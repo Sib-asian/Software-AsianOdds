@@ -1,19 +1,10 @@
 import math
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime, date, timedelta
 import pandas as pd
 import os
 import requests
 import streamlit as st
-
-# ============================================================
-#  PROVA IMPORT REFRESH
-# ============================================================
-try:
-    from streamlit_autorefresh import st_autorefresh
-    HAS_AUTOR = True
-except Exception:
-    HAS_AUTOR = False
 
 # ============================================================
 #                 CONFIG
@@ -23,11 +14,14 @@ except Exception:
 THE_ODDS_API_KEY = "06c16ede44d09f9b3498bb63354930c4"
 THE_ODDS_BASE = "https://api.the-odds-api.com/v4"
 
-# API-FOOTBALL solo per aggiornare lo storico (risultati reali)
+# API-FOOTBALL per risultati reali
 API_FOOTBALL_KEY = "95c43f936816cd4389a747fd2cfe061a"
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 
 ARCHIVE_FILE = "storico_analisi.csv"
+
+# se vuoi auto-refresh della pagina (facoltativo, lo usiamo più sotto)
+AUTOREFRESH_DEFAULT_SEC = 0  # metti 60 o 120 se vuoi farlo andare da solo
 
 # ============================================================
 #             UTILS
@@ -35,6 +29,14 @@ ARCHIVE_FILE = "storico_analisi.csv"
 
 def normalize_key(s: str) -> str:
     return (s or "").lower().replace(" ", "").replace("-", "").replace("/", "")
+
+def safe_round(x: Optional[float], nd: int = 3) -> Optional[float]:
+    if x is None:
+        return None
+    try:
+        return round(x, nd)
+    except Exception:
+        return x
 
 # ============================================================
 #         FUNZIONI THE ODDS API
@@ -56,6 +58,10 @@ def oddsapi_get_soccer_leagues() -> List[dict]:
         return []
 
 def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
+    """
+    Prova prima a prendere h2h+totals+spreads+btts.
+    Se il book non dà BTTS, riproviamo senza.
+    """
     base_url = f"{THE_ODDS_BASE}/sports/{league_key}/odds"
     params_common = {
         "apiKey": THE_ODDS_API_KEY,
@@ -64,7 +70,6 @@ def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
         "dateFormat": "iso",
     }
 
-    # 1) con btts
     try:
         r = requests.get(
             base_url,
@@ -78,7 +83,7 @@ def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
     except Exception as e:
         print("errore events (con btts):", e)
 
-    # 2) senza btts
+    # fallback senza btts
     try:
         r2 = requests.get(
             base_url,
@@ -92,6 +97,9 @@ def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
         return []
 
 def oddsapi_refresh_event(league_key: str, event_id: str) -> dict:
+    """
+    Refresh puntuale di una partita.
+    """
     if not league_key or not event_id:
         return {}
     url = f"{THE_ODDS_BASE}/sports/{league_key}/events/{event_id}/odds"
@@ -114,6 +122,41 @@ def oddsapi_refresh_event(league_key: str, event_id: str) -> dict:
         return {}
 
 # ============================================================
+#  FUNZIONI DI NORMALIZZAZIONE QUOTE (nuove)
+# ============================================================
+
+def normalize_two_way(o1: float, o2: float) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Normalizza un mercato 2-esiti (es. Over/Under) togliendo il margine.
+    Ritorna le quote 'fair' (senza margine).
+    """
+    if not o1 or not o2 or o1 <= 1 or o2 <= 1:
+        return o1, o2
+    p1 = 1 / o1
+    p2 = 1 / o2
+    overround = p1 + p2
+    if overround <= 0:
+        return o1, o2
+    p1_f = p1 / overround
+    p2_f = p2 / overround
+    return round(1 / p1_f, 3), round(1 / p2_f, 3)
+
+def normalize_three_way(o1: float, ox: float, o2: float) -> Tuple[float, float, float]:
+    """
+    Normalizza mercato 1X2 togliendo il margine.
+    """
+    p1 = 1 / o1 if o1 and o1 > 1 else 0.0
+    px = 1 / ox if ox and ox > 1 else 0.0
+    p2 = 1 / o2 if o2 and o2 > 1 else 0.0
+    tot = p1 + px + p2
+    if tot == 0:
+        return o1, ox, o2
+    p1_f = p1 / tot
+    px_f = px / tot
+    p2_f = p2 / tot
+    return round(1 / p1_f, 3), round(1 / px_f, 3), round(1 / p2_f, 3)
+
+# ============================================================
 #  STIMA GG QUANDO NON ARRIVA DALL’API
 # ============================================================
 
@@ -124,6 +167,10 @@ def estimate_btts_from_basic_odds(
     odds_over25: float = None,
     odds_under25: float = None,
 ) -> float:
+    """
+    Stima del BTTS quando non c’è il mercato.
+    Raffinata: parte da O/U e sbilanciamento 1X2.
+    """
     def _p(odd: float) -> float:
         return 1.0 / odd if odd and odd > 1 else 0.0
 
@@ -131,27 +178,34 @@ def estimate_btts_from_basic_odds(
     p_home = _p(odds_1)
     p_away = _p(odds_2)
 
+    # se manca over, stimiamo solo con equilibrio
     if p_over == 0:
         balance = 1.0 - abs(p_home - p_away)
         gg_prob = 0.50 + (balance - 0.5) * 0.25
         gg_prob = max(0.38, min(0.70, gg_prob))
-        return round(1.0 / gg_prob, 2)
+        return round(1.0 / gg_prob, 3)
 
     gg_prob = 0.50 + (p_over - 0.50) * 0.9
     balance = 1.0 - abs(p_home - p_away)
     gg_prob += (balance - 0.5) * 0.20
     gg_prob = max(0.35, min(0.75, gg_prob))
-    return round(1.0 / gg_prob, 2)
+    return round(1.0 / gg_prob, 3)
 
 # ============================================================
 #   ESTRATTORE QUOTE DA EVENTO
+#   (PIÙ PRECISO: pesi libro per libro + trimming outlier)
 # ============================================================
 
 def oddsapi_extract_prices(event: dict) -> dict:
-    # pesi leggermente aggiustati: bet365 un filo più forte
+    """
+    Estrae le quote dai bookmaker e fa:
+    - pesatura per bookmaker
+    - rimozione outlier
+    - normalizzazione alcuni mercati
+    """
     WEIGHTS = {
-        "bet365": 1.7,
-        "pinnacle": 1.6,
+        "pinnacle": 1.7,
+        "bet365": 1.5,
         "unibet_eu": 1.2,
         "marathonbet": 1.2,
         "williamhill": 1.1,
@@ -284,7 +338,7 @@ def oddsapi_extract_prices(event: dict) -> dict:
             return None
         num = sum(v * w for v, w in values)
         den = sum(w for _, w in values)
-        return num / den if den else None
+        return round(num / den, 3) if den else None
 
     out["odds_1"] = weighted_avg(h2h_home)
     out["odds_x"] = weighted_avg(h2h_draw)
@@ -295,11 +349,7 @@ def oddsapi_extract_prices(event: dict) -> dict:
     out["odds_dnb_away"] = weighted_avg(dnb_away_list)
     out["odds_btts"] = weighted_avg(btts_list)
 
-    # rifinitura decimali e "stretta" leggera
-    for k in ["odds_1", "odds_x", "odds_2", "odds_over25", "odds_under25", "odds_dnb_home", "odds_dnb_away", "odds_btts"]:
-        if out.get(k):
-            out[k] = round(out[k], 3)
-
+    # stima btts se manca
     if out["odds_btts"] is None:
         out["odds_btts"] = estimate_btts_from_basic_odds(
             odds_1=out["odds_1"],
@@ -308,6 +358,16 @@ def oddsapi_extract_prices(event: dict) -> dict:
             odds_over25=out["odds_over25"],
             odds_under25=out["odds_under25"],
         )
+
+    # normalizzazione leggera del 1X2
+    if out["odds_1"] and out["odds_x"] and out["odds_2"]:
+        n1, nx, n2 = normalize_three_way(out["odds_1"], out["odds_x"], out["odds_2"])
+        out["odds_1"], out["odds_x"], out["odds_2"] = n1, nx, n2
+
+    # normalizzazione OU se ci sono entrambi
+    if out["odds_over25"] and out["odds_under25"]:
+        no, nu = normalize_two_way(out["odds_over25"], out["odds_under25"])
+        out["odds_over25"], out["odds_under25"] = no, nu
 
     return out
 
@@ -328,7 +388,8 @@ def apifootball_get_fixtures_by_date(d: str) -> list:
         return []
 
 # ============================================================
-#                  FUNZIONI MODELLO
+#                  FUNZIONI MODELLO (come prima,
+#              ma con qualche commento in più)
 # ============================================================
 
 def poisson_pmf(k: int, lam: float) -> float:
@@ -356,6 +417,9 @@ def normalize_1x2_from_odds(o1: float, ox: float, o2: float) -> Tuple[float, flo
 
 def gol_attesi_migliorati(spread: float, total: float,
                           p1: float, p2: float) -> Tuple[float, float]:
+    """
+    Versione già corretta che usavi: tiene conto del total, poi aggiusta in base al favoritismo.
+    """
     if total < 2.25:
         total_eff = total * 1.03
     elif total > 3.0:
@@ -609,6 +673,7 @@ def risultato_completo(
 
     p1, px, p2 = normalize_1x2_from_odds(odds_1, odds_x, odds_2)
 
+    # mix con DNB se presente
     if odds_dnb_home and odds_dnb_home > 1 and odds_dnb_away and odds_dnb_away > 1:
         pdnb_home = 1 / odds_dnb_home
         pdnb_away = 1 / odds_dnb_away
@@ -620,8 +685,10 @@ def risultato_completo(
             p2 = p2 * 0.7 + pdnb_away * 0.3
             px = max(0.0, 1.0 - (p1 + p2))
 
+    # λ da total+spread
     lh, la = gol_attesi_migliorati(spread, total, p1, p2)
 
+    # se ci hai messo gli xG li mischio
     if (xg_for_home is not None and xg_against_home is not None and
         xg_for_away is not None and xg_against_away is not None):
         lh, la = blend_lambda_market_xg(
@@ -631,6 +698,7 @@ def risultato_completo(
             w_market=0.6
         )
 
+    # rho guidato anche dal BTTS reale quando c'è
     if odds_btts and odds_btts > 1:
         p_btts_market = 1 / odds_btts
         rho = 0.15 + (p_btts_market - 0.55) * 0.5
@@ -972,20 +1040,10 @@ def valuta_evento_rapido(event: dict) -> dict:
 
 st.set_page_config(page_title="Modello Scommesse – Odds API PRO", layout="wide")
 st.title("⚽ Modello Scommesse – versione con The Odds API PRO + DNB + controlli")
-
-# ======== SIDEBAR: REFRESH AUTOMATICO ========
-st.sidebar.header("⚙️ Opzioni")
-auto_refresh = st.sidebar.checkbox("Refresh automatico quote", value=False)
-refresh_sec = st.sidebar.slider("Ogni quanti secondi", 15, 120, 45)
-st.session_state["auto_refresh"] = auto_refresh
-st.session_state["refresh_ms"] = refresh_sec * 1000
-
-if HAS_AUTOR and auto_refresh:
-    st_autorefresh(interval=st.session_state["refresh_ms"], key="auto_refresh_tick")
-elif auto_refresh and not HAS_AUTOR:
-    st.sidebar.warning("Per il refresh automatico installa: streamlit-autorefresh")
-
 st.caption(f"Esecuzione: {datetime.now().isoformat(timespec='seconds')}")
+
+# se vuoi auto-refresh della pagina, scommenta qui:
+# st_autorefresh(interval=AUTOREFRESH_DEFAULT_SEC * 1000, key="autorefresh")
 
 # init session state
 if "soccer_leagues" not in st.session_state:
@@ -998,10 +1056,8 @@ if "selected_league_key" not in st.session_state:
     st.session_state.selected_league_key = None
 if "selected_event_id" not in st.session_state:
     st.session_state.selected_event_id = None
-# questo è il suffix STABILE per i widget
 if "selected_event_key" not in st.session_state:
     st.session_state.selected_event_key = "match"
-# per messaggio di refresh
 if "refresh_done" not in st.session_state:
     st.session_state.refresh_done = False
 if "last_refresh_ts" not in st.session_state:
@@ -1127,7 +1183,7 @@ if st.session_state.soccer_leagues:
         # salvo lega
         st.session_state.selected_league_key = selected_league_key
 
-        # provo a prendere un id stabile
+        # id stabile
         event_id = event.get("id") or event.get("event_id") or event.get("key")
         home_n = event.get("home_team") or ""
         away_n = event.get("away_team") or ""
@@ -1143,29 +1199,15 @@ if st.session_state.soccer_leagues:
         st.session_state.selected_event_prices = prices
         st.success("Quote prese dall’API e precompilate più sotto ✅")
 
-        # refresh automatico: se è attivo, richiamo la stessa partita e confronto
-        if st.session_state.get("auto_refresh", False) and st.session_state.get("selected_event_id"):
-            ref_ev = oddsapi_refresh_event(
-                st.session_state.selected_league_key,
-                st.session_state.selected_event_id
-            )
-            if ref_ev:
-                old_prices = st.session_state.get("selected_event_prices", {})
-                new_prices = oddsapi_extract_prices(ref_ev)
-                diffs = []
-                for k in ["odds_1", "odds_x", "odds_2", "odds_over25", "odds_under25", "odds_btts", "odds_dnb_home", "odds_dnb_away"]:
-                    ov = old_prices.get(k)
-                    nv = new_prices.get(k)
-                    if ov != nv:
-                        diffs.append(f"{k}: {ov} → {nv}")
-                st.session_state.selected_event_prices = new_prices
-                st.session_state.last_refresh_ts = datetime.now().isoformat(timespec="seconds")
-                st.session_state.last_refresh_diffs = diffs
+        # se refresh precedente
+        if st.session_state.get("refresh_done"):
+            st.success("Quote aggiornate dalla API ✅")
+            st.session_state.refresh_done = False
 
         if st.session_state.get("last_refresh_ts"):
             st.caption(f"🕓 Ultimo refresh quote: {st.session_state.last_refresh_ts}")
 
-        # bottone refresh manuale
+        # bottone refresh
         if st.button("🔁 Refresh quote partita"):
             ref_ev = oddsapi_refresh_event(
                 st.session_state.selected_league_key,
@@ -1176,7 +1218,7 @@ if st.session_state.soccer_leagues:
                 new_prices = oddsapi_extract_prices(ref_ev)
 
                 diffs = []
-                for k in ["odds_1", "odds_x", "odds_2", "odds_over25", "odds_under25", "odds_btts"]:
+                for k in ["odds_1", "odds_x", "odds_2", "odds_over25", "odds_under25", "odds_btts", "odds_dnb_home", "odds_dnb_away"]:
                     ov = old_prices.get(k)
                     nv = new_prices.get(k)
                     if ov != nv:
@@ -1249,6 +1291,7 @@ st.subheader("3. Linee correnti e quote (precompilate)")
 
 api_prices = st.session_state.get("selected_event_prices", {})
 
+# se manca BTTS lo stimo
 if not api_prices.get("odds_btts") or api_prices.get("odds_btts") <= 1.01:
     api_prices["odds_btts"] = estimate_btts_from_basic_odds(
         odds_1=api_prices.get("odds_1"),
@@ -1268,6 +1311,7 @@ def _safe_div(a, b):
     except Exception:
         return None
 
+# stima DNB se non arriva dall’API
 if (not api_prices.get("odds_dnb_home")) and odds1_tmp and oddsx_tmp:
     dnb_home_calc = _safe_div(odds1_tmp * oddsx_tmp, (odds1_tmp + oddsx_tmp))
     if dnb_home_calc:
@@ -1278,7 +1322,6 @@ if (not api_prices.get("odds_dnb_away")) and odds2_tmp and oddsx_tmp:
     if dnb_away_calc:
         api_prices["odds_dnb_away"] = round(dnb_away_calc * 0.995, 3)
 
-# QUI usiamo la chiave stabile
 key_suffix = st.session_state.get("selected_event_key", "match")
 
 col_co1, col_co2, col_co3 = st.columns(3)
@@ -1428,6 +1471,7 @@ if st.button("CALCOLA MODELLO"):
         odds_dnb_away=odds_dnb_away if odds_dnb_away > 0 else None,
     )
 
+    # se il BTTS era stimato, lo ricalibro dal modello
     if not odds_btts or odds_btts <= 1.01:
         p_gg_modello = ris_co["btts"]
         if p_gg_modello and p_gg_modello > 0:
