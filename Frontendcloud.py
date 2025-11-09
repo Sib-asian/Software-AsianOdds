@@ -71,7 +71,7 @@ class APIConfig:
     football_data_api_key: str = "ca816dc8504543768e8adfaf128ecffc"
     thesportsdb_api_key: str = "3"  # Pubblica, gratuita
     telegram_bot_token: str = "8530766126:AAHs1ZoLwrwvT7JuPyn_9ymNVyddPtUXi-g"
-    telegram_chat_id: str = "311951419"
+    telegram_chat_id: str = "-1003278011521"
     telegram_enabled: bool = True
     
     def __post_init__(self):
@@ -5366,9 +5366,23 @@ def send_telegram_message(
                 error_data = response.json()
                 error_desc = error_data.get("description", "Chat ID non valido")
                 if "chat not found" in error_desc.lower():
+                    # Estrai informazioni aggiuntive se disponibili
+                    error_msg_detailed = (
+                        "**Chat ID non trovato o bot non autorizzato.**\n\n"
+                        "Possibili cause:\n"
+                        "1. **Chat ID errato**: Verifica di aver copiato correttamente il Chat ID\n"
+                        "2. **Bot non avviato**: Il bot deve aver ricevuto almeno un messaggio da te\n"
+                        "3. **Gruppo/Canale**: Se è un gruppo/canale, il bot deve essere membro/amministratore\n"
+                        "4. **Chat privata**: Per chat private, assicurati di aver avviato la conversazione\n\n"
+                        "**Come ottenere il Chat ID corretto:**\n"
+                        "- **Chat privata**: Scrivi a [@userinfobot](https://t.me/userinfobot) e copia il tuo ID\n"
+                        "- **Gruppo**: Aggiungi [@userinfobot](https://t.me/userinfobot) al gruppo e vedi il Group ID\n"
+                        "- **Canale**: Il bot deve essere amministratore del canale\n\n"
+                        f"Errore API: {error_desc}"
+                    )
                     return {
                         "success": False,
-                        "error_message": f"Chat ID non valido o bot non autorizzato. Verifica il Chat ID e assicurati di aver avviato una conversazione con il bot. Errore: {error_desc}",
+                        "error_message": error_msg_detailed,
                         "error_type": "invalid_chat_id"
                     }
             except:
@@ -5426,6 +5440,32 @@ def send_telegram_message(
             "error_message": f"Errore imprevisto: {str(e)}",
             "error_type": "other"
         }
+
+def test_telegram_chat_id(
+    bot_token: str = None,
+    chat_id: str = None,
+) -> Dict[str, Any]:
+    """
+    Testa se il Chat ID è valido inviando un messaggio di test.
+    
+    Args:
+        bot_token: Token del bot (default: TELEGRAM_BOT_TOKEN)
+        chat_id: Chat ID da testare (default: TELEGRAM_CHAT_ID)
+    
+    Returns:
+        Dict con:
+            - success: bool
+            - error_message: str
+            - error_type: str
+    """
+    test_message = "🧪 **Test connessione Telegram**\n\nSe ricevi questo messaggio, la configurazione è corretta! ✅"
+    
+    return send_telegram_message(
+        message=test_message,
+        bot_token=bot_token,
+        chat_id=chat_id,
+        parse_mode="HTML"
+    )
 
 def send_telegram_photo(
     photo_path: str,
@@ -6701,9 +6741,170 @@ with st.expander("🤖 Configurazione Telegram Bot (Opzionale)", expanded=False)
     1. Crea un bot su Telegram scrivendo a [@BotFather](https://t.me/BotFather)
     2. Invia `/newbot` e segui le istruzioni
     3. Copia il **Token** che ti viene fornito
-    4. Per ottenere il **Chat ID**, scrivi a [@userinfobot](https://t.me/userinfobot) e copia il tuo ID
+    4. Per ottenere il **Chat ID**, segui la guida dettagliata qui sotto
     5. In alternativa, puoi usare variabili d'ambiente: `TELEGRAM_BOT_TOKEN` e `TELEGRAM_CHAT_ID`
     """)
+    
+    # Guida dettagliata per trovare Chat ID
+    with st.expander("📖 **Guida Completa: Come Trovare il Chat ID**", expanded=False):
+        st.markdown("""
+        ## 🎯 Metodo 1: Chat Privata (Messaggi Personali)
+        
+        **Per ricevere messaggi sul tuo account Telegram personale:**
+        
+        ### Passo 1: Ottieni il tuo User ID
+        1. Apri Telegram (app o web)
+        2. Cerca **[@userinfobot](https://t.me/userinfobot)** nella barra di ricerca
+        3. Clicca sul bot e avvia una conversazione
+        4. Invia il comando `/start`
+        5. Il bot ti mostrerà il tuo **User ID** (es. `123456789`)
+        6. **Copia questo numero** - questo è il tuo Chat ID!
+        
+        ### Passo 2: Avvia il tuo bot
+        1. Cerca il nome del tuo bot (quello che hai creato con @BotFather)
+        2. Avvia una conversazione con il bot
+        3. **IMPORTANTE**: Invia almeno un messaggio al bot (anche solo `/start`)
+        4. Questo è necessario perché il bot possa inviarti messaggi
+        
+        ### Passo 3: Verifica
+        - Il Chat ID per chat private è un **numero positivo** (es. `123456789`)
+        - Non include segni `-` o altri caratteri
+        - Solo numeri!
+        
+        ---
+        
+        ## 👥 Metodo 2: Gruppo Telegram
+        
+        **Per ricevere messaggi in un gruppo:**
+        
+        ### Passo 1: Aggiungi il bot al gruppo
+        1. Apri il gruppo dove vuoi ricevere i messaggi
+        2. Vai su **Info gruppo** (icona in alto)
+        3. Clicca su **Aggiungi membri** o **Aggiungi amministratori**
+        4. Cerca il nome del tuo bot e aggiungilo al gruppo
+        5. **IMPORTANTE**: Il bot deve essere membro del gruppo
+        
+        ### Passo 2: Ottieni il Group ID
+        1. Aggiungi **[@userinfobot](https://t.me/userinfobot)** al gruppo
+        2. Il bot mostrerà automaticamente le informazioni del gruppo
+        3. Cerca il **Group ID** (es. `-1001234567890`)
+        4. **Copia questo numero** - include il segno `-` all'inizio!
+        
+        ### Passo 3: Verifica
+        - Il Chat ID per gruppi è un **numero negativo** (es. `-123456789` o `-1001234567890`)
+        - Include sempre il segno `-` all'inizio
+        - I supergruppi iniziano con `-100`
+        
+        ---
+        
+        ## 📢 Metodo 3: Canale Telegram
+        
+        **Per ricevere messaggi in un canale:**
+        
+        ### ⚠️ IMPORTANTE: @userinfobot NON funziona per canali!
+        Il bot @userinfobot mostra solo le tue informazioni personali, non quelle del canale.
+        Per i canali devi usare un metodo diverso.
+        
+        ### Passo 1: Rendi il bot amministratore
+        1. Apri il canale dove vuoi ricevere i messaggi
+        2. Vai su **Info canale** (icona in alto a destra)
+        3. Clicca su **Amministratori** → **Aggiungi amministratore**
+        4. Cerca il nome del tuo bot e aggiungilo
+        5. **IMPORTANTE**: Il bot deve essere **amministratore** del canale (non solo membro)
+        
+        ### Passo 2: Ottieni il Channel ID - METODO A (Consigliato)
+        
+        **Usa @RawDataBot:**
+        1. Aggiungi **[@RawDataBot](https://t.me/RawDataBot)** al canale come amministratore
+        2. Inoltra un messaggio qualsiasi dal canale a @RawDataBot (in una chat privata con il bot)
+        3. Il bot ti mostrerà tutti i dati del messaggio
+        4. Cerca la riga `"chat":{"id":-1001234567890}`
+        5. Il numero dopo `"id":` è il tuo **Channel ID** (es. `-1001234567890`)
+        6. **Copia questo numero** - include il segno `-` e inizia con `-100`
+        
+        ### Passo 2 Alternativo: METODO B (Più semplice)
+        
+        **Usa @getidsbot:**
+        1. Aggiungi **[@getidsbot](https://t.me/getidsbot)** al canale come amministratore
+        2. Il bot dovrebbe mostrare automaticamente il Channel ID
+        3. Se non appare, invia un messaggio nel canale e il bot risponderà con l'ID
+        4. **Copia il numero** mostrato (inizia con `-100`)
+        
+        ### Passo 2 Alternativo: METODO C (Se i bot non funzionano)
+        
+        **Usa il tuo bot personalizzato:**
+        1. Se hai già creato il bot con @BotFather, aggiungilo come amministratore al canale
+        2. Invia un messaggio di test nel canale
+        3. Usa questo script Python per ottenere l'ID:
+        ```python
+        import requests
+        bot_token = "TUO_BOT_TOKEN"
+        url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+        response = requests.get(url)
+        data = response.json()
+        # Cerca il canale nei risultati
+        for update in data.get("result", []):
+            if "channel_post" in update:
+                chat_id = update["channel_post"]["chat"]["id"]
+                print(f"Channel ID: {chat_id}")
+        ```
+        
+        ### Passo 3: Verifica
+        - Il Chat ID per canali è un **numero negativo che inizia con `-100`** (es. `-1001234567890`)
+        - Include sempre il segno `-` all'inizio
+        - Deve iniziare con `-100`
+        - **NON** usare il tuo User ID (quello che vedi con @userinfobot)!
+        
+        ---
+        
+        ## ✅ Riepilogo Formati Chat ID
+        
+        | Tipo | Formato | Esempio | Note |
+        |------|---------|---------|------|
+        | **Chat Privata** | Numero positivo | `123456789` | Solo numeri, nessun segno |
+        | **Gruppo** | Numero negativo | `-123456789` | Include segno `-` |
+        | **Supergruppo** | Numero negativo `-100...` | `-1001234567890` | Inizia con `-100` |
+        | **Canale** | Numero negativo `-100...` | `-1001234567890` | Inizia con `-100` |
+        
+        ---
+        
+        ## 🔧 Bot Utili per Trovare Chat ID
+        
+        - **[@userinfobot](https://t.me/userinfobot)**: Per User ID (chat private) e Group ID ⚠️ NON funziona per canali!
+        - **[@getidsbot](https://t.me/getidsbot)**: Per Channel ID (canali) - Aggiungi al canale come admin
+        - **[@RawDataBot](https://t.me/RawDataBot)**: Mostra tutti i dati raw - Inoltra un messaggio dal canale al bot
+        - **[@username_to_id_bot](https://t.me/username_to_id_bot)**: Converte username in ID (se il canale ha username pubblico)
+        
+        ---
+        
+        ## ⚠️ Problemi Comuni
+        
+        ### "Chat not found" o "Chat ID non valido"
+        
+        **Per Chat Private:**
+        - ✅ Hai inviato almeno un messaggio al bot? (anche solo `/start`)
+        - ✅ Il Chat ID è un numero positivo senza segni?
+        - ✅ Hai copiato correttamente il numero?
+        
+        **Per Gruppi:**
+        - ✅ Il bot è membro del gruppo?
+        - ✅ Il Chat ID include il segno `-` all'inizio?
+        - ✅ Hai usato @userinfobot per ottenere l'ID?
+        
+        **Per Canali:**
+        - ✅ Il bot è **amministratore** del canale?
+        - ✅ Il Chat ID inizia con `-100`?
+        - ✅ Hai usato @getidsbot per ottenere l'ID?
+        
+        ---
+        
+        ## 💡 Suggerimenti
+        
+        1. **Testa sempre**: Usa il pulsante "🧪 Testa Configurazione" prima di abilitare l'invio automatico
+        2. **Copia con attenzione**: Assicurati di non includere spazi o caratteri extra
+        3. **Verifica formato**: Controlla che il formato corrisponda al tipo di chat (vedi tabella sopra)
+        4. **Bot attivo**: Assicurati che il bot creato con @BotFather sia ancora attivo
+        """)
     
     telegram_enabled = st.checkbox("📤 Invia analisi automaticamente su Telegram", value=False,
                                    help="Se abilitato, ogni analisi verrà inviata automaticamente al tuo bot Telegram")
@@ -6719,6 +6920,67 @@ with st.expander("🤖 Configurazione Telegram Bot (Opzionale)", expanded=False)
         telegram_chat_id = st.text_input("Chat ID", value=TELEGRAM_CHAT_ID,
                                         help="ID della chat dove inviare (da @userinfobot)",
                                         placeholder="123456789")
+    
+    # Pulsante per testare la configurazione
+    if telegram_token and telegram_chat_id:
+        col_test1, col_test2 = st.columns([1, 2])
+        with col_test1:
+            if st.button("🧪 Testa Configurazione", help="Invia un messaggio di test per verificare che token e chat ID siano corretti"):
+                with st.spinner("Invio messaggio di test..."):
+                    test_result = test_telegram_chat_id(
+                        bot_token=telegram_token,
+                        chat_id=telegram_chat_id
+                    )
+                    
+                    if test_result.get("success"):
+                        st.success("✅ **Test riuscito!** Messaggio di test inviato con successo. La configurazione è corretta.")
+                    else:
+                        error_msg = test_result.get("error_message", "Errore sconosciuto")
+                        error_type = test_result.get("error_type", "other")
+                        
+                        # Mostra messaggio di errore dettagliato
+                        if error_type == "no_token":
+                            st.error(f"❌ **Token Bot non configurato**\n\n{error_msg}")
+                        elif error_type == "no_chat_id":
+                            st.error(f"❌ **Chat ID non configurato**\n\n{error_msg}")
+                        elif error_type == "invalid_token":
+                            st.error(f"❌ **Token non valido**\n\n{error_msg}\n\nVerifica che il token sia corretto e che il bot sia ancora attivo.")
+                        elif error_type == "invalid_chat_id":
+                            st.error("❌ **Chat ID non valido**")
+                            st.markdown(error_msg)
+                            with st.expander("🔍 **Guida passo-passo per risolvere**", expanded=True):
+                                st.markdown("""
+                                **Per Chat Private:**
+                                1. Apri Telegram e cerca [@userinfobot](https://t.me/userinfobot)
+                                2. Avvia una conversazione e invia `/start`
+                                3. Il bot ti mostrerà il tuo **User ID** (es. `123456789`)
+                                4. Copia questo numero e incollalo nel campo "Chat ID"
+                                5. **IMPORTANTE**: Prima di testare, invia almeno un messaggio al tuo bot (anche solo `/start`)
+                                
+                                **Per Gruppi:**
+                                1. Aggiungi [@userinfobot](https://t.me/userinfobot) al gruppo
+                                2. Il bot mostrerà il **Group ID** (es. `-1001234567890`)
+                                3. Copia questo numero (include il segno `-`)
+                                4. Aggiungi il tuo bot al gruppo come membro
+                                
+                                **Per Canali:**
+                                1. Il bot deve essere **amministratore** del canale
+                                2. Il Chat ID del canale inizia con `-100` (es. `-1001234567890`)
+                                3. Per ottenere il Chat ID, usa [@getidsbot](https://t.me/getidsbot) nel canale
+                                
+                                **Verifica rapida:**
+                                - Chat ID privata: numero positivo (es. `123456789`)
+                                - Chat ID gruppo: numero negativo (es. `-123456789`)
+                                - Chat ID canale: numero negativo che inizia con `-100` (es. `-1001234567890`)
+                                """)
+                        elif error_type == "rate_limit":
+                            st.warning(f"⏱️ **Rate Limit**\n\n{error_msg}")
+                        elif error_type == "timeout" or error_type == "connection_error":
+                            st.warning(f"🌐 **Problema di connessione**\n\n{error_msg}")
+                        else:
+                            st.warning(f"⚠️ **Errore test Telegram**\n\n{error_msg}")
+        with col_test2:
+            st.caption("💡 **Suggerimento**: Testa sempre la configurazione prima di abilitare l'invio automatico")
     
     if telegram_enabled and (not telegram_token or not telegram_chat_id):
         st.warning("⚠️ Inserisci Bot Token e Chat ID per abilitare Telegram")
@@ -7709,7 +7971,36 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                     elif error_type == "invalid_token":
                         st.error(f"❌ **Token non valido**\n\n{error_msg}\n\nVerifica che il token sia corretto e che il bot sia ancora attivo.")
                     elif error_type == "invalid_chat_id":
-                        st.error(f"❌ **Chat ID non valido**\n\n{error_msg}\n\nAssicurati di:\n1. Aver avviato una conversazione con il bot\n2. Aver inviato almeno un messaggio al bot\n3. Che il Chat ID sia corretto")
+                        # Usa markdown per formattazione migliore
+                        st.error("❌ **Chat ID non valido**")
+                        st.markdown(error_msg)
+                        
+                        # Aggiungi sezione interattiva con suggerimenti
+                        with st.expander("🔍 **Guida passo-passo per risolvere**", expanded=True):
+                            st.markdown("""
+                            **Per Chat Private:**
+                            1. Apri Telegram e cerca [@userinfobot](https://t.me/userinfobot)
+                            2. Avvia una conversazione e invia `/start`
+                            3. Il bot ti mostrerà il tuo **User ID** (es. `123456789`)
+                            4. Copia questo numero e incollalo nel campo "Chat ID"
+                            5. **IMPORTANTE**: Prima di usare il bot, invia almeno un messaggio al tuo bot (anche solo `/start`)
+                            
+                            **Per Gruppi:**
+                            1. Aggiungi [@userinfobot](https://t.me/userinfobot) al gruppo
+                            2. Il bot mostrerà il **Group ID** (es. `-1001234567890`)
+                            3. Copia questo numero (include il segno `-`)
+                            4. Aggiungi il tuo bot al gruppo come membro
+                            
+                            **Per Canali:**
+                            1. Il bot deve essere **amministratore** del canale
+                            2. Il Chat ID del canale inizia con `-100` (es. `-1001234567890`)
+                            3. Per ottenere il Chat ID, usa [@getidsbot](https://t.me/getidsbot) nel canale
+                            
+                            **Verifica rapida:**
+                            - Chat ID privata: numero positivo (es. `123456789`)
+                            - Chat ID gruppo: numero negativo (es. `-123456789`)
+                            - Chat ID canale: numero negativo che inizia con `-100` (es. `-1001234567890`)
+                            """)
                     elif error_type == "rate_limit":
                         st.warning(f"⏱️ **Rate Limit**\n\n{error_msg}")
                     elif error_type == "timeout" or error_type == "connection_error":
