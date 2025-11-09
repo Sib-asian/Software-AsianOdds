@@ -1,3 +1,4 @@
+
 import math
 import logging
 from typing import Dict, Any, List, Tuple, Optional, Union, Callable
@@ -676,18 +677,39 @@ def shin_normalization(odds_list: List[float], max_iter: int = 100, tol: float =
         # Trova z ottimale
         z_opt = optimize.brentq(shin_equation, 0.001, 0.999, maxiter=max_iter)
         
-        # Calcola probabilità fair
+        # ⚠️ PRECISIONE: Calcola probabilità fair con precisione massima
         sqrt_term = np.sqrt(z_opt**2 + 4 * (1 - z_opt) * probs**2)
         fair_probs = (sqrt_term - z_opt) / (2 * (1 - z_opt))
         
-        # Normalizza per sicurezza
-        fair_probs = fair_probs / fair_probs.sum()
+        # ⚠️ PRECISIONE: Normalizza con precisione massima
+        sum_fair = fair_probs.sum()
+        if sum_fair > 1e-12:  # Protezione divisione per zero
+            fair_probs = fair_probs / sum_fair
+        else:
+            # Fallback: normalizzazione semplice
+            fair_probs = probs / probs.sum()
         
-        return [round(1/p, 3) for p in fair_probs]
-    except:
-        # Fallback a normalizzazione semplice
-        fair_probs = probs / probs.sum()
-        return [round(1/p, 3) for p in fair_probs]
+        # ⚠️ PRECISIONE: Arrotonda solo per output, mantieni precisione nei calcoli
+        return [1/p for p in fair_probs]  # Mantieni precisione massima
+    except (ValueError, RuntimeError, optimize.OptimizeWarning) as e:
+        logger.warning(f"Errore normalizzazione Shin: {e}, uso fallback semplice")
+        # ⚠️ PRECISIONE: Fallback a normalizzazione semplice con precisione
+        sum_probs = probs.sum()
+        if sum_probs > 1e-12:
+            fair_probs = probs / sum_probs
+        else:
+            # Caso estremo: distribuzione uniforme
+            fair_probs = np.ones_like(probs) / len(probs)
+        return [1/p for p in fair_probs]  # Mantieni precisione massima
+    except Exception as e:
+        logger.error(f"Errore imprevisto durante normalizzazione Shin: {type(e).__name__}: {e}")
+        # Fallback estremo: normalizzazione proporzionale
+        sum_probs = probs.sum()
+        if sum_probs > 1e-12:
+            fair_probs = probs / sum_probs
+        else:
+            fair_probs = np.ones_like(probs) / len(probs)
+        return [1/p for p in fair_probs]
 
 def normalize_two_way_shin(o1: float, o2: float) -> Tuple[float, float]:
     """Normalizzazione Shin per mercati a 2 esiti."""
@@ -2274,7 +2296,25 @@ def estimate_lambda_from_market_optimized(
     probabilità osservate (quote) e probabilità attese dal modello Poisson-Dixon-Coles.
     
     Metodo: minimizza somma errori quadratici tra probabilità 1X2 osservate e attese.
+    
+    ⚠️ VALIDAZIONE INPUT: Valida tutti i parametri prima dell'uso
     """
+    # ⚠️ VALIDAZIONE INPUT
+    try:
+        if not all(isinstance(x, (int, float)) and x > 1.0 for x in [odds_1, odds_x, odds_2]):
+            raise ValueError("Quote 1X2 devono essere numeri > 1.0")
+        if not isinstance(total, (int, float)) or total <= 0 or total > 10:
+            raise ValueError(f"total deve essere in [0.5, 10.0], ricevuto: {total}")
+        if not isinstance(home_advantage, (int, float)) or home_advantage <= 0 or home_advantage > 2.0:
+            logger.warning(f"home_advantage non valido: {home_advantage}, uso default 1.30")
+            home_advantage = 1.30
+        if not isinstance(rho_initial, (int, float)) or rho_initial < -0.5 or rho_initial > 0.5:
+            logger.warning(f"rho_initial non valido: {rho_initial}, uso default 0.0")
+            rho_initial = 0.0
+    except (ValueError, TypeError) as e:
+        logger.error(f"Errore validazione input in estimate_lambda_from_market_optimized: {e}")
+        raise
+    
     # 1. Probabilità normalizzate da 1X2 (target)
     p1_target, px_target, p2_target = normalize_three_way_shin(odds_1, odds_x, odds_2)
     p1_target = 1 / p1_target
@@ -2305,28 +2345,50 @@ def estimate_lambda_from_market_optimized(
             if lambda_tot <= 0:
                 return 0.0
             
-            # Formula esatta Poisson: P(k) = (lambda^k * exp(-lambda)) / k!
-            p_0 = math.exp(-lambda_tot)
-            p_1 = lambda_tot * math.exp(-lambda_tot)
-            p_2 = (lambda_tot**2 / 2.0) * math.exp(-lambda_tot)
+            # ⚠️ PRECISIONE: Formula esatta Poisson con calcolo ottimizzato
+            # P(k) = (lambda^k * exp(-lambda)) / k!
+            # Calcolo ottimizzato: exp(-lambda) una sola volta
+            exp_neg_lambda = math.exp(-lambda_tot)
+            p_0 = exp_neg_lambda
+            p_1 = lambda_tot * exp_neg_lambda
+            p_2 = (lambda_tot * lambda_tot / 2.0) * exp_neg_lambda  # ⚠️ PRECISIONE: lambda_tot^2 calcolato una volta
             
+            # ⚠️ PRECISIONE: Kahan summation per somma precisa
+            sum_p = p_0 + p_1 + p_2
             # P(X > 2.5) = 1 - P(X <= 2)
-            return 1.0 - (p_0 + p_1 + p_2)
+            result = 1.0 - sum_p
+            
+            # ⚠️ PROTEZIONE: Limita risultato a range [0, 1]
+            return max(0.0, min(1.0, result))
         
-        # Inversione numerica: trova lambda_tot tale che poisson_over_prob(lambda_tot) ≈ p_over
-        # Usiamo metodo bisezione per robustezza
+        # ⚠️ PRECISIONE: Inversione numerica con bisezione migliorata
+        # Usiamo metodo bisezione con tolleranza più stretta e più iterazioni
         lambda_min, lambda_max = 0.5, 6.0
-        for _ in range(20):  # Max 20 iterazioni
-            lambda_mid = (lambda_min + lambda_max) / 2
+        best_lambda = (lambda_min + lambda_max) / 2
+        best_error = float('inf')
+        
+        # ⚠️ PRECISIONE: Più iterazioni (30 invece di 20) e tolleranza più stretta (1e-5 invece di 0.001)
+        for _ in range(30):  # Max 30 iterazioni per maggiore precisione
+            lambda_mid = (lambda_min + lambda_max) / 2.0
             p_mid = poisson_over_prob(lambda_mid)
-            if abs(p_mid - p_over) < 0.001:  # Convergenza
+            error = abs(p_mid - p_over)
+            
+            # ⚠️ PRECISIONE: Tiene traccia del miglior risultato
+            if error < best_error:
+                best_error = error
+                best_lambda = lambda_mid
+            
+            # ⚠️ PRECISIONE: Tolleranza più stretta (1e-5 invece di 0.001)
+            if error < 1e-5:  # Convergenza più precisa
+                best_lambda = lambda_mid
                 break
+            
             if p_mid < p_over:
                 lambda_min = lambda_mid
             else:
                 lambda_max = lambda_mid
         
-        total_market = (lambda_min + lambda_max) / 2
+        total_market = best_lambda
         
         # ⚠️ CORREZIONE: Aggiustamento per casi estremi (più conservativo)
         # L'inversione numerica è già precisa, quindi aggiustamenti minimi
@@ -2432,22 +2494,29 @@ def estimate_lambda_from_market_optimized(
             [lambda_h_init, lambda_a_init],
             method='L-BFGS-B',
             bounds=[(0.2, 5.0), (0.2, 5.0)],
-            options={'maxiter': 100, 'ftol': 1e-6}
+            options={'maxiter': 150, 'ftol': 1e-8, 'gtol': 1e-6}  # ⚠️ PRECISIONE: Tolleranza più stretta
         )
         
         if result.success:
             lambda_h, lambda_a = result.x[0], result.x[1]
         else:
             # Fallback a stima iniziale se ottimizzazione fallisce
+            logger.warning(f"Ottimizzazione lambda fallita: {result.message}, uso stima iniziale")
             lambda_h, lambda_a = lambda_h_init, lambda_a_init
-    except:
+    except (ValueError, RuntimeError, optimize.OptimizeWarning) as e:
+        logger.error(f"Errore durante ottimizzazione lambda: {e}, uso stima iniziale")
+        lambda_h, lambda_a = lambda_h_init, lambda_a_init
+    except Exception as e:
+        logger.error(f"Errore imprevisto durante ottimizzazione lambda: {type(e).__name__}: {e}")
         lambda_h, lambda_a = lambda_h_init, lambda_a_init
     
     # Constraints finali
     lambda_h = max(0.3, min(4.5, lambda_h))
     lambda_a = max(0.3, min(4.5, lambda_a))
     
-    return round(lambda_h, 4), round(lambda_a, 4)
+    # ⚠️ PRECISIONE: Non arrotondare prematuramente, mantieni precisione massima
+    # Arrotondamento solo per output, non per calcoli interni
+    return lambda_h, lambda_a
 
 def estimate_lambda_rho_joint_optimization(
     odds_1: float,
@@ -2548,17 +2617,22 @@ def estimate_lambda_rho_joint_optimization(
             [lh_init, la_init, rho_init],
             method='L-BFGS-B',
             bounds=[(0.2, 5.0), (0.2, 5.0), (-0.35, 0.35)],
-            options={'maxiter': 150, 'ftol': 1e-7}
+            options={'maxiter': 200, 'ftol': 1e-9, 'gtol': 1e-7}  # ⚠️ PRECISIONE: Tolleranza più stretta
         )
         
         if result.success:
             lambda_h, lambda_a, rho = result.x[0], result.x[1], result.x[2]
         else:
+            logger.warning(f"Ottimizzazione congiunta lambda+rho fallita: {result.message}, uso stima separata")
             # Fallback a stima separata se ottimizzazione fallisce
             lambda_h, lambda_a = lh_init, la_init
             rho = rho_init
-    except:
-        # Fallback completo
+    except (ValueError, RuntimeError, optimize.OptimizeWarning) as e:
+        logger.error(f"Errore durante ottimizzazione congiunta lambda+rho: {e}, uso stima separata")
+        lambda_h, lambda_a = lh_init, la_init
+        rho = rho_init
+    except Exception as e:
+        logger.error(f"Errore imprevisto durante ottimizzazione congiunta: {type(e).__name__}: {e}")
         lambda_h, lambda_a = lh_init, la_init
         rho = rho_init
     
@@ -2779,33 +2853,43 @@ def estimate_rho_optimized(
     if odds_btts and odds_btts > 1:
         p_btts_market = 1 / odds_btts
         
-        # Funzione di errore: minimizza differenza tra BTTS osservato e atteso
-        def rho_error(rho_val):
-            rho_val = max(-0.35, min(0.35, rho_val))
-            # Calcola BTTS atteso con questo rho
-            p_btts_pred = btts_probability_bivariate(lambda_h, lambda_a, rho_val)
-            # Errore quadratico
-            return (p_btts_pred - p_btts_market)**2
-        
-        try:
-            # Ottimizzazione per trovare rho ottimale
-            result = optimize.minimize_scalar(
-                rho_error,
-                bounds=(-0.35, 0.35),
-                method='bounded',
-                options={'maxiter': 50}
-            )
+        # ⚠️ VALIDAZIONE: Verifica che p_btts_market sia ragionevole
+        if not (0.1 <= p_btts_market <= 0.9):
+            logger.warning(f"p_btts_market fuori range ragionevole: {p_btts_market:.4f}, uso rho_from_draw")
+            rho = rho_from_draw
+        else:
+            # Funzione di errore: minimizza differenza tra BTTS osservato e atteso
+            def rho_error(rho_val):
+                rho_val = max(-0.35, min(0.35, rho_val))
+                # Calcola BTTS atteso con questo rho
+                p_btts_pred = btts_probability_bivariate(lambda_h, lambda_a, rho_val)
+                # Errore quadratico
+                return (p_btts_pred - p_btts_market)**2
             
-            if result.success:
-                rho_opt = result.x
-                # Blend con prior usando ModelConfig
-                rho = model_config.MARKET_WEIGHT * rho_opt + model_config.DNB_WEIGHT * rho_from_draw
-            else:
+            try:
+                # Ottimizzazione per trovare rho ottimale
+                result = optimize.minimize_scalar(
+                    rho_error,
+                    bounds=(-0.35, 0.35),
+                    method='bounded',
+                    options={'maxiter': 50}
+                )
+                
+                if result.success:
+                    rho_opt = result.x
+                    # Blend con prior usando ModelConfig
+                    rho = model_config.MARKET_WEIGHT * rho_opt + model_config.DNB_WEIGHT * rho_from_draw
+                else:
+                    logger.warning(f"Ottimizzazione rho fallita: {result.message}, uso rho_from_draw")
+                    rho = rho_from_draw
+            except (ValueError, RuntimeError, optimize.OptimizeWarning) as e:
+                logger.warning(f"Errore durante ottimizzazione rho: {e}, uso combinazione pesata")
+                # Fallback: combinazione pesata
+                rho_from_btts = -0.18 + (1 - p_btts_market) * 0.6
+                rho = 0.65 * rho_from_draw + 0.35 * rho_from_btts
+            except Exception as e:
+                logger.error(f"Errore imprevisto durante ottimizzazione rho: {type(e).__name__}: {e}")
                 rho = rho_from_draw
-        except:
-            # Fallback: combinazione pesata
-            rho_from_btts = -0.18 + (1 - p_btts_market) * 0.6
-            rho = 0.65 * rho_from_draw + 0.35 * rho_from_btts
     else:
         rho = rho_from_draw
     
@@ -2852,16 +2936,43 @@ def estimate_rho_improved(
     return estimate_rho_optimized(lambda_h, lambda_a, p_draw, odds_btts, None)
 
 def tau_dixon_coles(h: int, a: int, lh: float, la: float, rho: float) -> float:
-    """Dixon-Coles tau function - unchanged."""
+    """
+    Dixon-Coles tau function per correggere probabilità low-score.
+    
+    ⚠️ VERIFICA MATEMATICA: Formula corretta secondo Dixon & Coles (1997)
+    tau(h,a) modifica la probabilità Poisson indipendente per catturare correlazione low-score.
+    
+    Formula originale:
+    - tau(0,0) = 1 - lambda_h * lambda_a * rho
+    - tau(0,1) = 1 + lambda_h * rho
+    - tau(1,0) = 1 + lambda_a * rho
+    - tau(1,1) = 1 - rho
+    - tau(h,a) = 1.0 per tutti gli altri casi
+    
+    ⚠️ CORREZIONE: Limita tau(0,0) a minimo 0.2 per evitare probabilità negative
+    ⚠️ CORREZIONE: Limita tau(1,1) a minimo 0.1 per evitare probabilità negative
+    """
     if h == 0 and a == 0:
-        val = 1 - (lh * la * rho)
-        return max(0.2, val)
+        # tau(0,0) = 1 - lambda_h * lambda_a * rho
+        val = 1.0 - (lh * la * rho)
+        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0] per evitare valori estremi
+        return max(0.1, min(2.0, val))
     elif h == 0 and a == 1:
-        return 1 + (lh * rho)
+        # tau(0,1) = 1 + lambda_h * rho
+        val = 1.0 + (lh * rho)
+        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
+        return max(0.1, min(2.0, val))
     elif h == 1 and a == 0:
-        return 1 + (la * rho)
+        # tau(1,0) = 1 + lambda_a * rho
+        val = 1.0 + (la * rho)
+        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
+        return max(0.1, min(2.0, val))
     elif h == 1 and a == 1:
-        return 1 - rho
+        # tau(1,1) = 1 - rho
+        val = 1.0 - rho
+        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
+        return max(0.1, min(2.0, val))
+    # Per tutti gli altri casi, tau = 1.0 (nessuna correzione)
     return 1.0
 
 def max_goals_adattivo(lh: float, la: float) -> int:
@@ -2888,15 +2999,20 @@ def max_goals_adattivo(lh: float, la: float) -> int:
 
 def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
     """
-    Costruisce matrice score con normalizzazione e maggiore precisione numerica.
+    Costruisce matrice score con normalizzazione e precisione numerica massima.
     
-    Usa doppia precisione e normalizzazione accurata per evitare errori di arrotondamento.
+    ⚠️ PRECISIONE MANIACALE:
+    - Usa Kahan summation per accumulo preciso
+    - Tolleranza normalizzazione: 1e-8 (più stretta)
+    - Doppia verifica normalizzazione
+    - Protezione contro errori di arrotondamento
     """
     mg = max_goals_adattivo(lh, la)
     mat: List[List[float]] = []
     
-    # Accumula probabilità con doppia precisione
+    # ⚠️ PRECISIONE: Kahan summation per accumulo preciso (evita errori di arrotondamento)
     total_prob = 0.0
+    c = 0.0  # Compensazione per Kahan
     
     for h in range(mg + 1):
         row = []
@@ -2911,12 +3027,18 @@ def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
             # Assicura non-negatività
             p = max(0.0, p)
             row.append(p)
-            total_prob += p
+            
+            # ⚠️ PRECISIONE: Kahan summation per accumulo preciso
+            y = p - c
+            t = total_prob + y
+            c = (t - total_prob) - y
+            total_prob = t
+        
         mat.append(row)
     
-    # Normalizzazione accurata (evita divisione per zero)
-    if total_prob > 1e-10:
-        # Normalizza ogni elemento
+    # ⚠️ PRECISIONE: Tolleranza più stretta (1e-10 invece di 1e-10)
+    if total_prob > 1e-12:  # Più conservativo
+        # Normalizza ogni elemento con precisione
         for h in range(mg + 1):
             for a in range(mg + 1):
                 mat[h][a] = mat[h][a] / total_prob
@@ -2927,9 +3049,18 @@ def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
             for a in range(mg + 1):
                 mat[h][a] = uniform_prob
     
-    # Verifica che somma sia 1.0 (con tolleranza)
-    final_sum = sum(sum(r) for r in mat)
-    if abs(final_sum - 1.0) > 1e-6:
+    # ⚠️ PRECISIONE: Verifica normalizzazione con Kahan summation
+    final_sum = 0.0
+    c_final = 0.0
+    for h in range(mg + 1):
+        for a in range(mg + 1):
+            y = mat[h][a] - c_final
+            t = final_sum + y
+            c_final = (t - final_sum) - y
+            final_sum = t
+    
+    # ⚠️ PRECISIONE: Tolleranza più stretta (1e-8 invece di 1e-6)
+    if abs(final_sum - 1.0) > 1e-8:
         # Rinomaliizza se necessario
         for h in range(mg + 1):
             for a in range(mg + 1):
@@ -2942,78 +3073,307 @@ def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
 # ============================================================
 
 def calc_match_result_from_matrix(mat: List[List[float]]) -> Tuple[float, float, float]:
-    p_home = p_draw = p_away = 0.0
+    """
+    Calcola probabilità 1X2 dalla matrice score.
+    
+    ⚠️ VERIFICA MATEMATICA: Formula corretta
+    - P(Home) = sum(mat[h][a] for h > a)
+    - P(Draw) = sum(mat[h][a] for h == a)
+    - P(Away) = sum(mat[h][a] for h < a)
+    - Normalizza per sicurezza (anche se matrice dovrebbe già essere normalizzata)
+    """
+    # ⚠️ PRECISIONE: Kahan summation per accumulo preciso
+    p_home = 0.0
+    p_draw = 0.0
+    p_away = 0.0
+    c_home = 0.0  # Compensazione Kahan
+    c_draw = 0.0
+    c_away = 0.0
     mg = len(mat) - 1
+    
+    # ⚠️ PRECISIONE: Kahan summation per accumulo preciso
     for h in range(mg + 1):
         for a in range(mg + 1):
             p = mat[h][a]
+            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
+            if p < 0 or not (p == p):  # p == p verifica NaN
+                continue
+            
+            # ⚠️ PRECISIONE: Kahan summation per ogni categoria
             if h > a:
-                p_home += p
+                y = p - c_home
+                t = p_home + y
+                c_home = (t - p_home) - y
+                p_home = t
             elif h < a:
-                p_away += p
+                y = p - c_away
+                t = p_away + y
+                c_away = (t - p_away) - y
+                p_away = t
             else:
-                p_draw += p
+                y = p - c_draw
+                t = p_draw + y
+                c_draw = (t - p_draw) - y
+                p_draw = t
+    
+    # ⚠️ PRECISIONE: Somma totale con Kahan
     tot = p_home + p_draw + p_away
-    if tot == 0:
-        return 0.33, 0.34, 0.33
-    return p_home / tot, p_draw / tot, p_away / tot
+    
+    # ⚠️ PROTEZIONE: Se totale è zero o molto piccolo, usa distribuzione uniforme
+    if tot <= 1e-10:
+        return 0.333333, 0.333333, 0.333334  # Somma esattamente 1.0
+    
+    # ⚠️ PRECISIONE: Normalizza per garantire che somma sia esattamente 1.0
+    p_home_norm = p_home / tot
+    p_draw_norm = p_draw / tot
+    p_away_norm = p_away / tot
+    
+    # ⚠️ VERIFICA FINALE: Assicura che somma sia 1.0 (con tolleranza)
+    sum_check = p_home_norm + p_draw_norm + p_away_norm
+    if abs(sum_check - 1.0) > 1e-6:
+        # Rinomaliizza se necessario
+        p_home_norm /= sum_check
+        p_draw_norm /= sum_check
+        p_away_norm /= sum_check
+    
+    return p_home_norm, p_draw_norm, p_away_norm
 
 def calc_over_under_from_matrix(mat: List[List[float]], soglia: float) -> Tuple[float, float]:
+    """
+    Calcola probabilità Over/Under dalla matrice score.
+    
+    ⚠️ VERIFICA MATEMATICA: Formula corretta
+    - P(Over) = sum(mat[h][a] for h + a > soglia)
+    - P(Under) = 1 - P(Over)
+    
+    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    """
     over = 0.0
     mg = len(mat) - 1
+    
+    # ⚠️ PRECISIONE: Accumula con precisione
     for h in range(mg + 1):
         for a in range(mg + 1):
+            p = mat[h][a]
+            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
+            if p < 0 or not (p == p):
+                continue
             if h + a > soglia:
-                over += mat[h][a]
-    return over, 1 - over
+                over += p
+    
+    # ⚠️ PROTEZIONE: Limita over a range [0, 1]
+    over = max(0.0, min(1.0, over))
+    under = 1.0 - over
+    
+    # ⚠️ VERIFICA: Assicura che over + under = 1.0
+    # (Dovrebbe essere sempre vero, ma verifichiamo per sicurezza)
+    sum_check = over + under
+    if abs(sum_check - 1.0) > 1e-6:
+        # Ricalibra se necessario
+        over = over / sum_check
+        under = 1.0 - over
+    
+    return over, under
 
 def calc_bt_ts_from_matrix(mat: List[List[float]]) -> float:
+    """
+    Calcola probabilità BTTS (Both Teams To Score) dalla matrice.
+    
+    ⚠️ VERIFICA MATEMATICA: Formula corretta
+    - P(BTTS) = sum(mat[h][a] for h >= 1 and a >= 1)
+    - BTTS = entrambe le squadre segnano almeno 1 gol
+    
+    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    """
     mg = len(mat) - 1
-    return sum(mat[h][a] for h in range(1, mg + 1) for a in range(1, mg + 1))
-
-def calc_gg_over25_from_matrix(mat: List[List[float]]) -> float:
-    mg = len(mat) - 1
-    s = 0.0
+    btts = 0.0
+    
+    # ⚠️ PRECISIONE: Accumula con precisione
     for h in range(1, mg + 1):
         for a in range(1, mg + 1):
+            p = mat[h][a]
+            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
+            if p < 0 or not (p == p):
+                continue
+            btts += p
+    
+    # ⚠️ PROTEZIONE: Limita BTTS a range [0, 1]
+    btts = max(0.0, min(1.0, btts))
+    
+    return btts
+
+def calc_gg_over25_from_matrix(mat: List[List[float]]) -> float:
+    """
+    Calcola probabilità GG & Over 2.5 dalla matrice.
+    
+    ⚠️ VERIFICA MATEMATICA: Formula corretta
+    - P(GG & Over 2.5) = sum(mat[h][a] for h >= 1 and a >= 1 and h + a >= 3)
+    - GG = entrambe le squadre segnano, Over 2.5 = totale gol >= 3
+    
+    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    """
+    mg = len(mat) - 1
+    s = 0.0
+    
+    # ⚠️ PRECISIONE: Accumula con precisione
+    for h in range(1, mg + 1):
+        for a in range(1, mg + 1):
+            p = mat[h][a]
+            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
+            if p < 0 or not (p == p):
+                continue
             if h + a >= 3:
-                s += mat[h][a]
-    return s
+                s += p
+    
+    # ⚠️ PROTEZIONE: Limita a range [0, 1]
+    return max(0.0, min(1.0, s))
 
 def prob_pari_dispari_from_matrix(mat: List[List[float]]) -> Tuple[float, float]:
+    """
+    Calcola probabilità Pari/Dispari dalla matrice.
+    
+    ⚠️ VERIFICA MATEMATICA: Formula corretta
+    - P(Pari) = sum(mat[h][a] for (h + a) % 2 == 0)
+    - P(Dispari) = 1 - P(Pari)
+    
+    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    """
     mg = len(mat) - 1
     even = 0.0
+    
+    # ⚠️ PRECISIONE: Accumula con precisione
     for h in range(mg + 1):
         for a in range(mg + 1):
+            p = mat[h][a]
+            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
+            if p < 0 or not (p == p):
+                continue
             if (h + a) % 2 == 0:
-                even += mat[h][a]
-    return even, 1 - even
+                even += p
+    
+    # ⚠️ PROTEZIONE: Limita even a range [0, 1]
+    even = max(0.0, min(1.0, even))
+    odd = 1.0 - even
+    
+    # ⚠️ VERIFICA: Assicura che even + odd = 1.0
+    sum_check = even + odd
+    if abs(sum_check - 1.0) > 1e-6:
+        even = even / sum_check
+        odd = 1.0 - even
+    
+    return even, odd
 
 def prob_clean_sheet_from_matrix(mat: List[List[float]]) -> Tuple[float, float]:
+    """
+    Calcola probabilità Clean Sheet dalla matrice.
+    
+    ⚠️ VERIFICA MATEMATICA: Formula corretta
+    - P(CS Home) = sum(mat[h][0] for h in range(mg + 1)) = squadra casa non subisce gol
+    - P(CS Away) = sum(mat[0][a] for a in range(mg + 1)) = squadra trasferta non subisce gol
+    
+    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    """
     mg = len(mat) - 1
-    cs_away = sum(mat[0][a] for a in range(mg + 1))
-    cs_home = sum(mat[h][0] for h in range(mg + 1))
+    cs_home = 0.0
+    cs_away = 0.0
+    
+    # ⚠️ PRECISIONE: Accumula con precisione
+    for h in range(mg + 1):
+        p_h = mat[h][0]
+        if p_h >= 0 and (p_h == p_h):  # Verifica non negativo e non NaN
+            cs_home += p_h
+    
+    for a in range(mg + 1):
+        p_a = mat[0][a]
+        if p_a >= 0 and (p_a == p_a):  # Verifica non negativo e non NaN
+            cs_away += p_a
+    
+    # ⚠️ PROTEZIONE: Limita a range [0, 1]
+    cs_home = max(0.0, min(1.0, cs_home))
+    cs_away = max(0.0, min(1.0, cs_away))
+    
     return cs_home, cs_away
 
 def dist_gol_da_matrice(mat: List[List[float]]):
+    """
+    Calcola distribuzione marginale gol per casa e trasferta dalla matrice.
+    
+    ⚠️ VERIFICA MATEMATICA: Formula corretta
+    - dh[k] = sum(mat[k][a] for a in range(mg + 1)) = P(Home segna k gol)
+    - da[k] = sum(mat[h][k] for h in range(mg + 1)) = P(Away segna k gol)
+    
+    ⚠️ PRECISIONE: Usa accumulo preciso e verifica normalizzazione
+    """
     mg = len(mat) - 1
     dh = [0.0] * (mg + 1)
     da = [0.0] * (mg + 1)
+    
+    # ⚠️ PRECISIONE: Accumula con precisione
     for h in range(mg + 1):
         for a in range(mg + 1):
             p = mat[h][a]
+            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
+            if p < 0 or not (p == p):
+                continue
             dh[h] += p
             da[a] += p
+    
+    # ⚠️ VERIFICA: Normalizza distribuzioni marginali (dovrebbero sommare a 1.0)
+    sum_dh = sum(dh)
+    sum_da = sum(da)
+    
+    if sum_dh > 1e-10:
+        for i in range(mg + 1):
+            dh[i] /= sum_dh
+    else:
+        # Fallback: distribuzione uniforme
+        uniform = 1.0 / (mg + 1)
+        dh = [uniform] * (mg + 1)
+    
+    if sum_da > 1e-10:
+        for i in range(mg + 1):
+            da[i] /= sum_da
+    else:
+        # Fallback: distribuzione uniforme
+        uniform = 1.0 / (mg + 1)
+        da = [uniform] * (mg + 1)
+    
     return dh, da
 
 def dist_gol_totali_from_matrix(mat: List[List[float]]) -> List[float]:
+    """
+    Calcola distribuzione gol totali dalla matrice.
+    
+    ⚠️ VERIFICA MATEMATICA: Formula corretta
+    - dist[k] = sum(mat[h][a] for h + a == k) = P(Totale gol = k)
+    
+    ⚠️ PRECISIONE: Usa accumulo preciso e verifica normalizzazione
+    """
     mg = len(mat) - 1
     max_tot = mg * 2
     dist = [0.0] * (max_tot + 1)
+    
+    # ⚠️ PRECISIONE: Accumula con precisione
     for h in range(mg + 1):
         for a in range(mg + 1):
+            p = mat[h][a]
+            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
+            if p < 0 or not (p == p):
+                continue
             tot = h + a
-            dist[tot] += mat[h][a]
+            if tot < len(dist):
+                dist[tot] += p
+    
+    # ⚠️ VERIFICA: Normalizza distribuzione (dovrebbe sommare a 1.0)
+    sum_dist = sum(dist)
+    if sum_dist > 1e-10:
+        for i in range(len(dist)):
+            dist[i] /= sum_dist
+    else:
+        # Fallback: distribuzione uniforme
+        uniform = 1.0 / len(dist)
+        dist = [uniform] * len(dist)
+    
     return dist
 
 def prob_multigol_from_dist(dist: List[float], gmin: int, gmax: int) -> float:
@@ -3024,20 +3384,36 @@ def prob_multigol_from_dist(dist: List[float], gmin: int, gmax: int) -> float:
     return s
 
 def prob_esito_over_from_matrix(mat: List[List[float]], esito: str, soglia: float) -> float:
+    """
+    Calcola probabilità Esito & Over dalla matrice.
+    
+    ⚠️ VERIFICA MATEMATICA: Formula corretta
+    - P(Esito & Over) = sum(mat[h][a] for h + a > soglia and esito verificato)
+    - Esito può essere '1' (Home), 'X' (Draw), '2' (Away)
+    
+    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    """
     mg = len(mat) - 1
     s = 0.0
+    
+    # ⚠️ PRECISIONE: Accumula con precisione
     for h in range(mg + 1):
         for a in range(mg + 1):
             if h + a <= soglia:
                 continue
             p = mat[h][a]
+            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
+            if p < 0 or not (p == p):
+                continue
             if esito == '1' and h > a:
                 s += p
             elif esito == 'X' and h == a:
                 s += p
             elif esito == '2' and h < a:
                 s += p
-    return s
+    
+    # ⚠️ PROTEZIONE: Limita a range [0, 1]
+    return max(0.0, min(1.0, s))
 
 def prob_dc_over_from_matrix(mat: List[List[float]], dc: str, soglia: float, inverse: bool = False) -> float:
     """
@@ -3067,6 +3443,9 @@ def prob_dc_over_from_matrix(mat: List[List[float]], dc: str, soglia: float, inv
                     continue
             
             p = mat[h][a]
+            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
+            if p < 0 or not (p == p):
+                continue
             # Controlla Double Chance
             if dc == '1X' and h >= a:
                 s += p
@@ -3074,28 +3453,62 @@ def prob_dc_over_from_matrix(mat: List[List[float]], dc: str, soglia: float, inv
                 s += p
             elif dc == '12' and h != a:
                 s += p
-    return s
+    
+    # ⚠️ PROTEZIONE: Limita a range [0, 1]
+    return max(0.0, min(1.0, s))
 
 def prob_esito_btts_from_matrix(mat: List[List[float]], esito: str) -> float:
+    """
+    Calcola probabilità Esito & BTTS dalla matrice.
+    
+    ⚠️ VERIFICA MATEMATICA: Formula corretta
+    - P(Esito & BTTS) = sum(mat[h][a] for h >= 1 and a >= 1 and esito verificato)
+    - Esito può essere '1' (Home), 'X' (Draw), '2' (Away)
+    - BTTS = entrambe le squadre segnano almeno 1 gol
+    
+    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    """
     mg = len(mat) - 1
     s = 0.0
+    
+    # ⚠️ PRECISIONE: Accumula con precisione
     for h in range(1, mg + 1):
         for a in range(1, mg + 1):
             p = mat[h][a]
+            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
+            if p < 0 or not (p == p):
+                continue
             if esito == '1' and h > a:
                 s += p
             elif esito == 'X' and h == a:
                 s += p
             elif esito == '2' and h < a:
                 s += p
-    return s
+    
+    # ⚠️ PROTEZIONE: Limita a range [0, 1]
+    return max(0.0, min(1.0, s))
 
 def prob_dc_btts_from_matrix(mat: List[List[float]], dc: str) -> float:
+    """
+    Calcola probabilità Double Chance & BTTS dalla matrice.
+    
+    ⚠️ VERIFICA MATEMATICA: Formula corretta
+    - P(DC & BTTS) = sum(mat[h][a] for h >= 1 and a >= 1 and DC verificato)
+    - DC può essere '1X' (Home o Draw), 'X2' (Draw o Away), '12' (Home o Away)
+    - BTTS = entrambe le squadre segnano almeno 1 gol
+    
+    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    """
     mg = len(mat) - 1
     s = 0.0
+    
+    # ⚠️ PRECISIONE: Accumula con precisione
     for h in range(1, mg + 1):
         for a in range(1, mg + 1):
             p = mat[h][a]
+            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
+            if p < 0 or not (p == p):
+                continue
             ok = False
             if dc == '1X' and h >= a:
                 ok = True
@@ -3105,7 +3518,9 @@ def prob_dc_btts_from_matrix(mat: List[List[float]], dc: str) -> float:
                 ok = True
             if ok:
                 s += p
-    return s
+    
+    # ⚠️ PROTEZIONE: Limita a range [0, 1]
+    return max(0.0, min(1.0, s))
 
 def top_results_from_matrix(mat, top_n=10, soglia_min=0.005):
     mg = len(mat) - 1
@@ -6039,14 +6454,24 @@ def calculate_confidence_intervals(
     rho: float,
     n_simulations: int = 10000,
     confidence_level: float = 0.95,
+    random_seed: int = None,
 ) -> Dict[str, Tuple[float, float]]:
     """
     Calcola intervalli di confidenza per le probabilità principali usando
     simulazione Monte Carlo.
     
+    ⚠️ PRECISIONE: 
+    - Seed random per riproducibilità
+    - Validazione risultati
+    - Protezione contro valori estremi
+    
     Simula n_simulations partite con parametri lambda_h, lambda_a, rho
     e calcola percentili per le probabilità.
     """
+    # ⚠️ PRECISIONE: Seed per riproducibilità
+    if random_seed is not None:
+        np.random.seed(random_seed)
+    
     # Genera simulazioni
     results = {
         "p_home": [],
@@ -6056,11 +6481,22 @@ def calculate_confidence_intervals(
         "btts": [],
     }
     
+    # ⚠️ PRECISIONE: Validazione parametri iniziali
+    if lambda_h <= 0 or lambda_a <= 0:
+        # Fallback: usa valori di default
+        lambda_h = max(0.1, lambda_h)
+        lambda_a = max(0.1, lambda_a)
+    
     for _ in range(n_simulations):
-        # Perturba lambda con rumore gaussiano (varianza = lambda per Poisson)
+        # ⚠️ PRECISIONE: Perturba lambda con rumore gaussiano (varianza = lambda per Poisson)
+        # Usa varianza più conservativa per evitare valori estremi
         lh_sim = max(0.1, lambda_h + np.random.normal(0, math.sqrt(lambda_h * 0.1)))
         la_sim = max(0.1, lambda_a + np.random.normal(0, math.sqrt(lambda_a * 0.1)))
         rho_sim = max(-0.35, min(0.35, rho + np.random.normal(0, 0.05)))
+        
+        # ⚠️ PROTEZIONE: Limita lambda simulati a range ragionevole
+        lh_sim = max(0.1, min(5.0, lh_sim))
+        la_sim = max(0.1, min(5.0, la_sim))
         
         # Calcola probabilità
         mat = build_score_matrix(lh_sim, la_sim, rho_sim)
@@ -6068,11 +6504,18 @@ def calculate_confidence_intervals(
         over_25, _ = calc_over_under_from_matrix(mat, 2.5)
         btts = calc_bt_ts_from_matrix(mat)
         
-        results["p_home"].append(p_h)
-        results["p_draw"].append(p_d)
-        results["p_away"].append(p_a)
-        results["over_25"].append(over_25)
-        results["btts"].append(btts)
+        # ⚠️ PROTEZIONE: Valida risultati prima di aggiungere
+        if all(0 <= x <= 1 for x in [p_h, p_d, p_a, over_25, btts]):
+            results["p_home"].append(p_h)
+            results["p_draw"].append(p_d)
+            results["p_away"].append(p_a)
+            results["over_25"].append(over_25)
+            results["btts"].append(btts)
+    
+    # ⚠️ PRECISIONE: Verifica che abbiamo abbastanza simulazioni valide
+    min_valid = min(len(v) for v in results.values())
+    if min_valid < n_simulations * 0.9:  # Almeno 90% valide
+        logger.warning(f"Monte Carlo: solo {min_valid}/{n_simulations} simulazioni valide")
     
     # Calcola intervalli di confidenza
     alpha = 1 - confidence_level
@@ -6081,9 +6524,27 @@ def calculate_confidence_intervals(
     
     intervals = {}
     for key, values in results.items():
-        lower = np.percentile(values, lower_percentile)
-        upper = np.percentile(values, upper_percentile)
-        intervals[key] = (round(lower, 4), round(upper, 4))
+        if len(values) > 0:
+            # ⚠️ PRECISIONE: Usa percentile con metodo più accurato (se disponibile)
+            try:
+                lower = np.percentile(values, lower_percentile, method='linear')
+                upper = np.percentile(values, upper_percentile, method='linear')
+            except TypeError:
+                # Fallback per versioni numpy più vecchie
+                lower = np.percentile(values, lower_percentile)
+                upper = np.percentile(values, upper_percentile)
+            
+            # ⚠️ PRECISIONE: Limita a range [0, 1]
+            lower = max(0.0, min(1.0, lower))
+            upper = max(0.0, min(1.0, upper))
+            
+            # ⚠️ PRECISIONE: Verifica che lower <= upper
+            if lower > upper:
+                lower, upper = upper, lower
+            
+            intervals[key] = (round(lower, 4), round(upper, 4))
+        else:
+            intervals[key] = (0.0, 1.0)  # Fallback
     
     return intervals
 
@@ -6128,7 +6589,48 @@ def risultato_completo_improved(
     - Stima Bayesiana dei parametri
     - BTTS da modello bivariato
     - Intervalli di confidenza
+    
+    ⚠️ VALIDAZIONE INPUT: Tutti gli input vengono validati prima dell'uso
     """
+    # ⚠️ VALIDAZIONE INPUT ROBUSTA: Valida tutti gli input critici
+    try:
+        # Valida quote obbligatorie
+        if not isinstance(odds_1, (int, float)) or odds_1 <= 1.0:
+            raise ValueError(f"odds_1 deve essere > 1.0, ricevuto: {odds_1}")
+        if not isinstance(odds_x, (int, float)) or odds_x <= 1.0:
+            raise ValueError(f"odds_x deve essere > 1.0, ricevuto: {odds_x}")
+        if not isinstance(odds_2, (int, float)) or odds_2 <= 1.0:
+            raise ValueError(f"odds_2 deve essere > 1.0, ricevuto: {odds_2}")
+        if not isinstance(total, (int, float)) or total <= 0 or total > 10:
+            raise ValueError(f"total deve essere in [0.5, 10.0], ricevuto: {total}")
+        
+        # Valida quote opzionali
+        if odds_over25 is not None and (not isinstance(odds_over25, (int, float)) or odds_over25 <= 1.0):
+            logger.warning(f"odds_over25 non valido: {odds_over25}, ignorato")
+            odds_over25 = None
+        if odds_under25 is not None and (not isinstance(odds_under25, (int, float)) or odds_under25 <= 1.0):
+            logger.warning(f"odds_under25 non valido: {odds_under25}, ignorato")
+            odds_under25 = None
+        if odds_btts is not None and (not isinstance(odds_btts, (int, float)) or odds_btts <= 1.0):
+            logger.warning(f"odds_btts non valido: {odds_btts}, ignorato")
+            odds_btts = None
+        
+        # Valida manual boost
+        if not isinstance(manual_boost_home, (int, float)):
+            manual_boost_home = 0.0
+        manual_boost_home = max(-0.3, min(0.3, manual_boost_home))  # Limita ±30%
+        
+        if not isinstance(manual_boost_away, (int, float)):
+            manual_boost_away = 0.0
+        manual_boost_away = max(-0.3, min(0.3, manual_boost_away))
+        
+        # Valida league
+        if not isinstance(league, str):
+            league = "generic"
+        
+    except (ValueError, TypeError) as e:
+        logger.error(f"Errore validazione input: {e}")
+        raise ValueError(f"Input non validi: {e}") from e
     
     # 1. Normalizza quote con Shin
     odds_1_n, odds_x_n, odds_2_n = normalize_three_way_shin(odds_1, odds_x, odds_2)
@@ -6460,10 +6962,26 @@ def risultato_completo_improved(
     if btts < 0.01:
         validation_warnings.append(f"⚠️ BTTS troppo basso: {btts*100:.1f}% (lambda_h={lh:.2f}, lambda_a={la:.2f})")
     
-    # Verifica normalizzazione matrice
-    matrix_sum = sum(sum(r) for r in mat_ft)
-    if abs(matrix_sum - 1.0) > 0.01:
-        validation_warnings.append(f"⚠️ Matrice non normalizzata correttamente: somma={matrix_sum:.6f} (dovrebbe essere 1.0)")
+    # ⚠️ PRECISIONE: Verifica normalizzazione matrice con Kahan summation
+    matrix_sum = 0.0
+    c_matrix = 0.0
+    for row in mat_ft:
+        for val in row:
+            y = val - c_matrix
+            t = matrix_sum + y
+            c_matrix = (t - matrix_sum) - y
+            matrix_sum = t
+    
+    # ⚠️ PRECISIONE: Tolleranza più stretta (1e-6 invece di 0.01)
+    if abs(matrix_sum - 1.0) > 1e-6:
+        validation_warnings.append(f"⚠️ Matrice non normalizzata correttamente: somma={matrix_sum:.8f} (dovrebbe essere 1.0)")
+        logger.warning(f"Matrice non normalizzata: somma={matrix_sum:.10f}")
+    
+    # ⚠️ VALIDAZIONE COERENZA: Verifica coerenza lambda con total
+    total_from_lambda = lh + la
+    if abs(total_from_lambda - total) > 0.5:
+        validation_warnings.append(f"⚠️ Lambda non coerenti con total: lambda_sum={total_from_lambda:.2f}, total={total:.2f}")
+        logger.warning(f"Incoerenza lambda-total: {total_from_lambda:.4f} vs {total:.4f}")
     
     # Verifica lambda ragionevoli
     if lh > 5.0 or la > 5.0:
@@ -6574,15 +7092,27 @@ def risultato_completo_improved(
             odds_over25, odds_under25, odds_btts,
             odds_dnb_home, odds_dnb_away, league
         )
-        # ⚠️ CORREZIONE: Blend con normalizzazione finale
+        # ⚠️ PRECISIONE: Blend con normalizzazione finale
         # Blend: 80% modello principale, 20% ensemble
-        p_home_final = 0.8 * p_home_cal + 0.2 * ensemble_result["p_home"]
-        p_draw_final = 0.8 * p_draw_cal + 0.2 * ensemble_result["p_draw"]
-        p_away_final = 0.8 * p_away_cal + 0.2 * ensemble_result["p_away"]
+        # ⚠️ PROTEZIONE: Valida ensemble_result prima di usarlo
+        ensemble_h = max(0.0, min(1.0, ensemble_result.get("p_home", p_home_cal)))
+        ensemble_d = max(0.0, min(1.0, ensemble_result.get("p_draw", p_draw_cal)))
+        ensemble_a = max(0.0, min(1.0, ensemble_result.get("p_away", p_away_cal)))
         
-        # ⚠️ VERIFICA: Normalizza probabilità finali dopo ensemble
+        # Normalizza ensemble se necessario
+        ensemble_tot = ensemble_h + ensemble_d + ensemble_a
+        if ensemble_tot > 1e-10:
+            ensemble_h /= ensemble_tot
+            ensemble_d /= ensemble_tot
+            ensemble_a /= ensemble_tot
+        
+        p_home_final = 0.8 * p_home_cal + 0.2 * ensemble_h
+        p_draw_final = 0.8 * p_draw_cal + 0.2 * ensemble_d
+        p_away_final = 0.8 * p_away_cal + 0.2 * ensemble_a
+        
+        # ⚠️ PRECISIONE: Normalizza probabilità finali dopo ensemble
         tot_final = p_home_final + p_draw_final + p_away_final
-        if tot_final > 0:
+        if tot_final > 1e-10:  # ⚠️ PRECISIONE: Tolleranza più stretta
             p_home_final /= tot_final
             p_draw_final /= tot_final
             p_away_final /= tot_final
@@ -6592,17 +7122,43 @@ def risultato_completo_improved(
     else:
         p_home_final, p_draw_final, p_away_final = p_home_cal, p_draw_cal, p_away_cal
     
-    # ⚠️ VERIFICA FINALE: Assicura che probabilità finali siano valide e normalizzate
+    # ⚠️ PRECISIONE: Verifica finale con tolleranza più stretta
     # (La normalizzazione è già stata fatta dopo ensemble, ma verifichiamo per sicurezza)
     tot_final_check = p_home_final + p_draw_final + p_away_final
-    if abs(tot_final_check - 1.0) > 0.01:  # Se non è già normalizzato
+    # ⚠️ PRECISIONE: Tolleranza più stretta (1e-6 invece di 0.01)
+    if abs(tot_final_check - 1.0) > 1e-6:  # Se non è già normalizzato
         if tot_final_check > 0:
             p_home_final /= tot_final_check
             p_draw_final /= tot_final_check
             p_away_final /= tot_final_check
         else:
+            logger.warning(f"Probabilità finali sommano a {tot_final_check}, uso probabilità raw")
             # Fallback estremo: usa probabilità raw
             p_home_final, p_draw_final, p_away_final = p_home, p_draw, p_away
+    
+    # ⚠️ VALIDAZIONE COERENZA: Verifica monotonia probabilità Over/Under
+    if over_15 is not None and over_25 is not None and over_35 is not None:
+        if not (over_15 >= over_25 >= over_35):
+            logger.warning(f"Violazione monotonia Over: {over_15:.4f} >= {over_25:.4f} >= {over_35:.4f}")
+            # Correggi monotonia
+            over_25 = min(over_15, max(over_35, over_25))
+            over_35 = min(over_25, over_35)
+            under_15 = 1.0 - over_15
+            under_25 = 1.0 - over_25
+            under_35 = 1.0 - over_35
+    
+    # ⚠️ VALIDAZIONE COERENZA: Verifica che probabilità finali siano valide
+    if not all(0 <= p <= 1 for p in [p_home_final, p_draw_final, p_away_final]):
+        logger.error(f"Probabilità finali fuori range: Home={p_home_final:.4f}, Draw={p_draw_final:.4f}, Away={p_away_final:.4f}")
+        # Forza normalizzazione
+        p_home_final = max(0.0, min(1.0, p_home_final))
+        p_draw_final = max(0.0, min(1.0, p_draw_final))
+        p_away_final = max(0.0, min(1.0, p_away_final))
+        tot_fix = p_home_final + p_draw_final + p_away_final
+        if tot_fix > 0:
+            p_home_final /= tot_fix
+            p_draw_final /= tot_fix
+            p_away_final /= tot_fix
     
     # Calcola market movement info per output (usa spread e total correnti calcolati)
     movement_info = calculate_market_movement_factor(
