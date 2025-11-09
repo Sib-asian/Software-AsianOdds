@@ -30,6 +30,11 @@ THE_ODDS_BASE = "https://api.the-odds-api.com/v4"
 API_FOOTBALL_KEY = "95c43f936816cd4389a747fd2cfe061a"
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 
+# Telegram Bot Configuration (opzionale)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8530766126:AAHs1ZoLwrwvT7JuPyn_9ymNVyddPtUXi-g")  # Token del bot (da @BotFather)
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1003278011521")  # Chat ID canale (o chat privata: "311951419")
+TELEGRAM_ENABLED = False  # Abilita/disabilita invio automatico
+
 ARCHIVE_FILE = "storico_analisi.csv"
 VALIDATION_FILE = "validation_metrics.csv"
 PORTFOLIO_FILE = "portfolio_scommesse.csv"
@@ -3901,6 +3906,173 @@ def analyze_feature_importance(archive_file: str = ARCHIVE_FILE) -> Dict[str, fl
         return {"error": str(e)}
 
 # ============================================================
+#   TELEGRAM BOT INTEGRATION
+# ============================================================
+
+def send_telegram_message(
+    message: str,
+    bot_token: str = None,
+    chat_id: str = None,
+    parse_mode: str = "HTML",
+) -> bool:
+    """
+    Invia messaggio a Telegram tramite Bot API.
+    
+    Args:
+        message: Testo del messaggio (supporta HTML/Markdown)
+        bot_token: Token del bot (default: TELEGRAM_BOT_TOKEN)
+        chat_id: Chat ID destinatario (default: TELEGRAM_CHAT_ID)
+        parse_mode: "HTML" o "Markdown"
+    
+    Returns:
+        True se invio riuscito, False altrimenti
+    """
+    if not bot_token:
+        bot_token = TELEGRAM_BOT_TOKEN
+    if not chat_id:
+        chat_id = TELEGRAM_CHAT_ID
+    
+    if not bot_token or not chat_id:
+        return False
+    
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": parse_mode,
+        "disable_web_page_preview": True,
+    }
+    
+    try:
+        response = requests.post(url, json=payload, timeout=5)
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"⚠️ Errore invio Telegram: {e}")
+        return False
+
+def send_telegram_photo(
+    photo_path: str,
+    caption: str = "",
+    bot_token: str = None,
+    chat_id: str = None,
+) -> bool:
+    """
+    Invia foto a Telegram.
+    
+    Args:
+        photo_path: Percorso file immagine
+        caption: Didascalia (opzionale)
+        bot_token: Token del bot
+        chat_id: Chat ID destinatario
+    
+    Returns:
+        True se invio riuscito, False altrimenti
+    """
+    if not bot_token:
+        bot_token = TELEGRAM_BOT_TOKEN
+    if not chat_id:
+        chat_id = TELEGRAM_CHAT_ID
+    
+    if not bot_token or not chat_id or not os.path.exists(photo_path):
+        return False
+    
+    url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+    
+    try:
+        with open(photo_path, 'rb') as photo:
+            files = {'photo': photo}
+            data = {
+                'chat_id': chat_id,
+                'caption': caption[:1024] if caption else "",  # Max 1024 caratteri
+            }
+            response = requests.post(url, files=files, data=data, timeout=10)
+            response.raise_for_status()
+            return True
+    except Exception as e:
+        print(f"⚠️ Errore invio foto Telegram: {e}")
+        return False
+
+def format_analysis_for_telegram(
+    match_name: str,
+    ris: Dict[str, Any],
+    odds_1: float,
+    odds_x: float,
+    odds_2: float,
+    quality_score: float,
+    market_conf: float,
+    value_bets: List[Dict[str, Any]] = None,
+) -> str:
+    """
+    Formatta analisi completa per messaggio Telegram.
+    
+    Usa HTML per formattazione (grassetto, corsivo, etc.)
+    """
+    # Header
+    message = f"⚽ <b>ANALISI COMPLETATA</b>\n\n"
+    message += f"🏆 <b>{match_name}</b>\n"
+    message += f"📅 {datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
+    
+    # Metriche principali
+    message += f"📊 <b>Metriche Qualità</b>\n"
+    message += f"Quality Score: {quality_score:.0f}/100\n"
+    message += f"Market Confidence: {market_conf:.0f}/100\n\n"
+    
+    # Parametri modello
+    message += f"🔢 <b>Parametri Modello</b>\n"
+    message += f"λ Casa: {ris['lambda_home']:.3f}\n"
+    message += f"λ Trasferta: {ris['lambda_away']:.3f}\n"
+    message += f"ρ (correlazione): {ris['rho']:.4f}\n\n"
+    
+    # Probabilità principali
+    message += f"🎯 <b>Probabilità Esito</b>\n"
+    message += f"🏠 Casa: <b>{ris['p_home']*100:.1f}%</b> (quota: {odds_1:.2f})\n"
+    message += f"⚖️ Pareggio: <b>{ris['p_draw']*100:.1f}%</b> (quota: {odds_x:.2f})\n"
+    message += f"✈️ Trasferta: <b>{ris['p_away']*100:.1f}%</b> (quota: {odds_2:.2f})\n\n"
+    
+    # Over/Under e BTTS
+    message += f"⚽ <b>Mercati Speciali</b>\n"
+    message += f"Over 2.5: {ris['over_25']*100:.1f}%\n"
+    message += f"Under 2.5: {ris['under_25']*100:.1f}%\n"
+    message += f"BTTS: {ris['btts']*100:.1f}%\n\n"
+    
+    # Value Bets
+    if value_bets:
+        message += f"💎 <b>Value Bets Identificate</b>\n"
+        for bet in value_bets[:5]:  # Max 5 value bets
+            esito = bet.get("Esito", "")
+            edge = bet.get("Edge %", "0")
+            ev = bet.get("EV %", "0")
+            rec = bet.get("Rec", "")
+            message += f"• {esito}: Edge {edge}%, EV {ev}% ({rec})\n"
+        message += "\n"
+    
+    # Top 3 risultati
+    if "top10" in ris and len(ris["top10"]) > 0:
+        message += f"🏅 <b>Top 3 Risultati</b>\n"
+        for i, (h, a, p) in enumerate(ris["top10"][:3], 1):
+            message += f"{i}. {h}-{a}: {p:.1f}%\n"
+        message += "\n"
+    
+    # Aggiustamenti applicati
+    adjustments = []
+    if ris.get("calibration_applied"):
+        adjustments.append("Calibrazione")
+    if ris.get("ensemble_applied"):
+        adjustments.append("Ensemble")
+    if ris.get("market_movement", {}).get("movement_type") != "NO_OPENING_DATA":
+        adjustments.append("Market Movement")
+    
+    if adjustments:
+        message += f"✅ <b>Aggiustamenti</b>: {', '.join(adjustments)}\n"
+    
+    # Footer
+    message += f"\n🤖 <i>Inviato automaticamente dal Modello Scommesse PRO</i>"
+    
+    return message
+
+# ============================================================
 #   REAL-TIME ALERTS
 # ============================================================
 
@@ -4989,6 +5161,40 @@ if st.session_state.soccer_leagues:
 st.markdown("---")
 
 # ============================================================
+#        CONFIGURAZIONE TELEGRAM (OPZIONALE)
+# ============================================================
+
+with st.expander("🤖 Configurazione Telegram Bot (Opzionale)", expanded=False):
+    st.markdown("""
+    **Come configurare:**
+    1. Crea un bot su Telegram scrivendo a [@BotFather](https://t.me/BotFather)
+    2. Invia `/newbot` e segui le istruzioni
+    3. Copia il **Token** che ti viene fornito
+    4. Per ottenere il **Chat ID**, scrivi a [@userinfobot](https://t.me/userinfobot) e copia il tuo ID
+    5. In alternativa, puoi usare variabili d'ambiente: `TELEGRAM_BOT_TOKEN` e `TELEGRAM_CHAT_ID`
+    """)
+    
+    telegram_enabled = st.checkbox("📤 Invia analisi automaticamente su Telegram", value=False,
+                                   help="Se abilitato, ogni analisi verrà inviata automaticamente al tuo bot Telegram")
+    
+    col_tg1, col_tg2 = st.columns(2)
+    
+    with col_tg1:
+        telegram_token = st.text_input("Bot Token", value=TELEGRAM_BOT_TOKEN, type="password",
+                                       help="Token del bot (da @BotFather)",
+                                       placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz")
+    
+    with col_tg2:
+        telegram_chat_id = st.text_input("Chat ID", value=TELEGRAM_CHAT_ID,
+                                        help="ID della chat dove inviare (da @userinfobot)",
+                                        placeholder="123456789")
+    
+    if telegram_enabled and (not telegram_token or not telegram_chat_id):
+        st.warning("⚠️ Inserisci Bot Token e Chat ID per abilitare Telegram")
+
+st.markdown("---")
+
+# ============================================================
 #        INPUT DATI PARTITA
 # ============================================================
 
@@ -5828,6 +6034,47 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             st.success("💾 Analisi salvata nello storico")
         except Exception as e:
             st.warning(f"Errore salvataggio: {e}")
+        
+        # 7. INVIO TELEGRAM (se abilitato)
+        if telegram_enabled and telegram_token and telegram_chat_id:
+            try:
+                # Prepara value bets per Telegram
+                value_bets_list = []
+                for bet in value_rows:
+                    if bet.get("Value") == "✅":
+                        value_bets_list.append({
+                            "Esito": bet.get("Esito", ""),
+                            "Edge %": bet.get("Edge %", ""),
+                            "EV %": bet.get("EV %", ""),
+                            "Rec": bet.get("Rec", "")
+                        })
+                
+                # Formatta messaggio
+                telegram_message = format_analysis_for_telegram(
+                    match_name=match_name,
+                    ris=ris,
+                    odds_1=odds_1,
+                    odds_x=odds_x,
+                    odds_2=odds_2,
+                    quality_score=quality_score,
+                    market_conf=market_conf,
+                    value_bets=value_bets_list if value_bets_list else None
+                )
+                
+                # Invia messaggio
+                success = send_telegram_message(
+                    message=telegram_message,
+                    bot_token=telegram_token,
+                    chat_id=telegram_chat_id
+                )
+                
+                if success:
+                    st.success("📤 Analisi inviata su Telegram!")
+                else:
+                    st.warning("⚠️ Errore invio Telegram (controlla token e chat ID)")
+            except Exception as e:
+                st.warning(f"⚠️ Errore invio Telegram: {e}")
+                # Non bloccare il flusso se Telegram fallisce
 
 st.markdown("---")
 
