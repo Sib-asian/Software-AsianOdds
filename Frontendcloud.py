@@ -30,6 +30,11 @@ THE_ODDS_BASE = "https://api.the-odds-api.com/v4"
 API_FOOTBALL_KEY = "95c43f936816cd4389a747fd2cfe061a"
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 
+# API Gratuite Aggiuntive
+OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "01afa2183566fcf16d98b5a33c91eae1")  # API key OpenWeatherMap
+FOOTBALL_DATA_API_KEY = os.getenv("FOOTBALL_DATA_API_KEY", "ca816dc8504543768e8adfaf128ecffc")  # API key Football-Data.org
+THESPORTSDB_API_KEY = "3"  # TheSportsDB usa chiave fissa "3" (gratuita)
+
 # Telegram Bot Configuration (opzionale)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8530766126:AAHs1ZoLwrwvT7JuPyn_9ymNVyddPtUXi-g")  # Token del bot (da @BotFather)
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1003278011521")  # Chat ID canale (o chat privata: "311951419")
@@ -1904,23 +1909,45 @@ def estimate_lambda_from_market_optimized(
     px_target /= tot_p
     p2_target /= tot_p
     
-    # 2. Stima iniziale da total (più accurata)
+    # 2. Stima iniziale da total (MIGLIORATA: inversione numerica precisa)
     if odds_over25 and odds_under25:
         po, pu = normalize_two_way_shin(odds_over25, odds_under25)
         p_over = 1 / po
         
-        # Expected total gol migliorato: usa approssimazione più precisa
-        # Per una distribuzione Poisson con lambda_tot, E[goals > 2.5] ≈ f(lambda_tot)
-        # Invertiamo: se P(over 2.5) = p, allora lambda_tot ≈ g(p)
-        # Formula empirica calibrata: lambda_tot = 2.5 + (p_over - 0.5) * 2.8
-        # Più accurata della precedente
-        total_market = 2.5 + (p_over - 0.5) * 2.8
+        # MIGLIORAMENTO: Inversione numerica precisa invece di formula empirica
+        # Per una distribuzione Poisson con lambda_tot, P(goals > 2.5) = 1 - sum(P(k) per k=0..2)
+        # Invertiamo numericamente per trovare lambda_tot che produce p_over osservato
+        def poisson_over_prob(lambda_tot):
+            """Calcola P(goals > 2.5) per una Poisson con lambda_tot"""
+            # Approssimazione: per lambda_tot, P(>2.5) ≈ 1 - P(0) - P(1) - P(2)
+            # Usiamo approssimazione più accurata considerando che total = somma di due Poisson
+            # Per semplicità, usiamo approssimazione normale: P(X > 2.5) ≈ 1 - Φ((2.5 - lambda) / sqrt(lambda))
+            # Ma per precisione, calcoliamo direttamente con Poisson
+            p_0 = math.exp(-lambda_tot)
+            p_1 = lambda_tot * math.exp(-lambda_tot)
+            p_2 = (lambda_tot**2 / 2) * math.exp(-lambda_tot)
+            return 1 - (p_0 + p_1 + p_2)
         
-        # Aggiustamento per casi estremi
-        if p_over > 0.75:
-            total_market += 0.3  # Over molto probabile → più gol
-        elif p_over < 0.25:
-            total_market -= 0.2  # Under molto probabile → meno gol
+        # Inversione numerica: trova lambda_tot tale che poisson_over_prob(lambda_tot) ≈ p_over
+        # Usiamo metodo bisezione per robustezza
+        lambda_min, lambda_max = 0.5, 6.0
+        for _ in range(20):  # Max 20 iterazioni
+            lambda_mid = (lambda_min + lambda_max) / 2
+            p_mid = poisson_over_prob(lambda_mid)
+            if abs(p_mid - p_over) < 0.001:  # Convergenza
+                break
+            if p_mid < p_over:
+                lambda_min = lambda_mid
+            else:
+                lambda_max = lambda_mid
+        
+        total_market = (lambda_min + lambda_max) / 2
+        
+        # Aggiustamento per casi estremi (ridotto, dato che l'inversione è già precisa)
+        if p_over > 0.85:
+            total_market += 0.15  # Over molto probabile → più gol
+        elif p_over < 0.15:
+            total_market -= 0.10  # Under molto probabile → meno gol
     else:
         total_market = total
     
@@ -3906,6 +3933,385 @@ def analyze_feature_importance(archive_file: str = ARCHIVE_FILE) -> Dict[str, fl
         return {"error": str(e)}
 
 # ============================================================
+#   API GRATUITE AGGIUNTIVE - INTEGRAZIONE
+# ============================================================
+
+# 1. OPENWEATHERMAP API
+def get_weather_for_match(city: str, match_datetime: str = None) -> Dict[str, Any]:
+    """
+    Recupera condizioni meteo per partita.
+    Calcola impatto su lambda (pioggia/vento → meno gol).
+    """
+    if not OPENWEATHER_API_KEY:
+        return {"available": False, "weather_factor": 1.0}
+    
+    try:
+        url = "https://api.openweathermap.org/data/2.5/weather"
+        params = {
+            "q": city,
+            "appid": OPENWEATHER_API_KEY,
+            "units": "metric",
+            "lang": "it"
+        }
+        
+        response = requests.get(url, params=params, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Estrai dati meteo (MIGLIORATO: più parametri)
+        temp = data["main"]["temp"]
+        humidity = data["main"]["humidity"]
+        pressure = data["main"].get("pressure", 1013)  # Pressione in hPa (default 1013)
+        wind_speed = data["wind"].get("speed", 0)
+        visibility = data.get("visibility", 10000) / 1000  # Visibilità in km (default 10km)
+        rain = data.get("rain", {}).get("1h", 0) or data.get("rain", {}).get("3h", 0) or 0
+        conditions = data["weather"][0]["main"].lower()
+        description = data["weather"][0]["description"]
+        
+        # Calcola fattore impatto su lambda (MIGLIORATO: più parametri)
+        weather_factor = 1.0
+        adjustments = []
+        
+        # Pioggia → riduce gol significativamente
+        if rain > 5:  # Pioggia > 5mm/h
+            reduction = min(0.15, rain / 50)  # Max -15%
+            weather_factor *= (1 - reduction)
+            adjustments.append(f"Pioggia forte: -{reduction*100:.1f}%")
+        elif rain > 0:
+            reduction = rain / 30  # Max -3% per pioggia leggera
+            weather_factor *= (1 - reduction)
+            adjustments.append(f"Pioggia: -{reduction*100:.1f}%")
+        
+        # Vento forte → riduce gol
+        if wind_speed > 15:  # > 15 m/s (54 km/h)
+            reduction = min(0.10, (wind_speed - 15) / 30)  # Max -10%
+            weather_factor *= (1 - reduction)
+            adjustments.append(f"Vento forte: -{reduction*100:.1f}%")
+        elif wind_speed > 10:  # > 10 m/s (36 km/h)
+            reduction = (wind_speed - 10) / 50  # Max -1%
+            weather_factor *= (1 - reduction)
+            adjustments.append(f"Vento moderato: -{reduction*100:.1f}%")
+        
+        # Neve → riduce molto gol
+        if "snow" in conditions:
+            weather_factor *= 0.85  # -15% gol
+            adjustments.append("Neve: -15%")
+        
+        # Temperatura estrema → riduce gol
+        if temp < 0:
+            reduction = min(0.10, abs(temp) / 20)  # Max -10% per freddo estremo
+            weather_factor *= (1 - reduction)
+            adjustments.append(f"Freddo estremo: -{reduction*100:.1f}%")
+        elif temp > 35:
+            reduction = min(0.08, (temp - 35) / 15)  # Max -8% per caldo estremo
+            weather_factor *= (1 - reduction)
+            adjustments.append(f"Caldo estremo: -{reduction*100:.1f}%")
+        
+        # NUOVO: Umidità alta → può ridurre gol (campo pesante)
+        if humidity > 80:
+            reduction = min(0.05, (humidity - 80) / 100)  # Max -5% per umidità > 80%
+            weather_factor *= (1 - reduction)
+            adjustments.append(f"Umidità alta: -{reduction*100:.1f}%")
+        
+        # NUOVO: Pressione bassa → può ridurre gol (condizioni pesanti)
+        if pressure < 1000:  # Pressione < 1000 hPa
+            reduction = min(0.04, (1000 - pressure) / 50)  # Max -4%
+            weather_factor *= (1 - reduction)
+            adjustments.append(f"Pressione bassa: -{reduction*100:.1f}%")
+        
+        # NUOVO: Visibilità bassa → può ridurre gol (nebbia/foschia)
+        if visibility < 1:  # Visibilità < 1km (nebbia fitta)
+            reduction = 0.08  # -8% gol
+            weather_factor *= (1 - reduction)
+            adjustments.append(f"Nebbia fitta: -{reduction*100:.1f}%")
+        elif visibility < 3:  # Visibilità < 3km (nebbia moderata)
+            reduction = 0.04  # -4% gol
+            weather_factor *= (1 - reduction)
+            adjustments.append(f"Nebbia moderata: -{reduction*100:.1f}%")
+        
+        return {
+            "available": True,
+            "weather_factor": max(0.7, weather_factor),  # Min 0.7 (non ridurre troppo)
+            "temperature": temp,
+            "humidity": humidity,
+            "pressure": pressure,  # NUOVO
+            "wind_speed": wind_speed,
+            "visibility": visibility,  # NUOVO
+            "rain": rain,
+            "conditions": conditions,
+            "description": description,
+            "adjustments": adjustments,
+            "city": city
+        }
+    except Exception as e:
+        print(f"⚠️ Errore OpenWeatherMap: {e}")
+        return {"available": False, "weather_factor": 1.0, "error": str(e)}
+
+# 2. FOOTBALL-DATA.ORG API
+def football_data_get_team_info(team_name: str, league_code: str = None) -> Dict[str, Any]:
+    """
+    Recupera info squadra da Football-Data.org (backup/validazione).
+    """
+    if not FOOTBALL_DATA_API_KEY:
+        return {"available": False}
+    
+    try:
+        # Cerca squadra
+        url = "https://api.football-data.org/v4/teams"
+        headers = {"X-Auth-Token": FOOTBALL_DATA_API_KEY}
+        
+        # Prova ricerca per nome
+        params = {"name": team_name}
+        response = requests.get(url, headers=headers, params=params, timeout=5)
+        
+        if response.status_code == 200:
+            teams = response.json().get("teams", [])
+            if teams:
+                team = teams[0]
+                return {
+                    "available": True,
+                    "team_id": team.get("id"),
+                    "name": team.get("name"),
+                    "short_name": team.get("shortName"),
+                    "founded": team.get("founded"),
+                    "venue": team.get("venue"),
+                    "website": team.get("website")
+                }
+        
+        return {"available": False, "reason": "Team not found"}
+    except Exception as e:
+        print(f"⚠️ Errore Football-Data.org: {e}")
+        return {"available": False, "error": str(e)}
+
+def football_data_get_competitions() -> List[Dict[str, Any]]:
+    """Recupera lista competizioni disponibili."""
+    if not FOOTBALL_DATA_API_KEY:
+        return []
+    
+    try:
+        url = "https://api.football-data.org/v4/competitions"
+        headers = {"X-Auth-Token": FOOTBALL_DATA_API_KEY}
+        response = requests.get(url, headers=headers, timeout=5)
+        response.raise_for_status()
+        return response.json().get("competitions", [])
+    except Exception as e:
+        print(f"⚠️ Errore Football-Data.org competitions: {e}")
+        return []
+
+# 3. THESPORTSDB API (NO API KEY NECESSARIA!)
+def thesportsdb_get_team_info(team_name: str) -> Dict[str, Any]:
+    """
+    Recupera info squadra da TheSportsDB (completamente gratuito, no API key).
+    """
+    try:
+        url = "https://www.thesportsdb.com/api/v1/json/3/searchteams.php"
+        params = {"t": team_name}
+        response = requests.get(url, params=params, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        
+        teams = data.get("teams", [])
+        if teams:
+            team = teams[0]
+            return {
+                "available": True,
+                "team_id": team.get("idTeam"),
+                "name": team.get("strTeam"),
+                "stadium": team.get("strStadium"),
+                "stadium_capacity": team.get("intStadiumCapacity"),
+                "stadium_location": team.get("strStadiumLocation"),
+                "founded": team.get("intFormedYear"),
+                "league": team.get("strLeague"),
+                "website": team.get("strWebsite"),
+                "logo": team.get("strTeamBadge")
+            }
+        
+        return {"available": False}
+    except Exception as e:
+        print(f"⚠️ Errore TheSportsDB: {e}")
+        return {"available": False, "error": str(e)}
+
+def thesportsdb_get_stadium_info(stadium_name: str) -> Dict[str, Any]:
+    """Recupera info stadio da TheSportsDB."""
+    try:
+        url = "https://www.thesportsdb.com/api/v1/json/3/searchvenues.php"
+        params = {"v": stadium_name}
+        response = requests.get(url, params=params, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        
+        venues = data.get("venues", [])
+        if venues:
+            venue = venues[0]
+            return {
+                "available": True,
+                "name": venue.get("strVenue"),
+                "capacity": venue.get("intCapacity"),
+                "location": venue.get("strLocation"),
+                "country": venue.get("strCountry")
+            }
+        
+        return {"available": False}
+    except Exception as e:
+        print(f"⚠️ Errore TheSportsDB stadium: {e}")
+        return {"available": False}
+
+# 4. UNDERSTAT SCRAPING (xG avanzato)
+def understat_get_team_xg(team_name: str, season: str = None) -> Dict[str, Any]:
+    """
+    Recupera xG avanzato da Understat.com (scraping).
+    Ritorna xG più preciso di API-Football.
+    """
+    try:
+        # Understat usa ID squadra, non nome
+        # Per ora ritorna struttura, implementazione completa richiede mapping team_id
+        # Questo è un placeholder per struttura futura
+        
+        # Esempio struttura dati che si otterrebbe:
+        return {
+            "available": False,  # Placeholder - richiede implementazione scraping completo
+            "team_name": team_name,
+            "xg_for": None,
+            "xg_against": None,
+            "xg_open_play": None,
+            "xg_set_pieces": None,
+            "note": "Richiede implementazione scraping BeautifulSoup"
+        }
+    except Exception as e:
+        print(f"⚠️ Errore Understat: {e}")
+        return {"available": False, "error": str(e)}
+
+# 5. FBREF SCRAPING (Statistiche avanzate)
+def fbref_get_team_stats(team_name: str, league: str = None) -> Dict[str, Any]:
+    """
+    Recupera statistiche avanzate da FBRef.com (scraping).
+    """
+    try:
+        # Placeholder - implementazione completa richiede scraping
+        return {
+            "available": False,  # Placeholder
+            "team_name": team_name,
+            "expected_goals": None,
+            "expected_assists": None,
+            "expected_goals_against": None,
+            "note": "Richiede implementazione scraping BeautifulSoup"
+        }
+    except Exception as e:
+        print(f"⚠️ Errore FBRef: {e}")
+        return {"available": False, "error": str(e)}
+
+# Funzione helper per applicare impatto meteo su lambda
+def apply_weather_impact(lh: float, la: float, weather_data: Dict[str, Any]) -> Tuple[float, float]:
+    """
+    Applica impatto meteo su lambda home e away.
+    """
+    if not weather_data.get("available", False):
+        return lh, la
+    
+    weather_factor = weather_data.get("weather_factor", 1.0)
+    
+    # Applica fattore a entrambe le lambda (meteo impatta entrambe le squadre)
+    lh_adjusted = lh * weather_factor
+    la_adjusted = la * weather_factor
+    
+    return lh_adjusted, la_adjusted
+
+def apply_stadium_adjustments(
+    lambda_h: float,
+    lambda_a: float,
+    stadium_data: Dict[str, Any],
+) -> Tuple[float, float]:
+    """
+    Applica aggiustamenti basati su dati stadio (capacità, altitudine).
+    
+    - Capacità alta → più atmosfera → più gol casa
+    - Altitudine alta → meno ossigeno → meno gol (entrambe)
+    """
+    if not stadium_data or not stadium_data.get("available"):
+        return lambda_h, lambda_a
+    
+    capacity = stadium_data.get("stadium_capacity")
+    # Nota: TheSportsDB non fornisce altitudine direttamente, ma possiamo stimarla
+    # da location se disponibile (es. città ad alta quota)
+    
+    # Aggiustamento capacità: stadio grande → più atmosfera → più gol casa
+    if capacity:
+        # Stadio > 50k → +3% gol casa
+        if capacity > 50000:
+            capacity_factor = 1.03
+        # Stadio > 30k → +2% gol casa
+        elif capacity > 30000:
+            capacity_factor = 1.02
+        # Stadio < 15k → -1% gol casa (meno atmosfera)
+        elif capacity < 15000:
+            capacity_factor = 0.99
+        else:
+            capacity_factor = 1.0
+        
+        # Applica solo a lambda_h (vantaggio casa)
+        lambda_h *= capacity_factor
+    
+    # Aggiustamento altitudine (se disponibile da location)
+    # Nota: implementazione base, può essere estesa con mappa città → altitudine
+    location = stadium_data.get("stadium_location", "").lower()
+    altitude_factor = 1.0
+    
+    # Città ad alta quota (es. La Paz, Quito, Città del Messico)
+    high_altitude_cities = ["la paz", "quito", "mexico city", "città del messico", "bogotá", "bogota"]
+    if any(city in location for city in high_altitude_cities):
+        altitude_factor = 0.92  # -8% gol (entrambe le squadre)
+        lambda_h *= altitude_factor
+        lambda_a *= altitude_factor
+    
+    return lambda_h, lambda_a
+
+# Funzione helper per recuperare città da nome squadra/stadio
+def get_city_from_team(team_name: str, league: str = None) -> str:
+    """
+    Prova a recuperare città della squadra da TheSportsDB o API-Football.
+    """
+    # Prova TheSportsDB (gratuito, no API key)
+    team_info = thesportsdb_get_team_info(team_name)
+    if team_info.get("available"):
+        stadium_location = team_info.get("stadium_location", "")
+        if stadium_location:
+            # Estrai città (prima parte prima della virgola)
+            city = stadium_location.split(",")[0].strip()
+            return city
+    
+    # Fallback: mappa manuale per squadre principali
+    city_mapping = {
+        "milan": "Milano",
+        "inter": "Milano",
+        "juventus": "Torino",
+        "roma": "Roma",
+        "lazio": "Roma",
+        "napoli": "Napoli",
+        "atalanta": "Bergamo",
+        "fiorentina": "Firenze",
+        "bologna": "Bologna",
+        "manchester city": "Manchester",
+        "manchester united": "Manchester",
+        "liverpool": "Liverpool",
+        "chelsea": "London",
+        "arsenal": "London",
+        "tottenham": "London",
+        "real madrid": "Madrid",
+        "barcelona": "Barcelona",
+        "atletico madrid": "Madrid",
+        "bayern munich": "Munich",
+        "dortmund": "Dortmund",
+        "psg": "Paris"
+    }
+    
+    team_lower = team_name.lower()
+    for key, city in city_mapping.items():
+        if key in team_lower:
+            return city
+    
+    return ""  # Non trovato
+
+# ============================================================
 #   TELEGRAM BOT INTEGRATION
 # ============================================================
 
@@ -4471,6 +4877,22 @@ def risultato_completo_improved(
         rho_initial=rho_prelim
     )
     
+    # 5.3. Applica impatto meteo (se disponibile)
+    weather_data = None
+    if home_team:
+        city = get_city_from_team(home_team, league)
+        if city:
+            weather_data = get_weather_for_match(city, match_datetime)
+            if weather_data.get("available"):
+                lh, la = apply_weather_impact(lh, la, weather_data)
+    
+    # 5.4. Applica correzioni stadio (capacità, altitudine) - NUOVO
+    stadium_data = None
+    if home_team:
+        stadium_data = thesportsdb_get_team_info(home_team)
+        if stadium_data.get("available"):
+            lh, la = apply_stadium_adjustments(lh, la, stadium_data)
+    
     # 5.5. Applica Market Movement Intelligence (blend apertura/corrente)
     # Se abbiamo dati apertura, calcola spread corrente se non fornito
     spread_curr_calc = spread_corrente
@@ -4541,25 +4963,40 @@ def risultato_completo_improved(
     if advanced_data:
         lh, la = apply_advanced_data_adjustments(lh, la, advanced_data)
     
-    # 7. Blend con xG usando approccio bayesiano migliorato
+    # 7. Blend con xG usando approccio bayesiano migliorato (MIGLIORATO: confidence più accurata)
     if all(x is not None for x in [xg_for_home, xg_against_home, xg_for_away, xg_against_away]):
         # Stima xG per la partita: media tra xG for e xG against avversario
         xg_h_est = (xg_for_home + xg_against_away) / 2.0
         xg_a_est = (xg_for_away + xg_against_home) / 2.0
         
-        # Calcola confidence in xG basata su:
+        # MIGLIORAMENTO: Confidence più accurata basata su:
         # 1. Dimensione campione (proxy: valore xG - più alto = più dati)
         # 2. Coerenza tra xG for e against
-        xg_h_confidence = min(1.0, (xg_for_home + xg_against_away) / 2.0)
-        xg_a_confidence = min(1.0, (xg_for_away + xg_against_home) / 2.0)
+        # 3. NUOVO: Validazione con dati reali dalle API (se disponibili)
+        
+        # Base confidence: valore xG normalizzato (più alto = più affidabile)
+        xg_h_base_conf = min(1.0, (xg_for_home + xg_against_away) / 3.0)  # Normalizza a max 3.0
+        xg_a_base_conf = min(1.0, (xg_for_away + xg_against_home) / 3.0)
         
         # Coerenza: se xG for e against sono simili, più affidabile
         consistency_h = 1.0 - abs(xg_for_home - xg_against_away) / max(0.1, (xg_for_home + xg_against_away) / 2)
         consistency_a = 1.0 - abs(xg_for_away - xg_against_home) / max(0.1, (xg_for_away + xg_against_home) / 2)
         
-        # Pesatura bayesiana: w = confidence * consistency
-        w_xg_h = xg_h_confidence * consistency_h * 0.4  # Max 40% peso a xG
-        w_xg_a = xg_a_confidence * consistency_a * 0.4
+        # NUOVO: Boost confidence se abbiamo dati reali dalle API (advanced_data)
+        api_boost = 1.0
+        if advanced_data and advanced_data.get("data_available"):
+            # Se abbiamo statistiche reali dalle API, aumenta confidence in xG
+            if advanced_data.get("home_team_stats") or advanced_data.get("away_team_stats"):
+                api_boost = 1.15  # +15% confidence se abbiamo dati API
+        
+        # Confidence finale: base * consistency * api_boost
+        xg_h_confidence = xg_h_base_conf * consistency_h * api_boost
+        xg_a_confidence = xg_a_base_conf * consistency_a * api_boost
+        
+        # Pesatura bayesiana: w = confidence * consistency (max 45% peso a xG se alta confidence)
+        max_xg_weight = 0.45 if api_boost > 1.0 else 0.40
+        w_xg_h = min(max_xg_weight, xg_h_confidence * 0.5)  # Max 45% se alta confidence
+        w_xg_a = min(max_xg_weight, xg_a_confidence * 0.5)
         
         w_market_h = 1.0 - w_xg_h
         w_market_a = 1.0 - w_xg_a
@@ -4727,6 +5164,25 @@ def risultato_completo_improved(
         spread_apertura, total_apertura, spread_curr_calc, total
     )
     
+    # Recupera dati API aggiuntive per output
+    additional_api_data = {
+        "weather": weather_data if weather_data and weather_data.get("available") else None,
+        "football_data_org": None,
+        "thesportsdb": None
+    }
+    
+    # Recupera dati aggiuntivi se disponibili (in background, non blocca)
+    if home_team:
+        try:
+            # Football-Data.org (backup)
+            if FOOTBALL_DATA_API_KEY:
+                additional_api_data["football_data_org"] = football_data_get_team_info(home_team)
+            
+            # TheSportsDB (stadio info) - già recuperato sopra, riutilizza
+            additional_api_data["thesportsdb"] = stadium_data if stadium_data and stadium_data.get("available") else thesportsdb_get_team_info(home_team)
+        except:
+            pass  # Non bloccare se fallisce
+    
     return {
         "lambda_home": lh,
         "lambda_away": la,
@@ -4740,6 +5196,7 @@ def risultato_completo_improved(
         "calibration_applied": calibrate_func is not None,
         "ensemble_applied": use_ensemble,
         "market_movement": movement_info,  # Info movimento mercato
+        "additional_api_data": additional_api_data,  # Dati API aggiuntive
         "over_15": over_15,
         "under_15": under_15,
         "over_25": over_25,
@@ -5616,8 +6073,56 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                     elif movement_type == "STABLE":
                         st.info("💡 **Mercato stabile**: Le quote di apertura sono più affidabili. Peso apertura 70%.")
         
+        # Mostra dati API aggiuntive (se disponibili)
+        additional_data = ris.get("additional_api_data", {})
+        
+        # Dati meteo
+        weather_info = additional_data.get("weather")
+        if weather_info and weather_info.get("available"):
+            with st.expander("🌤️ Dati Meteo (OpenWeatherMap)", expanded=False):
+                col_w1, col_w2 = st.columns(2)
+                
+                with col_w1:
+                    st.markdown(f"**📍 Città**: {weather_info.get('city', 'N/A')}")
+                    st.markdown(f"**🌡️ Temperatura**: {weather_info.get('temperature', 0):.1f}°C")
+                    st.markdown(f"**💨 Vento**: {weather_info.get('wind_speed', 0):.1f} m/s")
+                    st.markdown(f"**💧 Umidità**: {weather_info.get('humidity', 0):.0f}%")
+                
+                with col_w2:
+                    st.markdown(f"**🌧️ Pioggia**: {weather_info.get('rain', 0):.1f} mm/h")
+                    st.markdown(f"**☁️ Condizioni**: {weather_info.get('description', 'N/A').title()}")
+                    weather_factor = weather_info.get('weather_factor', 1.0)
+                    impact_pct = (1 - weather_factor) * 100
+                    if impact_pct > 0:
+                        st.markdown(f"**📉 Impatto Gol**: -{impact_pct:.1f}%")
+                    else:
+                        st.markdown(f"**✅ Impatto Gol**: Neutro")
+                    
+                    adjustments_list = weather_info.get('adjustments', [])
+                    if adjustments_list:
+                        st.markdown("**Aggiustamenti applicati:**")
+                        for adj in adjustments_list:
+                            st.caption(f"• {adj}")
+        
+        # Dati TheSportsDB (stadio)
+        thesportsdb_info = additional_data.get("thesportsdb")
+        if thesportsdb_info and thesportsdb_info.get("available"):
+            with st.expander("🏟️ Info Stadio (TheSportsDB)", expanded=False):
+                st.markdown(f"**Nome**: {thesportsdb_info.get('stadium', 'N/A')}")
+                capacity = thesportsdb_info.get('stadium_capacity')
+                if capacity:
+                    st.markdown(f"**Capacità**: {capacity:,} spettatori")
+                location = thesportsdb_info.get('stadium_location')
+                if location:
+                    st.markdown(f"**Ubicazione**: {location}")
+        
         # Info aggiustamenti applicati
         adjustments_applied = []
+        
+        # Aggiungi meteo agli aggiustamenti se applicato
+        if weather_info and weather_info.get("available") and weather_info.get("weather_factor", 1.0) != 1.0:
+            impact = (1 - weather_info.get("weather_factor", 1.0)) * 100
+            adjustments_applied.append(f"🌤️ Meteo: {impact:+.1f}% gol")
         
         # Market Movement Intelligence (sempre mostrato se dati apertura disponibili)
         if spread_apertura != 0.0 or total_apertura != 2.5:
