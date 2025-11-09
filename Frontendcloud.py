@@ -4312,49 +4312,72 @@ def apply_advanced_data_adjustments(
     """
     Applica aggiustamenti basati su dati avanzati (statistiche, H2H, infortuni).
     Lavora in background, modifica lambda silenziosamente.
+    
+    ⚠️ MIGLIORAMENTO: Limita effetto cumulativo per evitare esplosione dei lambda.
     """
     if not advanced_data or not advanced_data.get("data_available"):
         return lambda_h, lambda_a
     
-    # 1. Aggiustamenti forma squadre
+    # Salva valori iniziali per limitare effetto totale
+    lambda_h_initial = lambda_h
+    lambda_a_initial = lambda_a
+    max_advanced_adjustment = 1.2  # Massimo 20% di variazione totale
+    
+    # 1. Aggiustamenti forma squadre (limitati)
     home_stats = advanced_data.get("home_team_stats")
     away_stats = advanced_data.get("away_team_stats")
     
     if home_stats and home_stats.get("confidence", 0) > 0.3:
+        # Limita form_attack e form_defense a range ragionevole
+        form_attack = max(0.85, min(1.15, home_stats.get("form_attack", 1.0)))
+        form_defense = max(0.85, min(1.15, home_stats.get("form_defense", 1.0)))
         # Applica forma attacco casa
-        lambda_h *= home_stats.get("form_attack", 1.0)
+        lambda_h *= form_attack
         # Applica forma difesa trasferta (riduce lambda away)
-        lambda_a *= (2.0 - home_stats.get("form_defense", 1.0))  # Inverso
+        lambda_a *= (2.0 - form_defense)  # Inverso, ma limitato
     
     if away_stats and away_stats.get("confidence", 0) > 0.3:
+        form_attack = max(0.85, min(1.15, away_stats.get("form_attack", 1.0)))
+        form_defense = max(0.85, min(1.15, away_stats.get("form_defense", 1.0)))
         # Applica forma attacco trasferta
-        lambda_a *= away_stats.get("form_attack", 1.0)
+        lambda_a *= form_attack
         # Applica forma difesa casa (riduce lambda home)
-        lambda_h *= (2.0 - away_stats.get("form_defense", 1.0))  # Inverso
+        lambda_h *= (2.0 - form_defense)  # Inverso, ma limitato
     
-    # 2. Aggiustamenti H2H
+    # 2. Aggiustamenti H2H (limitati)
     h2h_data = advanced_data.get("h2h_data")
     if h2h_data and h2h_data.get("confidence", 0) > 0.3:
+        # Limita h2h_home_advantage a range ragionevole
+        h2h_advantage = max(0.9, min(1.1, h2h_data.get("h2h_home_advantage", 1.0)))
         # Aggiusta vantaggio casa
-        lambda_h *= h2h_data.get("h2h_home_advantage", 1.0)
-        # Aggiusta total gol (entrambi i lambda)
-        goals_factor = h2h_data.get("h2h_goals_factor", 1.0)
+        lambda_h *= h2h_advantage
+        # Aggiusta total gol (entrambi i lambda) - limitato
+        goals_factor = max(0.9, min(1.1, h2h_data.get("h2h_goals_factor", 1.0)))
         lambda_h *= math.sqrt(goals_factor)  # Radice per distribuire
         lambda_a *= math.sqrt(goals_factor)
     
-    # 3. Aggiustamenti infortuni
+    # 3. Aggiustamenti infortuni (limitati)
     home_injuries = advanced_data.get("home_injuries")
     away_injuries = advanced_data.get("away_injuries")
     
     if home_injuries and home_injuries.get("confidence", 0) > 0.3:
+        # Limita attack_factor e defense_factor
+        attack_factor = max(0.85, min(1.0, home_injuries.get("attack_factor", 1.0)))
+        defense_factor = max(0.85, min(1.0, home_injuries.get("defense_factor", 1.0)))
         # Infortuni casa: riduce attacco, aumenta vulnerabilità difesa
-        lambda_h *= home_injuries.get("attack_factor", 1.0)
-        lambda_a *= (2.0 - home_injuries.get("defense_factor", 1.0))  # Inverso
+        lambda_h *= attack_factor
+        lambda_a *= (2.0 - defense_factor)  # Inverso, ma limitato
     
     if away_injuries and away_injuries.get("confidence", 0) > 0.3:
+        attack_factor = max(0.85, min(1.0, away_injuries.get("attack_factor", 1.0)))
+        defense_factor = max(0.85, min(1.0, away_injuries.get("defense_factor", 1.0)))
         # Infortuni trasferta: riduce attacco, aumenta vulnerabilità difesa
-        lambda_a *= away_injuries.get("attack_factor", 1.0)
-        lambda_h *= (2.0 - away_injuries.get("defense_factor", 1.0))  # Inverso
+        lambda_a *= attack_factor
+        lambda_h *= (2.0 - defense_factor)  # Inverso, ma limitato
+    
+    # ⚠️ CONTROLLO FINALE: Limita effetto totale degli aggiustamenti avanzati
+    lambda_h = max(lambda_h_initial / max_advanced_adjustment, min(lambda_h_initial * max_advanced_adjustment, lambda_h))
+    lambda_a = max(lambda_a_initial / max_advanced_adjustment, min(lambda_a_initial * max_advanced_adjustment, lambda_a))
     
     return lambda_h, lambda_a
 
@@ -6001,6 +6024,11 @@ def risultato_completo_improved(
         )
         rho = estimate_rho_optimized(lh, la, px_prelim, odds_btts, None)
     
+    # ⚠️ CONTROLLO: Salva lambda iniziali per limitare effetto cumulativo
+    lh_initial = lh
+    la_initial = la
+    max_adjustment_factor = 1.5  # Massimo 50% di variazione totale dagli aggiustamenti
+    
     # 5.3. Applica impatto meteo (se disponibile)
     weather_data = None
     if home_team:
@@ -6009,6 +6037,9 @@ def risultato_completo_improved(
             weather_data = get_weather_for_match(city, match_datetime)
             if weather_data.get("available"):
                 lh, la = apply_weather_impact(lh, la, weather_data)
+                # Controllo intermedio
+                lh = max(lh_initial / max_adjustment_factor, min(lh_initial * max_adjustment_factor, lh))
+                la = max(la_initial / max_adjustment_factor, min(la_initial * max_adjustment_factor, la))
     
     # 5.4. Applica correzioni stadio (capacità, altitudine) - NUOVO
     stadium_data = None
@@ -6016,6 +6047,9 @@ def risultato_completo_improved(
         stadium_data = thesportsdb_get_team_info(home_team)
         if stadium_data.get("available"):
             lh, la = apply_stadium_adjustments(lh, la, stadium_data)
+            # Controllo intermedio
+            lh = max(lh_initial / max_adjustment_factor, min(lh_initial * max_adjustment_factor, lh))
+            la = max(la_initial / max_adjustment_factor, min(la_initial * max_adjustment_factor, la))
     
     # 5.5. Applica Market Movement Intelligence (blend apertura/corrente)
     # Calcola spread e total correnti dai lambda (prima degli aggiustamenti finali)
@@ -6029,25 +6063,36 @@ def risultato_completo_improved(
         spread_curr_calc, total_curr_calc,
         home_advantage=ha
     )
+    # Controllo intermedio
+    lh = max(lh_initial / max_adjustment_factor, min(lh_initial * max_adjustment_factor, lh))
+    la = max(la_initial / max_adjustment_factor, min(la_initial * max_adjustment_factor, la))
     
-    # 6. Applica boost manuali
+    # 6. Applica boost manuali (limitati)
     if manual_boost_home != 0.0:
-        lh *= (1.0 + manual_boost_home)
+        # Limita boost manuale a max ±30%
+        manual_boost_home_limited = max(-0.3, min(0.3, manual_boost_home))
+        lh *= (1.0 + manual_boost_home_limited)
     if manual_boost_away != 0.0:
-        la *= (1.0 + manual_boost_away)
+        manual_boost_away_limited = max(-0.3, min(0.3, manual_boost_away))
+        la *= (1.0 + manual_boost_away_limited)
     
     # 6.5. Applica time-based adjustments
     if match_datetime:
         lh, la = apply_time_adjustments(lh, la, match_datetime, league)
+        # Controllo intermedio
+        lh = max(lh_initial / max_adjustment_factor, min(lh_initial * max_adjustment_factor, lh))
+        la = max(la_initial / max_adjustment_factor, min(la_initial * max_adjustment_factor, la))
     
-    # 6.6. Applica fatigue factors
+    # 6.6. Applica fatigue factors (limitati)
     if fatigue_home and fatigue_home.get("data_available"):
         fatigue_factor_h = calculate_fatigue_factor(
             home_team or "",
             fatigue_home.get("days_since_last_match"),
             fatigue_home.get("matches_last_30_days")
         )
-        lh *= fatigue_factor_h
+        # Limita effetto fatigue a max ±15%
+        fatigue_factor_h_limited = max(0.85, min(1.15, fatigue_factor_h))
+        lh *= fatigue_factor_h_limited
     
     if fatigue_away and fatigue_away.get("data_available"):
         fatigue_factor_a = calculate_fatigue_factor(
@@ -6055,9 +6100,10 @@ def risultato_completo_improved(
             fatigue_away.get("days_since_last_match"),
             fatigue_away.get("matches_last_30_days")
         )
-        la *= fatigue_factor_a
+        fatigue_factor_a_limited = max(0.85, min(1.15, fatigue_factor_a))
+        la *= fatigue_factor_a_limited
     
-    # 6.7. Applica motivation factors
+    # 6.7. Applica motivation factors (limitati)
     is_derby = False
     if home_team and away_team:
         is_derby = is_derby_match(home_team, away_team, league)
@@ -6069,7 +6115,9 @@ def risultato_completo_improved(
             motivation_home.get("points_from_europe"),
             is_derby
         )
-        lh *= motivation_factor_h
+        # Limita effetto motivation a max ±15%
+        motivation_factor_h_limited = max(0.85, min(1.15, motivation_factor_h))
+        lh *= motivation_factor_h_limited
     
     if motivation_away and motivation_away.get("data_available"):
         motivation_factor_a = calculate_motivation_factor(
@@ -6078,12 +6126,23 @@ def risultato_completo_improved(
             motivation_away.get("points_from_europe"),
             is_derby
         )
-        la *= motivation_factor_a
+        motivation_factor_a_limited = max(0.85, min(1.15, motivation_factor_a))
+        la *= motivation_factor_a_limited
     
     # 6.8. Applica dati avanzati (statistiche, H2H, infortuni) - BACKGROUND
     # Questi dati vengono passati come parametro opzionale
+    # ⚠️ IMPORTANTE: Limita effetto cumulativo degli aggiustamenti avanzati
     if advanced_data:
+        lh_before_advanced = lh
+        la_before_advanced = la
         lh, la = apply_advanced_data_adjustments(lh, la, advanced_data)
+        # Limita effetto totale degli aggiustamenti avanzati a max ±20%
+        lh = max(lh_before_advanced * 0.8, min(lh_before_advanced * 1.2, lh))
+        la = max(la_before_advanced * 0.8, min(la_before_advanced * 1.2, la))
+    
+    # ⚠️ CONTROLLO FINALE: Limita variazione totale rispetto a iniziali
+    lh = max(lh_initial / max_adjustment_factor, min(lh_initial * max_adjustment_factor, lh))
+    la = max(la_initial / max_adjustment_factor, min(la_initial * max_adjustment_factor, la))
     
     # 7. Blend con xG usando approccio bayesiano migliorato (MIGLIORATO: confidence più accurata)
     if all(x is not None for x in [xg_for_home, xg_against_home, xg_for_away, xg_against_away]):
@@ -6190,6 +6249,30 @@ def risultato_completo_improved(
     
     btts = calc_bt_ts_from_matrix(mat_ft)
     gg_over25 = calc_gg_over25_from_matrix(mat_ft)
+    
+    # ⚠️ VALIDAZIONE: Controlla probabilità anomale
+    validation_warnings = []
+    if over_15 > 0.99:
+        validation_warnings.append(f"⚠️ Over 1.5 anomalo: {over_15*100:.1f}% (lambda_h={lh:.2f}, lambda_a={la:.2f}, total={lh+la:.2f})")
+    if over_25 > 0.99:
+        validation_warnings.append(f"⚠️ Over 2.5 anomalo: {over_25*100:.1f}% (lambda_h={lh:.2f}, lambda_a={la:.2f}, total={lh+la:.2f})")
+    if btts > 0.99:
+        validation_warnings.append(f"⚠️ BTTS anomalo: {btts*100:.1f}% (lambda_h={lh:.2f}, lambda_a={la:.2f})")
+    if over_15 < 0.01:
+        validation_warnings.append(f"⚠️ Over 1.5 troppo basso: {over_15*100:.1f}% (lambda_h={lh:.2f}, lambda_a={la:.2f}, total={lh+la:.2f})")
+    if btts < 0.01:
+        validation_warnings.append(f"⚠️ BTTS troppo basso: {btts*100:.1f}% (lambda_h={lh:.2f}, lambda_a={la:.2f})")
+    
+    # Verifica normalizzazione matrice
+    matrix_sum = sum(sum(r) for r in mat_ft)
+    if abs(matrix_sum - 1.0) > 0.01:
+        validation_warnings.append(f"⚠️ Matrice non normalizzata correttamente: somma={matrix_sum:.6f} (dovrebbe essere 1.0)")
+    
+    # Verifica lambda ragionevoli
+    if lh > 5.0 or la > 5.0:
+        validation_warnings.append(f"⚠️ Lambda molto alti: lambda_h={lh:.2f}, lambda_a={la:.2f} (valori tipici: 0.5-3.0)")
+    if lh < 0.1 or la < 0.1:
+        validation_warnings.append(f"⚠️ Lambda molto bassi: lambda_h={lh:.2f}, lambda_a={la:.2f} (valori tipici: 0.5-3.0)")
     
     even_ft, odd_ft = prob_pari_dispari_from_matrix(mat_ft)
     even_ht, odd_ht = prob_pari_dispari_from_matrix(mat_ht)
@@ -6363,6 +6446,8 @@ def risultato_completo_improved(
         "multigol_home": multigol_home,
         "multigol_away": multigol_away,
         "dc": dc,
+        "validation_warnings": validation_warnings,  # Warning per probabilità anomale
+        "matrix_sum": matrix_sum,  # Somma matrice per debug
         "marg2": marg2,
         "marg3": marg3,
         "combo_book": combo_book,
@@ -7779,6 +7864,19 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                 st.write(f"GG + Over 2.5: {ris['gg_over25']*100:.1f}%")
                 st.write(f"Clean Sheet Casa: {ris['cs_home']*100:.1f}%")
                 st.write(f"Clean Sheet Trasferta: {ris['cs_away']*100:.1f}%")
+                
+                # Mostra warning se ci sono probabilità anomale
+                validation_warnings = ris.get("validation_warnings", [])
+                if validation_warnings:
+                    st.warning("⚠️ **Avviso: Probabilità anomale rilevate**")
+                    for warning in validation_warnings:
+                        st.caption(warning)
+                    
+                    # Mostra lambda per debug
+                    st.caption(f"🔍 **Debug Info**: lambda_home={ris['lambda_home']:.3f}, lambda_away={ris['lambda_away']:.3f}, total={ris['lambda_home']+ris['lambda_away']:.3f}, rho={ris.get('rho', 0):.3f}")
+                    matrix_sum = ris.get("matrix_sum", 1.0)
+                    if abs(matrix_sum - 1.0) > 0.01:
+                        st.caption(f"⚠️ Somma matrice: {matrix_sum:.6f} (dovrebbe essere 1.0)")
             
             with col_d3:
                 st.markdown("**Pari/Dispari**")
