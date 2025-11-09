@@ -6705,18 +6705,18 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                 odds_x=odds_x,
                 odds_2=odds_2,
                 total=total_line,
-                odds_over25=odds_over25 if odds_over25 > 0 else None,
-                odds_under25=odds_under25 if odds_under25 > 0 else None,
-                odds_btts=odds_btts if odds_btts > 0 else None,
-                odds_dnb_home=odds_dnb_home if odds_dnb_home > 0 else None,
-                odds_dnb_away=odds_dnb_away if odds_dnb_away > 0 else None,
+                odds_over25=odds_over25 if (odds_over25 and isinstance(odds_over25, (int, float)) and odds_over25 > 0) else None,
+                odds_under25=odds_under25 if (odds_under25 and isinstance(odds_under25, (int, float)) and odds_under25 > 0) else None,
+                odds_btts=odds_btts if (odds_btts and isinstance(odds_btts, (int, float)) and odds_btts > 0) else None,
+                odds_dnb_home=odds_dnb_home if (odds_dnb_home and isinstance(odds_dnb_home, (int, float)) and odds_dnb_home > 0) else None,
+                odds_dnb_away=odds_dnb_away if (odds_dnb_away and isinstance(odds_dnb_away, (int, float)) and odds_dnb_away > 0) else None,
                 spread_apertura=spread_apertura if spread_apertura != 0.0 else None,
                 total_apertura=total_apertura if total_apertura != 2.5 else None,
                 spread_corrente=spread_corrente if spread_corrente != 0.0 else None,
-                xg_for_home=xg_home_for if xg_home_for > 0 else None,
-                xg_against_home=xg_home_against if xg_home_against > 0 else None,
-                xg_for_away=xg_away_for if xg_away_for > 0 else None,
-                xg_against_away=xg_away_against if xg_away_against > 0 else None,
+                xg_for_home=xg_home_for if (xg_home_for and isinstance(xg_home_for, (int, float)) and xg_home_for > 0) else None,
+                xg_against_home=xg_home_against if (xg_home_against and isinstance(xg_home_against, (int, float)) and xg_home_against > 0) else None,
+                xg_for_away=xg_away_for if (xg_away_for and isinstance(xg_away_for, (int, float)) and xg_away_for > 0) else None,
+                xg_against_away=xg_away_against if (xg_away_against and isinstance(xg_away_against, (int, float)) and xg_away_against > 0) else None,
             )
             
             validated = validation_result["validated"]
@@ -6755,9 +6755,9 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
         market_conf = compute_market_confidence_score(
             odds_1, odds_x, odds_2,
             odds_over25, odds_under25,
-            odds_dnb_home if odds_dnb_home > 0 else None,
-            odds_dnb_away if odds_dnb_away > 0 else None,
-            odds_btts if odds_btts > 0 else None,
+            odds_dnb_home if (odds_dnb_home and isinstance(odds_dnb_home, (int, float)) and odds_dnb_home > 0) else None,
+            odds_dnb_away if (odds_dnb_away and isinstance(odds_dnb_away, (int, float)) and odds_dnb_away > 0) else None,
+            odds_btts if (odds_btts and isinstance(odds_btts, (int, float)) and odds_btts > 0) else None,
             num_books
         )
         
@@ -6841,11 +6841,11 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             odds_x=odds_x,
             odds_2=odds_2,
             total=total_line,
-            odds_over25=odds_over25 if odds_over25 > 0 else None,
-            odds_under25=odds_under25 if odds_under25 > 0 else None,
-            odds_btts=odds_btts if odds_btts > 0 else None,
-            odds_dnb_home=odds_dnb_home if odds_dnb_home > 0 else None,
-            odds_dnb_away=odds_dnb_away if odds_dnb_away > 0 else None,
+            odds_over25=odds_over25 if (odds_over25 and isinstance(odds_over25, (int, float)) and odds_over25 > 0) else None,
+            odds_under25=odds_under25 if (odds_under25 and isinstance(odds_under25, (int, float)) and odds_under25 > 0) else None,
+            odds_btts=odds_btts if (odds_btts and isinstance(odds_btts, (int, float)) and odds_btts > 0) else None,
+            odds_dnb_home=odds_dnb_home if (odds_dnb_home and isinstance(odds_dnb_home, (int, float)) and odds_dnb_home > 0) else None,
+            odds_dnb_away=odds_dnb_away if (odds_dnb_away and isinstance(odds_dnb_away, (int, float)) and odds_dnb_away > 0) else None,
             manual_boost_home=boost_home,
             manual_boost_away=boost_away,
             league=league_type,
@@ -6930,9 +6930,9 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
         # 6. BTTS finale
         btts_prob_model = ris["btts"]
         final_btts_odds, btts_source = blend_btts_sources_improved(
-            odds_btts_api=odds_btts if odds_btts > 0 else None,
+            odds_btts_api=odds_btts if (odds_btts and isinstance(odds_btts, (int, float)) and odds_btts > 0) else None,
             btts_from_model=btts_prob_model,
-            manual_btts=btts_manual if btts_manual > 1.01 else None,
+            manual_btts=btts_manual if (btts_manual and isinstance(btts_manual, (int, float)) and btts_manual > 1.01) else None,
             market_confidence=market_conf / 100
         )
         
