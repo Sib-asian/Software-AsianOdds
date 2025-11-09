@@ -889,7 +889,9 @@ def oddsapi_extract_prices_improved(event: dict) -> dict:
         w = WEIGHTS[bk_key]
 
         for mk in bk.get("markets", []):
-            mk_key = mk.get("key", "").lower()
+            mk_key_raw = mk.get("key")
+            # Assicurati che mk_key sia sempre una stringa (gestisce None)
+            mk_key = str(mk_key_raw).lower() if mk_key_raw is not None else ""
 
             if ("h2h" in mk_key) or mk_key == "h2h" or ("match_winner" in mk_key):
                 for o in mk.get("outcomes", []):
@@ -1344,7 +1346,9 @@ def get_team_standings_info(team_name: str, league: str, season: int = None) -> 
         for group in standings:
             for entry in group:
                 team_info = entry.get("team", {})
-                team_name_api = team_info.get("name", "").lower()
+                team_name_raw = team_info.get("name")
+                # Assicurati che team_name_api sia sempre una stringa (gestisce None)
+                team_name_api = str(team_name_raw).lower() if team_name_raw is not None else ""
                 
                 # Match approssimativo (potrebbe essere diverso)
                 if team_name_lower in team_name_api or team_name_api in team_name_lower:
@@ -1359,19 +1363,41 @@ def get_team_standings_info(team_name: str, league: str, season: int = None) -> 
                     if position >= 16:  # Ultime 3 posizioni
                         # Trova punti della 17esima (ultima salva)
                         for e in group:
-                            if e.get("rank") == 17:
-                                points_17 = e.get("points", 0)
-                                points_from_relegation = points - points_17
-                                break
+                            rank_val = e.get("rank")
+                            # Converti rank a int se necessario (può essere stringa)
+                            try:
+                                rank_int = int(rank_val) if rank_val is not None else None
+                                if rank_int == 17:
+                                    points_17 = e.get("points", 0)
+                                    # Assicurati che points_17 sia un numero
+                                    try:
+                                        points_17 = int(points_17) if points_17 is not None else 0
+                                    except (ValueError, TypeError):
+                                        points_17 = 0
+                                    points_from_relegation = points - points_17
+                                    break
+                            except (ValueError, TypeError):
+                                continue
                     
                     # Calcola distanza da Europa (posizione 6-7)
                     points_from_europe = None
                     if 6 <= position <= 10:
                         for e in group:
-                            if e.get("rank") == 6:
-                                points_6 = e.get("points", 0)
-                                points_from_europe = points_6 - points
-                                break
+                            rank_val = e.get("rank")
+                            # Converti rank a int se necessario (può essere stringa)
+                            try:
+                                rank_int = int(rank_val) if rank_val is not None else None
+                                if rank_int == 6:
+                                    points_6 = e.get("points", 0)
+                                    # Assicurati che points_6 sia un numero
+                                    try:
+                                        points_6 = int(points_6) if points_6 is not None else 0
+                                    except (ValueError, TypeError):
+                                        points_6 = 0
+                                    points_from_europe = points_6 - points
+                                    break
+                            except (ValueError, TypeError):
+                                continue
                     
                     return {
                         "position": position,
@@ -1655,10 +1681,12 @@ def get_weather_impact(fixture_data: Dict[str, Any]) -> Dict[str, float]:
     
     if weather_data:
         temp = weather_data.get("temp", None)
-        condition = weather_data.get("condition", "").lower()
+        condition_raw = weather_data.get("condition")
+        # Assicurati che condition sia sempre una stringa (gestisce None)
+        condition = str(condition_raw).lower() if condition_raw is not None else ""
         
         # Pioggia forte → meno gol
-        if "rain" in condition or "storm" in condition:
+        if condition and ("rain" in condition or "storm" in condition):
             total_factor *= 0.92  # -8% gol
             confidence = 0.7
         
@@ -1727,7 +1755,9 @@ def analyze_market_depth(
     
     for bk in bookmakers:
         for mk in bk.get("markets", []):
-            if mk.get("key", "").lower() in ["h2h", "match_winner"]:
+            mk_key_raw = mk.get("key")
+            mk_key = str(mk_key_raw).lower() if mk_key_raw is not None else ""
+            if mk_key in ["h2h", "match_winner"]:
                 for o in mk.get("outcomes", []):
                     name_l = (o.get("name") or "").lower()
                     price = o.get("price")
@@ -1983,14 +2013,16 @@ def calculate_injuries_impact(injuries: List[Dict[str, Any]], team_id: int) -> D
         
         for injury in team_injuries:
             player = injury.get("player", {})
-            position = player.get("position", "").upper()
+            position_raw = player.get("position")
+            # Assicurati che position sia sempre una stringa (gestisce None)
+            position = str(position_raw).upper() if position_raw is not None else ""
             
             # Determina impatto basandosi su posizione
-            if any(pos in position for pos in attack_positions):
+            if position and any(pos in position for pos in attack_positions):
                 attack_impact += 0.05  # -5% per attaccante infortunato
-            elif any(pos in position for pos in defense_positions):
+            elif position and any(pos in position for pos in defense_positions):
                 defense_impact += 0.05  # -5% per difensore infortunato
-            elif any(pos in position for pos in midfield_positions):
+            elif position and any(pos in position for pos in midfield_positions):
                 attack_impact += 0.02  # -2% per centrocampista (influenza attacco)
                 defense_impact += 0.02  # -2% per centrocampista (influenza difesa)
         
@@ -4049,7 +4081,9 @@ def compare_bookmaker_odds(event: dict) -> Dict[str, List[Dict[str, Any]]]:
         bk_name = bk.get("key", "unknown")
         
         for mk in bk.get("markets", []):
-            mk_key = mk.get("key", "").lower()
+            mk_key_raw = mk.get("key")
+            # Assicurati che mk_key sia sempre una stringa (gestisce None)
+            mk_key = str(mk_key_raw).lower() if mk_key_raw is not None else ""
             
             # 1X2
             if "h2h" in mk_key or "match_winner" in mk_key:
@@ -5788,6 +5822,7 @@ def risultato_completo_improved(
     spread_apertura: float = None,
     total_apertura: float = None,
     spread_corrente: float = None,
+    total_corrente: float = None,
     **kwargs
 ) -> Dict[str, Any]:
     """
