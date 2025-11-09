@@ -4009,6 +4009,110 @@ def analyze_market_correlations(
     
     return correlations
 
+def get_realtime_performance_metrics(
+    archive_file: str = ARCHIVE_FILE,
+    window_days: int = 7,
+) -> Dict[str, Any]:
+    """
+    Calcola metriche di performance real-time per ultimi N giorni.
+    
+    ALTA PRIORITÀ: Real-time Performance Monitoring - dashboard performance live.
+    """
+    if not os.path.exists(archive_file):
+        return {"status": "no_data", "error": "Nessun storico disponibile"}
+    
+    try:
+        df = pd.read_csv(archive_file)
+        
+        # Filtra per ultimi N giorni
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce')
+            cutoff_date = datetime.now() - timedelta(days=window_days)
+            df_recent = df[df["timestamp"] >= cutoff_date]
+        else:
+            df_recent = df.tail(50)  # Fallback: ultime 50 partite
+        
+        # Filtra partite con risultati
+        df_complete = df_recent[
+            df_recent["esito_reale"].notna() & 
+            (df_recent["esito_reale"] != "") &
+            df_recent["p_home"].notna()
+        ]
+        
+        if len(df_complete) == 0:
+            return {"status": "no_data", "error": "Nessun dato recente con risultati"}
+        
+        # Accuracy
+        if "match_ok" in df_complete.columns:
+            accuracy = df_complete["match_ok"].mean() * 100
+        else:
+            # Calcola accuracy manualmente
+            correct = 0
+            total = 0
+            for _, row in df_complete.iterrows():
+                esito_reale = str(row.get("esito_reale", "")).strip()
+                if esito_reale in ["1", "X", "2"]:
+                    # Trova esito predetto (quello con probabilità maggiore)
+                    p_home = row.get("p_home", 0)
+                    p_draw = row.get("p_draw", 0)
+                    p_away = row.get("p_away", 0)
+                    esito_pred = "1" if p_home == max(p_home, p_draw, p_away) else ("X" if p_draw == max(p_home, p_draw, p_away) else "2")
+                    if esito_pred == esito_reale:
+                        correct += 1
+                    total += 1
+            accuracy = (correct / total * 100) if total > 0 else 0
+        
+        # ROI simulato
+        roi_data = calculate_roi(
+            (df_complete["p_home"] / 100).tolist() if df_complete["p_home"].max() > 1 else df_complete["p_home"].tolist(),
+            (df_complete["esito_reale"] == "1").astype(int).tolist(),
+            df_complete["odds_1"].tolist(),
+            threshold=0.03
+        )
+        
+        # Trend (confronta con periodo precedente)
+        if len(df) >= 100:
+            df_old = df.head(len(df) - len(df_recent))
+            df_old_complete = df_old[
+                df_old["esito_reale"].notna() & 
+                (df_old["esito_reale"] != "")
+            ]
+            if "match_ok" in df_old_complete.columns and len(df_old_complete) > 0:
+                accuracy_old = df_old_complete["match_ok"].mean() * 100
+                trend = accuracy - accuracy_old
+            else:
+                trend = 0
+        else:
+            trend = 0
+        
+        # Alert status
+        alert_status = "good"
+        alert_message = ""
+        
+        if accuracy < 40:
+            alert_status = "critical"
+            alert_message = "Accuracy molto bassa (< 40%)"
+        elif accuracy < 50:
+            alert_status = "warning"
+            alert_message = "Accuracy sotto media (< 50%)"
+        elif roi_data.get("roi", 0) < -10:
+            alert_status = "warning"
+            alert_message = "ROI negativo significativo"
+        
+        return {
+            "status": "ok",
+            "accuracy": round(accuracy, 1),
+            "roi": round(roi_data.get("roi", 0), 1),
+            "bets_placed": roi_data.get("bets", 0),
+            "trend": round(trend, 1),
+            "alert_status": alert_status,
+            "alert_message": alert_message,
+            "window_days": window_days,
+            "matches_analyzed": len(df_complete),
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
 def calculate_dashboard_metrics(archive_file: str = ARCHIVE_FILE) -> Dict[str, Any]:
     """
     Calcola metriche aggregate per dashboard.
