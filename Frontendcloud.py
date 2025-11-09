@@ -15,9 +15,10 @@ warnings.filterwarnings('ignore')
 #                 CONFIG
 # ============================================================
 
-THE_ODDS_API_KEY = "06c16ede44d09f9b3498bb63354930c4"
-THE_ODDS_BASE = "https://api.the-odds-api.com/v4"
+# PINNACLE API (GRATIS E SHARP!)
+PINNACLE_BASE = "https://guest.api.arcadia.pinnacle.com/0.1"
 
+# API-FOOTBALL per risultati reali (GRATIS 100 req/day)
 API_FOOTBALL_KEY = "95c43f936816cd4389a747fd2cfe061a"
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 
@@ -43,28 +44,23 @@ def decimali_a_prob(odds: float) -> float:
     return 1 / odds if odds and odds > 0 else 0.0
 
 # ============================================================
-#   NORMALIZZAZIONE AVANZATA DELLE QUOTE (SHIN METHOD)
+#   NORMALIZZAZIONE AVANZATA (SHIN METHOD)
 # ============================================================
 
 def shin_normalization(odds_list: List[float], max_iter: int = 100, tol: float = 1e-6) -> List[float]:
     """
     Shin method per rimuovere il margine considerando insider trading.
-    Più robusto della semplice normalizzazione proporzionale.
-    
-    Reference: Shin, H. S. (1992). "Prices of State Contingent Claims with Insider 
-    Traders, and the Favourite-Longshot Bias"
+    Più robusto della normalizzazione proporzionale.
     """
     if not odds_list or any(o <= 1 for o in odds_list):
         return odds_list
     
-    # Probabilità implicite
     probs = np.array([1/o for o in odds_list])
     margin = probs.sum() - 1
     
     if margin <= 0:
         return odds_list
     
-    # Risolvi per z (proporzione di insider information)
     def shin_equation(z):
         if z <= 0 or z >= 1:
             return float('inf')
@@ -73,181 +69,108 @@ def shin_normalization(odds_list: List[float], max_iter: int = 100, tol: float =
         return fair_probs.sum() - 1
     
     try:
-        # Trova z ottimale
         z_opt = optimize.brentq(shin_equation, 0.001, 0.999, maxiter=max_iter)
-        
-        # Calcola probabilità fair
         sqrt_term = np.sqrt(z_opt**2 + 4 * (1 - z_opt) * probs**2)
         fair_probs = (sqrt_term - z_opt) / (2 * (1 - z_opt))
-        
-        # Normalizza per sicurezza
         fair_probs = fair_probs / fair_probs.sum()
-        
         return [round(1/p, 3) for p in fair_probs]
     except:
-        # Fallback a normalizzazione semplice
         fair_probs = probs / probs.sum()
         return [round(1/p, 3) for p in fair_probs]
 
 def normalize_two_way_shin(o1: float, o2: float) -> Tuple[float, float]:
-    """Normalizzazione Shin per mercati a 2 esiti."""
     if not o1 or not o2 or o1 <= 1 or o2 <= 1:
         return o1, o2
-    
     normalized = shin_normalization([o1, o2])
     return normalized[0], normalized[1]
 
 def normalize_three_way_shin(o1: float, ox: float, o2: float) -> Tuple[float, float, float]:
-    """Normalizzazione Shin per 1X2."""
     if not all([o1, ox, o2]) or any(o <= 1 for o in [o1, ox, o2]):
         return o1, ox, o2
-    
     normalized = shin_normalization([o1, ox, o2])
     return normalized[0], normalized[1], normalized[2]
 
 # ============================================================
-#  STIMA BTTS AVANZATA CON MODELLO BIVARIATO
+#         PINNACLE API (GRATIS!)
 # ============================================================
 
-def btts_probability_bivariate(lambda_h: float, lambda_a: float, rho: float) -> float:
+def pinnacle_get_sports() -> List[dict]:
+    """Ottieni lista sport disponibili."""
+    try:
+        r = requests.get(f"{PINNACLE_BASE}/sports", timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        return [s for s in data if s.get('name', '').lower() == 'soccer']
+    except Exception as e:
+        print(f"Errore Pinnacle sports: {e}")
+        return []
+
+def pinnacle_get_leagues(sport_id: int = 29) -> List[dict]:
     """
-    Calcola P(BTTS) usando distribuzione Poisson bivariata con correlazione.
-    Più accurato della stima euristica.
+    Ottieni leghe di calcio.
+    Sport ID 29 = Soccer
     """
-    # P(BTTS) = 1 - P(H=0 or A=0)
-    # P(H=0) marginale
-    p_h0 = poisson.pmf(0, lambda_h)
-    # P(A=0) marginale  
-    p_a0 = poisson.pmf(0, lambda_a)
-    
-    # P(H=0, A=0) con correlazione Dixon-Coles
-    p_h0_a0 = p_h0 * p_a0 * (1 - lambda_h * lambda_a * rho)
-    
-    # P(H=0 or A=0) = P(H=0) + P(A=0) - P(H=0, A=0)
-    p_no_btts = p_h0 + p_a0 - p_h0_a0
-    
-    return max(0.0, min(1.0, 1 - p_no_btts))
+    try:
+        r = requests.get(
+            f"{PINNACLE_BASE}/leagues",
+            params={"sport_id": sport_id},
+            timeout=10
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"Errore Pinnacle leagues: {e}")
+        return []
 
-def estimate_btts_from_basic_odds_improved(
-    odds_1: float = None,
-    odds_x: float = None,
-    odds_2: float = None,
-    odds_over25: float = None,
-    odds_under25: float = None,
-    lambda_h: float = None,
-    lambda_a: float = None,
-    rho: float = 0.0,
-) -> float:
+def pinnacle_get_matchups(league_ids: List[int]) -> List[dict]:
+    """Ottieni partite per le leghe specificate."""
+    try:
+        league_ids_str = ",".join(str(lid) for lid in league_ids)
+        r = requests.get(
+            f"{PINNACLE_BASE}/matchups",
+            params={
+                "league_ids": league_ids_str,
+                "is_have_odds": "true"
+            },
+            timeout=10
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"Errore Pinnacle matchups: {e}")
+        return []
+
+def pinnacle_get_odds(matchup_id: int) -> dict:
+    """Ottieni quote per una specifica partita."""
+    try:
+        r = requests.get(
+            f"{PINNACLE_BASE}/odds",
+            params={"matchup_id": matchup_id},
+            timeout=10
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"Errore Pinnacle odds: {e}")
+        return {}
+
+def pinnacle_extract_prices(matchup: dict, odds_data: dict) -> dict:
     """
-    Stima BTTS migliorata:
-    1. Se abbiamo lambda, usa modello bivariato
-    2. Altrimenti usa regressione calibrata su dati storici
+    Estrae e normalizza le quote da Pinnacle.
+    
+    Pinnacle fornisce:
+    - Moneyline (1X2)
+    - Totals (Over/Under)
+    - Spread (Handicap)
+    
+    NON fornisce sempre:
+    - BTTS (lo calcoliamo dal modello)
+    - DNB (lo calcoliamo da 1X2)
     """
-    if lambda_h is not None and lambda_a is not None:
-        prob_btts = btts_probability_bivariate(lambda_h, lambda_a, rho)
-        return round(1.0 / prob_btts, 3) if prob_btts > 0 else 2.0
     
-    # Fallback: modello empirico calibrato
-    # Questi coefficienti sono stati calibrati su ~50k partite storiche
-    def _p(odd: float) -> float:
-        return 1.0 / odd if odd and odd > 1 else 0.0
-    
-    p_over = _p(odds_over25)
-    p_home = _p(odds_1) if odds_1 else 0.33
-    p_away = _p(odds_2) if odds_2 else 0.33
-    
-    # Modello empirico migliorato
-    if p_over > 0:
-        # BTTS correlato con over 2.5 e balance 1X2
-        balance = 1.0 - abs(p_home - p_away)
-        
-        # Formula calibrata
-        gg_prob = 0.35 + (p_over - 0.50) * 0.85 + (balance - 0.5) * 0.15
-        
-        # Adjustment per mercati estremi
-        if p_home > 0.65 or p_away > 0.65:
-            gg_prob *= 0.92  # Squadra molto favorita → meno BTTS
-        
-        gg_prob = max(0.30, min(0.75, gg_prob))
-    else:
-        # Solo da 1X2
-        balance = 1.0 - abs(p_home - p_away)
-        gg_prob = 0.48 + (balance - 0.5) * 0.20
-        gg_prob = max(0.35, min(0.65, gg_prob))
-    
-    return round(1.0 / gg_prob, 3)
-
-def blend_btts_sources_improved(
-    odds_btts_api: Optional[float],
-    btts_from_model: Optional[float],
-    manual_btts: Optional[float] = None,
-    market_confidence: float = 0.7,
-) -> Tuple[float, str]:
-    """
-    Versione migliorata con pesatura dinamica basata su confidence del mercato.
-    """
-    if manual_btts and manual_btts > 1.01:
-        return round(manual_btts, 3), "BTTS manuale (bet365)"
-    
-    if odds_btts_api and odds_btts_api > 1.01 and btts_from_model and btts_from_model > 0:
-        p_api = 1 / odds_btts_api
-        p_mod = btts_from_model
-        
-        # Pesatura dinamica: più confidence → più peso al mercato
-        w_market = 0.55 + market_confidence * 0.20
-        p_final = w_market * p_api + (1 - w_market) * p_mod
-        
-        return round(1 / p_final, 3), f"BTTS blended (w={w_market:.2f})"
-    
-    if odds_btts_api and odds_btts_api > 1.01:
-        return round(odds_btts_api, 3), "BTTS da API"
-    
-    if btts_from_model and btts_from_model > 0:
-        return round(1 / btts_from_model, 3), "BTTS da modello"
-    
-    return 2.0, "BTTS default"
-
-# ============================================================
-#   ESTRATTORE QUOTE CON OUTLIER DETECTION MIGLIORATO
-# ============================================================
-
-def detect_outliers_iqr(values: List[float], k: float = 1.5) -> List[bool]:
-    """Identifica outlier usando metodo IQR (più robusto)."""
-    if len(values) <= 2:
-        return [False] * len(values)
-    
-    q1 = np.percentile(values, 25)
-    q3 = np.percentile(values, 75)
-    iqr = q3 - q1
-    
-    lower_bound = q1 - k * iqr
-    upper_bound = q3 + k * iqr
-    
-    return [v < lower_bound or v > upper_bound for v in values]
-
-def oddsapi_extract_prices_improved(event: dict) -> dict:
-    """Versione migliorata con IQR outlier detection e Shin normalization."""
-    
-    WEIGHTS = {
-        "pinnacle": 2.0,      # Sharp book
-        "bet365": 1.6,
-        "unibet_eu": 1.3,
-        "marathonbet": 1.3,
-        "williamhill": 1.2,
-        "bwin": 1.0,
-        "betonlineag": 1.0,
-        "10bet": 1.0,
-        "bovada": 0.9,
-    }
-
-    home_team = (event.get("home_team") or "home").strip()
-    away_team = (event.get("away_team") or "away").strip()
-    home_l = home_team.lower()
-    away_l = away_team.lower()
-
     out = {
-        "home": home_team,
-        "away": away_team,
+        "home": matchup.get("participants", [{}])[0].get("name", "Home"),
+        "away": matchup.get("participants", [{}])[1].get("name", "Away") if len(matchup.get("participants", [])) > 1 else "Away",
         "odds_1": None,
         "odds_x": None,
         "odds_2": None,
@@ -255,206 +178,81 @@ def oddsapi_extract_prices_improved(event: dict) -> dict:
         "odds_under25": None,
         "odds_dnb_home": None,
         "odds_dnb_away": None,
-        "odds_btts": None,
+        "spread_line": 0.0,
+        "total_line": 2.5,
     }
-
-    bookmakers = event.get("bookmakers", [])
-    if not bookmakers:
+    
+    if not odds_data:
         return out
-
-    h2h_home, h2h_draw, h2h_away = [], [], []
-    over25_list, under25_list = [], []
-    dnb_home_list, dnb_away_list = [], []
-    btts_list = []
-
-    for bk in bookmakers:
-        bk_key = bk.get("key")
-        if bk_key not in WEIGHTS:
-            continue
-        w = WEIGHTS[bk_key]
-
-        for mk in bk.get("markets", []):
-            mk_key = mk.get("key", "").lower()
-
-            if ("h2h" in mk_key) or mk_key == "h2h" or ("match_winner" in mk_key):
-                for o in mk.get("outcomes", []):
-                    name_l = (o.get("name") or "").strip().lower()
-                    price = o.get("price")
-                    if not price:
-                        continue
-                    if name_l == home_l or home_l in name_l:
-                        h2h_home.append((price, w))
-                    elif name_l == away_l or away_l in name_l:
-                        h2h_away.append((price, w))
-                    elif name_l in ["draw", "tie", "x", "pareggio"]:
-                        h2h_draw.append((price, w))
-
-            elif "totals" in mk_key or "total" in mk_key:
-                for o in mk.get("outcomes", []):
-                    point = o.get("point")
-                    price = o.get("price")
-                    name_l = (o.get("name") or "").lower()
-                    if price is None:
-                        continue
-                    if point == 2.5:
-                        if "over" in name_l:
-                            over25_list.append((price, w))
-                        elif "under" in name_l:
-                            under25_list.append((price, w))
-
-            elif "draw_no_bet" in mk_key or mk_key == "dnb":
-                for o in mk.get("outcomes", []):
-                    name_l = (o.get("name") or "").lower()
-                    price = o.get("price")
-                    if not price:
-                        continue
-                    if name_l == home_l or home_l in name_l:
-                        dnb_home_list.append((price, w))
-                    elif name_l == away_l or away_l in name_l:
-                        dnb_away_list.append((price, w))
-
-            elif mk_key == "spreads":
-                for o in mk.get("outcomes", []):
-                    point = o.get("point")
-                    price = o.get("price")
-                    name_l = (o.get("name") or "").lower()
-                    if price is None:
-                        continue
-                    if point == 0 or point == 0.0:
-                        if name_l == home_l or home_l in name_l:
-                            dnb_home_list.append((price, w))
-                        elif name_l == away_l or away_l in name_l:
-                            dnb_away_list.append((price, w))
-
-            elif "btts" in mk_key or "both_teams_to_score" in mk_key:
-                for o in mk.get("outcomes", []):
-                    name_l = (o.get("name") or "").lower()
-                    price = o.get("price")
-                    if not price:
-                        continue
-                    if "yes" in name_l or "sì" in name_l or "si" in name_l:
-                        btts_list.append((price, w))
-
-    # Rimozione outlier con IQR
-    def _remove_outliers(values: List[Tuple[float, float]]):
-        if len(values) <= 2:
-            return values
-        odds_only = [v for v, _ in values]
-        is_outlier = detect_outliers_iqr(odds_only, k=1.5)
-        return [item for item, outlier in zip(values, is_outlier) if not outlier]
-
-    h2h_home = _remove_outliers(h2h_home)
-    h2h_draw = _remove_outliers(h2h_draw)
-    h2h_away = _remove_outliers(h2h_away)
-    over25_list = _remove_outliers(over25_list)
-    under25_list = _remove_outliers(under25_list)
-    dnb_home_list = _remove_outliers(dnb_home_list)
-    dnb_away_list = _remove_outliers(dnb_away_list)
-    btts_list = _remove_outliers(btts_list)
-
-    def weighted_avg(values: List[Tuple[float, float]]):
-        if not values:
-            return None
-        num = sum(v * w for v, w in values)
-        den = sum(w for _, w in values)
-        return round(num / den, 3) if den else None
-
-    out["odds_1"] = weighted_avg(h2h_home)
-    out["odds_x"] = weighted_avg(h2h_draw)
-    out["odds_2"] = weighted_avg(h2h_away)
-    out["odds_over25"] = weighted_avg(over25_list)
-    out["odds_under25"] = weighted_avg(under25_list)
-    out["odds_dnb_home"] = weighted_avg(dnb_home_list)
-    out["odds_dnb_away"] = weighted_avg(dnb_away_list)
-    out["odds_btts"] = weighted_avg(btts_list)
-
-    # Normalizzazione Shin
+    
+    # Estrai Moneyline (1X2)
+    for market in odds_data:
+        market_type = market.get("type", "")
+        
+        # MONEYLINE (1X2)
+        if market_type == "moneyline":
+            prices = market.get("prices", [])
+            if len(prices) >= 3:
+                # Pinnacle: [Home, Draw, Away]
+                out["odds_1"] = prices[0].get("price")
+                out["odds_x"] = prices[1].get("price")
+                out["odds_2"] = prices[2].get("price")
+        
+        # TOTALS (Over/Under)
+        elif market_type == "total":
+            points = market.get("points")
+            if points == 2.5:
+                prices = market.get("prices", [])
+                if len(prices) >= 2:
+                    out["odds_over25"] = prices[0].get("price")  # Over
+                    out["odds_under25"] = prices[1].get("price")  # Under
+                out["total_line"] = points
+        
+        # SPREAD (Handicap)
+        elif market_type == "spread":
+            points = market.get("points")
+            if points == 0.0:  # Spread 0 = Asian Handicap 0
+                prices = market.get("prices", [])
+                if len(prices) >= 2:
+                    # Possiamo usare questo per DNB estimation
+                    out["odds_dnb_home"] = prices[0].get("price")
+                    out["odds_dnb_away"] = prices[1].get("price")
+            out["spread_line"] = points if points else 0.0
+    
+    # Calcola DNB da 1X2 se non disponibile
+    if not out["odds_dnb_home"] and out["odds_1"] and out["odds_x"]:
+        # Formula: DNB = (1 * X) / (1 + X)
+        try:
+            out["odds_dnb_home"] = round(
+                (out["odds_1"] * out["odds_x"]) / (out["odds_1"] + out["odds_x"]) * 0.995,
+                3
+            )
+        except:
+            pass
+    
+    if not out["odds_dnb_away"] and out["odds_2"] and out["odds_x"]:
+        try:
+            out["odds_dnb_away"] = round(
+                (out["odds_2"] * out["odds_x"]) / (out["odds_2"] + out["odds_x"]) * 0.995,
+                3
+            )
+        except:
+            pass
+    
+    # Normalizzazione Shin per 1X2
     if out["odds_1"] and out["odds_x"] and out["odds_2"]:
         n1, nx, n2 = normalize_three_way_shin(out["odds_1"], out["odds_x"], out["odds_2"])
         out["odds_1"], out["odds_x"], out["odds_2"] = n1, nx, n2
-
+    
+    # Normalizzazione Shin per Over/Under
     if out["odds_over25"] and out["odds_under25"]:
         no, nu = normalize_two_way_shin(out["odds_over25"], out["odds_under25"])
         out["odds_over25"], out["odds_under25"] = no, nu
-
+    
     return out
 
 # ============================================================
-#        FUNZIONI ODDS API (invariate)
-# ============================================================
-
-def oddsapi_get_soccer_leagues() -> List[dict]:
-    try:
-        r = requests.get(
-            f"{THE_ODDS_BASE}/sports",
-            params={"apiKey": THE_ODDS_API_KEY, "all": "true"},
-            timeout=8,
-        )
-        r.raise_for_status()
-        data = r.json()
-        return [s for s in data if s.get("key", "").startswith("soccer")]
-    except Exception as e:
-        print("errore sports:", e)
-        return []
-
-def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
-    base_url = f"{THE_ODDS_BASE}/sports/{league_key}/odds"
-    params_common = {
-        "apiKey": THE_ODDS_API_KEY,
-        "regions": "eu,uk",
-        "oddsFormat": "decimal",
-        "dateFormat": "iso",
-    }
-
-    try:
-        r = requests.get(
-            base_url,
-            params={**params_common, "markets": "h2h,totals,spreads,btts"},
-            timeout=8,
-        )
-        r.raise_for_status()
-        data = r.json()
-        if data:
-            return data
-    except Exception as e:
-        print("errore events (con btts):", e)
-
-    try:
-        r2 = requests.get(
-            base_url,
-            params={**params_common, "markets": "h2h,totals,spreads"},
-            timeout=8,
-        )
-        r2.raise_for_status()
-        return r2.json()
-    except Exception as e:
-        print("errore events (senza btts):", e)
-        return []
-
-def oddsapi_refresh_event(league_key: str, event_id: str) -> dict:
-    if not league_key or not event_id:
-        return {}
-    url = f"{THE_ODDS_BASE}/sports/{league_key}/events/{event_id}/odds"
-    params = {
-        "apiKey": THE_ODDS_API_KEY,
-        "regions": "eu,uk",
-        "oddsFormat": "decimal",
-        "dateFormat": "iso",
-        "markets": "h2h,totals,spreads,btts",
-    }
-    try:
-        r = requests.get(url, params=params, timeout=8)
-        r.raise_for_status()
-        data = r.json()
-        if isinstance(data, list) and data:
-            return data[0]
-        return data
-    except Exception as e:
-        print("errore refresh evento:", e)
-        return {}
-
-# ============================================================
-#  API-FOOTBALL
+#  API-FOOTBALL SOLO PER RISULTATI REALI
 # ============================================================
 
 def apifootball_get_fixtures_by_date(d: str) -> list:
@@ -466,21 +264,39 @@ def apifootball_get_fixtures_by_date(d: str) -> list:
         data = r.json()
         return data.get("response", [])
     except Exception as e:
-        print("errore api-football:", e)
+        print(f"Errore API-Football: {e}")
         return []
+
+# ============================================================
+#  STIMA BTTS DA MODELLO BIVARIATO (NO API NEEDED!)
+# ============================================================
+
+def btts_probability_bivariate(lambda_h: float, lambda_a: float, rho: float) -> float:
+    """
+    Calcola P(BTTS) usando distribuzione Poisson bivariata.
+    NON serve API esterna - calcoliamo dal modello!
+    """
+    p_h0 = poisson.pmf(0, lambda_h)
+    p_a0 = poisson.pmf(0, lambda_a)
+    
+    # P(H=0, A=0) con correlazione Dixon-Coles
+    p_h0_a0 = p_h0 * p_a0 * (1 - lambda_h * lambda_a * rho)
+    
+    # P(no BTTS) = P(H=0 or A=0)
+    p_no_btts = p_h0 + p_a0 - p_h0_a0
+    
+    return max(0.0, min(1.0, 1 - p_no_btts))
 
 # ============================================================
 #          MODELLO POISSON MIGLIORATO
 # ============================================================
 
 def poisson_pmf(k: int, lam: float) -> float:
-    """Poisson PMF con protezione overflow."""
     if lam <= 0:
         return 1.0 if k == 0 else 0.0
     return poisson.pmf(k, lam)
 
 def entropia_poisson(lam: float, max_k: int = 15) -> float:
-    """Shannon entropy della distribuzione Poisson."""
     e = 0.0
     for k in range(max_k + 1):
         p = poisson_pmf(k, lam)
@@ -489,19 +305,18 @@ def entropia_poisson(lam: float, max_k: int = 15) -> float:
     return e
 
 def home_advantage_factor(league: str = "generic") -> float:
-    """
-    Home advantage empirico per lega.
-    Basato su analisi di ~100k partite per lega.
-    """
+    """Home advantage calibrato per lega."""
     ha_dict = {
         "premier_league": 1.35,
         "serie_a": 1.28,
         "la_liga": 1.32,
         "bundesliga": 1.30,
         "ligue_1": 1.25,
+        "champions_league": 1.20,  # Meno home advantage in Europa
+        "europa_league": 1.22,
         "generic": 1.30,
     }
-    return ha_dict.get(league, 1.30)
+    return ha_dict.get(league.lower().replace(" ", "_"), 1.30)
 
 def estimate_lambda_from_market_improved(
     odds_1: float,
@@ -514,11 +329,9 @@ def estimate_lambda_from_market_improved(
     odds_dnb_away: float = None,
     home_advantage: float = 1.30,
 ) -> Tuple[float, float]:
-    """
-    Stima lambda con approccio Bayesiano multi-sorgente.
-    Combina informazioni da: 1X2, totals, DNB, spread implicito.
-    """
-    # 1. Probabilità normalizzate da 1X2
+    """Stima lambda con approccio Bayesiano multi-sorgente."""
+    
+    # Probabilità normalizzate
     p1, px, p2 = normalize_three_way_shin(odds_1, odds_x, odds_2)
     p1_n = 1 / p1
     px_n = 1 / px
@@ -526,44 +339,40 @@ def estimate_lambda_from_market_improved(
     tot_p = p1_n + px_n + p2_n
     p1_n /= tot_p
     p2_n /= tot_p
-    px_n /= tot_p
     
-    # 2. Stima iniziale da total
+    # Expected total da over/under
     if odds_over25 and odds_under25:
         po, pu = normalize_two_way_shin(odds_over25, odds_under25)
         p_over = 1 / po
-        # Expected total gol da over/under market
-        total_market = 2.5 + (p_over - 0.5) * 2.0  # Calibrato empiricamente
+        total_market = 2.5 + (p_over - 0.5) * 2.0
     else:
         total_market = total
     
-    # 3. Lambda base da total
+    # Lambda base
     lambda_total = total_market / 2.0
     
-    # 4. Spread implicito da probabilità
-    # Se p1 > p2, casa favorita → lambda_h > lambda_a
+    # Spread implicito
     prob_diff = p1_n - p2_n
-    spread_factor = 1.0 + prob_diff * 0.8  # Calibrato
+    spread_factor = 1.0 + prob_diff * 0.8
     
     lambda_h_base = lambda_total * spread_factor
     lambda_a_base = lambda_total / spread_factor
     
-    # 5. Aggiustamento con DNB se disponibile
+    # Aggiustamento con DNB
     if odds_dnb_home and odds_dnb_home > 1 and odds_dnb_away and odds_dnb_away > 1:
         p_dnb_h = 1 / odds_dnb_home
         p_dnb_a = 1 / odds_dnb_away
-        # DNB rimuove pareggio → più informativo su forza relativa
         dnb_ratio = p_dnb_h / p_dnb_a
-        spread_factor_dnb = math.sqrt(dnb_ratio)  # Sqrt per moderare
+        spread_factor_dnb = math.sqrt(dnb_ratio)
         
         lambda_h_base *= (0.7 + 0.3 * spread_factor_dnb)
         lambda_a_base *= (0.7 + 0.3 / spread_factor_dnb)
     
-    # 6. Applica home advantage
+    # Home advantage
     lambda_h = lambda_h_base * math.sqrt(home_advantage)
     lambda_a = lambda_a_base / math.sqrt(home_advantage)
     
-    # 7. Constraints ragionevoli
+    # Constraints
     lambda_h = max(0.3, min(4.0, lambda_h))
     lambda_a = max(0.3, min(4.0, lambda_a))
     
@@ -573,38 +382,20 @@ def estimate_rho_improved(
     lambda_h: float,
     lambda_a: float,
     p_draw: float,
-    odds_btts: float = None,
 ) -> float:
-    """
-    Stima rho (correlazione gol) con metodo migliorato.
+    """Stima rho (correlazione gol)."""
     
-    Rho negativo → pochi 0-0, 1-0, 0-1, 1-1 (anticorrelazione)
-    Rho positivo → più low-scoring draws
-    """
-    # Prior basato su draw probability
+    # Prior da draw probability
     rho_from_draw = -0.15 + (p_draw - 0.25) * 0.8
     
-    # Adjustment da BTTS se disponibile
-    if odds_btts and odds_btts > 1:
-        p_btts_market = 1 / odds_btts
-        # BTTS alto → rho più negativo (meno 0-0, 1-0, 0-1)
-        rho_from_btts = -0.20 + (1 - p_btts_market) * 0.5
-        
-        # Combina
-        rho = 0.6 * rho_from_draw + 0.4 * rho_from_btts
-    else:
-        rho = rho_from_draw
-    
-    # Expected frequency baseline per lambda
+    # Expected low-scoring
     exp_low_score = math.exp(-lambda_h) + math.exp(-lambda_a)
-    if exp_low_score > 0.6:  # Molti gol attesi → rho più negativo
-        rho -= 0.05
+    if exp_low_score > 0.6:
+        rho_from_draw -= 0.05
     
-    # Bounds empirici
-    return max(-0.30, min(0.30, rho))
+    return max(-0.30, min(0.30, rho_from_draw))
 
 def tau_dixon_coles(h: int, a: int, lh: float, la: float, rho: float) -> float:
-    """Dixon-Coles tau function - unchanged."""
     if h == 0 and a == 0:
         val = 1 - (lh * la * rho)
         return max(0.2, val)
@@ -617,12 +408,10 @@ def tau_dixon_coles(h: int, a: int, lh: float, la: float, rho: float) -> float:
     return 1.0
 
 def max_goals_adattivo(lh: float, la: float) -> int:
-    """Determina max gol per matrice dinamicamente."""
     expected_total = lh + la
     return max(8, min(15, int(expected_total * 3.0)))
 
 def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
-    """Costruisce matrice score con normalizzazione."""
     mg = max_goals_adattivo(lh, la)
     mat: List[List[float]] = []
     
@@ -631,7 +420,7 @@ def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
         for a in range(mg + 1):
             p = poisson_pmf(h, lh) * poisson_pmf(a, la)
             p *= tau_dixon_coles(h, a, lh, la, rho)
-            row.append(max(0, p))  # Ensure non-negative
+            row.append(max(0, p))
         mat.append(row)
     
     # Normalizzazione
@@ -642,7 +431,7 @@ def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
     return mat
 
 # ============================================================
-#      CALCOLO PROBABILITÀ DA MATRICE (unchanged)
+#      CALCOLO PROBABILITÀ DA MATRICE
 # ============================================================
 
 def calc_match_result_from_matrix(mat: List[List[float]]) -> Tuple[float, float, float]:
@@ -802,88 +591,7 @@ def top_results_from_matrix(mat, top_n=10, soglia_min=0.005):
     return risultati[:top_n]
 
 # ============================================================
-#     METRICHE DI VALIDAZIONE (NUOVO)
-# ============================================================
-
-def brier_score(predictions: List[float], outcomes: List[int]) -> float:
-    """
-    Brier Score: misura accuracy delle probabilità.
-    Score perfetto = 0, peggiore = 1.
-    """
-    if len(predictions) != len(outcomes):
-        return None
-    
-    return np.mean([(p - o)**2 for p, o in zip(predictions, outcomes)])
-
-def log_loss_score(predictions: List[float], outcomes: List[int], epsilon: float = 1e-15) -> float:
-    """Log Loss (cross-entropy): penalizza previsioni confident sbagliate."""
-    if len(predictions) != len(outcomes):
-        return None
-    
-    # Clip per evitare log(0)
-    predictions = np.clip(predictions, epsilon, 1 - epsilon)
-    
-    return -np.mean([o * np.log(p) + (1-o) * np.log(1-p) 
-                     for p, o in zip(predictions, outcomes)])
-
-def calculate_roi(predictions: List[float], outcomes: List[int], odds: List[float], 
-                  threshold: float = 0.05) -> Dict[str, float]:
-    """
-    Calcola ROI simulato con soglia di value.
-    threshold: minimo edge richiesto per bet (es. 0.05 = 5% edge)
-    """
-    total_staked = 0
-    total_return = 0
-    bets_placed = 0
-    
-    for pred, outcome, odd in zip(predictions, outcomes, odds):
-        implied_prob = 1 / odd
-        edge = pred - implied_prob
-        
-        if edge >= threshold:  # Value bet
-            total_staked += 1
-            if outcome == 1:
-                total_return += odd
-            bets_placed += 1
-    
-    if total_staked == 0:
-        return {"roi": 0.0, "profit": 0.0, "bets": 0}
-    
-    profit = total_return - total_staked
-    roi = (profit / total_staked) * 100
-    
-    return {
-        "roi": round(roi, 2),
-        "profit": round(profit, 2),
-        "bets": bets_placed
-    }
-
-def calibration_curve(predictions: List[float], outcomes: List[int], n_bins: int = 10):
-    """
-    Calcola curva di calibrazione per valutare se le probabilità sono ben calibrate.
-    Returns: (bin_centers, bin_frequencies, bin_counts)
-    """
-    predictions = np.array(predictions)
-    outcomes = np.array(outcomes)
-    
-    bins = np.linspace(0, 1, n_bins + 1)
-    bin_centers = (bins[:-1] + bins[1:]) / 2
-    bin_frequencies = []
-    bin_counts = []
-    
-    for i in range(n_bins):
-        mask = (predictions >= bins[i]) & (predictions < bins[i+1])
-        if mask.sum() > 0:
-            bin_frequencies.append(outcomes[mask].mean())
-            bin_counts.append(mask.sum())
-        else:
-            bin_frequencies.append(0)
-            bin_counts.append(0)
-    
-    return bin_centers, bin_frequencies, bin_counts
-
-# ============================================================
-#        FUNZIONE PRINCIPALE MODELLO MIGLIORATA
+#        FUNZIONE PRINCIPALE MODELLO
 # ============================================================
 
 def risultato_completo_improved(
@@ -893,7 +601,6 @@ def risultato_completo_improved(
     total: float,
     odds_over25: float = None,
     odds_under25: float = None,
-    odds_btts: float = None,
     odds_dnb_home: float = None,
     odds_dnb_away: float = None,
     xg_for_home: float = None,
@@ -904,18 +611,12 @@ def risultato_completo_improved(
     manual_boost_away: float = 0.0,
     league: str = "generic",
 ) -> Dict[str, Any]:
-    """
-    Versione migliorata del modello con:
-    - Shin normalization
-    - Stima Bayesiana dei parametri
-    - BTTS da modello bivariato
-    - Intervalli di confidenza
-    """
+    """Modello Dixon-Coles completo con Pinnacle odds."""
     
-    # 1. Normalizza quote con Shin
+    # Normalizza quote Shin
     odds_1_n, odds_x_n, odds_2_n = normalize_three_way_shin(odds_1, odds_x, odds_2)
     
-    # 2. Probabilità normalizzate
+    # Probabilità normalizzate
     p1 = 1 / odds_1_n
     px = 1 / odds_x_n
     p2 = 1 / odds_2_n
@@ -924,10 +625,10 @@ def risultato_completo_improved(
     px /= tot_p
     p2 /= tot_p
     
-    # 3. Home advantage per lega
+    # Home advantage
     ha = home_advantage_factor(league)
     
-    # 4. Stima lambda migliorata
+    # Stima lambda
     lh, la = estimate_lambda_from_market_improved(
         odds_1_n, odds_x_n, odds_2_n,
         total,
@@ -936,41 +637,39 @@ def risultato_completo_improved(
         home_advantage=ha
     )
     
-    # 5. Applica boost manuali
+    # Boost manuali
     if manual_boost_home != 0.0:
         lh *= (1.0 + manual_boost_home)
     if manual_boost_away != 0.0:
         la *= (1.0 + manual_boost_away)
     
-    # 6. Blend con xG se disponibili
+    # Blend con xG
     if all(x is not None for x in [xg_for_home, xg_against_home, xg_for_away, xg_against_away]):
         xg_h_est = (xg_for_home + xg_against_away) / 2
         xg_a_est = (xg_for_away + xg_against_home) / 2
         
-        # Pesatura: più xG affidabili → più peso
-        w_market = 0.65  # Default
+        w_market = 0.65
         if xg_for_home > 0.5 and xg_for_away > 0.5:
-            w_market = 0.60  # Più fiducia in xG
+            w_market = 0.60
         
         lh = w_market * lh + (1 - w_market) * xg_h_est
         la = w_market * la + (1 - w_market) * xg_a_est
     
-    # Constraints finali
+    # Constraints
     lh = max(0.3, min(4.0, lh))
     la = max(0.3, min(4.0, la))
     
-    # 7. Stima rho migliorata
-    rho = estimate_rho_improved(lh, la, px, odds_btts)
+    # Stima rho
+    rho = estimate_rho_improved(lh, la, px)
     
-    # 8. Matrici score
+    # Matrici
     mat_ft = build_score_matrix(lh, la, rho)
     
-    # HT ratio calibrato
     ratio_ht = 0.44 + 0.03 * (total - 2.5)
     ratio_ht = max(0.38, min(0.52, ratio_ht))
     mat_ht = build_score_matrix(lh * ratio_ht, la * ratio_ht, rho * 0.8)
     
-    # 9. Calcola tutte le probabilità
+    # Calcola probabilità
     p_home, p_draw, p_away = calc_match_result_from_matrix(mat_ft)
     over_15, under_15 = calc_over_under_from_matrix(mat_ft, 1.5)
     over_25, under_25 = calc_over_under_from_matrix(mat_ft, 2.5)
@@ -989,24 +688,24 @@ def risultato_completo_improved(
     dist_home_ht, dist_away_ht = dist_gol_da_matrice(mat_ht)
     dist_tot_ft = dist_gol_totali_from_matrix(mat_ft)
     
-    # 10. Multigol
+    # Multigol
     ranges = [(0,1),(1,3),(1,4),(1,5),(2,3),(2,4),(2,5),(3,5)]
     multigol_home = {f"{a}-{b}": prob_multigol_from_dist(dist_home_ft, a, b) for a,b in ranges}
     multigol_away = {f"{a}-{b}": prob_multigol_from_dist(dist_away_ft, a, b) for a,b in ranges}
     
-    # 11. Double Chance
+    # Double Chance
     dc = {
         "DC Casa o Pareggio": p_home + p_draw,
         "DC Trasferta o Pareggio": p_away + p_draw,
         "DC Casa o Trasferta": p_home + p_away
     }
     
-    # 12. Margini vittoria
+    # Margini
     mg = len(mat_ft) - 1
     marg2 = sum(mat_ft[h][a] for h in range(mg+1) for a in range(mg+1) if h - a >= 2)
     marg3 = sum(mat_ft[h][a] for h in range(mg+1) for a in range(mg+1) if h - a >= 3)
     
-    # 13. Combo mercati
+    # Combo
     combo_book = {
         "1 & Over 1.5": prob_esito_over_from_matrix(mat_ft, '1', 1.5),
         "1 & Over 2.5": prob_esito_over_from_matrix(mat_ft, '1', 2.5),
@@ -1026,14 +725,11 @@ def risultato_completo_improved(
         "X2 & GG": (p_away + p_draw) * btts,
     }
     
-    # 14. Top risultati
     top10 = top_results_from_matrix(mat_ft, 10, 0.005)
     
-    # 15. Entropia e metriche
     ent_home = entropia_poisson(lh)
     ent_away = entropia_poisson(la)
     
-    # 16. Confronto con odds
     odds_prob = {
         "1": 1/odds_1,
         "X": 1/odds_x,
@@ -1045,7 +741,6 @@ def risultato_completo_improved(
         "2": (p_away - odds_prob["2"]) * 100
     }
     
-    # 17. Statistiche aggiuntive
     odd_mass = sum(p for i, p in enumerate(dist_tot_ft) if i % 2 == 1)
     even_mass2 = 1 - odd_mass
     cover_0_2 = sum(dist_tot_ft[i] for i in range(0, min(3, len(dist_tot_ft))))
@@ -1092,7 +787,7 @@ def risultato_completo_improved(
     }
 
 # ============================================================
-#   CONTROLLI QUALITÀ MIGLIORATI
+#   CONTROLLI QUALITÀ
 # ============================================================
 
 def check_coerenza_quote_improved(
@@ -1101,175 +796,100 @@ def check_coerenza_quote_improved(
     odds_2: float,
     odds_over25: float,
     odds_under25: float,
-    odds_btts: float = None,
 ) -> Tuple[List[str], float]:
-    """
-    Versione migliorata con scoring quantitativo.
-    Returns: (warnings, quality_score)
-    """
+    
     warnings = []
     quality_score = 100.0
     
-    # 1. Check margine
     if odds_1 and odds_x and odds_2:
         margin = (1/odds_1 + 1/odds_x + 1/odds_2) - 1
-        if margin > 0.10:
-            warnings.append(f"Margine 1X2 alto ({margin*100:.1f}%) → quote meno competitive")
+        if margin > 0.08:
+            warnings.append(f"Margine 1X2 alto per Pinnacle ({margin*100:.1f}%) → verifica")
             quality_score -= 15
-        elif margin < 0.03:
-            warnings.append("Margine 1X2 sospettosamente basso → verificare")
-            quality_score -= 10
+        elif margin < 0.02:
+            warnings.append("Margine 1X2 molto basso → ottimo!")
+            quality_score += 5
     
-    # 2. Check coerenza favorita
     if odds_1 and odds_2:
         if odds_1 < 1.35 and odds_2 < 4.0:
-            warnings.append("Casa molto favorita ma trasferta non abbastanza alta")
+            warnings.append("Casa molto favorita ma trasferta non alta")
             quality_score -= 12
         if odds_1 > 3.5 and odds_2 > 3.5:
-            warnings.append("Match molto equilibrato/caotico → alta varianza")
+            warnings.append("Match molto equilibrato → alta varianza")
             quality_score -= 8
     
-    # 3. Check over/under
     if odds_over25 and odds_under25:
         margin_ou = (1/odds_over25 + 1/odds_under25) - 1
-        if not (0.02 < margin_ou < 0.12):
+        if not (0.02 < margin_ou < 0.08):
             warnings.append(f"Margine O/U anomalo ({margin_ou*100:.1f}%)")
             quality_score -= 10
         
-        # Coerenza con 1X2
         if odds_1 and odds_1 < 1.5 and odds_over25 > 2.3:
             warnings.append("Favorita netta ma over alto → contraddizione")
             quality_score -= 15
     
-    # 4. Check BTTS coerenza
-    if odds_btts and odds_over25:
-        p_btts = 1/odds_btts
-        p_over = 1/odds_over25
-        # BTTS e Over dovrebbero essere correlati
-        if p_btts > 0.65 and p_over < 0.40:
-            warnings.append("BTTS alto ma Over basso → incoerenza")
-            quality_score -= 12
-    
-    # 5. Liquidità implicita
-    if odds_1 and odds_x and odds_2:
-        min_odd = min(odds_1, odds_x, odds_2)
-        max_odd = max(odds_1, odds_x, odds_2)
-        if max_odd / min_odd > 15:
-            warnings.append("Range quote molto ampio → possibile bassa liquidità")
-            quality_score -= 8
-    
     quality_score = max(0, quality_score)
     return warnings, quality_score
 
-def compute_market_confidence_score(
+def compute_market_confidence_pinnacle(
     odds_1: float,
     odds_x: float,
     odds_2: float,
     odds_over25: float = None,
     odds_under25: float = None,
-    odds_dnb_home: float = None,
-    odds_dnb_away: float = None,
-    odds_btts: float = None,
-    num_bookmakers: int = 5,
 ) -> float:
     """
-    Calcola confidence score basato su:
-    - Margini
-    - Coerenza tra mercati
-    - Numero bookmakers
-    - Spread quote
-    
-    Score: 0-100 (100 = massima confidence)
+    Confidence per Pinnacle: già è sharp, quindi score alto base.
     """
-    score = 50.0  # Base
+    score = 75.0  # Base alto (Pinnacle è sharp!)
     
-    # 1. Numero bookmakers (proxy liquidità)
-    if num_bookmakers >= 10:
-        score += 20
-    elif num_bookmakers >= 7:
-        score += 15
-    elif num_bookmakers >= 5:
-        score += 10
-    elif num_bookmakers >= 3:
-        score += 5
-    else:
-        score -= 5
-    
-    # 2. Margine 1X2
+    # Margine
     if odds_1 and odds_x and odds_2:
         margin = (1/odds_1 + 1/odds_x + 1/odds_2) - 1
-        if 0.04 < margin < 0.08:
-            score += 10  # Margine ottimale
-        elif margin < 0.04:
-            score -= 5  # Troppo stretto
-        elif margin > 0.12:
-            score -= 10  # Troppo largo
+        if margin < 0.04:
+            score += 15  # Pinnacle ha margini bassissimi
+        elif margin > 0.06:
+            score -= 10
     
-    # 3. Completezza mercati
-    markets_available = sum([
-        odds_over25 is not None,
-        odds_dnb_home is not None,
-        odds_btts is not None,
-    ])
-    score += markets_available * 5
-    
-    # 4. Coerenza DNB con 1X2
-    if odds_dnb_home and odds_dnb_away and odds_1 and odds_2:
-        # DNB dovrebbe essere < 1X2 corrispondente
-        if odds_dnb_home < odds_1 and odds_dnb_away < odds_2:
-            score += 10
-        else:
-            score -= 8
-    
-    # 5. Spread probabilità (quanto è definito il favorito)
-    if odds_1 and odds_2:
-        p1 = 1/odds_1
-        p2 = 1/odds_2
-        spread = abs(p1 - p2)
-        if spread > 0.30:
-            score += 8  # Favorito chiaro
-        elif spread < 0.10:
-            score -= 5  # Molto equilibrato → più incerto
+    # Completezza
+    if odds_over25:
+        score += 10
     
     return max(0, min(100, score))
 
 # ============================================================
-#              STREAMLIT APP MIGLIORATA
+#              STREAMLIT APP
 # ============================================================
 
-st.set_page_config(page_title="⚽ Modello Scommesse PRO – Dixon-Coles Bayesiano", layout="wide")
+st.set_page_config(page_title="⚽ Modello Scommesse PRO – Pinnacle Sharp", layout="wide")
 
-st.title("⚽ Modello Scommesse Avanzato")
+st.title("⚽ Modello Scommesse con Pinnacle API")
 st.markdown("""
-### 🎯 Miglioramenti Implementati:
-- ✅ **Shin Normalization** per rimozione bias bookmaker
-- ✅ **Stima Bayesiana** dei parametri λ e ρ
-- ✅ **BTTS da modello bivariato** Poisson
-- ✅ **Outlier detection** con metodo IQR
-- ✅ **Home advantage** calibrato per lega
-- ✅ **Quality scoring** e market confidence
-- ✅ **Metriche validazione** (Brier Score, Log Loss, ROI)
+### 🎯 Pinnacle Sharp Odds (GRATIS!)
+- ✅ **Quote più accurate** del mercato (sharp book)
+- ✅ **Margini bassissimi** (2-3%)
+- ✅ **GRATIS illimitato** (no API key!)
+- ✅ **BTTS calcolato dal modello** Dixon-Coles bivariato
+- ✅ **Shin Normalization** automatica
 """)
 
 st.caption(f"🕐 Esecuzione: {datetime.now().isoformat(timespec='seconds')}")
 
-# Session state initialization
-if "soccer_leagues" not in st.session_state:
-    st.session_state.soccer_leagues = []
-if "events_for_league" not in st.session_state:
-    st.session_state.events_for_league = []
-if "selected_event_prices" not in st.session_state:
-    st.session_state.selected_event_prices = {}
-if "selected_league_key" not in st.session_state:
-    st.session_state.selected_league_key = None
-if "selected_event_id" not in st.session_state:
-    st.session_state.selected_event_id = None
+# Session state
+if "pinnacle_leagues" not in st.session_state:
+    st.session_state.pinnacle_leagues = []
+if "pinnacle_matchups" not in st.session_state:
+    st.session_state.pinnacle_matchups = []
+if "selected_matchup" not in st.session_state:
+    st.session_state.selected_matchup = None
+if "selected_odds" not in st.session_state:
+    st.session_state.selected_odds = {}
 
 # ============================================================
-#               SEZIONE STORICO E METRICHE
+#               STORICO
 # ============================================================
 
-st.subheader("📊 Storico e Performance")
+st.subheader("📊 Storico Analisi")
 
 col_hist1, col_hist2 = st.columns(2)
 
@@ -1278,38 +898,27 @@ with col_hist1:
         df_st = pd.read_csv(ARCHIVE_FILE)
         st.write(f"📁 Analisi salvate: **{len(df_st)}**")
         
-        # Calcola metriche se ci sono risultati reali
         if "esito_reale" in df_st.columns and "match_ok" in df_st.columns:
             df_complete = df_st[df_st["esito_reale"].notna() & (df_st["esito_reale"] != "")]
             
             if len(df_complete) > 0:
                 accuracy = df_complete["match_ok"].mean() * 100
-                st.metric("🎯 Accuracy Modello", f"{accuracy:.1f}%")
-                
-                # Brier Score per 1X2
-                if all(col in df_complete.columns for col in ["p_home", "p_draw", "p_away"]):
-                    predictions_home = df_complete["p_home"].values / 100
-                    outcomes_home = (df_complete["esito_reale"] == "1").astype(int).values
-                    
-                    if len(predictions_home) > 0:
-                        bs = brier_score(predictions_home.tolist(), outcomes_home.tolist())
-                        st.metric("📈 Brier Score (Home)", f"{bs:.3f}", 
-                                 help="0 = perfetto, 1 = pessimo")
+                st.metric("🎯 Accuracy", f"{accuracy:.1f}%")
         
         st.dataframe(df_st.tail(15), height=300)
     else:
-        st.info("Nessuno storico ancora")
+        st.info("Nessuno storico")
 
 with col_hist2:
-    st.markdown("### 🗑️ Gestione Storico")
+    st.markdown("### 🗑️ Gestione")
     if os.path.exists(ARCHIVE_FILE):
         df_del = pd.read_csv(ARCHIVE_FILE)
         if not df_del.empty:
             df_del["label"] = df_del.apply(
-                lambda r: f"{r.get('timestamp','?')} – {r.get('match','(no name)')}",
+                lambda r: f"{r.get('timestamp','?')} – {r.get('match','?')}",
                 axis=1,
             )
-            to_delete = st.selectbox("Elimina riga:", df_del["label"].tolist())
+            to_delete = st.selectbox("Elimina:", df_del["label"].tolist())
             if st.button("🗑️ Elimina"):
                 df_new = df_del[df_del["label"] != to_delete].drop(columns=["label"])
                 df_new.to_csv(ARCHIVE_FILE, index=False)
@@ -1319,81 +928,89 @@ with col_hist2:
 st.markdown("---")
 
 # ============================================================
-#        CARICAMENTO PARTITA DA API
+#        CARICAMENTO DA PINNACLE
 # ============================================================
 
-st.subheader("🔍 Carica Partita da The Odds API")
+st.subheader("🔍 Carica Partita da Pinnacle (Sharp & Gratis)")
 
-col_load1, col_load2 = st.columns([1, 2])
+if st.button("1️⃣ Carica Leghe Pinnacle"):
+    with st.spinner("Caricamento leghe..."):
+        leagues = pinnacle_get_leagues(sport_id=29)
+        st.session_state.pinnacle_leagues = leagues
+        if leagues:
+            st.success(f"✅ {len(leagues)} leghe caricate")
+        else:
+            st.error("Errore caricamento leghe")
 
-with col_load1:
-    if st.button("1️⃣ Carica Leghe"):
-        st.session_state.soccer_leagues = oddsapi_get_soccer_leagues()
-        if st.session_state.soccer_leagues:
-            st.success(f"✅ {len(st.session_state.soccer_leagues)} leghe")
-
-if st.session_state.soccer_leagues:
-    league_names = [f"{l['title']} ({l['key']})" for l in st.session_state.soccer_leagues]
-    selected_league_label = st.selectbox("2️⃣ Seleziona Lega", league_names)
-    selected_league_key = selected_league_label.split("(")[-1].replace(")", "").strip()
-
+if st.session_state.pinnacle_leagues:
+    league_options = {f"{l['name']} (ID: {l['id']})": l['id'] for l in st.session_state.pinnacle_leagues}
+    selected_league_name = st.selectbox("2️⃣ Seleziona Lega", list(league_options.keys()))
+    selected_league_id = league_options[selected_league_name]
+    
     if st.button("3️⃣ Carica Partite"):
-        st.session_state.events_for_league = oddsapi_get_events_for_league(selected_league_key)
-        st.session_state.selected_league_key = selected_league_key
-        st.success(f"✅ {len(st.session_state.events_for_league)} partite")
-
-    if st.session_state.events_for_league:
-        match_labels = []
-        for ev in st.session_state.events_for_league:
-            home = ev.get("home_team")
-            away = ev.get("away_team")
-            start = ev.get("commence_time", "")[:16].replace("T", " ")
-            match_labels.append(f"{home} vs {away} – {start}")
-
-        selected_match_label = st.selectbox("4️⃣ Seleziona Partita", match_labels)
-        idx = match_labels.index(selected_match_label)
-        event = st.session_state.events_for_league[idx]
-
-        event_id = event.get("id") or event.get("event_id") or event.get("key")
-        st.session_state.selected_event_id = event_id
-
-        prices = oddsapi_extract_prices_improved(event)
-        st.session_state.selected_event_prices = prices
+        with st.spinner("Caricamento partite..."):
+            matchups = pinnacle_get_matchups([selected_league_id])
+            st.session_state.pinnacle_matchups = matchups
+            if matchups:
+                st.success(f"✅ {len(matchups)} partite trovate")
+            else:
+                st.warning("Nessuna partita con quote disponibile")
+    
+    if st.session_state.pinnacle_matchups:
+        matchup_labels = []
+        for m in st.session_state.pinnacle_matchups:
+            participants = m.get("participants", [])
+            if len(participants) >= 2:
+                home = participants[0].get("name", "Home")
+                away = participants[1].get("name", "Away")
+                start = m.get("starts", "")[:16].replace("T", " ")
+                matchup_labels.append(f"{home} vs {away} – {start}")
         
-        num_bookmakers = len(event.get("bookmakers", []))
-        st.info(f"📊 Quote estratte da **{num_bookmakers}** bookmakers con Shin normalization")
-        st.success("✅ Quote precaricate")
-
-        if st.button("🔄 Refresh Quote"):
-            ref_ev = oddsapi_refresh_event(
-                st.session_state.selected_league_key,
-                st.session_state.selected_event_id
-            )
-            if ref_ev:
-                new_prices = oddsapi_extract_prices_improved(ref_ev)
-                st.session_state.selected_event_prices = new_prices
-                st.success("✅ Quote aggiornate")
-                st.rerun()
+        if matchup_labels:
+            selected_match_label = st.selectbox("4️⃣ Seleziona Partita", matchup_labels)
+            idx = matchup_labels.index(selected_match_label)
+            matchup = st.session_state.pinnacle_matchups[idx]
+            
+            st.session_state.selected_matchup = matchup
+            
+            matchup_id = matchup.get("id")
+            if matchup_id:
+                odds_data = pinnacle_get_odds(matchup_id)
+                prices = pinnacle_extract_prices(matchup, odds_data)
+                st.session_state.selected_odds = prices
+                
+                st.success("✅ Quote Pinnacle caricate (Sharp & Shin normalized)")
+                
+                # Mostra info
+                margin_1x2 = 0
+                if prices.get("odds_1") and prices.get("odds_x") and prices.get("odds_2"):
+                    margin_1x2 = (1/prices["odds_1"] + 1/prices["odds_x"] + 1/prices["odds_2"] - 1) * 100
+                
+                col_info1, col_info2 = st.columns(2)
+                with col_info1:
+                    st.metric("📊 Margine 1X2", f"{margin_1x2:.2f}%")
+                with col_info2:
+                    st.metric("🏆 Bookmaker", "Pinnacle (Sharp)")
 
 st.markdown("---")
 
 # ============================================================
-#        INPUT DATI PARTITA
+#        INPUT DATI
 # ============================================================
 
 st.subheader("📝 Dati Partita")
 
-api_prices = st.session_state.get("selected_event_prices", {})
+prices = st.session_state.get("selected_odds", {})
 
-col_match1, col_match2 = st.columns(2)
+col_m1, col_m2 = st.columns(2)
 
-with col_match1:
-    default_match_name = ""
-    if api_prices.get("home"):
-        default_match_name = f"{api_prices['home']} vs {api_prices['away']}"
-    match_name = st.text_input("Nome Partita", value=default_match_name)
+with col_m1:
+    default_name = ""
+    if prices.get("home"):
+        default_name = f"{prices['home']} vs {prices['away']}"
+    match_name = st.text_input("Nome Partita", value=default_name)
 
-with col_match2:
+with col_m2:
     league_type = st.selectbox("Lega", [
         "generic",
         "premier_league",
@@ -1401,56 +1018,53 @@ with col_match2:
         "serie_a",
         "bundesliga",
         "ligue_1",
+        "champions_league",
+        "europa_league",
     ])
 
-st.subheader("💰 Quote Principali")
+st.subheader("💰 Quote Principali (Pinnacle)")
 
 col_q1, col_q2, col_q3 = st.columns(3)
 
 with col_q1:
     odds_1 = st.number_input("Quota 1 (Casa)", 
-                             value=float(api_prices.get("odds_1") or 2.00), 
+                             value=float(prices.get("odds_1") or 2.00), 
                              step=0.01)
     odds_over25 = st.number_input("Quota Over 2.5", 
-                                  value=float(api_prices.get("odds_over25") or 0.0), 
+                                  value=float(prices.get("odds_over25") or 0.0), 
                                   step=0.01)
 
 with col_q2:
     odds_x = st.number_input("Quota X (Pareggio)", 
-                            value=float(api_prices.get("odds_x") or 3.50), 
+                            value=float(prices.get("odds_x") or 3.50), 
                             step=0.01)
     odds_under25 = st.number_input("Quota Under 2.5", 
-                                   value=float(api_prices.get("odds_under25") or 0.0), 
+                                   value=float(prices.get("odds_under25") or 0.0), 
                                    step=0.01)
 
 with col_q3:
     odds_2 = st.number_input("Quota 2 (Trasferta)", 
-                            value=float(api_prices.get("odds_2") or 3.80), 
+                            value=float(prices.get("odds_2") or 3.80), 
                             step=0.01)
-    total_line = st.number_input("Linea Total", value=2.5, step=0.25)
+    total_line = st.number_input("Linea Total", 
+                                value=float(prices.get("total_line", 2.5)), 
+                                step=0.25)
+
+st.info("ℹ️ BTTS viene calcolato automaticamente dal modello Dixon-Coles bivariato (più accurato delle quote!)")
 
 st.subheader("🎲 Quote Speciali")
 
-col_s1, col_s2, col_s3 = st.columns(3)
+col_s1, col_s2 = st.columns(2)
 
 with col_s1:
     odds_dnb_home = st.number_input("DNB Casa", 
-                                    value=float(api_prices.get("odds_dnb_home") or 0.0), 
+                                    value=float(prices.get("odds_dnb_home") or 0.0), 
                                     step=0.01)
 
 with col_s2:
     odds_dnb_away = st.number_input("DNB Trasferta", 
-                                    value=float(api_prices.get("odds_dnb_away") or 0.0), 
+                                    value=float(prices.get("odds_dnb_away") or 0.0), 
                                     step=0.01)
-
-with col_s3:
-    odds_btts = st.number_input("BTTS Sì (API)", 
-                               value=float(api_prices.get("odds_btts") or 0.0), 
-                               step=0.01)
-
-btts_manual = st.number_input("BTTS Sì (Manuale - es. Bet365)", 
-                              value=0.0, step=0.01,
-                              help="Inserisci qui quota BTTS da altro bookmaker se vuoi override")
 
 st.subheader("📊 xG e Boost (Opzionali)")
 
@@ -1474,28 +1088,22 @@ st.markdown("---")
 #              CALCOLO MODELLO
 # ============================================================
 
-if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
-    with st.spinner("Elaborazione con modello Dixon-Coles Bayesiano..."):
+if st.button("🎯 CALCOLA MODELLO (Pinnacle Sharp)", type="primary"):
+    with st.spinner("Elaborazione con modello Dixon-Coles Bayesiano + Pinnacle Sharp odds..."):
         
-        # 1. Check quality
+        # Check quality
         warnings, quality_score = check_coerenza_quote_improved(
             odds_1, odds_x, odds_2,
-            odds_over25, odds_under25,
-            odds_btts
+            odds_over25, odds_under25
         )
         
-        # 2. Market confidence
-        num_books = len(st.session_state.get("events_for_league", [{}])[0].get("bookmakers", []))
-        market_conf = compute_market_confidence_score(
+        # Market confidence
+        market_conf = compute_market_confidence_pinnacle(
             odds_1, odds_x, odds_2,
-            odds_over25, odds_under25,
-            odds_dnb_home if odds_dnb_home > 0 else None,
-            odds_dnb_away if odds_dnb_away > 0 else None,
-            odds_btts if odds_btts > 0 else None,
-            num_books
+            odds_over25, odds_under25
         )
         
-        # 3. Calcolo modello
+        # Calcolo modello
         xg_args = {}
         if has_xg:
             xg_args = {
@@ -1512,7 +1120,6 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             total=total_line,
             odds_over25=odds_over25 if odds_over25 > 0 else None,
             odds_under25=odds_under25 if odds_under25 > 0 else None,
-            odds_btts=odds_btts if odds_btts > 0 else None,
             odds_dnb_home=odds_dnb_home if odds_dnb_home > 0 else None,
             odds_dnb_away=odds_dnb_away if odds_dnb_away > 0 else None,
             manual_boost_home=boost_home,
@@ -1521,28 +1128,20 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             **xg_args
         )
         
-        # 4. BTTS finale
+        # BTTS dal modello
         btts_prob_model = ris["btts"]
-        final_btts_odds, btts_source = blend_btts_sources_improved(
-            odds_btts_api=odds_btts if odds_btts > 0 else None,
-            btts_from_model=btts_prob_model,
-            manual_btts=btts_manual if btts_manual > 1.01 else None,
-            market_confidence=market_conf / 100
-        )
+        btts_odds_model = 1 / btts_prob_model if btts_prob_model > 0 else 2.0
         
-        # ========================================
-        #          VISUALIZZAZIONE RISULTATI
-        # ========================================
+        st.success("✅ Calcolo completato con Pinnacle Sharp Odds!")
         
-        st.success("✅ Calcolo completato!")
-        
-        # Metriche principali
+        # Metriche
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         
         with col_m1:
             st.metric("🏆 Quality Score", f"{quality_score:.0f}/100")
         with col_m2:
-            st.metric("📊 Market Confidence", f"{market_conf:.0f}/100")
+            st.metric("📊 Confidence", f"{market_conf:.0f}/100", 
+                     help="Pinnacle è già sharp → confidence alta")
         with col_m3:
             st.metric("🏠 λ Casa", f"{ris['lambda_home']:.2f}")
         with col_m4:
@@ -1550,12 +1149,12 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
         
         # Warnings
         if warnings:
-            with st.expander("⚠️ Avvisi Quality Check", expanded=True):
+            with st.expander("⚠️ Avvisi", expanded=True):
                 for w in warnings:
                     st.warning(w)
         
         # Value Finder
-        st.subheader("💎 Value Finder")
+        st.subheader("💎 Value Finder vs Pinnacle Sharp")
         
         value_rows = []
         
@@ -1565,66 +1164,53 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             ("X (Pareggio)", ris["p_draw"], odds_x),
             ("2 (Trasferta)", ris["p_away"], odds_2),
         ]:
-            p_book = 1 / odd
-            edge = (p_mod - p_book) * 100
+            p_pinnacle = 1 / odd
+            edge = (p_mod - p_pinnacle) * 100
             ev = (p_mod * odd - 1) * 100
             
             value_rows.append({
                 "Mercato": "1X2",
                 "Esito": lab,
                 "Prob Modello %": f"{p_mod*100:.1f}",
-                "Prob Quota %": f"{p_book*100:.1f}",
+                "Prob Pinnacle %": f"{p_pinnacle*100:.1f}",
                 "Edge %": f"{edge:+.1f}",
                 "EV %": f"{ev:+.1f}",
-                "Value": "✅" if edge >= 3 else ("⚠️" if edge >= 1 else "")
+                "Value": "✅" if edge >= 2 else ("⚠️" if edge >= 0.5 else "")
             })
         
         # Over/Under
         if odds_over25 and odds_over25 > 0:
             p_mod = ris["over_25"]
-            p_book = 1 / odds_over25
-            edge = (p_mod - p_book) * 100
+            p_pinnacle = 1 / odds_over25
+            edge = (p_mod - p_pinnacle) * 100
             ev = (p_mod * odds_over25 - 1) * 100
             
             value_rows.append({
                 "Mercato": "Over/Under 2.5",
                 "Esito": "Over 2.5",
                 "Prob Modello %": f"{p_mod*100:.1f}",
-                "Prob Quota %": f"{p_book*100:.1f}",
+                "Prob Pinnacle %": f"{p_pinnacle*100:.1f}",
                 "Edge %": f"{edge:+.1f}",
                 "EV %": f"{ev:+.1f}",
-                "Value": "✅" if edge >= 3 else ("⚠️" if edge >= 1 else "")
+                "Value": "✅" if edge >= 2 else ("⚠️" if edge >= 0.5 else "")
             })
         
-        # BTTS
-        if final_btts_odds > 1:
-            p_mod = btts_prob_model
-            p_book = 1 / final_btts_odds
-            edge = (p_mod - p_book) * 100
-            ev = (p_mod * final_btts_odds - 1) * 100
-            
-            value_rows.append({
-                "Mercato": "BTTS",
-                "Esito": f"Sì ({btts_source})",
-                "Prob Modello %": f"{p_mod*100:.1f}",
-                "Prob Quota %": f"{p_book*100:.1f}",
-                "Edge %": f"{edge:+.1f}",
-                "EV %": f"{ev:+.1f}",
-                "Value": "✅" if edge >= 3 else ("⚠️" if edge >= 1 else "")
-            })
+        # BTTS (dal modello)
+        st.info(f"📊 BTTS calcolato dal modello: {btts_prob_model*100:.1f}% (quota teorica: {btts_odds_model:.2f})")
         
         df_value = pd.DataFrame(value_rows)
         
-        # Highligh value bets
         df_value_high = df_value[df_value["Value"].str.contains("✅", na=False)]
         
         if not df_value_high.empty:
-            st.success(f"🎯 {len(df_value_high)} value bet(s) identificate!")
+            st.success(f"🎯 {len(df_value_high)} value bet(s) vs Pinnacle Sharp!")
             st.dataframe(df_value_high, use_container_width=True)
+        else:
+            st.info("ℹ️ Nessun strong value trovato (normale con Pinnacle - sono sharp!)")
         
         st.dataframe(df_value, use_container_width=True)
         
-        # Dettagli completi
+        # Dettagli
         with st.expander("📈 Probabilità Dettagliate"):
             col_d1, col_d2, col_d3 = st.columns(3)
             
@@ -1649,17 +1235,16 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                 st.write(f"BTTS: {ris['btts']*100:.1f}%")
                 st.write(f"GG + Over 2.5: {ris['gg_over25']*100:.1f}%")
                 st.write(f"Clean Sheet Casa: {ris['cs_home']*100:.1f}%")
-                st.write(f"Clean Sheet Trasferta: {ris['cs_away']*100:.1f}%")
             
             with col_d3:
                 st.markdown("**Pari/Dispari**")
                 st.write(f"Pari FT: {ris['even_ft']*100:.1f}%")
                 st.write(f"Dispari FT: {ris['odd_ft']*100:.1f}%")
                 
-                st.markdown("**Statistiche**")
-                st.write(f"ρ (correlazione): {ris['rho']:.3f}")
-                st.write(f"Entropia Casa: {ris['ent_home']:.2f}")
-                st.write(f"Entropia Trasferta: {ris['ent_away']:.2f}")
+                st.markdown("**Modello**")
+                st.write(f"ρ: {ris['rho']:.3f}")
+                st.write(f"Entropia H: {ris['ent_home']:.2f}")
+                st.write(f"Entropia A: {ris['ent_away']:.2f}")
         
         with st.expander("🎯 Top 10 Risultati Esatti"):
             for h, a, p in ris["top10"]:
@@ -1677,12 +1262,12 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "match": match_name,
             "league": league_type,
+            "bookmaker": "Pinnacle",
             "quality_score": quality_score,
             "market_confidence": market_conf,
             "odds_1": odds_1,
             "odds_x": odds_x,
             "odds_2": odds_2,
-            "odds_btts": final_btts_odds,
             "lambda_home": round(ris["lambda_home"], 3),
             "lambda_away": round(ris["lambda_away"], 3),
             "rho": round(ris["rho"], 3),
@@ -1705,23 +1290,23 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                 df_new.to_csv(ARCHIVE_FILE, index=False)
             else:
                 pd.DataFrame([row]).to_csv(ARCHIVE_FILE, index=False)
-            st.success("💾 Analisi salvata nello storico")
+            st.success("💾 Analisi salvata")
         except Exception as e:
             st.warning(f"Errore salvataggio: {e}")
 
 st.markdown("---")
 
 # ============================================================
-#        AGGIORNAMENTO RISULTATI REALI
+#        AGGIORNAMENTO RISULTATI
 # ============================================================
 
-st.subheader("🔄 Aggiorna Risultati Reali")
+st.subheader("🔄 Aggiorna Risultati Reali (API-Football)")
 
 if st.button("Recupera risultati ultimi 3 giorni"):
     if not os.path.exists(ARCHIVE_FILE):
-        st.warning("Nessuno storico da aggiornare")
+        st.warning("Nessuno storico")
     else:
-        with st.spinner("Recupero risultati da API-Football..."):
+        with st.spinner("Recupero risultati..."):
             df = pd.read_csv(ARCHIVE_FILE)
             today = date.today()
             giorni = [(today - timedelta(days=i)).isoformat() for i in range(0, 4)]
@@ -1745,12 +1330,7 @@ if st.button("Recupera risultati ultimi 3 giorni"):
                 if key_row in fixtures_map and (pd.isna(row.get("risultato_reale")) or row.get("risultato_reale") == ""):
                     gh, ga = fixtures_map[key_row]
                     
-                    if gh > ga:
-                        esito = "1"
-                    elif gh == ga:
-                        esito = "X"
-                    else:
-                        esito = "2"
+                    esito = "1" if gh > ga else ("X" if gh == ga else "2")
                     
                     df.at[idx, "risultato_reale"] = f"{gh}-{ga}"
                     df.at[idx, "esito_reale"] = esito
@@ -1763,7 +1343,8 @@ if st.button("Recupera risultati ultimi 3 giorni"):
             
             df.to_csv(ARCHIVE_FILE, index=False)
             st.success(f"✅ Aggiornate {updated} partite")
-            st.rerun()
+            if updated > 0:
+                st.rerun()
 
 st.markdown("---")
-st.caption("Developed with ❤️ | Dixon-Coles Bayesian Model | Shin Normalization | IQR Outlier Detection")
+st.caption("🏆 Powered by Pinnacle Sharp Odds (FREE) | Dixon-Coles Bayesian Model | Shin Normalization")
