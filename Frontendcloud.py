@@ -5161,21 +5161,41 @@ def apply_stadium_adjustments(
     # da location se disponibile (es. città ad alta quota)
     
     # Aggiustamento capacità: stadio grande → più atmosfera → più gol casa
-    if capacity:
-        # Stadio > 50k → +3% gol casa
-        if capacity > 50000:
-            capacity_factor = 1.03
-        # Stadio > 30k → +2% gol casa
-        elif capacity > 30000:
-            capacity_factor = 1.02
-        # Stadio < 15k → -1% gol casa (meno atmosfera)
-        elif capacity < 15000:
-            capacity_factor = 0.99
-        else:
-            capacity_factor = 1.0
-        
-        # Applica solo a lambda_h (vantaggio casa)
-        lambda_h *= capacity_factor
+    # Converti capacity in numero se disponibile (può essere stringa, int, float, o None)
+    if capacity is not None:
+        try:
+            # Prova a convertire in int (rimuove spazi e caratteri non numerici se stringa)
+            if isinstance(capacity, str):
+                # Rimuovi spazi e caratteri non numerici
+                capacity_str = ''.join(filter(str.isdigit, capacity))
+                if capacity_str:
+                    capacity_num = int(capacity_str)
+                else:
+                    capacity_num = None
+            elif isinstance(capacity, (int, float)):
+                capacity_num = int(capacity)
+            else:
+                capacity_num = None
+            
+            # Applica aggiustamenti solo se abbiamo un numero valido
+            if capacity_num is not None and capacity_num > 0:
+                # Stadio > 50k → +3% gol casa
+                if capacity_num > 50000:
+                    capacity_factor = 1.03
+                # Stadio > 30k → +2% gol casa
+                elif capacity_num > 30000:
+                    capacity_factor = 1.02
+                # Stadio < 15k → -1% gol casa (meno atmosfera)
+                elif capacity_num < 15000:
+                    capacity_factor = 0.99
+                else:
+                    capacity_factor = 1.0
+                
+                # Applica solo a lambda_h (vantaggio casa)
+                lambda_h *= capacity_factor
+        except (ValueError, TypeError):
+            # Se la conversione fallisce, ignora l'aggiustamento capacità
+            pass
     
     # Aggiustamento altitudine (se disponibile da location)
     # Nota: implementazione base, può essere estesa con mappa città → altitudine
@@ -7056,7 +7076,22 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                 st.markdown(f"**Nome**: {thesportsdb_info.get('stadium', 'N/A')}")
                 capacity = thesportsdb_info.get('stadium_capacity')
                 if capacity:
-                    st.markdown(f"**Capacità**: {capacity:,} spettatori")
+                    # Converti capacity in numero se necessario (può essere stringa)
+                    try:
+                        if isinstance(capacity, str):
+                            capacity_str = ''.join(filter(str.isdigit, capacity))
+                            capacity_num = int(capacity_str) if capacity_str else None
+                        elif isinstance(capacity, (int, float)):
+                            capacity_num = int(capacity)
+                        else:
+                            capacity_num = None
+                        
+                        if capacity_num is not None:
+                            st.markdown(f"**Capacità**: {capacity_num:,} spettatori")
+                        else:
+                            st.markdown(f"**Capacità**: {capacity} spettatori")
+                    except (ValueError, TypeError):
+                        st.markdown(f"**Capacità**: {capacity} spettatori")
                 location = thesportsdb_info.get('stadium_location')
                 if location:
                     st.markdown(f"**Ubicazione**: {location}")
