@@ -5305,7 +5305,7 @@ def send_telegram_message(
     bot_token: str = None,
     chat_id: str = None,
     parse_mode: str = "HTML",
-) -> bool:
+) -> Dict[str, Any]:
     """
     Invia messaggio a Telegram tramite Bot API.
     
@@ -5316,15 +5316,30 @@ def send_telegram_message(
         parse_mode: "HTML" o "Markdown"
     
     Returns:
-        True se invio riuscito, False altrimenti
+        Dict con:
+            - success: bool (True se invio riuscito)
+            - error_message: str (messaggio di errore dettagliato se fallito)
+            - error_type: str (tipo di errore: "no_token", "no_chat_id", "invalid_token", "invalid_chat_id", "timeout", "other")
     """
     if not bot_token:
         bot_token = TELEGRAM_BOT_TOKEN
     if not chat_id:
         chat_id = TELEGRAM_CHAT_ID
     
-    if not bot_token or not chat_id:
-        return False
+    # Verifica token e chat ID
+    if not bot_token or bot_token.strip() == "":
+        return {
+            "success": False,
+            "error_message": "Bot Token non configurato. Configura TELEGRAM_BOT_TOKEN o inserisci il token nell'interfaccia.",
+            "error_type": "no_token"
+        }
+    
+    if not chat_id or chat_id.strip() == "":
+        return {
+            "success": False,
+            "error_message": "Chat ID non configurato. Configura TELEGRAM_CHAT_ID o inserisci il Chat ID nell'interfaccia.",
+            "error_type": "no_chat_id"
+        }
     
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     
@@ -5336,12 +5351,81 @@ def send_telegram_message(
     }
     
     try:
-        response = requests.post(url, json=payload, timeout=5)
+        response = requests.post(url, json=payload, timeout=10)  # Aumentato timeout a 10s
+        
+        # Controlla status code specifici
+        if response.status_code == 401:
+            return {
+                "success": False,
+                "error_message": "Token non valido o scaduto. Verifica che il Bot Token sia corretto.",
+                "error_type": "invalid_token"
+            }
+        elif response.status_code == 400:
+            # Prova a estrarre dettagli dall'errore
+            try:
+                error_data = response.json()
+                error_desc = error_data.get("description", "Chat ID non valido")
+                if "chat not found" in error_desc.lower():
+                    return {
+                        "success": False,
+                        "error_message": f"Chat ID non valido o bot non autorizzato. Verifica il Chat ID e assicurati di aver avviato una conversazione con il bot. Errore: {error_desc}",
+                        "error_type": "invalid_chat_id"
+                    }
+            except:
+                pass
+            return {
+                "success": False,
+                "error_message": "Chat ID non valido o formato errato. Verifica che il Chat ID sia corretto.",
+                "error_type": "invalid_chat_id"
+            }
+        elif response.status_code == 429:
+            # Rate limit
+            return {
+                "success": False,
+                "error_message": "Rate limit raggiunto. Troppi messaggi inviati. Attendi qualche minuto.",
+                "error_type": "rate_limit"
+            }
+        
         response.raise_for_status()
-        return True
+        return {
+            "success": True,
+            "error_message": None,
+            "error_type": None
+        }
+        
+    except requests.exceptions.Timeout:
+        return {
+            "success": False,
+            "error_message": "Timeout nella richiesta a Telegram. Verifica la connessione internet.",
+            "error_type": "timeout"
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "success": False,
+            "error_message": "Errore di connessione a Telegram. Verifica la connessione internet.",
+            "error_type": "connection_error"
+        }
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code if hasattr(e, 'response') and e.response else None
+        return {
+            "success": False,
+            "error_message": f"Errore HTTP {status_code} da Telegram API. Verifica token e chat ID.",
+            "error_type": "http_error"
+        }
     except requests.exceptions.RequestException as e:
         logger.error(f"Errore invio Telegram: {e}")
-        return False
+        return {
+            "success": False,
+            "error_message": f"Errore nella richiesta a Telegram: {str(e)}",
+            "error_type": "other"
+        }
+    except Exception as e:
+        logger.error(f"Errore imprevisto invio Telegram: {e}")
+        return {
+            "success": False,
+            "error_message": f"Errore imprevisto: {str(e)}",
+            "error_type": "other"
+        }
 
 def send_telegram_photo(
     photo_path: str,
@@ -7604,18 +7688,37 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                 )
                 
                 # Invia messaggio
-                success = send_telegram_message(
+                result = send_telegram_message(
                     message=telegram_message,
                     bot_token=telegram_token,
                     chat_id=telegram_chat_id
                 )
                 
-                if success:
+                if result.get("success"):
                     st.success("📤 Analisi inviata su Telegram!")
                 else:
-                    st.warning("⚠️ Errore invio Telegram (controlla token e chat ID)")
+                    # Mostra messaggio di errore dettagliato
+                    error_msg = result.get("error_message", "Errore sconosciuto")
+                    error_type = result.get("error_type", "other")
+                    
+                    # Messaggi specifici per tipo di errore
+                    if error_type == "no_token":
+                        st.error(f"❌ **Token Bot non configurato**\n\n{error_msg}\n\nPer configurare:\n1. Crea un bot su [@BotFather](https://t.me/BotFather)\n2. Invia `/newbot` e segui le istruzioni\n3. Copia il Token fornito")
+                    elif error_type == "no_chat_id":
+                        st.error(f"❌ **Chat ID non configurato**\n\n{error_msg}\n\nPer ottenere il Chat ID:\n1. Scrivi a [@userinfobot](https://t.me/userinfobot)\n2. Copia il tuo ID numerico")
+                    elif error_type == "invalid_token":
+                        st.error(f"❌ **Token non valido**\n\n{error_msg}\n\nVerifica che il token sia corretto e che il bot sia ancora attivo.")
+                    elif error_type == "invalid_chat_id":
+                        st.error(f"❌ **Chat ID non valido**\n\n{error_msg}\n\nAssicurati di:\n1. Aver avviato una conversazione con il bot\n2. Aver inviato almeno un messaggio al bot\n3. Che il Chat ID sia corretto")
+                    elif error_type == "rate_limit":
+                        st.warning(f"⏱️ **Rate Limit**\n\n{error_msg}")
+                    elif error_type == "timeout" or error_type == "connection_error":
+                        st.warning(f"🌐 **Problema di connessione**\n\n{error_msg}")
+                    else:
+                        st.warning(f"⚠️ **Errore invio Telegram**\n\n{error_msg}")
             except Exception as e:
-                st.warning(f"⚠️ Errore invio Telegram: {e}")
+                logger.error(f"Errore imprevisto in invio Telegram: {e}")
+                st.warning(f"⚠️ Errore imprevisto invio Telegram: {e}")
                 # Non bloccare il flusso se Telegram fallisce
 
 st.markdown("---")
