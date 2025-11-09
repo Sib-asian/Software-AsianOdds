@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import os
 import requests
+import json
 import streamlit as st
 from scipy import optimize
 from scipy.stats import poisson
@@ -31,6 +32,13 @@ API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 
 ARCHIVE_FILE = "storico_analisi.csv"
 VALIDATION_FILE = "validation_metrics.csv"
+PORTFOLIO_FILE = "portfolio_scommesse.csv"
+ODDS_HISTORY_FILE = "odds_history.csv"  # Storico movimenti quote
+ALERTS_FILE = "alerts.json"  # Notifiche e alert
+
+# Cache per API calls (evita rate limiting)
+API_CACHE = {}
+CACHE_EXPIRY = 300  # 5 minuti
 
 # ============================================================
 #             UTILS
@@ -491,6 +499,307 @@ def apifootball_get_fixtures_by_date(d: str) -> list:
     except Exception as e:
         print("errore api-football:", e)
         return []
+
+# ============================================================
+#   API-FOOTBALL: RECUPERO DATI AVANZATI
+# ============================================================
+
+def apifootball_search_team(team_name: str, league_id: int = None) -> Dict[str, Any]:
+    """
+    Cerca team ID da API-Football usando nome squadra.
+    """
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    params = {"search": team_name}
+    if league_id:
+        params["league"] = league_id
+    
+    try:
+        r = requests.get(f"{API_FOOTBALL_BASE}/teams", headers=headers, params=params, timeout=8)
+        r.raise_for_status()
+        data = r.json()
+        teams = data.get("response", [])
+        if teams:
+            return teams[0]  # Ritorna primo match
+        return {}
+    except Exception as e:
+        print(f"Errore ricerca team {team_name}:", e)
+        return {}
+
+def apifootball_get_team_fixtures(team_id: int, last: int = 10, season: int = None) -> List[Dict[str, Any]]:
+    """
+    Recupera ultime partite di una squadra.
+    """
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    params = {"team": team_id, "last": last}
+    if season:
+        params["season"] = season
+    
+    try:
+        r = requests.get(f"{API_FOOTBALL_BASE}/fixtures", headers=headers, params=params, timeout=8)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("response", [])
+    except Exception as e:
+        print(f"Errore fixtures team {team_id}:", e)
+        return []
+
+def apifootball_get_standings(league_id: int, season: int) -> Dict[str, Any]:
+    """
+    Recupera classifica di una lega.
+    """
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    params = {"league": league_id, "season": season}
+    
+    try:
+        r = requests.get(f"{API_FOOTBALL_BASE}/standings", headers=headers, params=params, timeout=8)
+        r.raise_for_status()
+        data = r.json()
+        standings = data.get("response", [])
+        if standings and len(standings) > 0:
+            return standings[0].get("league", {}).get("standings", [])
+        return []
+    except Exception as e:
+        print(f"Errore standings league {league_id}:", e)
+        return []
+
+def get_league_id_from_name(league_name: str) -> int:
+    """
+    Mappa nome lega a ID API-Football.
+    """
+    league_map = {
+        "premier_league": 39,  # Premier League
+        "serie_a": 135,  # Serie A
+        "la_liga": 140,  # La Liga
+        "bundesliga": 78,  # Bundesliga
+        "ligue_1": 61,  # Ligue 1
+    }
+    return league_map.get(league_name, 0)
+
+def get_current_season() -> int:
+    """
+    Ritorna anno stagione corrente (es. 2024 per 2023-2024).
+    """
+    now = datetime.now()
+    # Stagione inizia agosto, quindi se siamo dopo agosto usiamo anno corrente
+    if now.month >= 8:
+        return now.year
+    else:
+        return now.year - 1
+
+def calculate_days_since_last_match(team_id: int, match_date: str) -> int:
+    """
+    Calcola giorni dall'ultima partita di una squadra.
+    """
+    if not team_id or not match_date:
+        return None
+    
+    try:
+        # Recupera ultime partite
+        fixtures = apifootball_get_team_fixtures(team_id, last=5)
+        if not fixtures:
+            return None
+        
+        # Trova ultima partita giocata (status FT, AET, PEN)
+        last_match_date = None
+        for fixture in fixtures:
+            status = fixture.get("fixture", {}).get("status", {}).get("short", "")
+            if status in ["FT", "AET", "PEN"]:
+                date_str = fixture.get("fixture", {}).get("date", "")
+                if date_str:
+                    last_match_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                    break
+        
+        if not last_match_date:
+            return None
+        
+        # Calcola differenza con data partita corrente
+        match_dt = datetime.fromisoformat(match_date.replace("Z", "+00:00"))
+        delta = (match_dt - last_match_date).days
+        
+        return max(0, delta)  # Non può essere negativo
+    except Exception as e:
+        print(f"Errore calcolo giorni ultima partita: {e}")
+        return None
+
+def count_matches_last_30_days(team_id: int, match_date: str) -> int:
+    """
+    Conta partite giocate negli ultimi 30 giorni.
+    """
+    if not team_id or not match_date:
+        return None
+    
+    try:
+        fixtures = apifootball_get_team_fixtures(team_id, last=15)
+        if not fixtures:
+            return None
+        
+        match_dt = datetime.fromisoformat(match_date.replace("Z", "+00:00"))
+        cutoff_date = match_dt - timedelta(days=30)
+        
+        count = 0
+        for fixture in fixtures:
+            status = fixture.get("fixture", {}).get("status", {}).get("short", "")
+            if status in ["FT", "AET", "PEN"]:
+                date_str = fixture.get("fixture", {}).get("date", "")
+                if date_str:
+                    fixture_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                    if cutoff_date <= fixture_date < match_dt:
+                        count += 1
+        
+        return count
+    except Exception as e:
+        print(f"Errore conteggio partite 30 giorni: {e}")
+        return None
+
+def get_team_standings_info(team_name: str, league: str, season: int = None) -> Dict[str, Any]:
+    """
+    Recupera informazioni classifica per una squadra.
+    """
+    if not season:
+        season = get_current_season()
+    
+    league_id = get_league_id_from_name(league)
+    if not league_id:
+        return {}
+    
+    try:
+        standings = apifootball_get_standings(league_id, season)
+        if not standings:
+            return {}
+        
+        # Cerca squadra nella classifica
+        team_name_lower = team_name.lower()
+        for group in standings:
+            for entry in group:
+                team_info = entry.get("team", {})
+                team_name_api = team_info.get("name", "").lower()
+                
+                # Match approssimativo (potrebbe essere diverso)
+                if team_name_lower in team_name_api or team_name_api in team_name_lower:
+                    position = entry.get("rank", 0)
+                    points = entry.get("points", 0)
+                    all_stats = entry.get("all", {})
+                    played = all_stats.get("played", 0)
+                    
+                    # Calcola distanza da salvezza (assumendo 18 squadre, 3 retrocedono)
+                    # In realtà dipende dalla lega, ma approssimiamo
+                    points_from_relegation = None
+                    if position >= 16:  # Ultime 3 posizioni
+                        # Trova punti della 17esima (ultima salva)
+                        for e in group:
+                            if e.get("rank") == 17:
+                                points_17 = e.get("points", 0)
+                                points_from_relegation = points - points_17
+                                break
+                    
+                    # Calcola distanza da Europa (posizione 6-7)
+                    points_from_europe = None
+                    if 6 <= position <= 10:
+                        for e in group:
+                            if e.get("rank") == 6:
+                                points_6 = e.get("points", 0)
+                                points_from_europe = points_6 - points
+                                break
+                    
+                    return {
+                        "position": position,
+                        "points": points,
+                        "played": played,
+                        "points_from_relegation": points_from_relegation,
+                        "points_from_europe": points_from_europe,
+                    }
+        
+        return {}
+    except Exception as e:
+        print(f"Errore recupero standings {team_name}: {e}")
+        return {}
+
+def is_derby_match(home_team: str, away_team: str, league: str) -> bool:
+    """
+    Identifica se è un derby basandosi su pattern comuni.
+    """
+    # Lista derby comuni (potrebbe essere espansa)
+    derby_patterns = [
+        # Serie A
+        ("inter", "milan"), ("milan", "inter"),
+        ("juventus", "torino"), ("torino", "juventus"),
+        ("roma", "lazio"), ("lazio", "roma"),
+        ("napoli", "juventus"), ("juventus", "napoli"),
+        # Premier League
+        ("manchester united", "manchester city"), ("manchester city", "manchester united"),
+        ("liverpool", "everton"), ("everton", "liverpool"),
+        ("arsenal", "tottenham"), ("tottenham", "arsenal"),
+        # La Liga
+        ("real madrid", "atletico madrid"), ("atletico madrid", "real madrid"),
+        ("real madrid", "barcelona"), ("barcelona", "real madrid"),
+        ("atletico madrid", "barcelona"), ("barcelona", "atletico madrid"),
+        # Bundesliga
+        ("bayern munich", "borussia dortmund"), ("borussia dortmund", "bayern munich"),
+    ]
+    
+    home_lower = home_team.lower()
+    away_lower = away_team.lower()
+    
+    for pattern_home, pattern_away in derby_patterns:
+        if pattern_home in home_lower and pattern_away in away_lower:
+            return True
+    
+    return False
+
+def get_team_fatigue_and_motivation_data(
+    team_name: str,
+    league: str,
+    match_date: str,
+) -> Dict[str, Any]:
+    """
+    Recupera automaticamente tutti i dati per fatigue e motivation.
+    """
+    result = {
+        "team_id": None,
+        "days_since_last_match": None,
+        "matches_last_30_days": None,
+        "position": None,
+        "points_from_relegation": None,
+        "points_from_europe": None,
+        "is_derby": False,
+        "data_available": False,
+    }
+    
+    try:
+        # 1. Cerca team ID
+        league_id = get_league_id_from_name(league)
+        team_info = apifootball_search_team(team_name, league_id)
+        
+        if not team_info or "team" not in team_info:
+            return result
+        
+        team_id = team_info["team"].get("id")
+        if not team_id:
+            return result
+        
+        result["team_id"] = team_id
+        
+        # 2. Calcola fatigue
+        result["days_since_last_match"] = calculate_days_since_last_match(team_id, match_date)
+        result["matches_last_30_days"] = count_matches_last_30_days(team_id, match_date)
+        
+        # 3. Recupera standings
+        standings_info = get_team_standings_info(team_name, league)
+        result["position"] = standings_info.get("position")
+        result["points_from_relegation"] = standings_info.get("points_from_relegation")
+        result["points_from_europe"] = standings_info.get("points_from_europe")
+        
+        # 4. Verifica se abbiamo almeno alcuni dati
+        result["data_available"] = (
+            result["days_since_last_match"] is not None or
+            result["matches_last_30_days"] is not None or
+            result["position"] is not None
+        )
+        
+        return result
+    except Exception as e:
+        print(f"Errore recupero dati team {team_name}: {e}")
+        return result
 
 # ============================================================
 #          MODELLO POISSON MIGLIORATO
@@ -1500,6 +1809,981 @@ def create_score_heatmap_data(mat: List[List[float]], max_goals: int = 10) -> np
     
     return heatmap_data
 
+# ============================================================
+#   CACHING E RATE LIMITING
+# ============================================================
+
+def cached_api_call(cache_key: str, api_func: callable, *args, **kwargs):
+    """
+    Cache per chiamate API per evitare rate limiting.
+    """
+    import time
+    
+    if cache_key in API_CACHE:
+        cached_data, cached_time = API_CACHE[cache_key]
+        if time.time() - cached_time < CACHE_EXPIRY:
+            return cached_data
+    
+    # Chiama API
+    try:
+        result = api_func(*args, **kwargs)
+        API_CACHE[cache_key] = (result, time.time())
+        return result
+    except Exception as e:
+        # Se errore, ritorna cache vecchia se disponibile
+        if cache_key in API_CACHE:
+            return API_CACHE[cache_key][0]
+        raise e
+
+# ============================================================
+#   EXPORT E REPORT
+# ============================================================
+
+def export_analysis_to_csv(risultati: Dict[str, Any], match_name: str, output_file: str = None) -> str:
+    """
+    Esporta analisi completa in CSV.
+    """
+    if output_file is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"analisi_{match_name.replace(' ', '_')}_{timestamp}.csv"
+    
+    # Prepara dati
+    data = {
+        "Match": [match_name],
+        "Timestamp": [datetime.now().isoformat()],
+        "Lambda_Home": [risultati.get("lambda_home", 0)],
+        "Lambda_Away": [risultati.get("lambda_away", 0)],
+        "Rho": [risultati.get("rho", 0)],
+        "Prob_Home_%": [risultati.get("p_home", 0) * 100],
+        "Prob_Draw_%": [risultati.get("p_draw", 0) * 100],
+        "Prob_Away_%": [risultati.get("p_away", 0) * 100],
+        "Over_2.5_%": [risultati.get("over_25", 0) * 100],
+        "BTTS_%": [risultati.get("btts", 0) * 100],
+    }
+    
+    df = pd.DataFrame(data)
+    df.to_csv(output_file, index=False)
+    return output_file
+
+def export_analysis_to_excel(risultati: Dict[str, Any], match_name: str, odds_data: Dict[str, float], 
+                             output_file: str = None) -> str:
+    """
+    Esporta analisi completa in Excel con multiple sheets.
+    """
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except ImportError:
+        raise ImportError("openpyxl necessario per export Excel. Installare: pip install openpyxl")
+    
+    if output_file is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"analisi_{match_name.replace(' ', '_')}_{timestamp}.xlsx"
+    
+    wb = Workbook()
+    
+    # Sheet 1: Riepilogo
+    ws1 = wb.active
+    ws1.title = "Riepilogo"
+    ws1.append(["Analisi Partita", match_name])
+    ws1.append(["Data", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+    ws1.append([])
+    ws1.append(["Parametri Modello"])
+    ws1.append(["Lambda Casa", risultati.get("lambda_home", 0)])
+    ws1.append(["Lambda Trasferta", risultati.get("lambda_away", 0)])
+    ws1.append(["Rho (correlazione)", risultati.get("rho", 0)])
+    ws1.append([])
+    ws1.append(["Probabilità Principali"])
+    ws1.append(["Casa", f"{risultati.get('p_home', 0)*100:.2f}%"])
+    ws1.append(["Pareggio", f"{risultati.get('p_draw', 0)*100:.2f}%"])
+    ws1.append(["Trasferta", f"{risultati.get('p_away', 0)*100:.2f}%"])
+    
+    # Sheet 2: Quote e Value
+    ws2 = wb.create_sheet("Quote e Value")
+    ws2.append(["Mercato", "Esito", "Quota", "Prob Modello %", "Prob Quota %", "Edge %", "EV %"])
+    
+    for esito, prob, odd_key in [
+        ("Casa", risultati.get("p_home", 0), "odds_1"),
+        ("Pareggio", risultati.get("p_draw", 0), "odds_x"),
+        ("Trasferta", risultati.get("p_away", 0), "odds_2"),
+    ]:
+        if odd_key in odds_data and odds_data[odd_key] > 0:
+            odd = odds_data[odd_key]
+            p_book = 1 / odd
+            edge = (prob - p_book) * 100
+            ev = (prob * odd - 1) * 100
+            ws2.append(["1X2", esito, odd, f"{prob*100:.2f}", f"{p_book*100:.2f}", 
+                       f"{edge:+.2f}", f"{ev:+.2f}"])
+    
+    # Sheet 3: Top Risultati
+    ws3 = wb.create_sheet("Top Risultati")
+    ws3.append(["Casa", "Trasferta", "Probabilità %"])
+    for h, a, p in risultati.get("top10", []):
+        ws3.append([h, a, f"{p:.2f}"])
+    
+    wb.save(output_file)
+    return output_file
+
+# ============================================================
+#   COMPARAZIONE BOOKMAKERS
+# ============================================================
+
+def compare_bookmaker_odds(event: dict) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Confronta quote tra diversi bookmakers per trovare le migliori.
+    
+    Returns: Dict con migliori quote per ogni mercato
+    """
+    if not event or "bookmakers" not in event:
+        return {}
+    
+    home_team = (event.get("home_team") or "").lower()
+    away_team = (event.get("away_team") or "").lower()
+    
+    best_odds = {
+        "1": [],  # Lista di (bookmaker, odds)
+        "X": [],
+        "2": [],
+        "over_25": [],
+        "under_25": [],
+        "btts": [],
+    }
+    
+    for bk in event.get("bookmakers", []):
+        bk_name = bk.get("key", "unknown")
+        
+        for mk in bk.get("markets", []):
+            mk_key = mk.get("key", "").lower()
+            
+            # 1X2
+            if "h2h" in mk_key or "match_winner" in mk_key:
+                for o in mk.get("outcomes", []):
+                    name_l = (o.get("name") or "").lower()
+                    price = o.get("price")
+                    if not price:
+                        continue
+                    
+                    if home_team in name_l or name_l in home_team:
+                        best_odds["1"].append({"bookmaker": bk_name, "odds": price})
+                    elif away_team in name_l or name_l in away_team:
+                        best_odds["2"].append({"bookmaker": bk_name, "odds": price})
+                    elif "draw" in name_l or "x" == name_l or "pareggio" in name_l:
+                        best_odds["X"].append({"bookmaker": bk_name, "odds": price})
+            
+            # Over/Under
+            elif "totals" in mk_key:
+                for o in mk.get("outcomes", []):
+                    point = o.get("point")
+                    price = o.get("price")
+                    name_l = (o.get("name") or "").lower()
+                    if point == 2.5 and price:
+                        if "over" in name_l:
+                            best_odds["over_25"].append({"bookmaker": bk_name, "odds": price})
+                        elif "under" in name_l:
+                            best_odds["under_25"].append({"bookmaker": bk_name, "odds": price})
+            
+            # BTTS
+            elif "btts" in mk_key:
+                for o in mk.get("outcomes", []):
+                    name_l = (o.get("name") or "").lower()
+                    price = o.get("price")
+                    if price and ("yes" in name_l or "sì" in name_l):
+                        best_odds["btts"].append({"bookmaker": bk_name, "odds": price})
+    
+    # Ordina per odds migliori (più alte)
+    for key in best_odds:
+        best_odds[key].sort(key=lambda x: x["odds"], reverse=True)
+    
+    return best_odds
+
+def find_best_odds_summary(best_odds: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
+    """
+    Crea riepilogo delle migliori quote.
+    """
+    summary = {}
+    
+    for market, odds_list in best_odds.items():
+        if odds_list:
+            best = odds_list[0]
+            # Calcola media e spread
+            all_odds = [x["odds"] for x in odds_list]
+            avg_odds = np.mean(all_odds)
+            max_odds = max(all_odds)
+            min_odds = min(all_odds)
+            spread = max_odds - min_odds
+            
+            summary[market] = {
+                "best_bookmaker": best["bookmaker"],
+                "best_odds": best["odds"],
+                "avg_odds": round(avg_odds, 3),
+                "max_odds": max_odds,
+                "min_odds": min_odds,
+                "spread": round(spread, 3),
+                "num_bookmakers": len(odds_list),
+                "value": round((best["odds"] - avg_odds) / avg_odds * 100, 2)  # % sopra media
+            }
+    
+    return summary
+
+# ============================================================
+#   FEATURE ENGINEERING AVANZATO
+# ============================================================
+
+def get_team_form_factor(team_name: str, league: str = None, last_n: int = 5) -> Dict[str, float]:
+    """
+    Calcola fattore forma squadra basato su ultime N partite.
+    TODO: Integrare con API per dati reali.
+    
+    Returns: Dict con forma attacco, difesa, punti
+    """
+    # Placeholder - in produzione si integrerebbe con API-Football
+    # Per ora ritorna valori neutri
+    return {
+        "form_attack": 1.0,  # Moltiplicatore attacco
+        "form_defense": 1.0,  # Moltiplicatore difesa
+        "form_points": 1.0,  # Form generale
+        "confidence": 0.0,  # Confidence nei dati (0 = no data)
+    }
+
+def get_head_to_head_factor(home_team: str, away_team: str, last_n: int = 5) -> Dict[str, float]:
+    """
+    Calcola fattore H2H basato su ultime N partite tra le due squadre.
+    TODO: Integrare con API per dati reali.
+    """
+    # Placeholder
+    return {
+        "h2h_home_advantage": 1.0,  # Vantaggio casa in H2H
+        "h2h_goals_factor": 1.0,  # Fattore gol in H2H
+        "confidence": 0.0,
+    }
+
+def apply_form_adjustment(
+    lambda_h: float,
+    lambda_a: float,
+    home_team: str = None,
+    away_team: str = None,
+    league: str = None,
+) -> Tuple[float, float]:
+    """
+    Applica aggiustamento basato su forma squadre.
+    """
+    if not home_team or not away_team:
+        return lambda_h, lambda_a
+    
+    form_home = get_team_form_factor(home_team, league)
+    form_away = get_team_form_factor(away_team, league)
+    
+    # Applica solo se abbiamo confidence
+    if form_home["confidence"] > 0.5:
+        lambda_h *= form_home["form_attack"]
+    if form_away["confidence"] > 0.5:
+        lambda_a *= form_away["form_attack"]
+    
+    return lambda_h, lambda_a
+
+# ============================================================
+#   PORTFOLIO TRACKING
+# ============================================================
+
+def add_to_portfolio(
+    match_name: str,
+    market: str,
+    esito: str,
+    odds: float,
+    stake: float,
+    probability: float,
+    timestamp: str = None,
+) -> None:
+    """
+    Aggiunge scommessa al portfolio.
+    """
+    if timestamp is None:
+        timestamp = datetime.now().isoformat()
+    
+    portfolio_entry = {
+        "timestamp": timestamp,
+        "match": match_name,
+        "market": market,
+        "esito": esito,
+        "odds": odds,
+        "stake": stake,
+        "probability": probability,
+        "expected_value": (probability * odds - 1) * stake,
+        "status": "pending",  # pending, won, lost
+        "result": "",
+    }
+    
+    # Carica portfolio esistente
+    if os.path.exists(PORTFOLIO_FILE):
+        df = pd.read_csv(PORTFOLIO_FILE)
+        df = pd.concat([df, pd.DataFrame([portfolio_entry])], ignore_index=True)
+    else:
+        df = pd.DataFrame([portfolio_entry])
+    
+    df.to_csv(PORTFOLIO_FILE, index=False)
+
+def get_portfolio_summary() -> Dict[str, Any]:
+    """
+    Calcola riepilogo portfolio.
+    """
+    if not os.path.exists(PORTFOLIO_FILE):
+        return {"total_bets": 0, "total_staked": 0.0, "pending_bets": 0}
+    
+    df = pd.read_csv(PORTFOLIO_FILE)
+    
+    total_bets = len(df)
+    total_staked = df["stake"].sum()
+    pending = len(df[df["status"] == "pending"])
+    won = len(df[df["status"] == "won"])
+    lost = len(df[df["status"] == "lost"])
+    
+    # Calcola profit per scommesse chiuse
+    df_closed = df[df["status"].isin(["won", "lost"])]
+    if len(df_closed) > 0:
+        total_returned = 0.0
+        for _, row in df_closed.iterrows():
+            if row["status"] == "won":
+                total_returned += row["stake"] * row["odds"]
+        
+        total_staked_closed = df_closed["stake"].sum()
+        profit = total_returned - total_staked_closed
+        roi = (profit / total_staked_closed * 100) if total_staked_closed > 0 else 0
+    else:
+        profit = 0.0
+        roi = 0.0
+    
+    return {
+        "total_bets": total_bets,
+        "total_staked": round(total_staked, 2),
+        "pending_bets": pending,
+        "won_bets": won,
+        "lost_bets": lost,
+        "profit": round(profit, 2),
+        "roi": round(roi, 2),
+        "win_rate": round(won / (won + lost) * 100, 1) if (won + lost) > 0 else 0.0,
+    }
+
+# ============================================================
+#   DASHBOARD ANALYTICS
+# ============================================================
+
+# ============================================================
+#   MARKET MOVEMENT TRACKING
+# ============================================================
+
+def track_odds_movement(
+    match_name: str,
+    odds_1: float,
+    odds_x: float,
+    odds_2: float,
+    timestamp: str = None,
+) -> Dict[str, Any]:
+    """
+    Traccia movimenti delle quote nel tempo per identificare trend.
+    """
+    if timestamp is None:
+        timestamp = datetime.now().isoformat()
+    
+    # Carica storico movimenti
+    if os.path.exists(ODDS_HISTORY_FILE):
+        df = pd.read_csv(ODDS_HISTORY_FILE)
+    else:
+        df = pd.DataFrame(columns=["timestamp", "match", "odds_1", "odds_x", "odds_2"])
+    
+    # Aggiungi nuovo punto
+    new_row = {
+        "timestamp": timestamp,
+        "match": match_name,
+        "odds_1": odds_1,
+        "odds_x": odds_x,
+        "odds_2": odds_2,
+    }
+    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+    df.to_csv(ODDS_HISTORY_FILE, index=False)
+    
+    # Analizza trend per questa partita
+    match_data = df[df["match"] == match_name].sort_values("timestamp")
+    
+    if len(match_data) >= 2:
+        # Calcola cambiamenti
+        first = match_data.iloc[0]
+        last = match_data.iloc[-1]
+        
+        movement = {
+            "odds_1_change": last["odds_1"] - first["odds_1"],
+            "odds_x_change": last["odds_x"] - first["odds_x"],
+            "odds_2_change": last["odds_2"] - first["odds_2"],
+            "odds_1_change_pct": ((last["odds_1"] - first["odds_1"]) / first["odds_1"]) * 100,
+            "trend": "stable",
+            "market_sentiment": "neutral",
+        }
+        
+        # Determina trend
+        if abs(movement["odds_1_change_pct"]) > 5:
+            if movement["odds_1_change"] < 0:
+                movement["trend"] = "home_favorite_increasing"
+                movement["market_sentiment"] = "home_strong"
+            else:
+                movement["trend"] = "home_favorite_decreasing"
+                movement["market_sentiment"] = "away_strong"
+        
+        return movement
+    
+    return {"trend": "insufficient_data"}
+
+def get_odds_movement_insights(match_name: str) -> Dict[str, Any]:
+    """
+    Analizza movimenti quote e fornisce insights.
+    """
+    if not os.path.exists(ODDS_HISTORY_FILE):
+        return {}
+    
+    df = pd.read_csv(ODDS_HISTORY_FILE)
+    match_data = df[df["match"] == match_name].sort_values("timestamp")
+    
+    if len(match_data) < 2:
+        return {}
+    
+    # Calcola volatilità
+    volatility_1 = match_data["odds_1"].std()
+    volatility_x = match_data["odds_x"].std()
+    volatility_2 = match_data["odds_2"].std()
+    
+    # Identifica movimenti significativi
+    significant_moves = []
+    for i in range(1, len(match_data)):
+        prev = match_data.iloc[i-1]
+        curr = match_data.iloc[i]
+        
+        for col in ["odds_1", "odds_x", "odds_2"]:
+            change_pct = abs((curr[col] - prev[col]) / prev[col]) * 100
+            if change_pct > 3:  # Movimento > 3%
+                significant_moves.append({
+                    "market": col,
+                    "change": change_pct,
+                    "timestamp": curr["timestamp"],
+                    "direction": "up" if curr[col] > prev[col] else "down"
+                })
+    
+    return {
+        "volatility": {
+            "odds_1": round(volatility_1, 3),
+            "odds_x": round(volatility_x, 3),
+            "odds_2": round(volatility_2, 3),
+        },
+        "significant_moves": significant_moves,
+        "num_data_points": len(match_data),
+    }
+
+# ============================================================
+#   TIME-BASED ADJUSTMENTS
+# ============================================================
+
+def get_time_based_adjustments(
+    match_datetime: str = None,
+    league: str = "generic",
+) -> Dict[str, float]:
+    """
+    Calcola aggiustamenti basati su:
+    - Ora partita (serale vs pomeridiana)
+    - Giorno settimana (weekend vs settimana)
+    - Periodo stagione (inizio, metà, fine)
+    """
+    if match_datetime is None:
+        match_datetime = datetime.now().isoformat()
+    
+    try:
+        dt = datetime.fromisoformat(match_datetime.replace("Z", "+00:00"))
+    except:
+        dt = datetime.now()
+    
+    adjustments = {
+        "time_factor": 1.0,
+        "day_factor": 1.0,
+        "season_factor": 1.0,
+    }
+    
+    # Ora partita
+    hour = dt.hour
+    if 20 <= hour <= 22:  # Serale
+        adjustments["time_factor"] = 1.05  # +5% gol (atmosfera)
+    elif 12 <= hour <= 15:  # Pomeridiana
+        adjustments["time_factor"] = 0.98  # -2% gol
+    
+    # Giorno settimana
+    weekday = dt.weekday()
+    if weekday >= 5:  # Weekend (sabato/domenica)
+        adjustments["day_factor"] = 1.03  # +3% gol (più pubblico)
+    elif weekday == 2:  # Mercoledì (spesso Champions/Europa)
+        adjustments["day_factor"] = 1.08  # +8% gol (partite importanti)
+    
+    # Periodo stagione (approssimato)
+    month = dt.month
+    if month in [8, 9]:  # Inizio stagione
+        adjustments["season_factor"] = 1.02  # +2% gol (squadre fresche)
+    elif month in [4, 5]:  # Fine stagione
+        adjustments["season_factor"] = 0.97  # -3% gol (squadre stanche)
+    
+    return adjustments
+
+def apply_time_adjustments(
+    lambda_h: float,
+    lambda_a: float,
+    match_datetime: str = None,
+    league: str = "generic",
+) -> Tuple[float, float]:
+    """
+    Applica aggiustamenti temporali ai lambda.
+    """
+    adjustments = get_time_based_adjustments(match_datetime, league)
+    
+    # Combina tutti i fattori
+    total_factor = (
+        adjustments["time_factor"] *
+        adjustments["day_factor"] *
+        adjustments["season_factor"]
+    )
+    
+    # Applica solo se significativo
+    if abs(total_factor - 1.0) > 0.02:  # > 2% di differenza
+        lambda_h *= total_factor
+        lambda_a *= total_factor
+    
+    return lambda_h, lambda_a
+
+# ============================================================
+#   FATIGUE E MOTIVATION FACTORS
+# ============================================================
+
+def calculate_fatigue_factor(
+    team_name: str,
+    days_since_last_match: int = None,
+    matches_last_30_days: int = None,
+) -> float:
+    """
+    Calcola fattore fatica basato su:
+    - Giorni dall'ultima partita
+    - Numero partite ultimi 30 giorni
+    """
+    fatigue = 1.0
+    
+    # Giorni di riposo
+    if days_since_last_match is not None:
+        if days_since_last_match <= 2:
+            fatigue *= 0.92  # -8% (molto stanco)
+        elif days_since_last_match == 3:
+            fatigue *= 0.96  # -4% (stanco)
+        elif days_since_last_match >= 7:
+            fatigue *= 1.05  # +5% (molto riposato)
+    
+    # Partite ravvicinate
+    if matches_last_30_days is not None:
+        if matches_last_30_days >= 8:
+            fatigue *= 0.94  # -6% (troppe partite)
+        elif matches_last_30_days <= 4:
+            fatigue *= 1.03  # +3% (poche partite)
+    
+    return fatigue
+
+def calculate_motivation_factor(
+    team_position: int = None,
+    points_from_relegation: int = None,
+    points_from_europe: int = None,
+    is_derby: bool = False,
+) -> float:
+    """
+    Calcola fattore motivazione basato su:
+    - Posizione in classifica
+    - Vicinanza a obiettivi (salvezza, Europa)
+    - Partite speciali (derby)
+    """
+    motivation = 1.0
+    
+    # Derby
+    if is_derby:
+        motivation *= 1.12  # +12% (alta motivazione)
+    
+    # Lotta salvezza
+    if points_from_relegation is not None:
+        if 0 <= points_from_relegation <= 3:
+            motivation *= 1.10  # +10% (lotta per non retrocedere)
+    
+    # Lotta Europa
+    if points_from_europe is not None:
+        if 0 <= points_from_europe <= 3:
+            motivation *= 1.08  # +8% (lotta per Europa)
+    
+    return motivation
+
+# ============================================================
+#   ANOMALY DETECTION
+# ============================================================
+
+def detect_odds_anomalies(
+    odds_1: float,
+    odds_x: float,
+    odds_2: float,
+    odds_over25: float = None,
+    odds_under25: float = None,
+) -> Dict[str, Any]:
+    """
+    Rileva anomalie nelle quote che potrebbero indicare:
+    - Errori bookmaker
+    - Quote non aggiornate
+    - Opportunità di arbitraggio
+    """
+    anomalies = []
+    severity = 0
+    
+    # 1. Check margine anomalo
+    margin = (1/odds_1 + 1/odds_x + 1/odds_2) - 1
+    if margin < 0:
+        anomalies.append({
+            "type": "negative_margin",
+            "description": f"Margine negativo ({margin*100:.2f}%) - possibile errore o arbitraggio",
+            "severity": "high"
+        })
+        severity += 3
+    elif margin > 0.20:
+        anomalies.append({
+            "type": "excessive_margin",
+            "description": f"Margine eccessivo ({margin*100:.2f}%) - quote poco competitive",
+            "severity": "medium"
+        })
+        severity += 1
+    
+    # 2. Check coerenza Over/Under
+    if odds_over25 and odds_under25:
+        margin_ou = (1/odds_over25 + 1/odds_under25) - 1
+        if margin_ou < 0:
+            anomalies.append({
+                "type": "arbitrage_opportunity",
+                "description": "Opportunità arbitraggio Over/Under",
+                "severity": "high"
+            })
+            severity += 2
+    
+    # 3. Check quote estreme
+    if odds_1 < 1.01 or odds_2 < 1.01:
+        anomalies.append({
+            "type": "extreme_odds",
+            "description": "Quote estreme (< 1.01) - possibile errore",
+            "severity": "high"
+        })
+        severity += 2
+    
+    # 4. Check incoerenza 1X2 vs Over/Under
+    if odds_over25 and odds_1:
+        p_home = 1 / odds_1
+        p_over = 1 / odds_over25
+        
+        # Se casa molto favorita ma over alto → incoerenza
+        if p_home > 0.70 and p_over > 0.60:
+            anomalies.append({
+                "type": "incoherent_markets",
+                "description": "Casa molto favorita ma Over alto - possibile incoerenza",
+                "severity": "medium"
+            })
+            severity += 1
+    
+    return {
+        "anomalies": anomalies,
+        "severity_score": severity,
+        "has_anomalies": len(anomalies) > 0,
+        "recommendation": "verify" if severity >= 3 else ("review" if severity >= 1 else "ok")
+    }
+
+# ============================================================
+#   ADVANCED RISK MANAGEMENT
+# ============================================================
+
+def calculate_dynamic_position_size(
+    edge: float,
+    odds: float,
+    bankroll: float,
+    current_drawdown: float = 0.0,
+    win_streak: int = 0,
+    loss_streak: int = 0,
+) -> Dict[str, Any]:
+    """
+    Calcola position size dinamico basato su:
+    - Edge e odds
+    - Drawdown corrente
+    - Streak (vittorie/sconfitte consecutive)
+    """
+    # Kelly base
+    p = edge + (1 / odds)  # Probabilità reale
+    q = 1 - p
+    kelly_base = (p * odds - 1) / (odds - 1)
+    kelly_base = max(0, min(0.25, kelly_base))  # Cap a 25%
+    
+    # Aggiustamenti per drawdown
+    if current_drawdown > 0.20:  # Drawdown > 20%
+        kelly_base *= 0.5  # Riduci del 50%
+    elif current_drawdown > 0.10:  # Drawdown > 10%
+        kelly_base *= 0.75  # Riduci del 25%
+    
+    # Aggiustamenti per streak
+    if loss_streak >= 3:
+        kelly_base *= 0.6  # Riduci dopo 3 sconfitte consecutive
+    elif win_streak >= 5:
+        kelly_base *= 1.1  # Aumenta leggermente dopo 5 vittorie (max 10%)
+        kelly_base = min(0.25, kelly_base)  # Cap
+    
+    stake = bankroll * kelly_base
+    
+    return {
+        "kelly_percent": kelly_base * 100,
+        "stake": round(stake, 2),
+        "edge": edge,
+        "recommendation": "bet" if edge >= 0.03 else ("caution" if edge >= 0.01 else "skip"),
+        "risk_level": "low" if current_drawdown < 0.05 else ("medium" if current_drawdown < 0.15 else "high")
+    }
+
+def calculate_stop_loss_level(
+    initial_bankroll: float,
+    current_bankroll: float,
+    max_drawdown_pct: float = 0.25,
+) -> Dict[str, Any]:
+    """
+    Calcola livello stop loss per proteggere bankroll.
+    """
+    drawdown = (initial_bankroll - current_bankroll) / initial_bankroll
+    
+    stop_loss_triggered = drawdown >= max_drawdown_pct
+    
+    return {
+        "current_drawdown": round(drawdown * 100, 2),
+        "max_drawdown": max_drawdown_pct * 100,
+        "stop_loss_triggered": stop_loss_triggered,
+        "remaining_buffer": round((max_drawdown_pct - drawdown) * 100, 2),
+        "recommendation": "stop_betting" if stop_loss_triggered else "continue"
+    }
+
+# ============================================================
+#   FEATURE IMPORTANCE ANALYSIS
+# ============================================================
+
+def analyze_feature_importance(archive_file: str = ARCHIVE_FILE) -> Dict[str, float]:
+    """
+    Analizza importanza delle features nel modello usando correlazione
+    e analisi statistica.
+    """
+    if not os.path.exists(archive_file):
+        return {}
+    
+    try:
+        df = pd.read_csv(archive_file)
+        
+        # Filtra partite con risultati
+        df_complete = df[
+            df["esito_reale"].notna() &
+            (df["esito_reale"] != "") &
+            df["p_home"].notna()
+        ]
+        
+        if len(df_complete) < 20:
+            return {}
+        
+        # Calcola accuracy per ogni feature
+        features = {
+            "lambda_home": "lambda_home",
+            "lambda_away": "lambda_away",
+            "rho": "rho",
+            "quality_score": "quality_score",
+            "market_confidence": "market_confidence",
+        }
+        
+        importance = {}
+        
+        for feat_name, feat_col in features.items():
+            if feat_col not in df_complete.columns:
+                continue
+            
+            # Correlazione con accuracy
+            df_complete["correct"] = (
+                df_complete["esito_modello"] == df_complete["esito_reale"]
+            ).astype(int)
+            
+            corr = df_complete[feat_col].corr(df_complete["correct"])
+            importance[feat_name] = round(abs(corr) * 100, 1) if not pd.isna(corr) else 0
+        
+        # Ordina per importanza
+        sorted_importance = dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))
+        
+        return sorted_importance
+    except Exception as e:
+        return {"error": str(e)}
+
+# ============================================================
+#   REAL-TIME ALERTS
+# ============================================================
+
+def create_alert(
+    alert_type: str,
+    match_name: str,
+    message: str,
+    priority: str = "medium",
+    data: Dict[str, Any] = None,
+) -> None:
+    """
+    Crea alert per notifiche real-time.
+    """
+    if data is None:
+        data = {}
+    
+    alert = {
+        "timestamp": datetime.now().isoformat(),
+        "type": alert_type,  # "value_bet", "odds_change", "anomaly", etc.
+        "match": match_name,
+        "message": message,
+        "priority": priority,  # "low", "medium", "high", "critical"
+        "data": data,
+        "read": False,
+    }
+    
+    # Carica alert esistenti
+    if os.path.exists(ALERTS_FILE):
+        with open(ALERTS_FILE, 'r') as f:
+            alerts = json.load(f)
+    else:
+        alerts = []
+    
+    alerts.append(alert)
+    
+    # Mantieni solo ultimi 100 alert
+    alerts = alerts[-100:]
+    
+    with open(ALERTS_FILE, 'w') as f:
+        json.dump(alerts, f, indent=2)
+
+def get_unread_alerts() -> List[Dict[str, Any]]:
+    """
+    Recupera alert non letti.
+    """
+    if not os.path.exists(ALERTS_FILE):
+        return []
+    
+    try:
+        with open(ALERTS_FILE, 'r') as f:
+            alerts = json.load(f)
+        return [a for a in alerts if not a.get("read", False)]
+    except:
+        return []
+
+# ============================================================
+#   MARKET CORRELATION ANALYSIS
+# ============================================================
+
+def analyze_market_correlations(
+    odds_1: float,
+    odds_x: float,
+    odds_2: float,
+    odds_over25: float = None,
+    odds_under25: float = None,
+    odds_btts: float = None,
+) -> Dict[str, Any]:
+    """
+    Analizza correlazioni tra diversi mercati per identificare
+    opportunità di hedging o incoerenze.
+    """
+    correlations = {}
+    
+    # Converti in probabilità
+    p1 = 1 / odds_1
+    px = 1 / odds_x
+    p2 = 1 / odds_2
+    
+    if odds_over25:
+        p_over = 1 / odds_over25
+        
+        # Correlazione 1X2 vs Over/Under
+        # Se casa favorita → dovrebbe essere correlato con under (se favorita forte)
+        if p1 > 0.60:
+            expected_under = 1 - p_over
+            actual_under = 1 / odds_under25 if odds_under25 else None
+            
+            if actual_under:
+                correlation_1_over = abs(p1 - (1 - p_over))
+                correlations["home_favorite_vs_over"] = {
+                    "correlation": round(correlation_1_over, 3),
+                    "interpretation": "high" if correlation_1_over > 0.3 else "low"
+                }
+    
+    # Correlazione BTTS vs Over/Under
+    if odds_btts and odds_over25:
+        p_btts = 1 / odds_btts
+        p_over = 1 / odds_over25
+        
+        # BTTS e Over dovrebbero essere positivamente correlati
+        btts_over_corr = min(p_btts, p_over) / max(p_btts, p_over)
+        correlations["btts_vs_over"] = {
+            "correlation": round(btts_over_corr, 3),
+            "interpretation": "strong" if btts_over_corr > 0.8 else ("moderate" if btts_over_corr > 0.6 else "weak")
+        }
+    
+    return correlations
+
+def calculate_dashboard_metrics(archive_file: str = ARCHIVE_FILE) -> Dict[str, Any]:
+    """
+    Calcola metriche aggregate per dashboard.
+    """
+    if not os.path.exists(archive_file):
+        return {}
+    
+    try:
+        df = pd.read_csv(archive_file)
+        
+        # Filtra partite con risultati
+        df_complete = df[
+            df["esito_reale"].notna() & 
+            (df["esito_reale"] != "") &
+            df["p_home"].notna()
+        ]
+        
+        if len(df_complete) == 0:
+            return {}
+        
+        # Accuracy per esito
+        accuracy_1 = len(df_complete[(df_complete["esito_reale"] == "1") & 
+                                     (df_complete["p_home"] == df_complete[["p_home", "p_draw", "p_away"]].max(axis=1))]) / len(df_complete[df_complete["esito_reale"] == "1"]) * 100 if len(df_complete[df_complete["esito_reale"] == "1"]) > 0 else 0
+        
+        # Brier Score aggregato
+        # p_home è già in formato 0-1 (non percentuale)
+        predictions_home = df_complete["p_home"].values
+        outcomes_home = (df_complete["esito_reale"] == "1").astype(int).values
+        bs_home = brier_score(predictions_home.tolist(), outcomes_home.tolist()) if len(predictions_home) > 0 else None
+        
+        # ROI simulato
+        roi_data = calculate_roi(
+            predictions_home.tolist(),
+            outcomes_home.tolist(),
+            (1 / df_complete["odds_1"]).tolist(),
+            threshold=0.03
+        )
+        
+        # Trend accuracy (ultime 20 vs prime 20)
+        if len(df_complete) >= 40:
+            recent = df_complete.tail(20)
+            old = df_complete.head(20)
+            accuracy_recent = recent["match_ok"].mean() * 100 if "match_ok" in recent.columns else 0
+            accuracy_old = old["match_ok"].mean() * 100 if "match_ok" in old.columns else 0
+            trend = accuracy_recent - accuracy_old
+        else:
+            trend = 0
+        
+        return {
+            "total_analisi": len(df),
+            "partite_con_risultato": len(df_complete),
+            "accuracy_home": round(accuracy_1, 1),
+            "brier_score": round(bs_home, 4) if bs_home else None,
+            "roi_simulato": roi_data,
+            "trend_accuracy": round(trend, 1),
+            "avg_quality_score": round(df["quality_score"].mean(), 1) if "quality_score" in df.columns else None,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 def calculate_confidence_intervals(
     lambda_h: float,
     lambda_a: float,
@@ -1575,6 +2859,13 @@ def risultato_completo_improved(
     manual_boost_home: float = 0.0,
     manual_boost_away: float = 0.0,
     league: str = "generic",
+    home_team: str = None,
+    away_team: str = None,
+    match_datetime: str = None,
+    fatigue_home: Dict[str, Any] = None,
+    fatigue_away: Dict[str, Any] = None,
+    motivation_home: Dict[str, Any] = None,
+    motivation_away: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
     """
     Versione migliorata del modello con:
@@ -1619,6 +2910,50 @@ def risultato_completo_improved(
         lh *= (1.0 + manual_boost_home)
     if manual_boost_away != 0.0:
         la *= (1.0 + manual_boost_away)
+    
+    # 6.5. Applica time-based adjustments
+    if match_datetime:
+        lh, la = apply_time_adjustments(lh, la, match_datetime, league)
+    
+    # 6.6. Applica fatigue factors
+    if fatigue_home and fatigue_home.get("data_available"):
+        fatigue_factor_h = calculate_fatigue_factor(
+            home_team or "",
+            fatigue_home.get("days_since_last_match"),
+            fatigue_home.get("matches_last_30_days")
+        )
+        lh *= fatigue_factor_h
+    
+    if fatigue_away and fatigue_away.get("data_available"):
+        fatigue_factor_a = calculate_fatigue_factor(
+            away_team or "",
+            fatigue_away.get("days_since_last_match"),
+            fatigue_away.get("matches_last_30_days")
+        )
+        la *= fatigue_factor_a
+    
+    # 6.7. Applica motivation factors
+    is_derby = False
+    if home_team and away_team:
+        is_derby = is_derby_match(home_team, away_team, league)
+    
+    if motivation_home and motivation_home.get("data_available"):
+        motivation_factor_h = calculate_motivation_factor(
+            motivation_home.get("position"),
+            motivation_home.get("points_from_relegation"),
+            motivation_home.get("points_from_europe"),
+            is_derby
+        )
+        lh *= motivation_factor_h
+    
+    if motivation_away and motivation_away.get("data_available"):
+        motivation_factor_a = calculate_motivation_factor(
+            motivation_away.get("position"),
+            motivation_away.get("points_from_relegation"),
+            motivation_away.get("points_from_europe"),
+            is_derby
+        )
+        la *= motivation_factor_a
     
     # 7. Blend con xG usando approccio bayesiano migliorato
     if all(x is not None for x in [xg_for_home, xg_against_home, xg_for_away, xg_against_away]):
@@ -2012,6 +3347,20 @@ st.markdown("""
 - ✅ **Kelly Criterion** per sizing ottimale delle scommesse
 - ✅ **Ensemble di modelli** per maggiore robustezza e affidabilità
 - ✅ **Market efficiency tracking** per valutare efficienza del mercato
+- ✅ **Export Report** (CSV/Excel) per analisi approfondite
+- ✅ **Comparazione Bookmakers** per trovare migliori quote
+- ✅ **Portfolio Tracking** per gestione scommesse multiple
+- ✅ **Dashboard Analytics** con metriche aggregate e trend
+- ✅ **Caching API** per performance e rate limiting
+- ✅ **Feature Engineering** avanzato (forma squadre, H2H - pronto per integrazione)
+- ✅ **Market Movement Tracking** - traccia cambiamenti quote nel tempo
+- ✅ **Time-based Adjustments** - aggiustamenti per ora/giorno/periodo stagione
+- ✅ **Fatigue & Motivation Factors** - fatica squadre e motivazione
+- ✅ **Anomaly Detection** - rileva errori bookmaker e opportunità arbitraggio
+- ✅ **Advanced Risk Management** - stop loss, position sizing dinamico
+- ✅ **Feature Importance Analysis** - analizza quali features contano di più
+- ✅ **Real-time Alerts** - notifiche per value bets e cambiamenti quote
+- ✅ **Market Correlation Analysis** - correlazioni tra mercati diversi
 """)
 
 st.caption(f"🕐 Esecuzione: {datetime.now().isoformat(timespec='seconds')}")
@@ -2041,27 +3390,63 @@ with col_hist1:
         df_st = pd.read_csv(ARCHIVE_FILE)
         st.write(f"📁 Analisi salvate: **{len(df_st)}**")
         
-        # Calcola metriche se ci sono risultati reali
+        # Dashboard metrics avanzate
+        dashboard_metrics = calculate_dashboard_metrics()
+        
+        if dashboard_metrics and "error" not in dashboard_metrics:
+            col_dash1, col_dash2 = st.columns(2)
+            
+            with col_dash1:
+                if "accuracy_home" in dashboard_metrics:
+                    st.metric("🎯 Accuracy Modello", f"{dashboard_metrics['accuracy_home']:.1f}%")
+                if "brier_score" in dashboard_metrics and dashboard_metrics["brier_score"]:
+                    st.metric("📈 Brier Score", f"{dashboard_metrics['brier_score']:.3f}",
+                             help="0 = perfetto, 1 = pessimo")
+            
+            with col_dash2:
+                if "roi_simulato" in dashboard_metrics and dashboard_metrics["roi_simulato"]:
+                    roi_data = dashboard_metrics["roi_simulato"]
+                    st.metric("💵 ROI Simulato", f"{roi_data.get('roi', 0):.1f}%",
+                             help=f"{roi_data.get('bets', 0)} scommesse piazzate")
+                if "trend_accuracy" in dashboard_metrics:
+                    trend = dashboard_metrics["trend_accuracy"]
+                    st.metric("📊 Trend Accuracy", f"{trend:+.1f}%",
+                             help="Differenza ultime 20 vs prime 20 partite")
+        
+        # Calcola metriche se ci sono risultati reali (fallback)
         if "esito_reale" in df_st.columns and "match_ok" in df_st.columns:
             df_complete = df_st[df_st["esito_reale"].notna() & (df_st["esito_reale"] != "")]
             
-            if len(df_complete) > 0:
+            if len(df_complete) > 0 and not dashboard_metrics:
                 accuracy = df_complete["match_ok"].mean() * 100
                 st.metric("🎯 Accuracy Modello", f"{accuracy:.1f}%")
-                
-                # Brier Score per 1X2
-                if all(col in df_complete.columns for col in ["p_home", "p_draw", "p_away"]):
-                    predictions_home = df_complete["p_home"].values / 100
-                    outcomes_home = (df_complete["esito_reale"] == "1").astype(int).values
-                    
-                    if len(predictions_home) > 0:
-                        bs = brier_score(predictions_home.tolist(), outcomes_home.tolist())
-                        st.metric("📈 Brier Score (Home)", f"{bs:.3f}", 
-                                 help="0 = perfetto, 1 = pessimo")
         
         st.dataframe(df_st.tail(15), height=300)
     else:
         st.info("Nessuno storico ancora")
+    
+    # Portfolio Summary
+    portfolio_summary = get_portfolio_summary()
+    if portfolio_summary.get("total_bets", 0) > 0:
+        st.markdown("### 💼 Portfolio Scommesse")
+        col_port1, col_port2, col_port3 = st.columns(3)
+        
+        with col_port1:
+            st.metric("Totale Scommesse", portfolio_summary["total_bets"])
+            st.metric("In Attesa", portfolio_summary["pending_bets"])
+        
+        with col_port2:
+            st.metric("Vinte", portfolio_summary["won_bets"])
+            st.metric("Perse", portfolio_summary["lost_bets"])
+        
+        with col_port3:
+            st.metric("Profit", f"€{portfolio_summary['profit']:.2f}")
+            st.metric("ROI", f"{portfolio_summary['roi']:.1f}%")
+        
+        if st.button("📋 Visualizza Portfolio Completo"):
+            if os.path.exists(PORTFOLIO_FILE):
+                df_port = pd.read_csv(PORTFOLIO_FILE)
+                st.dataframe(df_port, use_container_width=True)
 
 with col_hist2:
     st.markdown("### 🗑️ Gestione Storico")
@@ -2125,6 +3510,16 @@ if st.session_state.soccer_leagues:
         
         num_bookmakers = len(event.get("bookmakers", []))
         st.info(f"📊 Quote estratte da **{num_bookmakers}** bookmakers con Shin normalization")
+        
+        # Mostra comparazione bookmakers
+        best_odds = compare_bookmaker_odds(event)
+        if best_odds:
+            summary = find_best_odds_summary(best_odds)
+            if summary.get("1"):
+                best_1 = summary["1"]
+                st.caption(f"🏆 Migliore quota Casa: **{best_1['best_odds']:.2f}** su {best_1['best_bookmaker']} "
+                          f"(media: {best_1['avg_odds']:.2f}, +{best_1['value']:.1f}% vs media)")
+        
         st.success("✅ Quote precaricate")
 
         if st.button("🔄 Refresh Quote"):
@@ -2258,7 +3653,58 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             num_books
         )
         
-        # 3. Calcolo modello
+        # 3. Recupera dati avanzati (fatigue, motivation, time)
+        home_team_name = api_prices.get("home") or match_name.split(" vs ")[0] if " vs " in match_name else ""
+        away_team_name = api_prices.get("away") or match_name.split(" vs ")[1] if " vs " in match_name else ""
+        
+        # Data partita da event se disponibile
+        match_datetime = None
+        if st.session_state.get("events_for_league"):
+            try:
+                current_event = None
+                for ev in st.session_state.events_for_league:
+                    if ev.get("id") == st.session_state.get("selected_event_id"):
+                        current_event = ev
+                        break
+                
+                if current_event:
+                    match_datetime = current_event.get("commence_time")
+            except:
+                pass
+        
+        # Recupera dati fatigue e motivation
+        fatigue_home_data = None
+        fatigue_away_data = None
+        motivation_home_data = None
+        motivation_away_data = None
+        
+        if home_team_name and away_team_name and match_datetime:
+            with st.spinner("📊 Recupero dati avanzati da API-Football..."):
+                try:
+                    fatigue_home_data = get_team_fatigue_and_motivation_data(
+                        home_team_name, league_type, match_datetime
+                    )
+                    fatigue_away_data = get_team_fatigue_and_motivation_data(
+                        away_team_name, league_type, match_datetime
+                    )
+                    
+                    # Motivation usa stessi dati (sono già inclusi)
+                    motivation_home_data = {
+                        "position": fatigue_home_data.get("position"),
+                        "points_from_relegation": fatigue_home_data.get("points_from_relegation"),
+                        "points_from_europe": fatigue_home_data.get("points_from_europe"),
+                        "data_available": fatigue_home_data.get("data_available"),
+                    }
+                    motivation_away_data = {
+                        "position": fatigue_away_data.get("position"),
+                        "points_from_relegation": fatigue_away_data.get("points_from_relegation"),
+                        "points_from_europe": fatigue_away_data.get("points_from_europe"),
+                        "data_available": fatigue_away_data.get("data_available"),
+                    }
+                except Exception as e:
+                    st.warning(f"⚠️ Errore recupero dati avanzati: {e}")
+        
+        # 4. Calcolo modello
         xg_args = {}
         if has_xg:
             xg_args = {
@@ -2281,10 +3727,80 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             manual_boost_home=boost_home,
             manual_boost_away=boost_away,
             league=league_type,
+            home_team=home_team_name,
+            away_team=away_team_name,
+            match_datetime=match_datetime,
+            fatigue_home=fatigue_home_data,
+            fatigue_away=fatigue_away_data,
+            motivation_home=motivation_home_data,
+            motivation_away=motivation_away_data,
             **xg_args
         )
         
-        # 4. BTTS finale
+        # 5. Mostra info fatigue e motivation
+        if fatigue_home_data and fatigue_home_data.get("data_available"):
+            with st.expander("💪 Dati Fatigue e Motivation", expanded=False):
+                col_fat1, col_fat2 = st.columns(2)
+                
+                with col_fat1:
+                    st.markdown(f"**🏠 {home_team_name}**")
+                    if fatigue_home_data.get("days_since_last_match") is not None:
+                        days = fatigue_home_data["days_since_last_match"]
+                        fatigue_f = calculate_fatigue_factor(
+                            home_team_name, days, fatigue_home_data.get("matches_last_30_days")
+                        )
+                        st.write(f"Giorni ultima partita: {days}")
+                        st.write(f"Partite ultimi 30gg: {fatigue_home_data.get('matches_last_30_days', 'N/A')}")
+                        st.write(f"Fattore Fatigue: {fatigue_f:.3f} ({'+' if fatigue_f > 1 else ''}{(fatigue_f-1)*100:.1f}%)")
+                    
+                    if motivation_home_data and motivation_home_data.get("data_available"):
+                        pos = motivation_home_data.get("position")
+                        if pos:
+                            st.write(f"Posizione classifica: {pos}°")
+                            if motivation_home_data.get("points_from_relegation") is not None:
+                                st.write(f"Punti da salvezza: {motivation_home_data['points_from_relegation']}")
+                            if motivation_home_data.get("points_from_europe") is not None:
+                                st.write(f"Punti da Europa: {motivation_home_data['points_from_europe']}")
+                            motivation_f = calculate_motivation_factor(
+                                pos,
+                                motivation_home_data.get("points_from_relegation"),
+                                motivation_home_data.get("points_from_europe"),
+                                is_derby_match(home_team_name, away_team_name, league_type) if home_team_name and away_team_name else False
+                            )
+                            st.write(f"Fattore Motivation: {motivation_f:.3f} ({'+' if motivation_f > 1 else ''}{(motivation_f-1)*100:.1f}%)")
+                
+                with col_fat2:
+                    st.markdown(f"**✈️ {away_team_name}**")
+                    if fatigue_away_data and fatigue_away_data.get("data_available"):
+                        days = fatigue_away_data.get("days_since_last_match")
+                        if days is not None:
+                            fatigue_f = calculate_fatigue_factor(
+                                away_team_name, days, fatigue_away_data.get("matches_last_30_days")
+                            )
+                            st.write(f"Giorni ultima partita: {days}")
+                            st.write(f"Partite ultimi 30gg: {fatigue_away_data.get('matches_last_30_days', 'N/A')}")
+                            st.write(f"Fattore Fatigue: {fatigue_f:.3f} ({'+' if fatigue_f > 1 else ''}{(fatigue_f-1)*100:.1f}%)")
+                    
+                    if motivation_away_data and motivation_away_data.get("data_available"):
+                        pos = motivation_away_data.get("position")
+                        if pos:
+                            st.write(f"Posizione classifica: {pos}°")
+                            if motivation_away_data.get("points_from_relegation") is not None:
+                                st.write(f"Punti da salvezza: {motivation_away_data['points_from_relegation']}")
+                            if motivation_away_data.get("points_from_europe") is not None:
+                                st.write(f"Punti da Europa: {motivation_away_data['points_from_europe']}")
+                            motivation_f = calculate_motivation_factor(
+                                pos,
+                                motivation_away_data.get("points_from_relegation"),
+                                motivation_away_data.get("points_from_europe"),
+                                is_derby_match(home_team_name, away_team_name, league_type) if home_team_name and away_team_name else False
+                            )
+                            st.write(f"Fattore Motivation: {motivation_f:.3f} ({'+' if motivation_f > 1 else ''}{(motivation_f-1)*100:.1f}%)")
+                
+                if is_derby_match(home_team_name, away_team_name, league_type) if home_team_name and away_team_name else False:
+                    st.info("🔥 **DERBY DETECTED** - Alta motivazione per entrambe le squadre!")
+        
+        # 6. BTTS finale
         btts_prob_model = ris["btts"]
         final_btts_odds, btts_source = blend_btts_sources_improved(
             odds_btts_api=odds_btts if odds_btts > 0 else None,
@@ -2319,6 +3835,23 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             # Calcola precisione: quanto si discosta il modello dalle quote
             avg_error = np.mean([abs(v) for v in ris['scost'].values()])
             st.metric("📊 Avg Scostamento", f"{avg_error:.2f}%")
+        
+        # Info aggiustamenti applicati
+        adjustments_applied = []
+        if match_datetime:
+            time_adj = get_time_based_adjustments(match_datetime, league_type)
+            total_time_factor = time_adj["time_factor"] * time_adj["day_factor"] * time_adj["season_factor"]
+            if abs(total_time_factor - 1.0) > 0.02:
+                adjustments_applied.append(f"⏰ Time-based: {total_time_factor:.3f}")
+        
+        if fatigue_home_data and fatigue_home_data.get("data_available") or fatigue_away_data and fatigue_away_data.get("data_available"):
+            adjustments_applied.append("💪 Fatigue factors")
+        
+        if motivation_home_data and motivation_home_data.get("data_available") or motivation_away_data and motivation_away_data.get("data_available"):
+            adjustments_applied.append("🎯 Motivation factors")
+        
+        if adjustments_applied:
+            st.info("✅ **Aggiustamenti applicati**: " + ", ".join(adjustments_applied))
         
         # Warnings
         if warnings:
@@ -2420,6 +3953,115 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             st.info("✅ **Calibrazione applicata**: Le probabilità sono state calibrate usando dati storici")
         if ris.get("ensemble_applied"):
             st.info("✅ **Ensemble applicato**: Combinazione di più modelli per maggiore robustezza")
+        
+        # Export e Portfolio
+        col_exp1, col_exp2, col_exp3 = st.columns(3)
+        
+        with col_exp1:
+            if st.button("📥 Esporta CSV"):
+                try:
+                    csv_file = export_analysis_to_csv(ris, match_name)
+                    st.success(f"✅ Esportato: {csv_file}")
+                    with open(csv_file, 'rb') as f:
+                        st.download_button("⬇️ Download CSV", f.read(), 
+                                         file_name=csv_file, mime="text/csv")
+                except Exception as e:
+                    st.error(f"Errore export: {e}")
+        
+        with col_exp2:
+            if st.button("📊 Esporta Excel"):
+                try:
+                    odds_data = {"odds_1": odds_1, "odds_x": odds_x, "odds_2": odds_2}
+                    excel_file = export_analysis_to_excel(ris, match_name, odds_data)
+                    st.success(f"✅ Esportato: {excel_file}")
+                    with open(excel_file, 'rb') as f:
+                        st.download_button("⬇️ Download Excel", f.read(),
+                                         file_name=excel_file, 
+                                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                except ImportError:
+                    st.warning("⚠️ Installare openpyxl: pip install openpyxl")
+                except Exception as e:
+                    st.error(f"Errore export: {e}")
+        
+        with col_exp3:
+            # Aggiungi al portfolio
+            if st.button("💼 Aggiungi al Portfolio"):
+                # Trova la scommessa con maggiore edge
+                best_bet = None
+                best_edge = -1
+                
+                for lab, p_mod, odd in [
+                    ("1", ris["p_home"], odds_1),
+                    ("X", ris["p_draw"], odds_x),
+                    ("2", ris["p_away"], odds_2),
+                ]:
+                    if odd > 0:
+                        p_book = 1 / odd
+                        edge = p_mod - p_book
+                        if edge > best_edge and edge >= 0.03:
+                            best_edge = edge
+                            kelly = kelly_criterion(p_mod, odd, bankroll, kelly_fraction)
+                            best_bet = {
+                                "esito": lab,
+                                "odds": odd,
+                                "stake": kelly["stake"],
+                                "probability": p_mod
+                            }
+                
+                if best_bet:
+                    add_to_portfolio(
+                        match_name,
+                        "1X2",
+                        best_bet["esito"],
+                        best_bet["odds"],
+                        best_bet["stake"],
+                        best_bet["probability"]
+                    )
+                    st.success(f"✅ Aggiunto al portfolio: {best_bet['esito']} @ {best_bet['odds']:.2f}")
+                else:
+                    st.info("ℹ️ Nessuna value bet con edge sufficiente")
+        
+        # Comparazione Bookmakers
+        if st.session_state.get("events_for_league"):
+            try:
+                current_event = None
+                for ev in st.session_state.events_for_league:
+                    if ev.get("id") == st.session_state.get("selected_event_id"):
+                        current_event = ev
+                        break
+                
+                if current_event:
+                    with st.expander("📊 Comparazione Bookmakers"):
+                        best_odds = compare_bookmaker_odds(current_event)
+                        summary = find_best_odds_summary(best_odds)
+                        
+                        if summary:
+                            st.markdown("### 🏆 Migliori Quote Disponibili")
+                            
+                            for market, data in summary.items():
+                                market_name = {
+                                    "1": "Casa (1)",
+                                    "X": "Pareggio (X)",
+                                    "2": "Trasferta (2)",
+                                    "over_25": "Over 2.5",
+                                    "under_25": "Under 2.5",
+                                    "btts": "BTTS Sì"
+                                }.get(market, market)
+                                
+                                col_bk1, col_bk2, col_bk3 = st.columns(3)
+                                with col_bk1:
+                                    st.metric(f"{market_name} - Migliore", 
+                                            f"{data['best_odds']:.2f}",
+                                            f"{data['best_bookmaker']}")
+                                with col_bk2:
+                                    st.metric("Media Mercato", f"{data['avg_odds']:.2f}")
+                                with col_bk3:
+                                    st.metric("Value vs Media", f"+{data['value']:.1f}%",
+                                             help="Quanto la migliore quota è sopra la media")
+                        else:
+                            st.info("Nessun dato disponibile per comparazione")
+            except Exception as e:
+                pass  # Silently fail se non disponibile
         
         # Dettagli completi
         with st.expander("📈 Probabilità Dettagliate"):
