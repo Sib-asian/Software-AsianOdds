@@ -7,13 +7,24 @@ import requests
 import streamlit as st
 
 # ============================================================
-#                 CONFIG (da secrets su Streamlit Cloud)
+#  PROVA IMPORT REFRESH
+# ============================================================
+try:
+    from streamlit_autorefresh import st_autorefresh
+    HAS_AUTOR = True
+except Exception:
+    HAS_AUTOR = False
+
+# ============================================================
+#                 CONFIG
 # ============================================================
 
-THE_ODDS_API_KEY = st.secrets.get("THE_ODDS_API_KEY", "")
+# The Odds API (PRO)
+THE_ODDS_API_KEY = "06c16ede44d09f9b3498bb63354930c4"
 THE_ODDS_BASE = "https://api.the-odds-api.com/v4"
 
-API_FOOTBALL_KEY = st.secrets.get("API_FOOTBALL_KEY", "")
+# API-FOOTBALL solo per aggiornare lo storico (risultati reali)
+API_FOOTBALL_KEY = "95c43f936816cd4389a747fd2cfe061a"
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 
 ARCHIVE_FILE = "storico_analisi.csv"
@@ -30,8 +41,6 @@ def normalize_key(s: str) -> str:
 # ============================================================
 
 def oddsapi_get_soccer_leagues() -> List[dict]:
-    if not THE_ODDS_API_KEY:
-        return []
     try:
         r = requests.get(
             f"{THE_ODDS_BASE}/sports",
@@ -43,12 +52,10 @@ def oddsapi_get_soccer_leagues() -> List[dict]:
         soccer = [s for s in data if s.get("key", "").startswith("soccer")]
         return soccer
     except Exception as e:
-        st.warning(f"Errore nella chiamata sports: {e}")
+        print("errore sports:", e)
         return []
 
 def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
-    if not THE_ODDS_API_KEY:
-        return []
     base_url = f"{THE_ODDS_BASE}/sports/{league_key}/odds"
     params_common = {
         "apiKey": THE_ODDS_API_KEY,
@@ -57,7 +64,7 @@ def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
         "dateFormat": "iso",
     }
 
-    # 1) provo con BTTS
+    # 1) con btts
     try:
         r = requests.get(
             base_url,
@@ -68,10 +75,10 @@ def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
         data = r.json()
         if data:
             return data
-    except Exception:
-        pass
+    except Exception as e:
+        print("errore events (con btts):", e)
 
-    # 2) senza BTTS
+    # 2) senza btts
     try:
         r2 = requests.get(
             base_url,
@@ -81,12 +88,10 @@ def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
         r2.raise_for_status()
         return r2.json()
     except Exception as e:
-        st.warning(f"Errore nella chiamata eventi: {e}")
+        print("errore events (senza btts):", e)
         return []
 
 def oddsapi_refresh_event(league_key: str, event_id: str) -> dict:
-    if not THE_ODDS_API_KEY:
-        return {}
     if not league_key or not event_id:
         return {}
     url = f"{THE_ODDS_BASE}/sports/{league_key}/events/{event_id}/odds"
@@ -105,7 +110,7 @@ def oddsapi_refresh_event(league_key: str, event_id: str) -> dict:
             return data[0]
         return data
     except Exception as e:
-        st.warning(f"Errore refresh evento: {e}")
+        print("errore refresh evento:", e)
         return {}
 
 # ============================================================
@@ -143,9 +148,10 @@ def estimate_btts_from_basic_odds(
 # ============================================================
 
 def oddsapi_extract_prices(event: dict) -> dict:
+    # pesi leggermente aggiustati: bet365 un filo più forte
     WEIGHTS = {
+        "bet365": 1.7,
         "pinnacle": 1.6,
-        "bet365": 1.4,
         "unibet_eu": 1.2,
         "marathonbet": 1.2,
         "williamhill": 1.1,
@@ -278,7 +284,7 @@ def oddsapi_extract_prices(event: dict) -> dict:
             return None
         num = sum(v * w for v, w in values)
         den = sum(w for _, w in values)
-        return round(num / den, 3) if den else None
+        return num / den if den else None
 
     out["odds_1"] = weighted_avg(h2h_home)
     out["odds_x"] = weighted_avg(h2h_draw)
@@ -288,6 +294,11 @@ def oddsapi_extract_prices(event: dict) -> dict:
     out["odds_dnb_home"] = weighted_avg(dnb_home_list)
     out["odds_dnb_away"] = weighted_avg(dnb_away_list)
     out["odds_btts"] = weighted_avg(btts_list)
+
+    # rifinitura decimali e "stretta" leggera
+    for k in ["odds_1", "odds_x", "odds_2", "odds_over25", "odds_under25", "odds_dnb_home", "odds_dnb_away", "odds_btts"]:
+        if out.get(k):
+            out[k] = round(out[k], 3)
 
     if out["odds_btts"] is None:
         out["odds_btts"] = estimate_btts_from_basic_odds(
@@ -305,8 +316,6 @@ def oddsapi_extract_prices(event: dict) -> dict:
 # ============================================================
 
 def apifootball_get_fixtures_by_date(d: str) -> list:
-    if not API_FOOTBALL_KEY:
-        return []
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     params = {"date": d}
     try:
@@ -315,7 +324,7 @@ def apifootball_get_fixtures_by_date(d: str) -> list:
         data = r.json()
         return data.get("response", [])
     except Exception as e:
-        st.warning(f"Errore api-football: {e}")
+        print("errore api-football:", e)
         return []
 
 # ============================================================
@@ -962,8 +971,21 @@ def valuta_evento_rapido(event: dict) -> dict:
 # ============================================================
 
 st.set_page_config(page_title="Modello Scommesse – Odds API PRO", layout="wide")
-st.title("⚽ Modello Scommesse – versione cloud")
-st.caption(f"Esecuzione: {datetime.utcnow().isoformat(timespec='seconds')}Z")
+st.title("⚽ Modello Scommesse – versione con The Odds API PRO + DNB + controlli")
+
+# ======== SIDEBAR: REFRESH AUTOMATICO ========
+st.sidebar.header("⚙️ Opzioni")
+auto_refresh = st.sidebar.checkbox("Refresh automatico quote", value=False)
+refresh_sec = st.sidebar.slider("Ogni quanti secondi", 15, 120, 45)
+st.session_state["auto_refresh"] = auto_refresh
+st.session_state["refresh_ms"] = refresh_sec * 1000
+
+if HAS_AUTOR and auto_refresh:
+    st_autorefresh(interval=st.session_state["refresh_ms"], key="auto_refresh_tick")
+elif auto_refresh and not HAS_AUTOR:
+    st.sidebar.warning("Per il refresh automatico installa: streamlit-autorefresh")
+
+st.caption(f"Esecuzione: {datetime.now().isoformat(timespec='seconds')}")
 
 # init session state
 if "soccer_leagues" not in st.session_state:
@@ -976,8 +998,10 @@ if "selected_league_key" not in st.session_state:
     st.session_state.selected_league_key = None
 if "selected_event_id" not in st.session_state:
     st.session_state.selected_event_id = None
+# questo è il suffix STABILE per i widget
 if "selected_event_key" not in st.session_state:
     st.session_state.selected_event_key = "match"
+# per messaggio di refresh
 if "refresh_done" not in st.session_state:
     st.session_state.refresh_done = False
 if "last_refresh_ts" not in st.session_state:
@@ -986,7 +1010,7 @@ if "last_refresh_diffs" not in st.session_state:
     st.session_state.last_refresh_diffs = []
 
 # ============================================================
-#               SEZIONE STORICO (ATTENZIONE SU CLOUD)
+#               SEZIONE STORICO + CANCELLA
 # ============================================================
 
 st.subheader("📁 Stato storico")
@@ -995,7 +1019,28 @@ if os.path.exists(ARCHIVE_FILE):
     st.write(f"Analisi salvate: **{len(df_st)}**")
     st.dataframe(df_st.tail(30))
 else:
-    st.info("Nessuno storico ancora (su Streamlit Cloud il file potrebbe non persistere).")
+    st.info("Nessuno storico ancora.")
+
+st.markdown("### 🗑️ Cancella analisi dallo storico")
+if os.path.exists(ARCHIVE_FILE):
+    df_del = pd.read_csv(ARCHIVE_FILE)
+    if not df_del.empty:
+        df_del["label"] = df_del.apply(
+            lambda r: f"{r.get('timestamp','?')} – {r.get('match','(senza nome)')}",
+            axis=1,
+        )
+        to_delete = st.selectbox(
+            "Seleziona la riga da eliminare:",
+            df_del["label"].tolist()
+        )
+        if st.button("Elimina riga selezionata"):
+            df_new = df_del[df_del["label"] != to_delete].drop(columns=["label"])
+            df_new.to_csv(ARCHIVE_FILE, index=False)
+            st.success("✅ Riga eliminata. Ricarica la pagina per vedere l’archivio aggiornato.")
+    else:
+        st.info("Lo storico è vuoto, niente da cancellare.")
+else:
+    st.info("Nessun file storico, niente da cancellare.")
 
 st.markdown("---")
 
@@ -1039,6 +1084,7 @@ if st.button("Genera palinsesto del giorno"):
         )
         st.write("Qui sotto le migliori di oggi (in alto le più ‘pulite’):")
         st.dataframe(df_pal.head(20))
+        st.info("💡 Le prime 3–4 partite sono quelle con struttura più affidabile secondo il modello.")
 
 # ============================================================
 # 0. PRENDI PARTITA DALL’API
@@ -1078,8 +1124,10 @@ if st.session_state.soccer_leagues:
         idx = match_labels.index(selected_match_label)
         event = st.session_state.events_for_league[idx]
 
+        # salvo lega
         st.session_state.selected_league_key = selected_league_key
 
+        # provo a prendere un id stabile
         event_id = event.get("id") or event.get("event_id") or event.get("key")
         home_n = event.get("home_team") or ""
         away_n = event.get("away_team") or ""
@@ -1095,13 +1143,29 @@ if st.session_state.soccer_leagues:
         st.session_state.selected_event_prices = prices
         st.success("Quote prese dall’API e precompilate più sotto ✅")
 
-        if st.session_state.get("refresh_done"):
-            st.success("Quote aggiornate dalla API ✅")
-            st.session_state.refresh_done = False
+        # refresh automatico: se è attivo, richiamo la stessa partita e confronto
+        if st.session_state.get("auto_refresh", False) and st.session_state.get("selected_event_id"):
+            ref_ev = oddsapi_refresh_event(
+                st.session_state.selected_league_key,
+                st.session_state.selected_event_id
+            )
+            if ref_ev:
+                old_prices = st.session_state.get("selected_event_prices", {})
+                new_prices = oddsapi_extract_prices(ref_ev)
+                diffs = []
+                for k in ["odds_1", "odds_x", "odds_2", "odds_over25", "odds_under25", "odds_btts", "odds_dnb_home", "odds_dnb_away"]:
+                    ov = old_prices.get(k)
+                    nv = new_prices.get(k)
+                    if ov != nv:
+                        diffs.append(f"{k}: {ov} → {nv}")
+                st.session_state.selected_event_prices = new_prices
+                st.session_state.last_refresh_ts = datetime.now().isoformat(timespec="seconds")
+                st.session_state.last_refresh_diffs = diffs
 
         if st.session_state.get("last_refresh_ts"):
             st.caption(f"🕓 Ultimo refresh quote: {st.session_state.last_refresh_ts}")
 
+        # bottone refresh manuale
         if st.button("🔁 Refresh quote partita"):
             ref_ev = oddsapi_refresh_event(
                 st.session_state.selected_league_key,
@@ -1120,6 +1184,7 @@ if st.session_state.soccer_leagues:
 
                 st.session_state.selected_event_prices = new_prices
 
+                # cancello i widget riferiti a questo evento usando la chiave STABILE
                 ek = st.session_state.selected_event_key
                 for k in [
                     f"spread_co_{ek}",
@@ -1136,20 +1201,21 @@ if st.session_state.soccer_leagues:
                     if k in st.session_state:
                         del st.session_state[k]
 
-                st.session_state.last_refresh_ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+                st.session_state.last_refresh_ts = datetime.now().isoformat(timespec="seconds")
                 st.session_state.refresh_done = True
                 st.session_state.last_refresh_diffs = diffs
                 st.rerun()
             else:
                 st.warning("Non sono riuscito ad aggiornare le quote.")
 
+        # dopo il rerun mostro le diff
         if st.session_state.get("last_refresh_diffs"):
             if len(st.session_state.last_refresh_diffs) > 0:
                 st.subheader("📊 Quote cambiate con l'ultimo refresh")
                 for d in st.session_state.last_refresh_diffs:
                     st.write("-", d)
             else:
-                st.info("ℹ️ Refresh riuscito, ma le quote erano identiche.")
+                st.info("ℹ️ Refresh riuscito, ma le quote erano identiche all’ultima chiamata.")
             st.session_state.last_refresh_diffs = []
 
 # ============================================================
@@ -1212,6 +1278,7 @@ if (not api_prices.get("odds_dnb_away")) and odds2_tmp and oddsx_tmp:
     if dnb_away_calc:
         api_prices["odds_dnb_away"] = round(dnb_away_calc * 0.995, 3)
 
+# QUI usiamo la chiave stabile
 key_suffix = st.session_state.get("selected_event_key", "match")
 
 col_co1, col_co2, col_co3 = st.columns(3)
@@ -1429,6 +1496,7 @@ if st.button("CALCOLA MODELLO"):
 
     st.subheader("💰 Value Finder")
     rows = []
+
     anomalo_ou = any("over/under 2.5" in w.lower() for w in warnings)
 
     for lab, p_mod, odd in [
@@ -1557,9 +1625,9 @@ if st.button("CALCOLA MODELLO"):
         st.write(f"Copertura 0–3 gol (FT): {ris_co['cover_0_3']*100:.1f}%")
         st.caption("Queste usano la distribuzione dei gol totali, quindi sono più stabili.")
 
-    # salvataggio nel CSV (non sempre persistente su cloud)
+    # salvataggio nel CSV
     row = {
-        "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
         "match": match_name,
         "match_date": date.today().isoformat(),
         "spread_ap": spread_ap,
@@ -1582,6 +1650,17 @@ if st.button("CALCOLA MODELLO"):
         "affidabilita": aff,
         "confidence_globale": global_conf,
         "market_pressure_index": mpi,
+        "esito_modello": max(
+            [("1", ris_co["p_home"]), ("X", ris_co["p_draw"]), ("2", ris_co["p_away"])],
+            key=lambda x: x[1]
+        )[0],
+        "esito_reale": "",
+        "risultato_reale": "",
+        "match_ok": "",
+        "odd_mass": round(ris_co["odd_mass"]*100, 2),
+        "even_mass2": round(ris_co["even_mass2"]*100, 2),
+        "cover_0_2": round(ris_co["cover_0_2"]*100, 2),
+        "cover_0_3": round(ris_co["cover_0_3"]*100, 2),
     }
 
     try:
@@ -1591,7 +1670,7 @@ if st.button("CALCOLA MODELLO"):
             df_new.to_csv(ARCHIVE_FILE, index=False)
         else:
             pd.DataFrame([row]).to_csv(ARCHIVE_FILE, index=False)
-        st.success("📁 Analisi salvata in storico_analisi.csv (se il cloud lo consente).")
+        st.success("📁 Analisi salvata in storico_analisi.csv")
     except Exception as e:
         st.warning(f"Non sono riuscito a salvare l'analisi: {e}")
 
@@ -1638,6 +1717,9 @@ if st.button("Recupera risultati degli ultimi 3 giorni"):
                     esito_real = "2"
                 df.at[idx, "risultato_reale"] = f"{gh}-{ga}"
                 df.at[idx, "esito_reale"] = esito_real
+                pred = row.get("esito_modello", "")
+                if pred != "" and esito_real != "":
+                    df.at[idx, "match_ok"] = 1 if pred == esito_real else 0
                 updated += 1
 
         df.to_csv(ARCHIVE_FILE, index=False)
