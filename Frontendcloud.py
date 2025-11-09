@@ -331,6 +331,19 @@ def safe_round(x: Optional[float], nd: int = 3) -> Optional[float]:
 def decimali_a_prob(odds: float) -> float:
     return 1 / odds if odds and odds > 0 else 0.0
 
+def ensure_probability_array(values: Union[List[float], np.ndarray, pd.Series]) -> np.ndarray:
+    """
+    Garantisce che un vettore di probabilità sia nell'intervallo [0, 1].
+    Se vengono rilevati valori > 1, assume che siano espressi in percentuale (0-100) e li converte.
+    """
+    arr = np.array(values, dtype=float)
+    if arr.size == 0:
+        return arr
+    percentage_mask = (arr > 1.0) & np.isfinite(arr)
+    if percentage_mask.any():
+        arr[percentage_mask] = arr[percentage_mask] / 100.0
+    return np.clip(arr, 0.0, 1.0)
+
 # ============================================================
 #   VALIDAZIONE INPUT ROBUSTA (URGENTE)
 # ============================================================
@@ -2757,7 +2770,9 @@ def weighted_calibration_with_time_decay(
             df["esito_reale"].notna() & 
             (df["esito_reale"] != "") &
             df["p_home"].notna()
-        ]
+        ].copy()
+        
+        df_complete["p_home"] = ensure_probability_array(df_complete["p_home"].values)
         
         if len(df_complete) < 30:
             return None
@@ -3987,7 +4002,11 @@ def load_calibration_from_history(
             df["p_home"].notna() &
             df["p_draw"].notna() &
             df["p_away"].notna()
-        ]
+        ].copy()
+        
+        df_complete["p_home"] = ensure_probability_array(df_complete["p_home"].values)
+        df_complete["p_draw"] = ensure_probability_array(df_complete["p_draw"].values)
+        df_complete["p_away"] = ensure_probability_array(df_complete["p_away"].values)
         
         # Minimo partite: 30 per lega specifica, 50 per globale
         min_matches = 30 if league else 50
@@ -4043,7 +4062,9 @@ def optimize_model_parameters(
             df["esito_reale"].notna() & 
             (df["esito_reale"] != "") &
             df["p_home"].notna()
-        ]
+        ].copy()
+        
+        df_complete["p_home"] = ensure_probability_array(df_complete["p_home"].values)
         
         if len(df_complete) < 30:
             return {}
@@ -4264,26 +4285,51 @@ def calculate_market_efficiency(
     Se il mercato è efficiente, le quote dovrebbero essere molto vicine ai risultati.
     """
     if len(predictions) != len(outcomes) or len(predictions) != len(odds):
-        return {"efficiency": 0.0, "bias": 0.0}
+        return {
+            "efficiency": 0.0,
+            "bias": 0.0,
+            "market_accuracy": 0.0,
+            "market_brier": None,
+            "model_brier": None,
+            "brier_delta_model_minus_market": None,
+        }
     
-    # Calcola accuracy delle quote
-    implied_probs = [1 / o for o in odds]
-    quote_accuracy = np.mean([
-        1 if (implied_probs[i] == max(implied_probs[i], predictions[i], 1 - predictions[i] - implied_probs[i])) 
-        else 0
-        for i in range(len(predictions))
-    ])
+    predictions_arr = ensure_probability_array(predictions)
+    outcomes_arr = np.array(outcomes, dtype=float)
+    implied_raw = np.array([1.0 / o if o and o > 0 else np.nan for o in odds], dtype=float)
     
-    # Bias: differenza media tra quote e risultati
-    bias = np.mean([abs(implied_probs[i] - outcomes[i]) for i in range(len(predictions))])
+    finite_mask = np.isfinite(implied_raw) & np.isfinite(outcomes_arr)
+    if finite_mask.sum() == 0:
+        return {
+            "efficiency": 0.0,
+            "bias": 0.0,
+            "market_accuracy": 0.0,
+            "market_brier": None,
+            "model_brier": None,
+            "brier_delta_model_minus_market": None,
+        }
     
-    # Efficiency score (0-100)
-    efficiency = (1 - bias) * 100
+    implied_probs = implied_raw.copy()
+    implied_probs[finite_mask] = ensure_probability_array(implied_raw[finite_mask])
+    
+    implied_clean = implied_probs[finite_mask]
+    outcomes_clean = outcomes_arr[finite_mask]
+    predictions_clean = predictions_arr[finite_mask]
+    
+    market_brier = float(np.mean((implied_clean - outcomes_clean) ** 2))
+    model_brier = float(np.mean((predictions_clean - outcomes_clean) ** 2))
+    
+    market_accuracy = float(np.mean((implied_clean >= 0.5).astype(int) == outcomes_clean.astype(int)))
+    bias = float(np.mean(implied_clean - outcomes_clean))
+    efficiency = max(0.0, min(100.0, (1.0 - abs(bias)) * 100.0))
     
     return {
         "efficiency": round(efficiency, 2),
         "bias": round(bias, 4),
-        "quote_accuracy": round(quote_accuracy * 100, 2)
+        "market_accuracy": round(market_accuracy * 100, 2),
+        "market_brier": round(market_brier, 4),
+        "model_brier": round(model_brier, 4),
+        "brier_delta_model_minus_market": round(model_brier - market_brier, 4),
     }
 
 # ============================================================
@@ -6313,16 +6359,20 @@ def get_realtime_performance_metrics(
         if "timestamp" in df.columns:
             df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce')
             cutoff_date = datetime.now() - timedelta(days=window_days)
-            df_recent = df[df["timestamp"] >= cutoff_date]
+            df_recent = df[df["timestamp"] >= cutoff_date].copy()
         else:
-            df_recent = df.tail(50)  # Fallback: ultime 50 partite
+            df_recent = df.tail(50).copy()  # Fallback: ultime 50 partite
         
         # Filtra partite con risultati
         df_complete = df_recent[
             df_recent["esito_reale"].notna() & 
             (df_recent["esito_reale"] != "") &
             df_recent["p_home"].notna()
-        ]
+        ].copy()
+        
+        for col in ["p_home", "p_draw", "p_away", "over_25", "btts"]:
+            if col in df_complete.columns:
+                df_complete[col] = ensure_probability_array(df_complete[col].values)
         
         if len(df_complete) == 0:
             return {"status": "no_data", "error": "Nessun dato recente con risultati"}
@@ -6331,27 +6381,19 @@ def get_realtime_performance_metrics(
         if "match_ok" in df_complete.columns:
             accuracy = df_complete["match_ok"].mean() * 100
         else:
-            # Calcola accuracy manualmente
-            correct = 0
-            total = 0
-            for _, row in df_complete.iterrows():
-                esito_reale = str(row.get("esito_reale", "")).strip()
-                if esito_reale in ["1", "X", "2"]:
-                    # Trova esito predetto (quello con probabilità maggiore)
-                    p_home = row.get("p_home", 0)
-                    p_draw = row.get("p_draw", 0)
-                    p_away = row.get("p_away", 0)
-                    esito_pred = "1" if p_home == max(p_home, p_draw, p_away) else ("X" if p_draw == max(p_home, p_draw, p_away) else "2")
-                    if esito_pred == esito_reale:
-                        correct += 1
-                    total += 1
-            accuracy = (correct / total * 100) if total > 0 else 0
+            mask_valid = df_complete["esito_reale"].isin(["1", "X", "2"])
+            if mask_valid.any() and {"p_home", "p_draw", "p_away"}.issubset(df_complete.columns):
+                preds = df_complete.loc[mask_valid, ["p_home", "p_draw", "p_away"]].idxmax(axis=1)
+                real = df_complete.loc[mask_valid, "esito_reale"].map({"1": "p_home", "X": "p_draw", "2": "p_away"})
+                accuracy = (preds == real).mean() * 100
+            else:
+                accuracy = 0
         
         # ROI simulato
         roi_data = calculate_roi(
-            (df_complete["p_home"] / 100).tolist() if df_complete["p_home"].max() > 1 else df_complete["p_home"].tolist(),
+            df_complete["p_home"].tolist(),
             (df_complete["esito_reale"] == "1").astype(int).tolist(),
-            df_complete["odds_1"].tolist(),
+            df_complete["odds_1"].astype(float).tolist(),
             threshold=0.03
         )
         
@@ -6413,14 +6455,22 @@ def calculate_dashboard_metrics(archive_file: str = ARCHIVE_FILE) -> Dict[str, A
             df["esito_reale"].notna() & 
             (df["esito_reale"] != "") &
             df["p_home"].notna()
-        ]
+        ].copy()
+        
+        for col in ["p_home", "p_draw", "p_away", "over_25", "btts"]:
+            if col in df_complete.columns:
+                df_complete[col] = ensure_probability_array(df_complete[col].values)
         
         if len(df_complete) == 0:
             return {}
         
-        # Accuracy per esito
-        accuracy_1 = len(df_complete[(df_complete["esito_reale"] == "1") & 
-                                     (df_complete["p_home"] == df_complete[["p_home", "p_draw", "p_away"]].max(axis=1))]) / len(df_complete[df_complete["esito_reale"] == "1"]) * 100 if len(df_complete[df_complete["esito_reale"] == "1"]) > 0 else 0
+        # Accuracy per esito (probabilità normalizzate in 0-1)
+        mask_home = df_complete["esito_reale"] == "1"
+        if mask_home.any() and {"p_home", "p_draw", "p_away"}.issubset(df_complete.columns):
+            predicted_cols = df_complete.loc[mask_home, ["p_home", "p_draw", "p_away"]].idxmax(axis=1)
+            accuracy_1 = (predicted_cols == "p_home").mean() * 100
+        else:
+            accuracy_1 = 0.0
         
         # Brier Score aggregato
         # p_home è già in formato 0-1 (non percentuale)
@@ -6432,7 +6482,7 @@ def calculate_dashboard_metrics(archive_file: str = ARCHIVE_FILE) -> Dict[str, A
         roi_data = calculate_roi(
             predictions_home.tolist(),
             outcomes_home.tolist(),
-            (1 / df_complete["odds_1"]).tolist(),
+            df_complete["odds_1"].astype(float).tolist(),
             threshold=0.03
         )
         
@@ -8799,11 +8849,11 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             "lambda_home": round(ris["lambda_home"], 3),
             "lambda_away": round(ris["lambda_away"], 3),
             "rho": round(ris["rho"], 3),
-            "p_home": round(ris["p_home"]*100, 2),
-            "p_draw": round(ris["p_draw"]*100, 2),
-            "p_away": round(ris["p_away"]*100, 2),
-            "btts": round(ris["btts"]*100, 2),
-            "over_25": round(ris["over_25"]*100, 2),
+            "p_home": round(ris["p_home"], 4),
+            "p_draw": round(ris["p_draw"], 4),
+            "p_away": round(ris["p_away"], 4),
+            "btts": round(ris["btts"], 4),
+            "over_25": round(ris["over_25"], 4),
             "esito_modello": max([("1", ris["p_home"]), ("X", ris["p_draw"]), ("2", ris["p_away"])], 
                                 key=lambda x: x[1])[0],
             "esito_reale": "",
@@ -8815,6 +8865,9 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             if os.path.exists(ARCHIVE_FILE):
                 df_old = pd.read_csv(ARCHIVE_FILE)
                 df_new = pd.concat([df_old, pd.DataFrame([row])], ignore_index=True)
+                for col in ["p_home", "p_draw", "p_away", "btts", "over_25"]:
+                    if col in df_new.columns:
+                        df_new[col] = ensure_probability_array(df_new[col].values)
                 df_new.to_csv(ARCHIVE_FILE, index=False)
             else:
                 pd.DataFrame([row]).to_csv(ARCHIVE_FILE, index=False)
