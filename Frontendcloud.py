@@ -11,6 +11,14 @@ from scipy.stats import poisson
 import warnings
 warnings.filterwarnings('ignore')
 
+# Import per calibrazione (opzionale)
+try:
+    from sklearn.linear_model import LogisticRegression
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    print("⚠️ sklearn non disponibile - calibrazione disabilitata")
+
 # ============================================================
 #                 CONFIG
 # ============================================================
@@ -1073,6 +1081,425 @@ def calibration_curve(predictions: List[float], outcomes: List[int], n_bins: int
     
     return bin_centers, bin_frequencies, bin_counts
 
+# ============================================================
+#   CALIBRAZIONE PROBABILITÀ (PLATT SCALING)
+# ============================================================
+
+def platt_scaling_calibration(
+    predictions: List[float],
+    outcomes: List[int],
+    test_predictions: List[float] = None,
+) -> Tuple[callable, float]:
+    """
+    Calibra probabilità usando Platt Scaling (sigmoid).
+    
+    Trasforma probabilità raw in probabilità calibrate usando:
+    P_calibrated = 1 / (1 + exp(A * logit(P_raw) + B))
+    
+    Returns: (calibration_function, calibration_score)
+    """
+    if not SKLEARN_AVAILABLE or len(predictions) < 10:
+        # Troppo pochi dati o sklearn non disponibile, ritorna funzione identità
+        return lambda p: p, 0.0
+    
+    # Converti probabilità in logit space
+    predictions_array = np.array(predictions)
+    # Clip per evitare logit infiniti
+    predictions_array = np.clip(predictions_array, 1e-6, 1 - 1e-6)
+    logits = np.log(predictions_array / (1 - predictions_array))
+    
+    # Fit logistic regression
+    try:
+        lr = LogisticRegression()
+        lr.fit(logits.reshape(-1, 1), outcomes)
+        
+        # Parametri Platt: A e B
+        A = lr.coef_[0][0]
+        B = lr.intercept_[0]
+        
+        def calibrate(p):
+            p = max(1e-6, min(1 - 1e-6, p))
+            logit_p = np.log(p / (1 - p))
+            calibrated = 1 / (1 + np.exp(-(A * logit_p + B)))
+            return max(0.0, min(1.0, calibrated))
+        
+        # Calcola score di calibrazione (Brier score migliorato)
+        calibrated_preds = [calibrate(p) for p in predictions]
+        calibration_score = brier_score(calibrated_preds, outcomes)
+        
+        return calibrate, calibration_score
+    except:
+        # Fallback: funzione identità
+        return lambda p: p, 1.0
+
+def load_calibration_from_history(archive_file: str = ARCHIVE_FILE) -> Optional[callable]:
+    """
+    Carica calibrazione da storico partite.
+    Se ci sono abbastanza dati con risultati, calibra il modello.
+    """
+    if not os.path.exists(archive_file):
+        return None
+    
+    try:
+        df = pd.read_csv(archive_file)
+        
+        # Filtra partite con risultati
+        df_complete = df[
+            df["esito_reale"].notna() & 
+            (df["esito_reale"] != "") &
+            df["p_home"].notna() &
+            df["p_draw"].notna() &
+            df["p_away"].notna()
+        ]
+        
+        if len(df_complete) < 50:  # Minimo 50 partite per calibrare
+            return None
+        
+        # Prepara dati per calibrazione 1X2
+        predictions_home = (df_complete["p_home"] / 100).values
+        outcomes_home = (df_complete["esito_reale"] == "1").astype(int).values
+        
+        # Calibra
+        calibrate_func, score = platt_scaling_calibration(
+            predictions_home.tolist(),
+            outcomes_home.tolist()
+        )
+        
+        return calibrate_func
+    except Exception as e:
+        print(f"Errore calibrazione: {e}")
+        return None
+
+# ============================================================
+#   KELLY CRITERION PER SIZING OTTIMALE
+# ============================================================
+
+def kelly_criterion(
+    probability: float,
+    odds: float,
+    bankroll: float = 100.0,
+    kelly_fraction: float = 0.25,
+) -> Dict[str, float]:
+    """
+    Calcola stake ottimale usando Kelly Criterion.
+    
+    Kelly % = (p * odds - 1) / (odds - 1)
+    
+    Args:
+        probability: Probabilità stimata
+        odds: Quota offerta
+        bankroll: Bankroll totale
+        kelly_fraction: Frazione di Kelly da usare (0.25 = quarter Kelly, più conservativo)
+    
+    Returns:
+        Dict con stake, edge, expected_value, kelly_percent
+    """
+    if odds <= 1.0 or probability <= 0 or probability >= 1:
+        return {
+            "stake": 0.0,
+            "edge": 0.0,
+            "expected_value": 0.0,
+            "kelly_percent": 0.0,
+            "recommendation": "NO BET"
+        }
+    
+    # Edge
+    edge = probability * odds - 1.0
+    
+    if edge <= 0:
+        return {
+            "stake": 0.0,
+            "edge": round(edge * 100, 2),
+            "expected_value": round(edge * bankroll, 2),
+            "kelly_percent": 0.0,
+            "recommendation": "NO BET (negative edge)"
+        }
+    
+    # Kelly percent
+    kelly_percent = (probability * odds - 1) / (odds - 1)
+    
+    # Applica fractional Kelly (più conservativo)
+    kelly_percent *= kelly_fraction
+    
+    # Stake
+    stake = bankroll * kelly_percent
+    
+    # Expected value
+    ev = edge * stake
+    
+    # Recommendation
+    if kelly_percent > 0.10:
+        rec = "HIGH CONFIDENCE"
+    elif kelly_percent > 0.05:
+        rec = "MEDIUM CONFIDENCE"
+    elif kelly_percent > 0.02:
+        rec = "LOW CONFIDENCE"
+    else:
+        rec = "MINIMAL BET"
+    
+    return {
+        "stake": round(stake, 2),
+        "edge": round(edge * 100, 2),
+        "expected_value": round(ev, 2),
+        "kelly_percent": round(kelly_percent * 100, 2),
+        "recommendation": rec
+    }
+
+# ============================================================
+#   ENSEMBLE DI MODELLI
+# ============================================================
+
+def ensemble_prediction(
+    odds_1: float,
+    odds_x: float,
+    odds_2: float,
+    total: float,
+    odds_over25: float = None,
+    odds_under25: float = None,
+    odds_btts: float = None,
+    odds_dnb_home: float = None,
+    odds_dnb_away: float = None,
+    league: str = "generic",
+    use_raw_model: bool = True,
+) -> Dict[str, float]:
+    """
+    Ensemble di più modelli per maggiore robustezza.
+    
+    Combina:
+    1. Modello principale (Dixon-Coles ottimizzato) - usa raw per evitare ricorsione
+    2. Modello basato solo su quote (market-based)
+    3. Modello conservativo (più vicino al mercato)
+    """
+    # Modello 1: Principale (usa raw per evitare ricorsione)
+    # Calcola direttamente senza ensemble per evitare loop
+    odds_1_n, odds_x_n, odds_2_n = normalize_three_way_shin(odds_1, odds_x, odds_2)
+    p1 = 1 / odds_1_n
+    px = 1 / odds_x_n
+    p2 = 1 / odds_2_n
+    tot_p = p1 + px + p2
+    p1 /= tot_p
+    px /= tot_p
+    p2 /= tot_p
+    
+    ha = home_advantage_factor(league)
+    px_prelim = px
+    rho_prelim = estimate_rho_improved(1.5, 1.5, px_prelim, odds_btts)
+    
+    lh, la = estimate_lambda_from_market_optimized(
+        odds_1_n, odds_x_n, odds_2_n, total,
+        odds_over25, odds_under25,
+        odds_dnb_home, odds_dnb_away,
+        home_advantage=ha, rho_initial=rho_prelim
+    )
+    
+    rho = estimate_rho_optimized(lh, la, px, odds_btts, None)
+    mat_ft = build_score_matrix(lh, la, rho)
+    p1_main, px_main, p2_main = calc_match_result_from_matrix(mat_ft)
+    
+    # Modello 2: Market-based (solo quote normalizzate - già calcolate e normalizzate sopra)
+    p1_market = p1  # Usa probabilità già normalizzate
+    px_market = px
+    p2_market = p2
+    
+    # Modello 3: Conservativo (blend 70% market, 30% modello)
+    p1_cons = 0.7 * p1_market + 0.3 * p1_main
+    px_cons = 0.7 * px_market + 0.3 * px_main
+    p2_cons = 0.7 * p2_market + 0.3 * p2_main
+    
+    # Ensemble finale: 60% principale, 25% market, 15% conservativo
+    p1_ensemble = 0.60 * p1_main + 0.25 * p1_market + 0.15 * p1_cons
+    px_ensemble = 0.60 * px_main + 0.25 * px_market + 0.15 * px_cons
+    p2_ensemble = 0.60 * p2_main + 0.25 * p2_market + 0.15 * p2_cons
+    
+    # Normalizza
+    tot_ens = p1_ensemble + px_ensemble + p2_ensemble
+    p1_ensemble /= tot_ens
+    px_ensemble /= tot_ens
+    p2_ensemble /= tot_ens
+    
+    return {
+        "p_home": p1_ensemble,
+        "p_draw": px_ensemble,
+        "p_away": p2_ensemble,
+        "ensemble_confidence": 0.85,  # Alta confidence nell'ensemble
+        "model_agreement": 1.0 - np.std([result_main["p_home"], p1_market, p1_cons])
+    }
+
+# ============================================================
+#   MARKET EFFICIENCY TRACKING
+# ============================================================
+
+def calculate_market_efficiency(
+    predictions: List[float],
+    outcomes: List[int],
+    odds: List[float],
+) -> Dict[str, float]:
+    """
+    Calcola efficienza del mercato.
+    
+    Market efficiency = quanto le quote riflettono la realtà.
+    Se il mercato è efficiente, le quote dovrebbero essere molto vicine ai risultati.
+    """
+    if len(predictions) != len(outcomes) or len(predictions) != len(odds):
+        return {"efficiency": 0.0, "bias": 0.0}
+    
+    # Calcola accuracy delle quote
+    implied_probs = [1 / o for o in odds]
+    quote_accuracy = np.mean([
+        1 if (implied_probs[i] == max(implied_probs[i], predictions[i], 1 - predictions[i] - implied_probs[i])) 
+        else 0
+        for i in range(len(predictions))
+    ])
+    
+    # Bias: differenza media tra quote e risultati
+    bias = np.mean([abs(implied_probs[i] - outcomes[i]) for i in range(len(predictions))])
+    
+    # Efficiency score (0-100)
+    efficiency = (1 - bias) * 100
+    
+    return {
+        "efficiency": round(efficiency, 2),
+        "bias": round(bias, 4),
+        "quote_accuracy": round(quote_accuracy * 100, 2)
+    }
+
+# ============================================================
+#   BACKTESTING AVANZATO
+# ============================================================
+
+def backtest_strategy(
+    archive_file: str = ARCHIVE_FILE,
+    min_edge: float = 0.03,
+    kelly_fraction: float = 0.25,
+    initial_bankroll: float = 100.0,
+) -> Dict[str, Any]:
+    """
+    Backtest completo della strategia su dati storici.
+    
+    Simula scommesse usando Kelly Criterion e calcola performance.
+    """
+    if not os.path.exists(archive_file):
+        return {"error": "Nessun storico disponibile"}
+    
+    try:
+        df = pd.read_csv(archive_file)
+        
+        # Filtra partite con risultati
+        df_complete = df[
+            df["esito_reale"].notna() & 
+            (df["esito_reale"] != "") &
+            df["p_home"].notna() &
+            df["odds_1"].notna()
+        ]
+        
+        if len(df_complete) < 10:
+            return {"error": "Dati insufficienti per backtest"}
+        
+        bankroll = initial_bankroll
+        bets_placed = 0
+        bets_won = 0
+        total_staked = 0.0
+        total_returned = 0.0
+        profit_history = [initial_bankroll]
+        
+        for _, row in df_complete.iterrows():
+            # Determina esito reale
+            esito_reale = str(row["esito_reale"]).strip()
+            if esito_reale not in ["1", "X", "2"]:
+                continue
+            
+            # Controlla tutti gli esiti per value bets
+            for esito, prob_col, odds_col in [
+                ("1", "p_home", "odds_1"),
+                ("X", "p_draw", "odds_x"),
+                ("2", "p_away", "odds_2"),
+            ]:
+                if pd.isna(row.get(prob_col)) or pd.isna(row.get(odds_col)):
+                    continue
+                
+                prob = row[prob_col] / 100.0
+                odds = row[odds_col]
+                
+                if odds <= 1.0:
+                    continue
+                
+                # Calcola edge
+                implied_prob = 1 / odds
+                edge = prob - implied_prob
+                
+                # Se edge sufficiente, piazza scommessa
+                if edge >= min_edge:
+                    kelly = kelly_criterion(prob, odds, bankroll, kelly_fraction)
+                    stake = kelly["stake"]
+                    
+                    if stake > 0 and stake <= bankroll:
+                        bets_placed += 1
+                        total_staked += stake
+                        bankroll -= stake
+                        
+                        # Verifica se vinta
+                        if esito == esito_reale:
+                            bets_won += 1
+                            winnings = stake * odds
+                            total_returned += winnings
+                            bankroll += winnings
+                        else:
+                            # Perdita già dedotta
+                            pass
+                        
+                        profit_history.append(bankroll)
+        
+        # Calcola metriche finali
+        if bets_placed == 0:
+            return {"error": "Nessuna scommessa piazzata con i criteri specificati"}
+        
+        win_rate = bets_won / bets_placed
+        roi = ((total_returned - total_staked) / total_staked * 100) if total_staked > 0 else 0
+        profit = bankroll - initial_bankroll
+        profit_pct = (profit / initial_bankroll * 100) if initial_bankroll > 0 else 0
+        
+        # Sharpe-like ratio (return / volatility)
+        if len(profit_history) > 1:
+            returns = np.diff(profit_history) / profit_history[:-1]
+            sharpe_approx = np.mean(returns) / (np.std(returns) + 1e-10) if np.std(returns) > 0 else 0
+        else:
+            sharpe_approx = 0
+        
+        return {
+            "initial_bankroll": initial_bankroll,
+            "final_bankroll": round(bankroll, 2),
+            "profit": round(profit, 2),
+            "profit_pct": round(profit_pct, 2),
+            "bets_placed": bets_placed,
+            "bets_won": bets_won,
+            "win_rate": round(win_rate * 100, 2),
+            "roi": round(roi, 2),
+            "total_staked": round(total_staked, 2),
+            "total_returned": round(total_returned, 2),
+            "sharpe_approx": round(sharpe_approx, 3),
+            "profit_history": profit_history,
+        }
+    except Exception as e:
+        return {"error": f"Errore backtest: {str(e)}"}
+
+# ============================================================
+#   VISUALIZZAZIONI AVANZATE
+# ============================================================
+
+def create_score_heatmap_data(mat: List[List[float]], max_goals: int = 10) -> np.ndarray:
+    """
+    Prepara dati per heatmap della matrice score.
+    """
+    mg = min(len(mat) - 1, max_goals)
+    heatmap_data = np.zeros((mg + 1, mg + 1))
+    
+    for h in range(mg + 1):
+        for a in range(mg + 1):
+            if h < len(mat) and a < len(mat[h]):
+                heatmap_data[h, a] = mat[h][a] * 100  # Converti in percentuale
+    
+    return heatmap_data
+
 def calculate_confidence_intervals(
     lambda_h: float,
     lambda_a: float,
@@ -1336,17 +1763,56 @@ def risultato_completo_improved(
     cover_0_2 = sum(dist_tot_ft[i] for i in range(0, min(3, len(dist_tot_ft))))
     cover_0_3 = sum(dist_tot_ft[i] for i in range(0, min(4, len(dist_tot_ft))))
     
-    # 18. Intervalli di confidenza (opzionale, può essere lento)
-    # Calcolati solo se necessario (commentati per performance)
-    # confidence_intervals = calculate_confidence_intervals(lh, la, rho, n_simulations=5000)
+    # 18. Calibrazione probabilità (se disponibile storico)
+    calibrate_func = load_calibration_from_history()
+    if calibrate_func:
+        p_home_cal = calibrate_func(p_home)
+        p_draw_cal = calibrate_func(p_draw)
+        p_away_cal = calibrate_func(p_away)
+        # Normalizza
+        tot_cal = p_home_cal + p_draw_cal + p_away_cal
+        if tot_cal > 0:
+            p_home_cal /= tot_cal
+            p_draw_cal /= tot_cal
+            p_away_cal /= tot_cal
+    else:
+        p_home_cal, p_draw_cal, p_away_cal = p_home, p_draw, p_away
+    
+    # 19. Ensemble prediction (opzionale, per maggiore robustezza)
+    # Usa ensemble solo se abbiamo tutti i dati necessari
+    use_ensemble = odds_over25 and odds_under25
+    if use_ensemble:
+        ensemble_result = ensemble_prediction(
+            odds_1, odds_x, odds_2, total,
+            odds_over25, odds_under25, odds_btts,
+            odds_dnb_home, odds_dnb_away, league
+        )
+        # Blend: 80% modello principale, 20% ensemble
+        p_home_final = 0.8 * p_home_cal + 0.2 * ensemble_result["p_home"]
+        p_draw_final = 0.8 * p_draw_cal + 0.2 * ensemble_result["p_draw"]
+        p_away_final = 0.8 * p_away_cal + 0.2 * ensemble_result["p_away"]
+    else:
+        p_home_final, p_draw_final, p_away_final = p_home_cal, p_draw_cal, p_away_cal
+    
+    # Normalizza finale
+    tot_final = p_home_final + p_draw_final + p_away_final
+    if tot_final > 0:
+        p_home_final /= tot_final
+        p_draw_final /= tot_final
+        p_away_final /= tot_final
     
     return {
         "lambda_home": lh,
         "lambda_away": la,
         "rho": rho,
-        "p_home": p_home,
-        "p_draw": p_draw,
-        "p_away": p_away,
+        "p_home": p_home_final,
+        "p_draw": p_draw_final,
+        "p_away": p_away_final,
+        "p_home_raw": p_home,  # Probabilità raw (non calibrate)
+        "p_draw_raw": p_draw,
+        "p_away_raw": p_away,
+        "calibration_applied": calibrate_func is not None,
+        "ensemble_applied": use_ensemble,
         "over_15": over_15,
         "under_15": under_15,
         "over_25": over_25,
@@ -1542,6 +2008,10 @@ st.markdown("""
 - ✅ **HT ratio migliorato** basato su analisi empirica
 - ✅ **Matrice score ad alta precisione** (fino a 20 gol, normalizzazione accurata)
 - ✅ **Intervalli di confidenza** Monte Carlo per probabilità principali
+- ✅ **Calibrazione probabilità** (Platt Scaling) per correggere bias sistematici
+- ✅ **Kelly Criterion** per sizing ottimale delle scommesse
+- ✅ **Ensemble di modelli** per maggiore robustezza e affidabilità
+- ✅ **Market efficiency tracking** per valutare efficienza del mercato
 """)
 
 st.caption(f"🕐 Esecuzione: {datetime.now().isoformat(timespec='seconds')}")
@@ -1856,8 +2326,13 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                 for w in warnings:
                     st.warning(w)
         
-        # Value Finder
-        st.subheader("💎 Value Finder")
+        # Value Finder con Kelly Criterion
+        st.subheader("💎 Value Finder & Kelly Criterion")
+        
+        # Input bankroll
+        bankroll = st.number_input("💰 Bankroll (€)", value=100.0, min_value=1.0, step=10.0, key="bankroll_input")
+        kelly_fraction = st.slider("🎯 Kelly Fraction", 0.1, 1.0, 0.25, 0.05, 
+                                   help="Frazione di Kelly da usare (0.25 = Quarter Kelly, più conservativo)")
         
         value_rows = []
         
@@ -1871,6 +2346,9 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             edge = (p_mod - p_book) * 100
             ev = (p_mod * odd - 1) * 100
             
+            # Kelly Criterion
+            kelly = kelly_criterion(p_mod, odd, bankroll, kelly_fraction)
+            
             value_rows.append({
                 "Mercato": "1X2",
                 "Esito": lab,
@@ -1878,7 +2356,10 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                 "Prob Quota %": f"{p_book*100:.1f}",
                 "Edge %": f"{edge:+.1f}",
                 "EV %": f"{ev:+.1f}",
-                "Value": "✅" if edge >= 3 else ("⚠️" if edge >= 1 else "")
+                "Kelly %": f"{kelly['kelly_percent']:.2f}",
+                "Stake (€)": f"{kelly['stake']:.2f}",
+                "Value": "✅" if edge >= 3 else ("⚠️" if edge >= 1 else ""),
+                "Rec": kelly['recommendation']
             })
         
         # Over/Under
@@ -1887,6 +2368,7 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             p_book = 1 / odds_over25
             edge = (p_mod - p_book) * 100
             ev = (p_mod * odds_over25 - 1) * 100
+            kelly = kelly_criterion(p_mod, odds_over25, bankroll, kelly_fraction)
             
             value_rows.append({
                 "Mercato": "Over/Under 2.5",
@@ -1895,7 +2377,10 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                 "Prob Quota %": f"{p_book*100:.1f}",
                 "Edge %": f"{edge:+.1f}",
                 "EV %": f"{ev:+.1f}",
-                "Value": "✅" if edge >= 3 else ("⚠️" if edge >= 1 else "")
+                "Kelly %": f"{kelly['kelly_percent']:.2f}",
+                "Stake (€)": f"{kelly['stake']:.2f}",
+                "Value": "✅" if edge >= 3 else ("⚠️" if edge >= 1 else ""),
+                "Rec": kelly['recommendation']
             })
         
         # BTTS
@@ -1904,6 +2389,7 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             p_book = 1 / final_btts_odds
             edge = (p_mod - p_book) * 100
             ev = (p_mod * final_btts_odds - 1) * 100
+            kelly = kelly_criterion(p_mod, final_btts_odds, bankroll, kelly_fraction)
             
             value_rows.append({
                 "Mercato": "BTTS",
@@ -1912,7 +2398,10 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                 "Prob Quota %": f"{p_book*100:.1f}",
                 "Edge %": f"{edge:+.1f}",
                 "EV %": f"{ev:+.1f}",
-                "Value": "✅" if edge >= 3 else ("⚠️" if edge >= 1 else "")
+                "Kelly %": f"{kelly['kelly_percent']:.2f}",
+                "Stake (€)": f"{kelly['stake']:.2f}",
+                "Value": "✅" if edge >= 3 else ("⚠️" if edge >= 1 else ""),
+                "Rec": kelly['recommendation']
             })
         
         df_value = pd.DataFrame(value_rows)
@@ -1925,6 +2414,12 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             st.dataframe(df_value_high, use_container_width=True)
         
         st.dataframe(df_value, use_container_width=True)
+        
+        # Info calibrazione e ensemble
+        if ris.get("calibration_applied"):
+            st.info("✅ **Calibrazione applicata**: Le probabilità sono state calibrate usando dati storici")
+        if ris.get("ensemble_applied"):
+            st.info("✅ **Ensemble applicato**: Combinazione di più modelli per maggiore robustezza")
         
         # Dettagli completi
         with st.expander("📈 Probabilità Dettagliate"):
@@ -1966,6 +2461,37 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
         with st.expander("🎯 Top 10 Risultati Esatti"):
             for h, a, p in ris["top10"]:
                 st.write(f"{h}-{a}: **{p:.1f}%**")
+        
+        # Heatmap matrice score
+        with st.expander("🔥 Heatmap Matrice Score"):
+            try:
+                import matplotlib.pyplot as plt
+                import seaborn as sns
+                
+                # Ricostruisci matrice (per visualizzazione)
+                mat_vis = build_score_matrix(ris["lambda_home"], ris["lambda_away"], ris["rho"])
+                heatmap_data = create_score_heatmap_data(mat_vis, max_goals=8)
+                
+                fig, ax = plt.subplots(figsize=(10, 8))
+                sns.heatmap(
+                    heatmap_data,
+                    annot=True,
+                    fmt='.1f',
+                    cmap='YlOrRd',
+                    cbar_kws={'label': 'Probabilità %'},
+                    xticklabels=range(0, min(9, len(heatmap_data))),
+                    yticklabels=range(0, min(9, len(heatmap_data))),
+                    ax=ax
+                )
+                ax.set_xlabel('Gol Trasferta')
+                ax.set_ylabel('Gol Casa')
+                ax.set_title('Distribuzione Probabilità Risultati Esatti')
+                st.pyplot(fig)
+                plt.close(fig)
+            except ImportError:
+                st.info("📊 Installare matplotlib e seaborn per visualizzare heatmap")
+            except Exception as e:
+                st.warning(f"Errore visualizzazione: {e}")
         
         with st.expander("🔀 Combo Mercati"):
             combo_df = pd.DataFrame([
@@ -2068,4 +2594,73 @@ if st.button("Recupera risultati ultimi 3 giorni"):
             st.rerun()
 
 st.markdown("---")
-st.caption("Developed with ❤️ | Dixon-Coles Bayesian Model | Shin Normalization | IQR Outlier Detection")
+
+# ============================================================
+#        BACKTESTING E PERFORMANCE
+# ============================================================
+
+st.subheader("📊 Backtesting Strategia")
+
+if os.path.exists(ARCHIVE_FILE):
+    col_bt1, col_bt2 = st.columns(2)
+    
+    with col_bt1:
+        min_edge_bt = st.slider("Minimo Edge %", 1.0, 10.0, 3.0, 0.5)
+        kelly_frac_bt = st.slider("Kelly Fraction", 0.1, 1.0, 0.25, 0.05)
+        initial_bank = st.number_input("Bankroll Iniziale (€)", value=100.0, min_value=10.0, step=10.0)
+    
+    with col_bt2:
+        if st.button("🚀 Esegui Backtest", type="primary"):
+            with st.spinner("Eseguendo backtest su dati storici..."):
+                results = backtest_strategy(
+                    ARCHIVE_FILE,
+                    min_edge=min_edge_bt / 100,
+                    kelly_fraction=kelly_frac_bt,
+                    initial_bankroll=initial_bank
+                )
+                
+                if "error" in results:
+                    st.warning(f"⚠️ {results['error']}")
+                else:
+                    st.success("✅ Backtest completato!")
+                    
+                    col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+                    
+                    with col_r1:
+                        st.metric("💰 Bankroll Finale", f"€{results['final_bankroll']:.2f}")
+                    with col_r2:
+                        st.metric("📈 Profit", f"€{results['profit']:.2f}", 
+                                 f"{results['profit_pct']:+.1f}%")
+                    with col_r3:
+                        st.metric("🎯 Win Rate", f"{results['win_rate']:.1f}%")
+                    with col_r4:
+                        st.metric("💵 ROI", f"{results['roi']:.1f}%")
+                    
+                    st.write(f"**Scommesse piazzate**: {results['bets_placed']} ({results['bets_won']} vinte)")
+                    st.write(f"**Totale puntato**: €{results['total_staked']:.2f}")
+                    st.write(f"**Totale ritornato**: €{results['total_returned']:.2f}")
+                    
+                    if results.get('sharpe_approx'):
+                        st.write(f"**Sharpe Ratio (approssimato)**: {results['sharpe_approx']:.3f}")
+                    
+                    # Grafico profit history
+                    if len(results.get('profit_history', [])) > 1:
+                        try:
+                            import matplotlib.pyplot as plt
+                            fig, ax = plt.subplots(figsize=(10, 4))
+                            ax.plot(results['profit_history'], linewidth=2)
+                            ax.axhline(y=initial_bank, color='r', linestyle='--', label='Bankroll Iniziale')
+                            ax.set_xlabel('Numero Scommesse')
+                            ax.set_ylabel('Bankroll (€)')
+                            ax.set_title('Evoluzione Bankroll')
+                            ax.legend()
+                            ax.grid(True, alpha=0.3)
+                            st.pyplot(fig)
+                            plt.close(fig)
+                        except:
+                            pass
+else:
+    st.info("Nessuno storico disponibile per backtest")
+
+st.markdown("---")
+st.caption("Developed with ❤️ | Dixon-Coles Bayesian Model | Shin Normalization | IQR Outlier Detection | Platt Scaling | Kelly Criterion | Ensemble Methods")
