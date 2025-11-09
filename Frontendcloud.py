@@ -998,16 +998,26 @@ def oddsapi_extract_prices_improved(event: dict) -> dict:
 # ============================================================
 
 def oddsapi_get_soccer_leagues() -> List[dict]:
-    if not THE_ODDS_API_KEY:
-        logger.warning("THE_ODDS_API_KEY non configurata. Configura tramite variabile d'ambiente.")
+    # Controlla se c'è una key in session_state (inserita dall'UI)
+    api_key = THE_ODDS_API_KEY
+    if st and "the_odds_api_key_input" in st.session_state and st.session_state.the_odds_api_key_input:
+        api_key = st.session_state.the_odds_api_key_input
+    
+    if not api_key:
+        logger.warning("THE_ODDS_API_KEY non configurata. Configura tramite variabile d'ambiente o inseriscila nell'interfaccia.")
         if st:
-            st.error("⚠️ THE_ODDS_API_KEY non configurata. Configura tramite variabile d'ambiente.")
+            st.error("⚠️ THE_ODDS_API_KEY non configurata. Inseriscila nella sezione 'Configurazione API' qui sotto.")
         return []
     try:
         timeout_val = app_config.api_timeout if hasattr(app_config, 'api_timeout') else 10.0
+        # Usa la key da session_state se disponibile, altrimenti quella globale
+        api_key = THE_ODDS_API_KEY
+        if st and "the_odds_api_key_input" in st.session_state and st.session_state.the_odds_api_key_input:
+            api_key = st.session_state.the_odds_api_key_input
+        
         r = requests.get(
             f"{THE_ODDS_BASE}/sports",
-            params={"apiKey": THE_ODDS_API_KEY, "all": "true"},
+            params={"apiKey": api_key, "all": "true"},
             timeout=timeout_val,
         )
         r.raise_for_status()
@@ -1045,12 +1055,19 @@ def oddsapi_get_soccer_leagues() -> List[dict]:
         return []
 
 def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
-    if not THE_ODDS_API_KEY:
-        logger.warning("THE_ODDS_API_KEY non configurata. Configura tramite variabile d'ambiente.")
+    # Controlla se c'è una key in session_state (inserita dall'UI)
+    api_key = THE_ODDS_API_KEY
+    if st and "the_odds_api_key_input" in st.session_state and st.session_state.the_odds_api_key_input:
+        api_key = st.session_state.the_odds_api_key_input
+    
+    if not api_key:
+        logger.warning("THE_ODDS_API_KEY non configurata. Configura tramite variabile d'ambiente o inseriscila nell'interfaccia.")
+        if st:
+            st.error("⚠️ THE_ODDS_API_KEY non configurata. Inseriscila nella sezione 'Configurazione API'.")
         return []
     base_url = f"{THE_ODDS_BASE}/sports/{league_key}/odds"
     params_common = {
-        "apiKey": THE_ODDS_API_KEY,
+        "apiKey": api_key,
         "regions": "eu,uk",
         "oddsFormat": "decimal",
         "dateFormat": "iso",
@@ -1082,15 +1099,22 @@ def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
         return []
 
 def oddsapi_refresh_event(league_key: str, event_id: str) -> dict:
-    if not THE_ODDS_API_KEY:
-        logger.warning("THE_ODDS_API_KEY non configurata. Configura tramite variabile d'ambiente.")
+    # Controlla se c'è una key in session_state (inserita dall'UI)
+    api_key = THE_ODDS_API_KEY
+    if st and "the_odds_api_key_input" in st.session_state and st.session_state.the_odds_api_key_input:
+        api_key = st.session_state.the_odds_api_key_input
+    
+    if not api_key:
+        logger.warning("THE_ODDS_API_KEY non configurata. Configura tramite variabile d'ambiente o inseriscila nell'interfaccia.")
+        if st:
+            st.error("⚠️ THE_ODDS_API_KEY non configurata. Inseriscila nella sezione 'Configurazione API'.")
         return {}
     if not league_key or not event_id:
         logger.warning(f"Parametri mancanti: league_key={league_key}, event_id={event_id}")
         return {}
     url = f"{THE_ODDS_BASE}/sports/{league_key}/events/{event_id}/odds"
     params = {
-        "apiKey": THE_ODDS_API_KEY,
+        "apiKey": api_key,
         "regions": "eu,uk",
         "oddsFormat": "decimal",
         "dateFormat": "iso",
@@ -6384,6 +6408,28 @@ st.markdown("---")
 # ============================================================
 
 st.subheader("🔍 Carica Partita da The Odds API")
+
+# Sezione configurazione API key (se non configurata)
+if not THE_ODDS_API_KEY:
+    with st.expander("⚙️ Configurazione API Key", expanded=True):
+        st.info("💡 **Inserisci la tua API key di The Odds API**")
+        st.caption("Puoi ottenerla su: https://the-odds-api.com/")
+        
+        api_key_input = st.text_input(
+            "THE_ODDS_API_KEY:",
+            value=st.session_state.get("the_odds_api_key_input", ""),
+            type="password",
+            help="Inserisci la tua API key. Verrà salvata solo per questa sessione."
+        )
+        
+        if api_key_input:
+            st.session_state.the_odds_api_key_input = api_key_input
+            st.success("✅ API key salvata per questa sessione!")
+            st.caption("💡 **Suggerimento**: Per una configurazione permanente, crea un file `.env` con `THE_ODDS_API_KEY=your_key`")
+        else:
+            st.warning("⚠️ Inserisci l'API key per continuare")
+        
+        st.markdown("---")
 
 col_load1, col_load2 = st.columns([1, 2])
 
