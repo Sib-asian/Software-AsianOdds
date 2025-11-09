@@ -746,6 +746,257 @@ def is_derby_match(home_team: str, away_team: str, league: str) -> bool:
     
     return False
 
+def apifootball_get_team_statistics(team_id: int, league_id: int, season: int) -> Dict[str, Any]:
+    """
+    Recupera statistiche dettagliate di una squadra.
+    """
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    params = {"team": team_id, "league": league_id, "season": season}
+    
+    try:
+        r = requests.get(f"{API_FOOTBALL_BASE}/teams/statistics", headers=headers, params=params, timeout=8)
+        r.raise_for_status()
+        data = r.json()
+        response = data.get("response", {})
+        return response
+    except Exception as e:
+        print(f"Errore statistiche team {team_id}: {e}")
+        return {}
+
+def apifootball_get_head_to_head(team1_id: int, team2_id: int, last: int = 10) -> List[Dict[str, Any]]:
+    """
+    Recupera partite head-to-head tra due squadre.
+    """
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    params = {"h2h": f"{team1_id}-{team2_id}", "last": last}
+    
+    try:
+        r = requests.get(f"{API_FOOTBALL_BASE}/fixtures/headtohead", headers=headers, params=params, timeout=8)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("response", [])
+    except Exception as e:
+        print(f"Errore H2H {team1_id} vs {team2_id}: {e}")
+        return []
+
+def apifootball_get_injuries(team_id: int = None, fixture_id: int = None) -> List[Dict[str, Any]]:
+    """
+    Recupera infortuni. Se team_id è specificato, filtra per squadra.
+    """
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    params = {}
+    if team_id:
+        params["team"] = team_id
+    if fixture_id:
+        params["fixture"] = fixture_id
+    
+    try:
+        r = requests.get(f"{API_FOOTBALL_BASE}/injuries", headers=headers, params=params, timeout=8)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("response", [])
+    except Exception as e:
+        print(f"Errore infortuni: {e}")
+        return []
+
+def calculate_team_form_from_statistics(team_stats: Dict[str, Any], last_n: int = 5) -> Dict[str, float]:
+    """
+    Calcola fattore forma da statistiche squadra.
+    """
+    if not team_stats:
+        return {"form_attack": 1.0, "form_defense": 1.0, "form_points": 1.0, "confidence": 0.0}
+    
+    try:
+        fixtures = team_stats.get("fixtures", {})
+        played = fixtures.get("played", {}).get("total", 0)
+        
+        if played < 3:
+            return {"form_attack": 1.0, "form_defense": 1.0, "form_points": 1.0, "confidence": 0.0}
+        
+        # Statistiche attacco
+        goals_for = team_stats.get("goals", {}).get("for", {}).get("average", {}).get("total", 0)
+        goals_against = team_stats.get("goals", {}).get("against", {}).get("average", {}).get("total", 0)
+        
+        # Forma ultime partite (se disponibile)
+        wins = fixtures.get("wins", {}).get("total", 0)
+        draws = fixtures.get("draws", {}).get("total", 0)
+        losses = fixtures.get("loses", {}).get("total", 0)
+        
+        # Calcola forma punti (vittoria=3, pareggio=1, sconfitta=0)
+        form_points = (wins * 3 + draws) / max(1, played * 3)
+        
+        # Normalizza forma punti (0.33 = media, 1.0 = perfetto)
+        form_points_factor = 0.7 + (form_points - 0.33) * 0.9  # Range: 0.7 - 1.6
+        
+        # Fattore attacco basato su gol fatti
+        # Media lega ~1.3 gol/partita, se squadra fa 1.5 → +15%
+        avg_goals_league = 1.3
+        form_attack = 0.85 + (goals_for / avg_goals_league - 1) * 0.3  # Range: 0.85 - 1.15
+        
+        # Fattore difesa basato su gol subiti
+        # Se squadra subisce 0.8 → +15% difesa
+        form_defense = 0.85 + (1 - goals_against / avg_goals_league) * 0.3  # Range: 0.85 - 1.15
+        
+        # Confidence basata su partite giocate
+        confidence = min(1.0, played / 10.0)
+        
+        return {
+            "form_attack": round(form_attack, 3),
+            "form_defense": round(form_defense, 3),
+            "form_points": round(form_points_factor, 3),
+            "confidence": round(confidence, 2),
+            "goals_for_avg": round(goals_for, 2),
+            "goals_against_avg": round(goals_against, 2),
+        }
+    except Exception as e:
+        print(f"Errore calcolo forma da statistiche: {e}")
+        return {"form_attack": 1.0, "form_defense": 1.0, "form_points": 1.0, "confidence": 0.0}
+
+def calculate_h2h_adjustments(h2h_matches: List[Dict[str, Any]], home_team_id: int, away_team_id: int) -> Dict[str, float]:
+    """
+    Calcola aggiustamenti basati su H2H.
+    """
+    if not h2h_matches or len(h2h_matches) < 2:
+        return {"h2h_home_advantage": 1.0, "h2h_goals_factor": 1.0, "h2h_btts_factor": 1.0, "confidence": 0.0}
+    
+    try:
+        home_wins = 0
+        draws = 0
+        away_wins = 0
+        total_goals = 0
+        btts_count = 0
+        matches_played = 0
+        
+        for match in h2h_matches:
+            fixture = match.get("fixture", {})
+            status = fixture.get("status", {}).get("short", "")
+            
+            if status not in ["FT", "AET", "PEN"]:
+                continue
+            
+            teams = match.get("teams", {})
+            home = teams.get("home", {})
+            away = teams.get("away", {})
+            
+            home_id = home.get("id")
+            away_id = away.get("id")
+            
+            # Determina quale squadra è casa/trasferta in questo match
+            if home_id == home_team_id:
+                # La nostra home è casa in questo match
+                home_score = match.get("goals", {}).get("home", 0)
+                away_score = match.get("goals", {}).get("away", 0)
+            elif away_id == home_team_id:
+                # La nostra home è trasferta in questo match
+                home_score = match.get("goals", {}).get("away", 0)
+                away_score = match.get("goals", {}).get("home", 0)
+            else:
+                continue
+            
+            matches_played += 1
+            total_goals += home_score + away_score
+            
+            if home_score > away_score:
+                home_wins += 1
+            elif home_score < away_score:
+                away_wins += 1
+            else:
+                draws += 1
+            
+            if home_score > 0 and away_score > 0:
+                btts_count += 1
+        
+        if matches_played < 2:
+            return {"h2h_home_advantage": 1.0, "h2h_goals_factor": 1.0, "h2h_btts_factor": 1.0, "confidence": 0.0}
+        
+        # Calcola fattori
+        home_win_rate = home_wins / matches_played
+        draw_rate = draws / matches_played
+        away_win_rate = away_wins / matches_played
+        
+        # Se home vince spesso → aumenta vantaggio casa
+        # Media: 45% vittorie casa, 25% pareggi, 30% vittorie trasferta
+        expected_home_win = 0.45
+        h2h_home_advantage = 0.9 + (home_win_rate - expected_home_win) * 0.4  # Range: 0.9 - 1.1
+        
+        # Fattore gol: media gol in H2H vs media generale (2.6)
+        avg_goals_h2h = total_goals / matches_played
+        avg_goals_general = 2.6
+        h2h_goals_factor = 0.9 + (avg_goals_h2h / avg_goals_general - 1) * 0.2  # Range: 0.9 - 1.1
+        
+        # Fattore BTTS
+        btts_rate = btts_count / matches_played
+        avg_btts_rate = 0.52  # Media generale
+        h2h_btts_factor = 0.9 + (btts_rate / avg_btts_rate - 1) * 0.2  # Range: 0.9 - 1.1
+        
+        # Confidence basata su numero match
+        confidence = min(1.0, matches_played / 5.0)
+        
+        return {
+            "h2h_home_advantage": round(h2h_home_advantage, 3),
+            "h2h_goals_factor": round(h2h_goals_factor, 3),
+            "h2h_btts_factor": round(h2h_btts_factor, 3),
+            "confidence": round(confidence, 2),
+            "matches_analyzed": matches_played,
+            "home_wins": home_wins,
+            "draws": draws,
+            "away_wins": away_wins,
+        }
+    except Exception as e:
+        print(f"Errore calcolo H2H: {e}")
+        return {"h2h_home_advantage": 1.0, "h2h_goals_factor": 1.0, "h2h_btts_factor": 1.0, "confidence": 0.0}
+
+def calculate_injuries_impact(injuries: List[Dict[str, Any]], team_id: int) -> Dict[str, float]:
+    """
+    Calcola impatto infortuni su lambda.
+    """
+    if not injuries:
+        return {"attack_factor": 1.0, "defense_factor": 1.0, "confidence": 0.0}
+    
+    try:
+        team_injuries = [inj for inj in injuries if inj.get("team", {}).get("id") == team_id]
+        
+        if not team_injuries:
+            return {"attack_factor": 1.0, "defense_factor": 1.0, "confidence": 0.0}
+        
+        # Classifica posizioni (approssimativo)
+        attack_positions = ["Forward", "Attacker", "Winger"]
+        defense_positions = ["Defender", "Goalkeeper"]
+        midfield_positions = ["Midfielder"]
+        
+        attack_impact = 0
+        defense_impact = 0
+        
+        for injury in team_injuries:
+            player = injury.get("player", {})
+            position = player.get("position", "").upper()
+            
+            # Determina impatto basandosi su posizione
+            if any(pos in position for pos in attack_positions):
+                attack_impact += 0.05  # -5% per attaccante infortunato
+            elif any(pos in position for pos in defense_positions):
+                defense_impact += 0.05  # -5% per difensore infortunato
+            elif any(pos in position for pos in midfield_positions):
+                attack_impact += 0.02  # -2% per centrocampista (influenza attacco)
+                defense_impact += 0.02  # -2% per centrocampista (influenza difesa)
+        
+        # Limita impatto massimo
+        attack_factor = max(0.85, 1.0 - min(0.15, attack_impact))  # Max -15%
+        defense_factor = max(0.85, 1.0 - min(0.15, defense_impact))  # Max -15%
+        
+        # Confidence: più infortuni = più confidence nell'impatto
+        confidence = min(1.0, len(team_injuries) / 3.0)
+        
+        return {
+            "attack_factor": round(attack_factor, 3),
+            "defense_factor": round(defense_factor, 3),
+            "confidence": round(confidence, 2),
+            "num_injuries": len(team_injuries),
+        }
+    except Exception as e:
+        print(f"Errore calcolo impatto infortuni: {e}")
+        return {"attack_factor": 1.0, "defense_factor": 1.0, "confidence": 0.0}
+
 def get_team_fatigue_and_motivation_data(
     team_name: str,
     league: str,
@@ -799,6 +1050,76 @@ def get_team_fatigue_and_motivation_data(
         return result
     except Exception as e:
         print(f"Errore recupero dati team {team_name}: {e}")
+        return result
+
+def get_advanced_team_data(
+    home_team_name: str,
+    away_team_name: str,
+    league: str,
+    match_date: str,
+) -> Dict[str, Any]:
+    """
+    Recupera dati avanzati: statistiche, H2H, infortuni.
+    Lavora in background per supportare il modello.
+    """
+    result = {
+        "home_team_stats": None,
+        "away_team_stats": None,
+        "h2h_data": None,
+        "home_injuries": None,
+        "away_injuries": None,
+        "data_available": False,
+    }
+    
+    try:
+        league_id = get_league_id_from_name(league)
+        if not league_id:
+            return result
+        
+        season = get_current_season()
+        
+        # 1. Cerca team IDs
+        home_team_info = apifootball_search_team(home_team_name, league_id)
+        away_team_info = apifootball_search_team(away_team_name, league_id)
+        
+        home_team_id = home_team_info.get("team", {}).get("id") if home_team_info else None
+        away_team_id = away_team_info.get("team", {}).get("id") if away_team_info else None
+        
+        if not home_team_id or not away_team_id:
+            return result
+        
+        # 2. Recupera statistiche squadre (in parallelo se possibile)
+        home_stats = apifootball_get_team_statistics(home_team_id, league_id, season)
+        away_stats = apifootball_get_team_statistics(away_team_id, league_id, season)
+        
+        if home_stats:
+            result["home_team_stats"] = calculate_team_form_from_statistics(home_stats)
+        if away_stats:
+            result["away_team_stats"] = calculate_team_form_from_statistics(away_stats)
+        
+        # 3. Recupera H2H
+        h2h_matches = apifootball_get_head_to_head(home_team_id, away_team_id, last=10)
+        if h2h_matches:
+            result["h2h_data"] = calculate_h2h_adjustments(h2h_matches, home_team_id, away_team_id)
+        
+        # 4. Recupera infortuni
+        all_injuries = apifootball_get_injuries()
+        if all_injuries:
+            result["home_injuries"] = calculate_injuries_impact(all_injuries, home_team_id)
+            result["away_injuries"] = calculate_injuries_impact(all_injuries, away_team_id)
+        
+        # 5. Verifica se abbiamo dati
+        result["data_available"] = (
+            result["home_team_stats"] is not None or
+            result["away_team_stats"] is not None or
+            result["h2h_data"] is not None or
+            result["home_injuries"] is not None or
+            result["away_injuries"] is not None
+        )
+        
+        return result
+    except Exception as e:
+        print(f"Errore recupero dati avanzati: {e}")
         return result
 
 # ============================================================
@@ -1626,12 +1947,16 @@ def ensemble_prediction(
     px_ensemble /= tot_ens
     p2_ensemble /= tot_ens
     
+    # Calcola agreement tra modelli (bassa deviazione standard = alto agreement)
+    probs_home = [p1_main, p1_market, p1_cons]
+    model_agreement = 1.0 - min(1.0, np.std(probs_home))  # Range 0-1, più alto = più accordo
+    
     return {
         "p_home": p1_ensemble,
         "p_draw": px_ensemble,
         "p_away": p2_ensemble,
         "ensemble_confidence": 0.85,  # Alta confidence nell'ensemble
-        "model_agreement": 1.0 - np.std([result_main["p_home"], p1_market, p1_cons])
+        "model_agreement": round(model_agreement, 3)
     }
 
 # ============================================================
@@ -2029,55 +2354,57 @@ def find_best_odds_summary(best_odds: Dict[str, List[Dict[str, Any]]]) -> Dict[s
 #   FEATURE ENGINEERING AVANZATO
 # ============================================================
 
-def get_team_form_factor(team_name: str, league: str = None, last_n: int = 5) -> Dict[str, float]:
-    """
-    Calcola fattore forma squadra basato su ultime N partite.
-    TODO: Integrare con API per dati reali.
-    
-    Returns: Dict con forma attacco, difesa, punti
-    """
-    # Placeholder - in produzione si integrerebbe con API-Football
-    # Per ora ritorna valori neutri
-    return {
-        "form_attack": 1.0,  # Moltiplicatore attacco
-        "form_defense": 1.0,  # Moltiplicatore difesa
-        "form_points": 1.0,  # Form generale
-        "confidence": 0.0,  # Confidence nei dati (0 = no data)
-    }
-
-def get_head_to_head_factor(home_team: str, away_team: str, last_n: int = 5) -> Dict[str, float]:
-    """
-    Calcola fattore H2H basato su ultime N partite tra le due squadre.
-    TODO: Integrare con API per dati reali.
-    """
-    # Placeholder
-    return {
-        "h2h_home_advantage": 1.0,  # Vantaggio casa in H2H
-        "h2h_goals_factor": 1.0,  # Fattore gol in H2H
-        "confidence": 0.0,
-    }
-
-def apply_form_adjustment(
+def apply_advanced_data_adjustments(
     lambda_h: float,
     lambda_a: float,
-    home_team: str = None,
-    away_team: str = None,
-    league: str = None,
+    advanced_data: Dict[str, Any],
 ) -> Tuple[float, float]:
     """
-    Applica aggiustamento basato su forma squadre.
+    Applica aggiustamenti basati su dati avanzati (statistiche, H2H, infortuni).
+    Lavora in background, modifica lambda silenziosamente.
     """
-    if not home_team or not away_team:
+    if not advanced_data or not advanced_data.get("data_available"):
         return lambda_h, lambda_a
     
-    form_home = get_team_form_factor(home_team, league)
-    form_away = get_team_form_factor(away_team, league)
+    # 1. Aggiustamenti forma squadre
+    home_stats = advanced_data.get("home_team_stats")
+    away_stats = advanced_data.get("away_team_stats")
     
-    # Applica solo se abbiamo confidence
-    if form_home["confidence"] > 0.5:
-        lambda_h *= form_home["form_attack"]
-    if form_away["confidence"] > 0.5:
-        lambda_a *= form_away["form_attack"]
+    if home_stats and home_stats.get("confidence", 0) > 0.3:
+        # Applica forma attacco casa
+        lambda_h *= home_stats.get("form_attack", 1.0)
+        # Applica forma difesa trasferta (riduce lambda away)
+        lambda_a *= (2.0 - home_stats.get("form_defense", 1.0))  # Inverso
+    
+    if away_stats and away_stats.get("confidence", 0) > 0.3:
+        # Applica forma attacco trasferta
+        lambda_a *= away_stats.get("form_attack", 1.0)
+        # Applica forma difesa casa (riduce lambda home)
+        lambda_h *= (2.0 - away_stats.get("form_defense", 1.0))  # Inverso
+    
+    # 2. Aggiustamenti H2H
+    h2h_data = advanced_data.get("h2h_data")
+    if h2h_data and h2h_data.get("confidence", 0) > 0.3:
+        # Aggiusta vantaggio casa
+        lambda_h *= h2h_data.get("h2h_home_advantage", 1.0)
+        # Aggiusta total gol (entrambi i lambda)
+        goals_factor = h2h_data.get("h2h_goals_factor", 1.0)
+        lambda_h *= math.sqrt(goals_factor)  # Radice per distribuire
+        lambda_a *= math.sqrt(goals_factor)
+    
+    # 3. Aggiustamenti infortuni
+    home_injuries = advanced_data.get("home_injuries")
+    away_injuries = advanced_data.get("away_injuries")
+    
+    if home_injuries and home_injuries.get("confidence", 0) > 0.3:
+        # Infortuni casa: riduce attacco, aumenta vulnerabilità difesa
+        lambda_h *= home_injuries.get("attack_factor", 1.0)
+        lambda_a *= (2.0 - home_injuries.get("defense_factor", 1.0))  # Inverso
+    
+    if away_injuries and away_injuries.get("confidence", 0) > 0.3:
+        # Infortuni trasferta: riduce attacco, aumenta vulnerabilità difesa
+        lambda_a *= away_injuries.get("attack_factor", 1.0)
+        lambda_h *= (2.0 - away_injuries.get("defense_factor", 1.0))  # Inverso
     
     return lambda_h, lambda_a
 
@@ -2866,6 +3193,8 @@ def risultato_completo_improved(
     fatigue_away: Dict[str, Any] = None,
     motivation_home: Dict[str, Any] = None,
     motivation_away: Dict[str, Any] = None,
+    advanced_data: Dict[str, Any] = None,
+    **kwargs
 ) -> Dict[str, Any]:
     """
     Versione migliorata del modello con:
@@ -2954,6 +3283,11 @@ def risultato_completo_improved(
             is_derby
         )
         la *= motivation_factor_a
+    
+    # 6.8. Applica dati avanzati (statistiche, H2H, infortuni) - BACKGROUND
+    # Questi dati vengono passati come parametro opzionale
+    if advanced_data:
+        lh, la = apply_advanced_data_adjustments(lh, la, advanced_data)
     
     # 7. Blend con xG usando approccio bayesiano migliorato
     if all(x is not None for x in [xg_for_home, xg_against_home, xg_for_away, xg_against_away]):
@@ -3355,7 +3689,10 @@ st.markdown("""
 - ✅ **Feature Engineering** avanzato (forma squadre, H2H - pronto per integrazione)
 - ✅ **Market Movement Tracking** - traccia cambiamenti quote nel tempo
 - ✅ **Time-based Adjustments** - aggiustamenti per ora/giorno/periodo stagione
-- ✅ **Fatigue & Motivation Factors** - fatica squadre e motivazione
+- ✅ **Fatigue & Motivation Factors** - fatica squadre e motivazione (automatico da API-Football)
+- ✅ **Statistiche Squadre** - forma attacco/difesa calcolata automaticamente da API-Football
+- ✅ **Head-to-Head Reali** - analisi H2H storica per aggiustare probabilità
+- ✅ **Infortuni & Squalifiche** - impatto automatico su lambda se giocatori chiave assenti
 - ✅ **Anomaly Detection** - rileva errori bookmaker e opportunità arbitraggio
 - ✅ **Advanced Risk Management** - stop loss, position sizing dinamico
 - ✅ **Feature Importance Analysis** - analizza quali features contano di più
@@ -3677,10 +4014,12 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
         fatigue_away_data = None
         motivation_home_data = None
         motivation_away_data = None
+        advanced_team_data = None
         
         if home_team_name and away_team_name and match_datetime:
             with st.spinner("📊 Recupero dati avanzati da API-Football..."):
                 try:
+                    # Dati base (fatigue, motivation)
                     fatigue_home_data = get_team_fatigue_and_motivation_data(
                         home_team_name, league_type, match_datetime
                     )
@@ -3701,8 +4040,20 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                         "points_from_europe": fatigue_away_data.get("points_from_europe"),
                         "data_available": fatigue_away_data.get("data_available"),
                     }
+                    
+                    # Dati avanzati (statistiche, H2H, infortuni) - BACKGROUND
+                    advanced_team_data = get_advanced_team_data(
+                        home_team_name, away_team_name, league_type, match_datetime
+                    )
+                    
+                    # Log discreto (solo in console, non in UI)
+                    if advanced_team_data.get("data_available"):
+                        print(f"✅ Dati avanzati disponibili: Form={advanced_team_data.get('home_team_stats') is not None}, "
+                              f"H2H={advanced_team_data.get('h2h_data') is not None}, "
+                              f"Injuries={advanced_team_data.get('home_injuries') is not None}")
                 except Exception as e:
                     st.warning(f"⚠️ Errore recupero dati avanzati: {e}")
+                    print(f"Errore dettagliato: {e}")
         
         # 4. Calcolo modello
         xg_args = {}
@@ -3734,6 +4085,7 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             fatigue_away=fatigue_away_data,
             motivation_home=motivation_home_data,
             motivation_away=motivation_away_data,
+            advanced_data=advanced_team_data,  # Dati avanzati in background
             **xg_args
         )
         
@@ -3849,6 +4201,19 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
         
         if motivation_home_data and motivation_home_data.get("data_available") or motivation_away_data and motivation_away_data.get("data_available"):
             adjustments_applied.append("🎯 Motivation factors")
+        
+        # Info dati avanzati (discreto, solo se disponibili)
+        if advanced_team_data and advanced_team_data.get("data_available"):
+            advanced_info = []
+            if advanced_team_data.get("home_team_stats") or advanced_team_data.get("away_team_stats"):
+                advanced_info.append("📊 Form")
+            if advanced_team_data.get("h2h_data"):
+                advanced_info.append("⚔️ H2H")
+            if advanced_team_data.get("home_injuries") or advanced_team_data.get("away_injuries"):
+                advanced_info.append("🏥 Injuries")
+            
+            if advanced_info:
+                st.caption(f"✅ Dati avanzati applicati: {', '.join(advanced_info)}")
         
         if adjustments_applied:
             st.info("✅ **Aggiustamenti applicati**: " + ", ".join(adjustments_applied))
