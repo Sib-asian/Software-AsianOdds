@@ -5199,15 +5199,18 @@ def apply_stadium_adjustments(
     
     # Aggiustamento altitudine (se disponibile da location)
     # Nota: implementazione base, può essere estesa con mappa città → altitudine
-    location = stadium_data.get("stadium_location", "").lower()
+    location_raw = stadium_data.get("stadium_location")
+    # Assicurati che location sia sempre una stringa (gestisce None)
+    location = str(location_raw).lower() if location_raw is not None else ""
     altitude_factor = 1.0
     
     # Città ad alta quota (es. La Paz, Quito, Città del Messico)
-    high_altitude_cities = ["la paz", "quito", "mexico city", "città del messico", "bogotá", "bogota"]
-    if any(city in location for city in high_altitude_cities):
-        altitude_factor = 0.92  # -8% gol (entrambe le squadre)
-        lambda_h *= altitude_factor
-        lambda_a *= altitude_factor
+    if location:  # Solo se abbiamo una location valida
+        high_altitude_cities = ["la paz", "quito", "mexico city", "città del messico", "bogotá", "bogota"]
+        if any(city in location for city in high_altitude_cities):
+            altitude_factor = 0.92  # -8% gol (entrambe le squadre)
+            lambda_h *= altitude_factor
+            lambda_a *= altitude_factor
     
     return lambda_h, lambda_a
 
@@ -5219,11 +5222,13 @@ def get_city_from_team(team_name: str, league: str = None) -> str:
     # Prova TheSportsDB (gratuito, no API key)
     team_info = thesportsdb_get_team_info(team_name)
     if team_info.get("available"):
-        stadium_location = team_info.get("stadium_location", "")
-        if stadium_location:
+        stadium_location = team_info.get("stadium_location")
+        # Assicurati che stadium_location sia una stringa (gestisce None)
+        if stadium_location and isinstance(stadium_location, str):
             # Estrai città (prima parte prima della virgola)
             city = stadium_location.split(",")[0].strip()
-            return city
+            if city:  # Solo se abbiamo una città valida
+                return city
     
     # Fallback: mappa manuale per squadre principali
     city_mapping = {
@@ -7093,7 +7098,8 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                     except (ValueError, TypeError):
                         st.markdown(f"**Capacità**: {capacity} spettatori")
                 location = thesportsdb_info.get('stadium_location')
-                if location:
+                # Assicurati che location sia una stringa valida
+                if location and isinstance(location, str):
                     st.markdown(f"**Ubicazione**: {location}")
         
         # Info aggiustamenti applicati
