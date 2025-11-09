@@ -1,6 +1,8 @@
 import math
-from typing import Dict, Any, List, Tuple, Optional
+import logging
+from typing import Dict, Any, List, Tuple, Optional, Union, Callable
 from datetime import datetime, date, timedelta
+from dataclasses import dataclass
 import pandas as pd
 import numpy as np
 import os
@@ -11,6 +13,26 @@ from scipy import optimize
 from scipy.stats import poisson
 import warnings
 warnings.filterwarnings('ignore')
+
+# ============================================================
+#   LOGGING STRUTTURATO (MIGLIORAMENTO)
+# ============================================================
+
+# Configurazione logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('app.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+# Per Streamlit, usa livello più alto per evitare spam in console
+if st:
+    logging.getLogger().setLevel(logging.WARNING)
 
 # Carica variabili d'ambiente da file .env (se disponibile)
 try:
@@ -25,46 +47,150 @@ try:
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
-    print("⚠️ sklearn non disponibile - calibrazione disabilitata")
+    logger.warning("sklearn non disponibile - calibrazione disabilitata")
+
+# Import per Isotonic Regression (opzionale)
+try:
+    from sklearn.isotonic import IsotonicRegression
+    ISOTONIC_AVAILABLE = True
+except ImportError:
+    ISOTONIC_AVAILABLE = False
 
 # ============================================================
-#                 CONFIG
+#   CONFIGURAZIONE CENTRALIZZATA (MIGLIORAMENTO)
 # ============================================================
 
-# IMPORTANTE: Configura tramite variabili d'ambiente per sicurezza
-THE_ODDS_API_KEY = os.getenv("THE_ODDS_API_KEY", "")  # API key The Odds API (da variabile d'ambiente)
-THE_ODDS_BASE = "https://api.the-odds-api.com/v4"
+@dataclass
+class APIConfig:
+    """Configurazione API keys e endpoints"""
+    the_odds_api_key: str = ""
+    the_odds_base: str = "https://api.the-odds-api.com/v4"
+    api_football_key: str = ""
+    api_football_base: str = "https://v3.football.api-sports.io"
+    openweather_api_key: str = ""
+    football_data_api_key: str = ""
+    thesportsdb_api_key: str = "3"  # Pubblica, gratuita
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    telegram_enabled: bool = False
+    
+    def __post_init__(self):
+        """Carica da variabili d'ambiente"""
+        self.the_odds_api_key = os.getenv("THE_ODDS_API_KEY", "")
+        self.api_football_key = os.getenv("API_FOOTBALL_KEY", "")
+        self.openweather_api_key = os.getenv("OPENWEATHER_API_KEY", "")
+        self.football_data_api_key = os.getenv("FOOTBALL_DATA_API_KEY", "")
+        self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
 
-API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY", "")  # API key API-Football (da variabile d'ambiente)
-API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
+@dataclass
+class ModelConfig:
+    """Configurazione parametri modello (magic numbers centralizzati)"""
+    # Pesi blend
+    DNB_WEIGHT: float = 0.3  # Peso DNB nel blend con 1X2
+    MARKET_WEIGHT: float = 0.7  # Peso mercato nel blend con DNB
+    XG_MARKET_WEIGHT: float = 0.6  # Peso mercato nel blend xG
+    XG_XG_WEIGHT: float = 0.4  # Peso xG nel blend
+    XG_MAX_WEIGHT: float = 0.45  # Peso massimo xG (con alta confidence)
+    XG_API_BOOST: float = 1.15  # Boost confidence se abbiamo dati API
+    
+    # Ensemble weights
+    ENSEMBLE_MAIN_WEIGHT: float = 0.60  # Peso modello principale
+    ENSEMBLE_MARKET_WEIGHT: float = 0.25  # Peso modello market
+    ENSEMBLE_CONSERVATIVE_WEIGHT: float = 0.15  # Peso modello conservativo
+    
+    # HT ratio
+    HT_BASE_RATIO: float = 0.45  # Ratio base HT/FT
+    HT_TOTAL_ADJUSTMENT: float = -0.015  # Aggiustamento per total
+    HT_TOTAL_BASE: float = 2.5  # Total base per calcolo
+    HT_LAMBDA_ADJUSTMENT: float = -0.01  # Aggiustamento per lambda
+    HT_RHO_ADJUSTMENT: float = 0.005  # Aggiustamento per rho
+    HT_MIN: float = 0.40  # Ratio HT minimo
+    HT_MAX: float = 0.55  # Ratio HT massimo
+    
+    # Rho defaults
+    RHO_BASE: float = 0.15  # Rho base
+    RHO_DRAW_FACTOR: float = 0.4  # Fattore moltiplicativo per draw
+    RHO_BTTS_FACTOR: float = 0.5  # Fattore per BTTS
+    RHO_MIN: float = -0.35  # Rho minimo
+    RHO_MAX: float = 0.35  # Rho massimo
+    RHO_DEFAULT_MIN: float = 0.05  # Rho default minimo
+    RHO_DEFAULT_MAX: float = 0.45  # Rho default massimo
+    
+    # Lambda bounds
+    LAMBDA_MIN: float = 0.1
+    LAMBDA_MAX: float = 5.0
+    LAMBDA_SAFE_MIN: float = 0.3
+    LAMBDA_SAFE_MAX: float = 4.5
+    LAMBDA_OPTIMIZATION_MIN: float = 0.2
+    LAMBDA_OPTIMIZATION_MAX: float = 5.0
+    
+    # Odds bounds
+    ODDS_MIN: float = 1.01
+    ODDS_MAX: float = 100.0
+    
+    # Total bounds
+    TOTAL_MIN: float = 0.5
+    TOTAL_MAX: float = 6.0
+    
+    # Bayesian updating
+    PRIOR_CONFIDENCE_BASE: float = 0.7  # Confidence base nel prior
+    MARKET_CONFIDENCE_BASE: float = 0.7  # Confidence base nel mercato
+    
+    # Shrinkage
+    SHRINKAGE_FACTOR: float = 0.3  # Fattore shrinkage James-Stein
+    
+    # Time decay
+    TIME_DECAY_HALF_LIFE_DAYS: int = 30  # Half-life per time decay
+    
+    # Calibration
+    CALIBRATION_MIN_SAMPLES: int = 20  # Minimo campioni per calibrazione
+    CALIBRATION_MIN_SAMPLES_LEAGUE: int = 30  # Minimo per calibrazione per lega
+    CALIBRATION_MIN_SAMPLES_GLOBAL: int = 50  # Minimo per calibrazione globale
 
-# API Gratuite Aggiuntive
-# IMPORTANTE: Configura le API keys tramite variabili d'ambiente per sicurezza
-# Esempio: export OPENWEATHER_API_KEY="your_key_here"
-OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "")  # API key OpenWeatherMap (da variabile d'ambiente)
-FOOTBALL_DATA_API_KEY = os.getenv("FOOTBALL_DATA_API_KEY", "")  # API key Football-Data.org (da variabile d'ambiente)
-THESPORTSDB_API_KEY = "3"  # TheSportsDB usa chiave fissa "3" (gratuita, pubblica)
+@dataclass
+class AppConfig:
+    """Configurazione applicazione"""
+    archive_file: str = "storico_analisi.csv"
+    validation_file: str = "validation_metrics.csv"
+    portfolio_file: str = "portfolio_scommesse.csv"
+    odds_history_file: str = "odds_history.csv"
+    alerts_file: str = "alerts.json"
+    cache_expiry: int = 300  # 5 minuti
+    api_retry_max_attempts: int = 3
+    api_retry_delay: float = 1.0  # secondi
+    api_timeout: float = 10.0  # secondi
+    log_file: str = "app.log"
 
-# Telegram Bot Configuration (opzionale)
-# IMPORTANTE: Configura tramite variabili d'ambiente per sicurezza
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")  # Token del bot (da @BotFather, via variabile d'ambiente)
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")  # Chat ID canale (via variabile d'ambiente)
-TELEGRAM_ENABLED = False  # Abilita/disabilita invio automatico
+# Istanze globali configurazione
+api_config = APIConfig()
+model_config = ModelConfig()
+app_config = AppConfig()
 
-ARCHIVE_FILE = "storico_analisi.csv"
-VALIDATION_FILE = "validation_metrics.csv"
-PORTFOLIO_FILE = "portfolio_scommesse.csv"
-ODDS_HISTORY_FILE = "odds_history.csv"  # Storico movimenti quote
-ALERTS_FILE = "alerts.json"  # Notifiche e alert
+# Backward compatibility (mantiene variabili esistenti)
+THE_ODDS_API_KEY = api_config.the_odds_api_key
+THE_ODDS_BASE = api_config.the_odds_base
+API_FOOTBALL_KEY = api_config.api_football_key
+API_FOOTBALL_BASE = api_config.api_football_base
+OPENWEATHER_API_KEY = api_config.openweather_api_key
+FOOTBALL_DATA_API_KEY = api_config.football_data_api_key
+THESPORTSDB_API_KEY = api_config.thesportsdb_api_key
+TELEGRAM_BOT_TOKEN = api_config.telegram_bot_token
+TELEGRAM_CHAT_ID = api_config.telegram_chat_id
+TELEGRAM_ENABLED = api_config.telegram_enabled
+
+ARCHIVE_FILE = app_config.archive_file
+VALIDATION_FILE = app_config.validation_file
+PORTFOLIO_FILE = app_config.portfolio_file
+ODDS_HISTORY_FILE = app_config.odds_history_file
+ALERTS_FILE = app_config.alerts_file
+CACHE_EXPIRY = app_config.cache_expiry
+API_RETRY_MAX_ATTEMPTS = app_config.api_retry_max_attempts
+API_RETRY_DELAY = app_config.api_retry_delay
+API_TIMEOUT = app_config.api_timeout
 
 # Cache per API calls (evita rate limiting)
 API_CACHE = {}
-CACHE_EXPIRY = 300  # 5 minuti
-
-# Configurazione retry per API
-API_RETRY_MAX_ATTEMPTS = 3
-API_RETRY_DELAY = 1.0  # secondi
-API_TIMEOUT = 10.0  # secondi
 
 # ============================================================
 #   GESTIONE ERRORI API ROBUSTA (URGENTE)
@@ -166,11 +292,13 @@ def api_call_with_retry(
     if use_cache and cache_key in API_CACHE:
         cached_data, cached_time = API_CACHE[cache_key]
         # Usa cache anche se scaduta (meglio di niente)
-        print(f"⚠️ API fallita, uso cache (scaduta): {cache_key}")
+        logger.warning(f"API fallita, uso cache (scaduta): {cache_key}")
         return cached_data
     
     # Nessun fallback disponibile: solleva eccezione
-    raise Exception(f"API call fallita dopo {max_attempts} tentativi: {last_exception}")
+    raise requests.exceptions.RequestException(
+        f"API call fallita dopo {max_attempts} tentativi: {last_exception}"
+    )
 
 def safe_api_call(api_func, default_return=None, *args, **kwargs):
     """
@@ -179,8 +307,8 @@ def safe_api_call(api_func, default_return=None, *args, **kwargs):
     """
     try:
         return api_call_with_retry(api_func, *args, **kwargs)
-    except Exception as e:
-        print(f"⚠️ API call fallita (non critica): {api_func.__name__}: {e}")
+    except (requests.exceptions.RequestException, Exception) as e:
+        logger.warning(f"API call fallita (non critica): {api_func.__name__}: {e}")
         return default_return
 
 # ============================================================
@@ -870,20 +998,35 @@ def oddsapi_extract_prices_improved(event: dict) -> dict:
 # ============================================================
 
 def oddsapi_get_soccer_leagues() -> List[dict]:
+    if not THE_ODDS_API_KEY:
+        logger.warning("THE_ODDS_API_KEY non configurata. Configura tramite variabile d'ambiente.")
+        return []
     try:
         r = requests.get(
             f"{THE_ODDS_BASE}/sports",
             params={"apiKey": THE_ODDS_API_KEY, "all": "true"},
-            timeout=8,
+            timeout=app_config.api_timeout,
         )
         r.raise_for_status()
         data = r.json()
         return [s for s in data if s.get("key", "").startswith("soccer")]
-    except Exception as e:
-        print("errore sports:", e)
+    except requests.exceptions.Timeout:
+        logger.error("Timeout richiesta The Odds API (sports)")
+        return []
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"Errore HTTP The Odds API (sports): {e.response.status_code}")
+        return []
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore richiesta The Odds API (sports): {e}")
+        return []
+    except (ValueError, KeyError, json.JSONDecodeError) as e:
+        logger.error(f"Errore parsing risposta The Odds API (sports): {e}")
         return []
 
 def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
+    if not THE_ODDS_API_KEY:
+        logger.warning("THE_ODDS_API_KEY non configurata. Configura tramite variabile d'ambiente.")
+        return []
     base_url = f"{THE_ODDS_BASE}/sports/{league_key}/odds"
     params_common = {
         "apiKey": THE_ODDS_API_KEY,
@@ -896,29 +1039,33 @@ def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
         r = requests.get(
             base_url,
             params={**params_common, "markets": "h2h,totals,spreads,btts"},
-            timeout=8,
+            timeout=app_config.api_timeout,
         )
         r.raise_for_status()
         data = r.json()
         if data:
             return data
-    except Exception as e:
-        print("errore events (con btts):", e)
+    except requests.exceptions.RequestException as e:
+        logger.debug(f"Errore events con BTTS per {league_key}: {e}, provo senza BTTS")
 
     try:
         r2 = requests.get(
             base_url,
             params={**params_common, "markets": "h2h,totals,spreads"},
-            timeout=8,
+            timeout=app_config.api_timeout,
         )
         r2.raise_for_status()
         return r2.json()
-    except Exception as e:
-        print("errore events (senza btts):", e)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore events per {league_key}: {e}")
         return []
 
 def oddsapi_refresh_event(league_key: str, event_id: str) -> dict:
+    if not THE_ODDS_API_KEY:
+        logger.warning("THE_ODDS_API_KEY non configurata. Configura tramite variabile d'ambiente.")
+        return {}
     if not league_key or not event_id:
+        logger.warning(f"Parametri mancanti: league_key={league_key}, event_id={event_id}")
         return {}
     url = f"{THE_ODDS_BASE}/sports/{league_key}/events/{event_id}/odds"
     params = {
@@ -929,14 +1076,14 @@ def oddsapi_refresh_event(league_key: str, event_id: str) -> dict:
         "markets": "h2h,totals,spreads,btts",
     }
     try:
-        r = requests.get(url, params=params, timeout=8)
+        r = requests.get(url, params=params, timeout=app_config.api_timeout)
         r.raise_for_status()
         data = r.json()
         if isinstance(data, list) and data:
             return data[0]
         return data
-    except Exception as e:
-        print("errore refresh evento:", e)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore refresh evento {event_id} in {league_key}: {e}")
         return {}
 
 # ============================================================
@@ -944,15 +1091,35 @@ def oddsapi_refresh_event(league_key: str, event_id: str) -> dict:
 # ============================================================
 
 def apifootball_get_fixtures_by_date(d: str) -> list:
+    if not API_FOOTBALL_KEY:
+        logger.warning("API_FOOTBALL_KEY non configurata. Configura tramite variabile d'ambiente.")
+        return []
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     params = {"date": d}
     try:
-        r = requests.get(f"{API_FOOTBALL_BASE}/fixtures", headers=headers, params=params, timeout=8)
+        r = requests.get(
+            f"{API_FOOTBALL_BASE}/fixtures",
+            headers=headers,
+            params=params,
+            timeout=app_config.api_timeout
+        )
         r.raise_for_status()
         data = r.json()
         return data.get("response", [])
-    except Exception as e:
-        print("errore api-football:", e)
+    except requests.exceptions.Timeout:
+        logger.error(f"Timeout API-Football fixtures per data {d}")
+        return []
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401:
+            logger.error("API-Football: API key non valida o scaduta")
+        else:
+            logger.error(f"Errore HTTP API-Football fixtures: {e.response.status_code}")
+        return []
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore richiesta API-Football fixtures: {e}")
+        return []
+    except (ValueError, KeyError, json.JSONDecodeError) as e:
+        logger.error(f"Errore parsing risposta API-Football: {e}")
         return []
 
 # ============================================================
@@ -963,58 +1130,82 @@ def apifootball_search_team(team_name: str, league_id: int = None) -> Dict[str, 
     """
     Cerca team ID da API-Football usando nome squadra.
     """
+    if not API_FOOTBALL_KEY:
+        logger.warning("API_FOOTBALL_KEY non configurata. Configura tramite variabile d'ambiente.")
+        return {}
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     params = {"search": team_name}
     if league_id:
         params["league"] = league_id
     
     try:
-        r = requests.get(f"{API_FOOTBALL_BASE}/teams", headers=headers, params=params, timeout=8)
+        r = requests.get(
+            f"{API_FOOTBALL_BASE}/teams",
+            headers=headers,
+            params=params,
+            timeout=app_config.api_timeout
+        )
         r.raise_for_status()
         data = r.json()
         teams = data.get("response", [])
         if teams:
             return teams[0]  # Ritorna primo match
         return {}
-    except Exception as e:
-        print(f"Errore ricerca team {team_name}:", e)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore ricerca team {team_name}: {e}")
         return {}
 
 def apifootball_get_team_fixtures(team_id: int, last: int = 10, season: int = None) -> List[Dict[str, Any]]:
     """
     Recupera ultime partite di una squadra.
     """
+    if not API_FOOTBALL_KEY:
+        logger.warning("API_FOOTBALL_KEY non configurata. Configura tramite variabile d'ambiente.")
+        return []
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     params = {"team": team_id, "last": last}
     if season:
         params["season"] = season
     
     try:
-        r = requests.get(f"{API_FOOTBALL_BASE}/fixtures", headers=headers, params=params, timeout=8)
+        r = requests.get(
+            f"{API_FOOTBALL_BASE}/fixtures",
+            headers=headers,
+            params=params,
+            timeout=app_config.api_timeout
+        )
         r.raise_for_status()
         data = r.json()
         return data.get("response", [])
-    except Exception as e:
-        print(f"Errore fixtures team {team_id}:", e)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore fixtures team {team_id}: {e}")
         return []
 
 def apifootball_get_standings(league_id: int, season: int) -> Dict[str, Any]:
     """
     Recupera classifica di una lega.
     """
+    if not API_FOOTBALL_KEY:
+        logger.warning("API_FOOTBALL_KEY non configurata. Configura tramite variabile d'ambiente.")
+        return []
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     params = {"league": league_id, "season": season}
     
     try:
-        r = requests.get(f"{API_FOOTBALL_BASE}/standings", headers=headers, params=params, timeout=8)
+        r = requests.get(
+            f"{API_FOOTBALL_BASE}/standings",
+            headers=headers,
+            params=params,
+            timeout=app_config.api_timeout
+        )
         r.raise_for_status()
         data = r.json()
         standings = data.get("response", [])
         if standings and len(standings) > 0:
             return standings[0].get("league", {}).get("standings", [])
         return []
-    except Exception as e:
-        print(f"Errore standings league {league_id}:", e)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore standings league {league_id}: {e}")
         return []
 
 def get_league_id_from_name(league_name: str) -> int:
@@ -1072,8 +1263,8 @@ def calculate_days_since_last_match(team_id: int, match_date: str) -> int:
         delta = (match_dt - last_match_date).days
         
         return max(0, delta)  # Non può essere negativo
-    except Exception as e:
-        print(f"Errore calcolo giorni ultima partita: {e}")
+    except (ValueError, TypeError, KeyError) as e:
+        logger.error(f"Errore calcolo giorni ultima partita: {e}")
         return None
 
 def count_matches_last_30_days(team_id: int, match_date: str) -> int:
@@ -1102,8 +1293,8 @@ def count_matches_last_30_days(team_id: int, match_date: str) -> int:
                         count += 1
         
         return count
-    except Exception as e:
-        print(f"Errore conteggio partite 30 giorni: {e}")
+    except (ValueError, TypeError, KeyError) as e:
+        logger.error(f"Errore conteggio partite 30 giorni: {e}")
         return None
 
 def get_team_standings_info(team_name: str, league: str, season: int = None) -> Dict[str, Any]:
@@ -1165,8 +1356,8 @@ def get_team_standings_info(team_name: str, league: str, season: int = None) -> 
                     }
         
         return {}
-    except Exception as e:
-        print(f"Errore recupero standings {team_name}: {e}")
+    except (KeyError, ValueError, requests.exceptions.RequestException) as e:
+        logger.error(f"Errore recupero standings {team_name}: {e}")
         return {}
 
 def is_derby_match(home_team: str, away_team: str, league: str) -> bool:
@@ -1205,39 +1396,58 @@ def apifootball_get_team_statistics(team_id: int, league_id: int, season: int) -
     """
     Recupera statistiche dettagliate di una squadra.
     """
+    if not API_FOOTBALL_KEY:
+        logger.warning("API_FOOTBALL_KEY non configurata. Configura tramite variabile d'ambiente.")
+        return {}
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     params = {"team": team_id, "league": league_id, "season": season}
     
     try:
-        r = requests.get(f"{API_FOOTBALL_BASE}/teams/statistics", headers=headers, params=params, timeout=8)
+        r = requests.get(
+            f"{API_FOOTBALL_BASE}/teams/statistics",
+            headers=headers,
+            params=params,
+            timeout=app_config.api_timeout
+        )
         r.raise_for_status()
         data = r.json()
         response = data.get("response", {})
         return response
-    except Exception as e:
-        print(f"Errore statistiche team {team_id}: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore statistiche team {team_id}: {e}")
         return {}
 
 def apifootball_get_head_to_head(team1_id: int, team2_id: int, last: int = 10) -> List[Dict[str, Any]]:
     """
     Recupera partite head-to-head tra due squadre.
     """
+    if not API_FOOTBALL_KEY:
+        logger.warning("API_FOOTBALL_KEY non configurata. Configura tramite variabile d'ambiente.")
+        return []
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     params = {"h2h": f"{team1_id}-{team2_id}", "last": last}
     
     try:
-        r = requests.get(f"{API_FOOTBALL_BASE}/fixtures/headtohead", headers=headers, params=params, timeout=8)
+        r = requests.get(
+            f"{API_FOOTBALL_BASE}/fixtures/headtohead",
+            headers=headers,
+            params=params,
+            timeout=app_config.api_timeout
+        )
         r.raise_for_status()
         data = r.json()
         return data.get("response", [])
-    except Exception as e:
-        print(f"Errore H2H {team1_id} vs {team2_id}: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore H2H {team1_id} vs {team2_id}: {e}")
         return []
 
 def apifootball_get_injuries(team_id: int = None, fixture_id: int = None) -> List[Dict[str, Any]]:
     """
     Recupera infortuni. Se team_id è specificato, filtra per squadra.
     """
+    if not API_FOOTBALL_KEY:
+        logger.warning("API_FOOTBALL_KEY non configurata. Configura tramite variabile d'ambiente.")
+        return []
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     params = {}
     if team_id:
@@ -1246,12 +1456,17 @@ def apifootball_get_injuries(team_id: int = None, fixture_id: int = None) -> Lis
         params["fixture"] = fixture_id
     
     try:
-        r = requests.get(f"{API_FOOTBALL_BASE}/injuries", headers=headers, params=params, timeout=8)
+        r = requests.get(
+            f"{API_FOOTBALL_BASE}/injuries",
+            headers=headers,
+            params=params,
+            timeout=app_config.api_timeout
+        )
         r.raise_for_status()
         data = r.json()
         return data.get("response", [])
-    except Exception as e:
-        print(f"Errore infortuni: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore infortuni: {e}")
         return []
 
 def apifootball_get_fixture_lineups(fixture_id: int) -> Dict[str, Any]:
@@ -1261,11 +1476,19 @@ def apifootball_get_fixture_lineups(fixture_id: int) -> Dict[str, Any]:
     Returns:
         Dict con formazioni casa/trasferta, formazione (es. 4-3-3), giocatori chiave
     """
+    if not API_FOOTBALL_KEY:
+        logger.warning("API_FOOTBALL_KEY non configurata. Configura tramite variabile d'ambiente.")
+        return {}
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     params = {"fixture": fixture_id}
     
     try:
-        r = requests.get(f"{API_FOOTBALL_BASE}/fixtures/lineups", headers=headers, params=params, timeout=8)
+        r = requests.get(
+            f"{API_FOOTBALL_BASE}/fixtures/lineups",
+            headers=headers,
+            params=params,
+            timeout=app_config.api_timeout
+        )
         r.raise_for_status()
         data = r.json()
         response = data.get("response", [])
@@ -1309,8 +1532,8 @@ def apifootball_get_fixture_lineups(fixture_id: int) -> Dict[str, Any]:
         
         result["data_available"] = result["home_lineup"] is not None and result["away_lineup"] is not None
         return result
-    except Exception as e:
-        print(f"Errore lineups fixture {fixture_id}: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore lineups fixture {fixture_id}: {e}")
         return {}
 
 def calculate_lineup_impact(lineup_data: Dict[str, Any], team_id: int) -> Dict[str, float]:
@@ -1359,19 +1582,27 @@ def apifootball_get_fixture_info(fixture_id: int) -> Dict[str, Any]:
     """
     Recupera info complete su una partita (per weather, referee, etc.).
     """
+    if not API_FOOTBALL_KEY:
+        logger.warning("API_FOOTBALL_KEY non configurata. Configura tramite variabile d'ambiente.")
+        return {}
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
     params = {"id": fixture_id}
     
     try:
-        r = requests.get(f"{API_FOOTBALL_BASE}/fixtures", headers=headers, params=params, timeout=8)
+        r = requests.get(
+            f"{API_FOOTBALL_BASE}/fixtures",
+            headers=headers,
+            params=params,
+            timeout=app_config.api_timeout
+        )
         r.raise_for_status()
         data = r.json()
         response = data.get("response", [])
         if response:
             return response[0]
         return {}
-    except Exception as e:
-        print(f"Errore fixture info {fixture_id}: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore fixture info {fixture_id}: {e}")
         return {}
 
 def get_weather_impact(fixture_data: Dict[str, Any]) -> Dict[str, float]:
@@ -1678,8 +1909,8 @@ def calculate_h2h_adjustments(h2h_matches: List[Dict[str, Any]], home_team_id: i
             "draws": draws,
             "away_wins": away_wins,
         }
-    except Exception as e:
-        print(f"Errore calcolo H2H: {e}")
+    except (KeyError, ValueError, TypeError, ZeroDivisionError) as e:
+        logger.error(f"Errore calcolo H2H: {e}")
         return {"h2h_home_advantage": 1.0, "h2h_goals_factor": 1.0, "h2h_btts_factor": 1.0, "confidence": 0.0}
 
 def calculate_injuries_impact(injuries: List[Dict[str, Any]], team_id: int) -> Dict[str, float]:
@@ -1729,8 +1960,8 @@ def calculate_injuries_impact(injuries: List[Dict[str, Any]], team_id: int) -> D
             "confidence": round(confidence, 2),
             "num_injuries": len(team_injuries),
         }
-    except Exception as e:
-        print(f"Errore calcolo impatto infortuni: {e}")
+    except (KeyError, ValueError, TypeError) as e:
+        logger.error(f"Errore calcolo impatto infortuni: {e}")
         return {"attack_factor": 1.0, "defense_factor": 1.0, "confidence": 0.0}
 
 def get_team_fatigue_and_motivation_data(
@@ -1784,8 +2015,8 @@ def get_team_fatigue_and_motivation_data(
         )
         
         return result
-    except Exception as e:
-        print(f"Errore recupero dati team {team_name}: {e}")
+    except (KeyError, ValueError, requests.exceptions.RequestException) as e:
+        logger.error(f"Errore recupero dati team {team_name}: {e}")
         return result
 
 def get_advanced_team_data(
@@ -1854,8 +2085,8 @@ def get_advanced_team_data(
         )
         
         return result
-    except Exception as e:
-        print(f"Errore recupero dati avanzati: {e}")
+    except (KeyError, ValueError, requests.exceptions.RequestException) as e:
+        logger.error(f"Errore recupero dati avanzati: {e}")
         return result
 
 # ============================================================
@@ -1981,19 +2212,19 @@ def estimate_lambda_from_market_optimized(
         if tot_dnb > 0:
             p_dnb_h /= tot_dnb
             p_dnb_a /= tot_dnb
-            # DNB più informativo: blend 70% init, 30% DNB
-            lambda_h_init = 0.7 * lambda_h_init + 0.3 * (lambda_total * (p_dnb_h / p_dnb_a) * math.sqrt(home_advantage))
-            lambda_a_init = 0.7 * lambda_a_init + 0.3 * (lambda_total / (p_dnb_h / p_dnb_a) / math.sqrt(home_advantage))
+            # DNB più informativo: blend usando ModelConfig
+            lambda_h_init = model_config.MARKET_WEIGHT * lambda_h_init + model_config.DNB_WEIGHT * (lambda_total * (p_dnb_h / p_dnb_a) * math.sqrt(home_advantage))
+            lambda_a_init = model_config.MARKET_WEIGHT * lambda_a_init + model_config.DNB_WEIGHT * (lambda_total / (p_dnb_h / p_dnb_a) / math.sqrt(home_advantage))
     
     # Constraints iniziali
-    lambda_h_init = max(0.3, min(4.5, lambda_h_init))
-    lambda_a_init = max(0.3, min(4.5, lambda_a_init))
+    lambda_h_init = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, lambda_h_init))
+    lambda_a_init = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, lambda_a_init))
     
     # 4. Ottimizzazione numerica: minimizza errore tra probabilità osservate e attese
     def error_function(params):
         lh, la = params[0], params[1]
-        lh = max(0.2, min(5.0, lh))
-        la = max(0.2, min(5.0, la))
+        lh = max(model_config.LAMBDA_OPTIMIZATION_MIN, min(model_config.LAMBDA_OPTIMIZATION_MAX, lh))
+        la = max(model_config.LAMBDA_OPTIMIZATION_MIN, min(model_config.LAMBDA_OPTIMIZATION_MAX, la))
         
         # Costruisci matrice temporanea per calcolare probabilità attese
         mat_temp = build_score_matrix(lh, la, rho_initial)
@@ -2036,6 +2267,285 @@ def estimate_lambda_from_market_optimized(
     lambda_a = max(0.3, min(4.5, lambda_a))
     
     return round(lambda_h, 4), round(lambda_a, 4)
+
+def estimate_lambda_rho_joint_optimization(
+    odds_1: float,
+    odds_x: float,
+    odds_2: float,
+    total: float,
+    odds_over25: float = None,
+    odds_under25: float = None,
+    odds_btts: float = None,
+    odds_dnb_home: float = None,
+    odds_dnb_away: float = None,
+    home_advantage: float = 1.30,
+) -> Tuple[float, float, float]:
+    """
+    ⭐ OTTIMIZZAZIONE SIMULTANEA LAMBDA + RHO ⭐
+    
+    Ottimizza lambda_h, lambda_a e rho simultaneamente invece che separatamente.
+    Questo produce soluzioni più accurate perché considera tutte le dipendenze.
+    
+    Minimizza errore combinato su:
+    - Probabilità 1X2
+    - Over/Under 2.5
+    - BTTS (se disponibile)
+    
+    Returns: (lambda_h, lambda_a, rho)
+    """
+    # 1. Probabilità target normalizzate
+    p1_target, px_target, p2_target = normalize_three_way_shin(odds_1, odds_x, odds_2)
+    p1_target = 1 / p1_target
+    px_target = 1 / px_target
+    p2_target = 1 / p2_target
+    tot_p = p1_target + px_target + p2_target
+    p1_target /= tot_p
+    px_target /= tot_p
+    p2_target /= tot_p
+    
+    # 2. Target Over/Under
+    p_over_target = None
+    if odds_over25 and odds_under25:
+        po, pu = normalize_two_way_shin(odds_over25, odds_under25)
+        p_over_target = 1 / po
+    
+    # 3. Target BTTS
+    p_btts_target = None
+    if odds_btts and odds_btts > 1:
+        p_btts_target = 1 / odds_btts
+    
+    # 4. Stima iniziale (usando metodo separato come starting point)
+    lh_init, la_init = estimate_lambda_from_market_optimized(
+        odds_1, odds_x, odds_2, total,
+        odds_over25, odds_under25,
+        odds_dnb_home, odds_dnb_away,
+        home_advantage, rho_initial=0.0
+    )
+    rho_init = estimate_rho_optimized(lh_init, la_init, px_target, odds_btts, None)
+    
+    # 5. Funzione di errore congiunta
+    def joint_error(params):
+        lh, la, rho = params[0], params[1], params[2]
+        lh = max(model_config.LAMBDA_OPTIMIZATION_MIN, min(model_config.LAMBDA_OPTIMIZATION_MAX, lh))
+        la = max(model_config.LAMBDA_OPTIMIZATION_MIN, min(model_config.LAMBDA_OPTIMIZATION_MAX, la))
+        rho = max(model_config.RHO_MIN, min(model_config.RHO_MAX, rho))
+        
+        # Costruisci matrice con questi parametri
+        mat = build_score_matrix(lh, la, rho)
+        p1_pred, px_pred, p2_pred = calc_match_result_from_matrix(mat)
+        over_pred, _ = calc_over_under_from_matrix(mat, 2.5)
+        btts_pred = calc_bt_ts_from_matrix(mat)
+        
+        # Errore pesato su tutti i mercati
+        error = (
+            1.0 * (p1_pred - p1_target)**2 +
+            0.8 * (px_pred - px_target)**2 +  # Pareggio meno informativo
+            1.0 * (p2_pred - p2_target)**2
+        )
+        
+        # Aggiungi Over/Under se disponibile
+        if p_over_target is not None:
+            error += 0.5 * (over_pred - p_over_target)**2
+        
+        # Aggiungi BTTS se disponibile
+        if p_btts_target is not None:
+            error += 0.4 * (btts_pred - p_btts_target)**2
+        
+        # Penalità per total atteso
+        total_pred = lh + la
+        if total > 0:
+            error += 0.3 * ((total_pred - total) / total)**2
+        
+        return error
+    
+    # 6. Ottimizzazione congiunta
+    try:
+        result = optimize.minimize(
+            joint_error,
+            [lh_init, la_init, rho_init],
+            method='L-BFGS-B',
+            bounds=[(0.2, 5.0), (0.2, 5.0), (-0.35, 0.35)],
+            options={'maxiter': 150, 'ftol': 1e-7}
+        )
+        
+        if result.success:
+            lambda_h, lambda_a, rho = result.x[0], result.x[1], result.x[2]
+        else:
+            # Fallback a stima separata se ottimizzazione fallisce
+            lambda_h, lambda_a = lh_init, la_init
+            rho = rho_init
+    except:
+        # Fallback completo
+        lambda_h, lambda_a = lh_init, la_init
+        rho = rho_init
+    
+    # Constraints finali
+    lambda_h = max(0.3, min(4.5, lambda_h))
+    lambda_a = max(0.3, min(4.5, lambda_a))
+    rho = max(-0.35, min(0.35, rho))
+    
+    return round(lambda_h, 4), round(lambda_a, 4), round(rho, 4)
+
+# ============================================================
+#   BAYESIAN UPDATING E SHRINKAGE ESTIMATION (NUOVO)
+# ============================================================
+
+def bayesian_lambda_update(
+    lambda_market: float,
+    lambda_prior: float,
+    prior_confidence: float,
+    market_confidence: float = 0.7,
+) -> float:
+    """
+    ⭐ BAYESIAN UPDATING ⭐
+    
+    Aggiornamento bayesiano: combina lambda di mercato con prior storico.
+    
+    lambda_posterior = w_prior * lambda_prior + w_market * lambda_market
+    
+    Args:
+        lambda_market: Lambda stimato dai dati di mercato
+        lambda_prior: Lambda da statistiche storiche (prior)
+        prior_confidence: Confidence nel prior (0-1)
+        market_confidence: Confidence nel mercato (0-1, default 0.7)
+    
+    Returns:
+        Lambda aggiornato (posterior)
+    """
+    # Normalizza confidence
+    total_confidence = prior_confidence + market_confidence
+    if total_confidence == 0:
+        return lambda_market
+    
+    w_prior = prior_confidence / total_confidence
+    w_market = market_confidence / total_confidence
+    
+    return w_prior * lambda_prior + w_market * lambda_market
+
+def james_stein_shrinkage(
+    lambda_estimate: float,
+    lambda_global_mean: float,
+    n_observations: int = 10,
+    shrinkage_factor: float = 0.3,
+) -> float:
+    """
+    ⭐ SHRINKAGE ESTIMATION ⭐
+    
+    James-Stein estimator: riduce varianza shrinkando verso media globale.
+    Utile per prevenire overfitting e valori estremi.
+    
+    Args:
+        lambda_estimate: Lambda stimato
+        lambda_global_mean: Media globale/lega
+        n_observations: Numero osservazioni usate per stima
+        shrinkage_factor: Fattore di shrinkage (default 0.3)
+    
+    Returns:
+        Lambda con shrinkage applicato
+    """
+    # Più osservazioni = meno shrinkage
+    effective_shrinkage = shrinkage_factor / (1 + n_observations / 10.0)
+    
+    return (
+        (1 - effective_shrinkage) * lambda_estimate +
+        effective_shrinkage * lambda_global_mean
+    )
+
+def time_decay_weight(
+    days_ago: int,
+    half_life_days: int = 30
+) -> float:
+    """
+    ⭐ TIME-DECAY WEIGHTING ⭐
+    
+    Peso esponenziale per dati storici: partite recenti contano di più.
+    
+    Peso = exp(-lambda * days_ago)
+    dove lambda = ln(2) / half_life_days
+    
+    Args:
+        days_ago: Giorni da oggi
+        half_life_days: Dopo quanti giorni il peso si dimezza (default 30)
+    
+    Returns:
+        Peso (0-1)
+    """
+    if days_ago < 0:
+        days_ago = 0
+    
+    lambda_decay = math.log(2) / half_life_days
+    return math.exp(-lambda_decay * days_ago)
+
+def weighted_calibration_with_time_decay(
+    archive_file: str = ARCHIVE_FILE,
+    league: str = None,
+    half_life_days: int = 30,
+) -> Optional[callable]:
+    """
+    Calibrazione con pesi temporali: partite recenti contano di più.
+    """
+    if not os.path.exists(archive_file):
+        return None
+    
+    try:
+        df = pd.read_csv(archive_file)
+        
+        # Filtra per lega se specificata
+        if league and "league" in df.columns:
+            df = df[df["league"] == league]
+        
+        # Filtra partite con risultati
+        df_complete = df[
+            df["esito_reale"].notna() & 
+            (df["esito_reale"] != "") &
+            df["p_home"].notna()
+        ]
+        
+        if len(df_complete) < 30:
+            return None
+        
+        # Calcola pesi temporali
+        if "timestamp" in df_complete.columns:
+            df_complete["timestamp"] = pd.to_datetime(df_complete["timestamp"], errors='coerce')
+            now = datetime.now()
+            df_complete["days_ago"] = (now - df_complete["timestamp"]).dt.days
+            df_complete["weight"] = df_complete["days_ago"].apply(
+                lambda x: time_decay_weight(x, half_life_days)
+            )
+        else:
+            # Se non c'è timestamp, usa pesi uniformi
+            df_complete["weight"] = 1.0
+        
+        # Prepara dati
+        predictions = df_complete["p_home"].values
+        outcomes = (df_complete["esito_reale"] == "1").astype(int).values
+        weights = df_complete["weight"].values
+        
+        # Normalizza pesi
+        weights = weights / weights.sum() * len(weights)
+        
+        # Calibrazione (usa best method, ma nota: sklearn non supporta pesi direttamente)
+        # Per ora usa calibrazione normale, ma con dati filtrati per pesi alti
+        # (semplificazione: usa solo top 70% per peso)
+        threshold = np.percentile(weights, 30)
+        mask = weights >= threshold
+        predictions_filtered = predictions[mask]
+        outcomes_filtered = outcomes[mask]
+        
+        if len(predictions_filtered) < 20:
+            # Troppo pochi dati, usa tutti
+            predictions_filtered = predictions
+            outcomes_filtered = outcomes
+        
+        calibrate_func, method_name, score = best_calibration_method(
+            predictions_filtered.tolist(),
+            outcomes_filtered.tolist()
+        )
+        
+        return calibrate_func
+    except (KeyError, ValueError, pd.errors.EmptyDataError) as e:
+        logger.error(f"Errore calibrazione con time decay: {e}")
+        return None
 
 def estimate_lambda_from_market_improved(
     odds_1: float,
@@ -2099,8 +2609,8 @@ def estimate_rho_optimized(
             
             if result.success:
                 rho_opt = result.x
-                # Blend con prior: 70% ottimizzato, 30% prior
-                rho = 0.7 * rho_opt + 0.3 * rho_from_draw
+                # Blend con prior usando ModelConfig
+                rho = model_config.MARKET_WEIGHT * rho_opt + model_config.DNB_WEIGHT * rho_from_draw
             else:
                 rho = rho_from_draw
         except:
@@ -2470,7 +2980,127 @@ def calibration_curve(predictions: List[float], outcomes: List[int], n_bins: int
     return bin_centers, bin_frequencies, bin_counts
 
 # ============================================================
-#   CALIBRAZIONE PROBABILITÀ (PLATT SCALING)
+#   METRICHE DI CALIBRAZIONE AVANZATE (NUOVO)
+# ============================================================
+
+def expected_calibration_error(
+    predictions: List[float],
+    outcomes: List[int],
+    n_bins: int = 10
+) -> float:
+    """
+    Expected Calibration Error (ECE): misura quanto le probabilità sono ben calibrate.
+    ECE = sum |accuracy(bin) - confidence(bin)| * |bin|
+    Score perfetto = 0, peggiore = 1.
+    """
+    if len(predictions) != len(outcomes):
+        return None
+    
+    predictions = np.array(predictions)
+    outcomes = np.array(outcomes)
+    
+    bin_boundaries = np.linspace(0, 1, n_bins + 1)
+    bin_lowers = bin_boundaries[:-1]
+    bin_uppers = bin_boundaries[1:]
+    
+    ece = 0.0
+    for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+        in_bin = (predictions > bin_lower) & (predictions <= bin_upper)
+        prop_in_bin = in_bin.mean()
+        
+        if prop_in_bin > 0:
+            accuracy_in_bin = outcomes[in_bin].mean()
+            avg_confidence_in_bin = predictions[in_bin].mean()
+            ece += np.abs(avg_confidence_in_bin - accuracy_in_bin) * prop_in_bin
+    
+    return ece
+
+def maximum_calibration_error(
+    predictions: List[float],
+    outcomes: List[int],
+    n_bins: int = 10
+) -> float:
+    """
+    Maximum Calibration Error (MCE): massimo errore di calibrazione.
+    """
+    if len(predictions) != len(outcomes):
+        return None
+    
+    predictions = np.array(predictions)
+    outcomes = np.array(outcomes)
+    
+    bin_boundaries = np.linspace(0, 1, n_bins + 1)
+    bin_lowers = bin_boundaries[:-1]
+    bin_uppers = bin_boundaries[1:]
+    
+    mce = 0.0
+    for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+        in_bin = (predictions > bin_lower) & (predictions <= bin_upper)
+        if in_bin.sum() > 0:
+            accuracy_in_bin = outcomes[in_bin].mean()
+            avg_confidence_in_bin = predictions[in_bin].mean()
+            mce = max(mce, np.abs(avg_confidence_in_bin - accuracy_in_bin))
+    
+    return mce
+
+def brier_score_decomposition(
+    predictions: List[float],
+    outcomes: List[int],
+    n_bins: int = 10
+) -> Dict[str, float]:
+    """
+    Decomposizione Brier Score:
+    BS = Uncertainty - Resolution + Reliability
+    
+    Returns:
+        - brier_score: Brier Score totale
+        - uncertainty: Varianza degli outcomes (non riducibile)
+        - resolution: Quanto le previsioni differiscono dalla media (più alto = meglio)
+        - reliability: Errore di calibrazione (più basso = meglio)
+    """
+    if len(predictions) != len(outcomes):
+        return None
+    
+    predictions = np.array(predictions)
+    outcomes = np.array(outcomes)
+    
+    # Uncertainty: varianza degli outcomes
+    uncertainty = np.var(outcomes)
+    
+    # Resolution e Reliability usando bins
+    bin_boundaries = np.linspace(0, 1, n_bins + 1)
+    resolution = 0.0
+    reliability = 0.0
+    mean_outcome = outcomes.mean()
+    
+    for i in range(len(bin_boundaries) - 1):
+        bin_lower = bin_boundaries[i]
+        bin_upper = bin_boundaries[i + 1]
+        in_bin = (predictions >= bin_lower) & (predictions < bin_upper)
+        
+        if in_bin.sum() > 0:
+            prop = in_bin.mean()
+            accuracy = outcomes[in_bin].mean()
+            confidence = predictions[in_bin].mean()
+            
+            # Resolution: quanto le previsioni differiscono dalla media
+            resolution += prop * (accuracy - mean_outcome)**2
+            
+            # Reliability: errore di calibrazione
+            reliability += prop * (confidence - accuracy)**2
+    
+    # Brier Score = Uncertainty - Resolution + Reliability
+    bs = uncertainty - resolution + reliability
+    
+    return {
+        "brier_score": float(bs),
+        "uncertainty": float(uncertainty),
+        "resolution": float(resolution),
+        "reliability": float(reliability)
+    }
+
+# ============================================================
+#   CALIBRAZIONE PROBABILITÀ (PLATT SCALING + ISOTONIC + TEMPERATURE)
 # ============================================================
 
 def platt_scaling_calibration(
@@ -2520,17 +3150,194 @@ def platt_scaling_calibration(
         # Fallback: funzione identità
         return lambda p: p, 1.0
 
-def load_calibration_from_history(archive_file: str = ARCHIVE_FILE, league: str = None) -> Optional[callable]:
+def isotonic_calibration(
+    predictions: List[float],
+    outcomes: List[int],
+    test_predictions: List[float] = None,
+) -> Tuple[callable, float]:
+    """
+    Calibrazione isotonica: non-parametrica, più flessibile di Platt Scaling.
+    
+    Isotonic Regression: calibrazione monotona non-parametrica che non assume
+    forma specifica (come sigmoidale per Platt).
+    
+    Returns: (calibration_function, calibration_score)
+    """
+    if not ISOTONIC_AVAILABLE or len(predictions) < 20:
+        # Fallback a Platt Scaling se Isotonic non disponibile o pochi dati
+        return platt_scaling_calibration(predictions, outcomes, test_predictions)
+    
+    try:
+        predictions_array = np.array(predictions)
+        outcomes_array = np.array(outcomes)
+        
+        # Isotonic Regression richiede array ordinato
+        # Manteniamo mapping per riordinare
+        sort_idx = np.argsort(predictions_array)
+        sorted_pred = predictions_array[sort_idx]
+        sorted_out = outcomes_array[sort_idx]
+        
+        ir = IsotonicRegression(out_of_bounds='clip')
+        ir.fit(sorted_pred, sorted_out)
+        
+        def calibrate(p):
+            p = max(0.0, min(1.0, p))
+            calibrated = ir.predict([p])[0]
+            return max(0.0, min(1.0, calibrated))
+        
+        # Calcola score di calibrazione
+        calibrated_preds = [calibrate(p) for p in predictions]
+        calibration_score = brier_score(calibrated_preds, outcomes)
+        
+        return calibrate, calibration_score
+    except Exception as e:
+        # Fallback a Platt Scaling
+        return platt_scaling_calibration(predictions, outcomes, test_predictions)
+
+def temperature_scaling_calibration(
+    predictions: List[float],
+    outcomes: List[int],
+    test_predictions: List[float] = None,
+) -> Tuple[callable, float, float]:
+    """
+    Temperature Scaling: calibrazione parametrica semplice e spesso efficace.
+    
+    P_calibrated = sigmoid(logit(P_raw) / T)
+    
+    T > 1: meno confident (allarga distribuzione)
+    T < 1: più confident (restringe distribuzione)
+    T = 1: nessun cambiamento
+    
+    Returns: (calibration_function, temperature, calibration_score)
+    """
+    if len(predictions) < 10:
+        return lambda p: p, 1.0, 1.0
+    
+    try:
+        predictions_array = np.array(predictions)
+        outcomes_array = np.array(outcomes)
+        
+        # Clip per evitare logit infiniti
+        predictions_array = np.clip(predictions_array, 1e-6, 1 - 1e-6)
+        logits = np.log(predictions_array / (1 - predictions_array))
+        
+        def temp_error(T):
+            """Errore per temperatura T"""
+            if T <= 0:
+                return 1e10
+            calibrated = 1 / (1 + np.exp(-logits / T))
+            calibrated = np.clip(calibrated, 1e-6, 1 - 1e-6)
+            bs = brier_score(calibrated.tolist(), outcomes_array.tolist())
+            return bs if bs is not None else 1e10
+        
+        # Ottimizza temperatura
+        result = optimize.minimize_scalar(
+            temp_error,
+            bounds=(0.1, 10.0),
+            method='bounded',
+            options={'maxiter': 50}
+        )
+        
+        T_opt = result.x if result.success else 1.0
+        
+        def calibrate(p):
+            p = max(1e-6, min(1 - 1e-6, p))
+            logit = np.log(p / (1 - p))
+            calibrated = 1 / (1 + np.exp(-logit / T_opt))
+            return max(0.0, min(1.0, calibrated))
+        
+        # Calcola score
+        calibrated_preds = [calibrate(p) for p in predictions]
+        calibration_score = brier_score(calibrated_preds, outcomes)
+        
+        return calibrate, T_opt, calibration_score
+    except Exception as e:
+        # Fallback: funzione identità
+        return lambda p: p, 1.0, 1.0
+
+def best_calibration_method(
+    predictions: List[float],
+    outcomes: List[int],
+    test_predictions: List[float] = None,
+) -> Tuple[callable, str, float]:
+    """
+    Seleziona automaticamente il miglior metodo di calibrazione.
+    
+    Prova: Isotonic > Temperature Scaling > Platt Scaling
+    Sceglie quello con Brier Score più basso.
+    
+    Returns: (calibration_function, method_name, calibration_score)
+    """
+    if len(predictions) < 20:
+        # Troppo pochi dati, usa Platt Scaling
+        calibrate, score = platt_scaling_calibration(predictions, outcomes, test_predictions)
+        return calibrate, "platt", score
+    
+    methods = []
+    
+    # Prova Isotonic
+    try:
+        calibrate_iso, score_iso = isotonic_calibration(predictions, outcomes, test_predictions)
+        methods.append(("isotonic", calibrate_iso, score_iso))
+    except:
+        pass
+    
+    # Prova Temperature Scaling
+    try:
+        calibrate_temp, T, score_temp = temperature_scaling_calibration(predictions, outcomes, test_predictions)
+        methods.append(("temperature", calibrate_temp, score_temp))
+    except:
+        pass
+    
+    # Prova Platt Scaling
+    try:
+        calibrate_platt, score_platt = platt_scaling_calibration(predictions, outcomes, test_predictions)
+        methods.append(("platt", calibrate_platt, score_platt))
+    except:
+        pass
+    
+    if not methods:
+        # Fallback: funzione identità
+        return lambda p: p, "none", 1.0
+    
+    # Scegli metodo con score più basso (migliore)
+    best_method = min(methods, key=lambda x: x[2])
+    return best_method[1], best_method[0], best_method[2]
+
+def load_calibration_from_history(
+    archive_file: str = ARCHIVE_FILE,
+    league: str = None,
+    use_time_decay: bool = True,
+    half_life_days: int = 30
+) -> Optional[callable]:
     """
     Carica calibrazione da storico partite.
     Se ci sono abbastanza dati con risultati, calibra il modello.
     
-    ALTA PRIORITÀ: Calibrazione dinamica per lega - calibra separatamente per ogni lega.
+    ⭐ MIGLIORATO: Supporta time-decay weighting per dare più peso a partite recenti.
+    
+    Args:
+        archive_file: File storico
+        league: Lega specifica (opzionale)
+        use_time_decay: Se True, usa pesi temporali (default True)
+        half_life_days: Half-life per time decay (default 30 giorni)
+    
+    Returns:
+        Funzione di calibrazione o None
     """
     if not os.path.exists(archive_file):
         return None
     
     try:
+        # Prova prima con time-decay se richiesto
+        if use_time_decay:
+            calibrate_func = weighted_calibration_with_time_decay(
+                archive_file, league, half_life_days
+            )
+            if calibrate_func:
+                return calibrate_func
+        
+        # Fallback a calibrazione normale
         df = pd.read_csv(archive_file)
         
         # Filtra per lega se specificata (CALIBRAZIONE DINAMICA PER LEGA)
@@ -2556,15 +3363,15 @@ def load_calibration_from_history(archive_file: str = ARCHIVE_FILE, league: str 
         predictions_home = df_complete["p_home"].values
         outcomes_home = (df_complete["esito_reale"] == "1").astype(int).values
         
-        # Calibra
-        calibrate_func, score = platt_scaling_calibration(
+        # Calibra usando miglior metodo disponibile
+        calibrate_func, method_name, score = best_calibration_method(
             predictions_home.tolist(),
             outcomes_home.tolist()
         )
         
         return calibrate_func
-    except Exception as e:
-        print(f"Errore calibrazione: {e}")
+    except (KeyError, ValueError, pd.errors.EmptyDataError) as e:
+        logger.error(f"Errore calibrazione: {e}")
         return None
 
 def optimize_model_parameters(
@@ -2642,8 +3449,8 @@ def optimize_model_parameters(
                 }
         
         return best_params
-    except Exception as e:
-        print(f"Errore ottimizzazione parametri: {e}")
+    except (KeyError, ValueError, pd.errors.EmptyDataError) as e:
+        logger.error(f"Errore ottimizzazione parametri: {e}")
         return {}
 
 # ============================================================
@@ -2777,15 +3584,15 @@ def ensemble_prediction(
     px_market = px
     p2_market = p2
     
-    # Modello 3: Conservativo (blend 70% market, 30% modello)
-    p1_cons = 0.7 * p1_market + 0.3 * p1_main
-    px_cons = 0.7 * px_market + 0.3 * px_main
-    p2_cons = 0.7 * p2_market + 0.3 * p2_main
+    # Modello 3: Conservativo usando ModelConfig
+    p1_cons = model_config.MARKET_WEIGHT * p1_market + model_config.DNB_WEIGHT * p1_main
+    px_cons = model_config.MARKET_WEIGHT * px_market + model_config.DNB_WEIGHT * px_main
+    p2_cons = model_config.MARKET_WEIGHT * p2_market + model_config.DNB_WEIGHT * p2_main
     
-    # Ensemble finale: 60% principale, 25% market, 15% conservativo
-    p1_ensemble = 0.60 * p1_main + 0.25 * p1_market + 0.15 * p1_cons
-    px_ensemble = 0.60 * px_main + 0.25 * px_market + 0.15 * px_cons
-    p2_ensemble = 0.60 * p2_main + 0.25 * p2_market + 0.15 * p2_cons
+    # Ensemble finale usando ModelConfig
+    p1_ensemble = model_config.ENSEMBLE_MAIN_WEIGHT * p1_main + model_config.ENSEMBLE_MARKET_WEIGHT * p1_market + model_config.ENSEMBLE_CONSERVATIVE_WEIGHT * p1_cons
+    px_ensemble = model_config.ENSEMBLE_MAIN_WEIGHT * px_main + model_config.ENSEMBLE_MARKET_WEIGHT * px_market + model_config.ENSEMBLE_CONSERVATIVE_WEIGHT * px_cons
+    p2_ensemble = model_config.ENSEMBLE_MAIN_WEIGHT * p2_main + model_config.ENSEMBLE_MARKET_WEIGHT * p2_market + model_config.ENSEMBLE_CONSERVATIVE_WEIGHT * p2_cons
     
     # Normalizza
     tot_ens = p1_ensemble + px_ensemble + p2_ensemble
@@ -4054,8 +4861,8 @@ def get_weather_for_match(city: str, match_datetime: str = None) -> Dict[str, An
             "adjustments": adjustments,
             "city": city
         }
-    except Exception as e:
-        print(f"⚠️ Errore OpenWeatherMap: {e}")
+    except (requests.exceptions.RequestException, KeyError, ValueError) as e:
+        logger.error(f"Errore OpenWeatherMap: {e}")
         return {"available": False, "weather_factor": 1.0, "error": str(e)}
 
 # 2. FOOTBALL-DATA.ORG API
@@ -4090,8 +4897,8 @@ def football_data_get_team_info(team_name: str, league_code: str = None) -> Dict
                 }
         
         return {"available": False, "reason": "Team not found"}
-    except Exception as e:
-        print(f"⚠️ Errore Football-Data.org: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore Football-Data.org: {e}")
         return {"available": False, "error": str(e)}
 
 def football_data_get_competitions() -> List[Dict[str, Any]]:
@@ -4105,8 +4912,8 @@ def football_data_get_competitions() -> List[Dict[str, Any]]:
         response = requests.get(url, headers=headers, timeout=5)
         response.raise_for_status()
         return response.json().get("competitions", [])
-    except Exception as e:
-        print(f"⚠️ Errore Football-Data.org competitions: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore Football-Data.org competitions: {e}")
         return []
 
 # 3. THESPORTSDB API (NO API KEY NECESSARIA!)
@@ -4138,8 +4945,8 @@ def thesportsdb_get_team_info(team_name: str) -> Dict[str, Any]:
             }
         
         return {"available": False}
-    except Exception as e:
-        print(f"⚠️ Errore TheSportsDB: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore TheSportsDB: {e}")
         return {"available": False, "error": str(e)}
 
 def thesportsdb_get_stadium_info(stadium_name: str) -> Dict[str, Any]:
@@ -4163,8 +4970,8 @@ def thesportsdb_get_stadium_info(stadium_name: str) -> Dict[str, Any]:
             }
         
         return {"available": False}
-    except Exception as e:
-        print(f"⚠️ Errore TheSportsDB stadium: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore TheSportsDB stadium: {e}")
         return {"available": False}
 
 # 4. UNDERSTAT SCRAPING (xG avanzato)
@@ -4189,7 +4996,7 @@ def understat_get_team_xg(team_name: str, season: str = None) -> Dict[str, Any]:
             "note": "Richiede implementazione scraping BeautifulSoup"
         }
     except Exception as e:
-        print(f"⚠️ Errore Understat: {e}")
+        logger.error(f"Errore Understat: {e}")
         return {"available": False, "error": str(e)}
 
 # 5. FBREF SCRAPING (Statistiche avanzate)
@@ -4208,7 +5015,7 @@ def fbref_get_team_stats(team_name: str, league: str = None) -> Dict[str, Any]:
             "note": "Richiede implementazione scraping BeautifulSoup"
         }
     except Exception as e:
-        print(f"⚠️ Errore FBRef: {e}")
+        logger.error(f"Errore FBRef: {e}")
         return {"available": False, "error": str(e)}
 
 # Funzione helper per applicare impatto meteo su lambda
@@ -4365,8 +5172,8 @@ def send_telegram_message(
         response = requests.post(url, json=payload, timeout=5)
         response.raise_for_status()
         return True
-    except Exception as e:
-        print(f"⚠️ Errore invio Telegram: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore invio Telegram: {e}")
         return False
 
 def send_telegram_photo(
@@ -4407,8 +5214,8 @@ def send_telegram_photo(
             response = requests.post(url, files=files, data=data, timeout=10)
             response.raise_for_status()
             return True
-    except Exception as e:
-        print(f"⚠️ Errore invio foto Telegram: {e}")
+    except (requests.exceptions.RequestException, IOError, FileNotFoundError) as e:
+        logger.error(f"Errore invio foto Telegram: {e}")
         return False
 
 def format_analysis_for_telegram(
@@ -4873,20 +5680,34 @@ def risultato_completo_improved(
     # 3. Home advantage per lega
     ha = home_advantage_factor(league)
     
-    # 4. Stima iniziale rho (per ottimizzazione lambda)
-    # Stima preliminare di rho basata su probabilità draw
-    px_prelim = 1 / odds_x_n
-    rho_prelim = estimate_rho_improved(1.5, 1.5, px_prelim, odds_btts)  # Lambda dummy
+    # 4. ⭐ OTTIMIZZAZIONE SIMULTANEA LAMBDA + RHO ⭐
+    # Usa ottimizzazione congiunta invece di separata per maggiore accuratezza
+    use_joint_optimization = True  # Flag per abilitare/disabilitare
     
-    # 5. Stima lambda migliorata (con rho preliminare)
-    lh, la = estimate_lambda_from_market_optimized(
-        odds_1_n, odds_x_n, odds_2_n,
-        total,
-        odds_over25, odds_under25,
-        odds_dnb_home, odds_dnb_away,
-        home_advantage=ha,
-        rho_initial=rho_prelim
-    )
+    if use_joint_optimization and odds_over25 and odds_under25:
+        # Ottimizzazione simultanea (più accurata)
+        lh, la, rho = estimate_lambda_rho_joint_optimization(
+            odds_1_n, odds_x_n, odds_2_n,
+            total,
+            odds_over25, odds_under25,
+            odds_btts,
+            odds_dnb_home, odds_dnb_away,
+            home_advantage=ha
+        )
+    else:
+        # Fallback a metodo separato se Over/Under non disponibile
+        px_prelim = 1 / odds_x_n
+        rho_prelim = estimate_rho_improved(1.5, 1.5, px_prelim, odds_btts)
+        
+        lh, la = estimate_lambda_from_market_optimized(
+            odds_1_n, odds_x_n, odds_2_n,
+            total,
+            odds_over25, odds_under25,
+            odds_dnb_home, odds_dnb_away,
+            home_advantage=ha,
+            rho_initial=rho_prelim
+        )
+        rho = estimate_rho_optimized(lh, la, px_prelim, odds_btts, None)
     
     # 5.3. Applica impatto meteo (se disponibile)
     weather_data = None
@@ -4998,15 +5819,15 @@ def risultato_completo_improved(
         if advanced_data and advanced_data.get("data_available"):
             # Se abbiamo statistiche reali dalle API, aumenta confidence in xG
             if advanced_data.get("home_team_stats") or advanced_data.get("away_team_stats"):
-                api_boost = 1.15  # +15% confidence se abbiamo dati API
+                api_boost = model_config.XG_API_BOOST
         
         # Confidence finale: base * consistency * api_boost
         xg_h_confidence = xg_h_base_conf * consistency_h * api_boost
         xg_a_confidence = xg_a_base_conf * consistency_a * api_boost
         
-        # Pesatura bayesiana: w = confidence * consistency (max 45% peso a xG se alta confidence)
-        max_xg_weight = 0.45 if api_boost > 1.0 else 0.40
-        w_xg_h = min(max_xg_weight, xg_h_confidence * 0.5)  # Max 45% se alta confidence
+        # Pesatura bayesiana: w = confidence * consistency usando ModelConfig
+        max_xg_weight = model_config.XG_MAX_WEIGHT if api_boost > 1.0 else model_config.XG_XG_WEIGHT
+        w_xg_h = min(max_xg_weight, xg_h_confidence * 0.5)
         w_xg_a = min(max_xg_weight, xg_a_confidence * 0.5)
         
         w_market_h = 1.0 - w_xg_h
@@ -5017,11 +5838,24 @@ def risultato_completo_improved(
         la = w_market_a * la + w_xg_a * xg_a_est
     
     # Constraints finali
-    lh = max(0.3, min(4.0, lh))
-    la = max(0.3, min(4.0, la))
+    lh = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, lh))
+    la = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, la))
     
-    # 8. Stima rho migliorata (ora con lambda corretti)
-    rho = estimate_rho_optimized(lh, la, px, odds_btts, None)
+    # 8. Ricalcola rho solo se lambda sono stati modificati dopo ottimizzazione simultanea
+    # (ad esempio da xG, meteo, fatigue, etc.)
+    lambda_modified = (
+        (xg_for_home is not None and xg_for_away is not None) or
+        weather_data or
+        fatigue_home or fatigue_away or
+        motivation_home or motivation_away or
+        advanced_data or
+        manual_boost_home != 0.0 or manual_boost_away != 0.0
+    )
+    
+    if lambda_modified:
+        # Lambda modificati, ricalcola rho
+        rho = estimate_rho_optimized(lh, la, px, odds_btts, None)
+    # Altrimenti rho è già ottimale dall'ottimizzazione simultanea
     
     # 9. Matrici score
     mat_ft = build_score_matrix(lh, la, rho)
@@ -5031,20 +5865,21 @@ def risultato_completo_improved(
     # Partite ad alto scoring: ratio più basso (più gol nel secondo tempo)
     # Partite a basso scoring: ratio più alto (più equilibrio)
     
-    # Base ratio: 0.45 è la media empirica
-    base_ratio = 0.45
+    # Base ratio usando ModelConfig
+    base_ratio = model_config.HT_BASE_RATIO
     
     # Adjustment per total: più gol totali → ratio più basso
-    total_adj = -0.015 * (total - 2.5)
+    total_adj = model_config.HT_TOTAL_ADJUSTMENT * (total - model_config.HT_TOTAL_BASE)
     
     # Adjustment per lambda: se lambda molto alto, ratio più basso
-    lambda_adj = -0.01 * max(0, (lh + la - 3.0) / 2.0)
+    lambda_adj = model_config.HT_LAMBDA_ADJUSTMENT * max(0, (lh + la - 3.0) / 2.0)
     
     # Adjustment per rho: correlazione influisce su distribuzione temporale
-    rho_adj = 0.005 * rho
+    rho_adj = model_config.HT_RHO_ADJUSTMENT * rho
     
     ratio_ht = base_ratio + total_adj + lambda_adj + rho_adj
-    ratio_ht = max(0.40, min(0.55, ratio_ht))
+    # Limita ratio usando ModelConfig
+    ratio_ht = max(model_config.HT_MIN, min(model_config.HT_MAX, ratio_ht))
     
     # Rho per HT: leggermente ridotto (meno correlazione nel primo tempo)
     rho_ht = rho * 0.75
@@ -5863,12 +6698,12 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                     
                     # Log discreto (solo in console, non in UI)
                     if advanced_team_data.get("data_available"):
-                        print(f"✅ Dati avanzati disponibili: Form={advanced_team_data.get('home_team_stats') is not None}, "
-                              f"H2H={advanced_team_data.get('h2h_data') is not None}, "
-                              f"Injuries={advanced_team_data.get('home_injuries') is not None}")
+                        logger.info(f"Dati avanzati disponibili: Form={advanced_team_data.get('home_team_stats') is not None}, "
+                                   f"H2H={advanced_team_data.get('h2h_data') is not None}, "
+                                   f"Injuries={advanced_team_data.get('home_injuries') is not None}")
                 except Exception as e:
                     st.warning(f"⚠️ Errore recupero dati avanzati: {e}")
-                    print(f"Errore dettagliato: {e}")
+                    logger.error(f"Errore dettagliato recupero dati avanzati: {e}")
         
         # 4. Calcolo modello
         xg_args = {}
