@@ -1251,7 +1251,8 @@ def apifootball_get_standings(league_id: int, season: int) -> Dict[str, Any]:
         r.raise_for_status()
         data = r.json()
         standings = data.get("response", [])
-        if standings and len(standings) > 0:
+        # ⚠️ PROTEZIONE: Valida che standings non sia vuoto e che [0] sia un dict
+        if standings and len(standings) > 0 and isinstance(standings[0], dict):
             return standings[0].get("league", {}).get("standings", [])
         return []
     except requests.exceptions.RequestException as e:
@@ -5513,8 +5514,17 @@ def get_weather_for_match(city: str, match_datetime: str = None) -> Dict[str, An
         wind_speed = data["wind"].get("speed", 0)
         visibility = data.get("visibility", 10000) / 1000  # Visibilità in km (default 10km)
         rain = data.get("rain", {}).get("1h", 0) or data.get("rain", {}).get("3h", 0) or 0
-        conditions = data["weather"][0]["main"].lower()
-        description = data["weather"][0]["description"]
+        
+        # ⚠️ PROTEZIONE: Valida che weather esista e non sia vuoto prima di accedere a [0]
+        weather_list = data.get("weather", [])
+        if weather_list and len(weather_list) > 0 and isinstance(weather_list[0], dict):
+            conditions = weather_list[0].get("main", "").lower()
+            description = weather_list[0].get("description", "")
+        else:
+            # Fallback: usa valori di default
+            conditions = ""
+            description = ""
+            logger.warning("Dati weather non disponibili o non validi")
         
         # Calcola fattore impatto su lambda (MIGLIORATO: più parametri)
         weather_factor = 1.0
@@ -8019,7 +8029,15 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
         )
         
         # 2. Market confidence
-        num_books = len(st.session_state.get("events_for_league", [{}])[0].get("bookmakers", []))
+        # ⚠️ PROTEZIONE: Valida che events_for_league non sia vuoto prima di accedere a [0]
+        events_for_league = st.session_state.get("events_for_league", [])
+        if events_for_league and len(events_for_league) > 0 and isinstance(events_for_league[0], dict):
+            num_books = len(events_for_league[0].get("bookmakers", []))
+        else:
+            # Fallback: usa valore di default se non disponibile
+            num_books = 1
+            logger.warning("events_for_league vuoto o non valido, uso num_books=1 come default")
+        
         market_conf = compute_market_confidence_score(
             odds_1, odds_x, odds_2,
             odds_over25, odds_under25,
@@ -8030,8 +8048,14 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
         )
         
         # 3. Recupera dati avanzati (fatigue, motivation, time)
-        home_team_name = api_prices.get("home") or match_name.split(" vs ")[0] if " vs " in match_name else ""
-        away_team_name = api_prices.get("away") or match_name.split(" vs ")[1] if " vs " in match_name else ""
+        # ⚠️ PROTEZIONE: Valida match_name prima di split
+        if match_name and " vs " in match_name:
+            match_parts = match_name.split(" vs ")
+            home_team_name = api_prices.get("home") or (match_parts[0] if len(match_parts) > 0 else "")
+            away_team_name = api_prices.get("away") or (match_parts[1] if len(match_parts) > 1 else "")
+        else:
+            home_team_name = api_prices.get("home") or ""
+            away_team_name = api_prices.get("away") or ""
         
         # Data partita da event se disponibile
         match_datetime = None
