@@ -1,0 +1,1645 @@
+import math
+from typing import Dict, Any, List, Tuple
+from datetime import datetime, date, timedelta
+import pandas as pd
+import os
+import requests
+import streamlit as st
+
+# ============================================================
+#                 CONFIG (da secrets su Streamlit Cloud)
+# ============================================================
+
+THE_ODDS_API_KEY = st.secrets.get("THE_ODDS_API_KEY", "")
+THE_ODDS_BASE = "https://api.the-odds-api.com/v4"
+
+API_FOOTBALL_KEY = st.secrets.get("API_FOOTBALL_KEY", "")
+API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
+
+ARCHIVE_FILE = "storico_analisi.csv"
+
+# ============================================================
+#             UTILS
+# ============================================================
+
+def normalize_key(s: str) -> str:
+    return (s or "").lower().replace(" ", "").replace("-", "").replace("/", "")
+
+# ============================================================
+#         FUNZIONI THE ODDS API
+# ============================================================
+
+def oddsapi_get_soccer_leagues() -> List[dict]:
+    if not THE_ODDS_API_KEY:
+        return []
+    try:
+        r = requests.get(
+            f"{THE_ODDS_BASE}/sports",
+            params={"apiKey": THE_ODDS_API_KEY, "all": "true"},
+            timeout=8,
+        )
+        r.raise_for_status()
+        data = r.json()
+        soccer = [s for s in data if s.get("key", "").startswith("soccer")]
+        return soccer
+    except Exception as e:
+        st.warning(f"Errore nella chiamata sports: {e}")
+        return []
+
+def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
+    if not THE_ODDS_API_KEY:
+        return []
+    base_url = f"{THE_ODDS_BASE}/sports/{league_key}/odds"
+    params_common = {
+        "apiKey": THE_ODDS_API_KEY,
+        "regions": "eu,uk",
+        "oddsFormat": "decimal",
+        "dateFormat": "iso",
+    }
+
+    # 1) provo con BTTS
+    try:
+        r = requests.get(
+            base_url,
+            params={**params_common, "markets": "h2h,totals,spreads,btts"},
+            timeout=8,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data:
+            return data
+    except Exception:
+        pass
+
+    # 2) senza BTTS
+    try:
+        r2 = requests.get(
+            base_url,
+            params={**params_common, "markets": "h2h,totals,spreads"},
+            timeout=8,
+        )
+        r2.raise_for_status()
+        return r2.json()
+    except Exception as e:
+        st.warning(f"Errore nella chiamata eventi: {e}")
+        return []
+
+def oddsapi_refresh_event(league_key: str, event_id: str) -> dict:
+    if not THE_ODDS_API_KEY:
+        return {}
+    if not league_key or not event_id:
+        return {}
+    url = f"{THE_ODDS_BASE}/sports/{league_key}/events/{event_id}/odds"
+    params = {
+        "apiKey": THE_ODDS_API_KEY,
+        "regions": "eu,uk",
+        "oddsFormat": "decimal",
+        "dateFormat": "iso",
+        "markets": "h2h,totals,spreads,btts",
+    }
+    try:
+        r = requests.get(url, params=params, timeout=8)
+        r.raise_for_status()
+        data = r.json()
+        if isinstance(data, list) and data:
+            return data[0]
+        return data
+    except Exception as e:
+        st.warning(f"Errore refresh evento: {e}")
+        return {}
+
+# ============================================================
+#  STIMA GG QUANDO NON ARRIVA DALL’API
+# ============================================================
+
+def estimate_btts_from_basic_odds(
+    odds_1: float = None,
+    odds_x: float = None,
+    odds_2: float = None,
+    odds_over25: float = None,
+    odds_under25: float = None,
+) -> float:
+    def _p(odd: float) -> float:
+        return 1.0 / odd if odd and odd > 1 else 0.0
+
+    p_over = _p(odds_over25)
+    p_home = _p(odds_1)
+    p_away = _p(odds_2)
+
+    if p_over == 0:
+        balance = 1.0 - abs(p_home - p_away)
+        gg_prob = 0.50 + (balance - 0.5) * 0.25
+        gg_prob = max(0.38, min(0.70, gg_prob))
+        return round(1.0 / gg_prob, 2)
+
+    gg_prob = 0.50 + (p_over - 0.50) * 0.9
+    balance = 1.0 - abs(p_home - p_away)
+    gg_prob += (balance - 0.5) * 0.20
+    gg_prob = max(0.35, min(0.75, gg_prob))
+    return round(1.0 / gg_prob, 2)
+
+# ============================================================
+#   ESTRATTORE QUOTE DA EVENTO
+# ============================================================
+
+def oddsapi_extract_prices(event: dict) -> dict:
+    WEIGHTS = {
+        "pinnacle": 1.6,
+        "bet365": 1.4,
+        "unibet_eu": 1.2,
+        "marathonbet": 1.2,
+        "williamhill": 1.1,
+        "bwin": 1.0,
+        "betonlineag": 1.0,
+        "10bet": 1.0,
+        "bovada": 0.8,
+    }
+
+    home_team = (event.get("home_team") or "home").strip()
+    away_team = (event.get("away_team") or "away").strip()
+    home_l = home_team.lower()
+    away_l = away_team.lower()
+
+    out = {
+        "home": home_team,
+        "away": away_team,
+        "odds_1": None,
+        "odds_x": None,
+        "odds_2": None,
+        "odds_over25": None,
+        "odds_under25": None,
+        "odds_dnb_home": None,
+        "odds_dnb_away": None,
+        "odds_btts": None,
+    }
+
+    bookmakers = event.get("bookmakers", [])
+    if not bookmakers:
+        out["odds_btts"] = estimate_btts_from_basic_odds()
+        return out
+
+    h2h_home, h2h_draw, h2h_away = [], [], []
+    over25_list, under25_list = [], []
+    dnb_home_list, dnb_away_list = [], []
+    btts_list = []
+
+    for bk in bookmakers:
+        bk_key = bk.get("key")
+        if bk_key not in WEIGHTS:
+            continue
+        w = WEIGHTS[bk_key]
+
+        for mk in bk.get("markets", []):
+            mk_key = mk.get("key", "").lower()
+
+            # 1X2
+            if ("h2h" in mk_key) or (mk_key == "h2h") or ("match_winner" in mk_key):
+                for o in mk.get("outcomes", []):
+                    name_l = (o.get("name") or "").strip().lower()
+                    price = o.get("price")
+                    if not price:
+                        continue
+                    if name_l == home_l or home_l in name_l:
+                        h2h_home.append((price, w))
+                    elif name_l == away_l or away_l in name_l:
+                        h2h_away.append((price, w))
+                    elif name_l in ["draw", "tie", "x", "pareggio"]:
+                        h2h_draw.append((price, w))
+
+            # TOTALS → 2.5
+            elif "totals" in mk_key or "total" in mk_key:
+                for o in mk.get("outcomes", []):
+                    point = o.get("point")
+                    price = o.get("price")
+                    name_l = (o.get("name") or "").lower()
+                    if price is None:
+                        continue
+                    if point == 2.5:
+                        if "over" in name_l:
+                            over25_list.append((price, w))
+                        elif "under" in name_l:
+                            under25_list.append((price, w))
+
+            # DNB
+            elif "draw_no_bet" in mk_key or mk_key == "dnb":
+                for o in mk.get("outcomes", []):
+                    name_l = (o.get("name") or "").lower()
+                    price = o.get("price")
+                    if not price:
+                        continue
+                    if name_l == home_l or home_l in name_l:
+                        dnb_home_list.append((price, w))
+                    elif name_l == away_l or away_l in name_l:
+                        dnb_away_list.append((price, w))
+
+            # SPREADS 0 → DNB
+            elif mk_key == "spreads":
+                for o in mk.get("outcomes", []):
+                    point = o.get("point")
+                    price = o.get("price")
+                    name_l = (o.get("name") or "").lower()
+                    if price is None:
+                        continue
+                    if point == 0 or point == 0.0:
+                        if name_l == home_l or home_l in name_l:
+                            dnb_home_list.append((price, w))
+                        elif name_l == away_l or away_l in name_l:
+                            dnb_away_list.append((price, w))
+
+            # BTTS
+            elif "btts" in mk_key or "both_teams_to_score" in mk_key:
+                for o in mk.get("outcomes", []):
+                    name_l = (o.get("name") or "").lower()
+                    price = o.get("price")
+                    if not price:
+                        continue
+                    if "yes" in name_l or "sì" in name_l or "si" in name_l:
+                        btts_list.append((price, w))
+
+    # pulizia outlier
+    def _trim_outliers(values: List[Tuple[float, float]], tol: float = 0.10):
+        if len(values) <= 2:
+            return values
+        avg = sum(v for v, _ in values) / len(values)
+        low, high = avg * (1 - tol), avg * (1 + tol)
+        return [(v, w) for (v, w) in values if low <= v <= high]
+
+    h2h_home = _trim_outliers(h2h_home)
+    h2h_draw = _trim_outliers(h2h_draw)
+    h2h_away = _trim_outliers(h2h_away)
+    over25_list = _trim_outliers(over25_list)
+    under25_list = _trim_outliers(under25_list)
+    dnb_home_list = _trim_outliers(dnb_home_list)
+    dnb_away_list = _trim_outliers(dnb_away_list)
+    btts_list = _trim_outliers(btts_list)
+
+    def weighted_avg(values: List[Tuple[float, float]]):
+        if not values:
+            return None
+        num = sum(v * w for v, w in values)
+        den = sum(w for _, w in values)
+        return round(num / den, 3) if den else None
+
+    out["odds_1"] = weighted_avg(h2h_home)
+    out["odds_x"] = weighted_avg(h2h_draw)
+    out["odds_2"] = weighted_avg(h2h_away)
+    out["odds_over25"] = weighted_avg(over25_list)
+    out["odds_under25"] = weighted_avg(under25_list)
+    out["odds_dnb_home"] = weighted_avg(dnb_home_list)
+    out["odds_dnb_away"] = weighted_avg(dnb_away_list)
+    out["odds_btts"] = weighted_avg(btts_list)
+
+    if out["odds_btts"] is None:
+        out["odds_btts"] = estimate_btts_from_basic_odds(
+            odds_1=out["odds_1"],
+            odds_x=out["odds_x"],
+            odds_2=out["odds_2"],
+            odds_over25=out["odds_over25"],
+            odds_under25=out["odds_under25"],
+        )
+
+    return out
+
+# ============================================================
+#            API-FOOTBALL SOLO PER RISULTATI REALI
+# ============================================================
+
+def apifootball_get_fixtures_by_date(d: str) -> list:
+    if not API_FOOTBALL_KEY:
+        return []
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    params = {"date": d}
+    try:
+        r = requests.get(f"{API_FOOTBALL_BASE}/fixtures", headers=headers, params=params, timeout=8)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("response", [])
+    except Exception as e:
+        st.warning(f"Errore api-football: {e}")
+        return []
+
+# ============================================================
+#                  FUNZIONI MODELLO
+# ============================================================
+
+def poisson_pmf(k: int, lam: float) -> float:
+    return math.exp(-lam) * (lam ** k) / math.factorial(k)
+
+def entropia_poisson(lam: float, max_k: int = 15) -> float:
+    e = 0.0
+    for k in range(max_k + 1):
+        p = poisson_pmf(k, lam)
+        if p > 0:
+            e -= p * math.log2(p)
+    return e
+
+def decimali_a_prob(odds: float) -> float:
+    return 1 / odds if odds and odds > 0 else 0.0
+
+def normalize_1x2_from_odds(o1: float, ox: float, o2: float) -> Tuple[float, float, float]:
+    p1 = 1 / o1 if o1 and o1 > 0 else 0.0
+    px = 1 / ox if ox and ox > 0 else 0.0
+    p2 = 1 / o2 if o2 and o2 > 0 else 0.0
+    tot = p1 + px + p2
+    if tot == 0:
+        return 0.33, 0.34, 0.33
+    return p1 / tot, px / tot, p2 / tot
+
+def gol_attesi_migliorati(spread: float, total: float,
+                          p1: float, p2: float) -> Tuple[float, float]:
+    if total < 2.25:
+        total_eff = total * 1.03
+    elif total > 3.0:
+        total_eff = total * 0.97
+    else:
+        total_eff = total
+    base = total_eff / 2.0
+    diff = spread / 2.0
+    fatt_int = 1 + (total_eff - 2.5) * 0.15
+    lh = (base - diff) * fatt_int
+    la = (base + diff) * fatt_int
+    fatt_dir = ((p1 - p2) * 0.2) + 1.0
+    lh *= fatt_dir
+    la /= fatt_dir
+    return max(lh, 0.05), max(la, 0.05)
+
+def blend_lambda_market_xg(lambda_market_home: float,
+                           lambda_market_away: float,
+                           xg_for_home: float,
+                           xg_against_home: float,
+                           xg_for_away: float,
+                           xg_against_away: float,
+                           w_market: float = 0.6) -> Tuple[float, float]:
+    xg_home_est = (xg_for_home + xg_against_away) / 2
+    xg_away_est = (xg_for_away + xg_against_home) / 2
+    lh = w_market * lambda_market_home + (1 - w_market) * xg_home_est
+    la = w_market * lambda_market_away + (1 - w_market) * xg_away_est
+    return max(lh, 0.05), max(la, 0.05)
+
+def max_goals_adattivo(lh: float, la: float) -> int:
+    return max(8, int((lh + la) * 2.5))
+
+def tau_dixon_coles(h: int, a: int, lh: float, la: float, rho: float) -> float:
+    if h == 0 and a == 0:
+        val = 1 - (lh * la * rho)
+        return max(0.2, val)
+    elif h == 0 and a == 1:
+        return 1 + (lh * rho)
+    elif h == 1 and a == 0:
+        return 1 + (la * rho)
+    elif h == 1 and a == 1:
+        return 1 - rho
+    return 1.0
+
+def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
+    mg = max_goals_adattivo(lh, la)
+    mat: List[List[float]] = []
+    for h in range(mg + 1):
+        row = []
+        for a in range(mg + 1):
+            p = poisson_pmf(h, lh) * poisson_pmf(a, la)
+            p *= tau_dixon_coles(h, a, lh, la, rho)
+            row.append(p)
+        mat.append(row)
+    tot = sum(sum(r) for r in mat)
+    mat = [[p / tot for p in r] for r in mat]
+    return mat
+
+def calc_match_result_from_matrix(mat: List[List[float]]) -> Tuple[float, float, float]:
+    p_home = p_draw = p_away = 0.0
+    mg = len(mat) - 1
+    for h in range(mg + 1):
+        for a in range(mg + 1):
+            p = mat[h][a]
+            if h > a:
+                p_home += p
+            elif h < a:
+                p_away += p
+            else:
+                p_draw += p
+    tot = p_home + p_draw + p_away
+    return p_home / tot, p_draw / tot, p_away / tot
+
+def calc_over_under_from_matrix(mat: List[List[float]], soglia: float) -> Tuple[float, float]:
+    over = 0.0
+    mg = len(mat) - 1
+    for h in range(mg + 1):
+        for a in range(mg + 1):
+            if h + a > soglia:
+                over += mat[h][a]
+    return over, 1 - over
+
+def calc_bt_ts_from_matrix(mat: List[List[float]]) -> float:
+    mg = len(mat) - 1
+    return sum(mat[h][a] for h in range(1, mg + 1) for a in range(1, mg + 1))
+
+def calc_gg_over25_from_matrix(mat: List[List[float]]) -> float:
+    mg = len(mat) - 1
+    s = 0.0
+    for h in range(1, mg + 1):
+        for a in range(1, mg + 1):
+            if h + a >= 3:
+                s += mat[h][a]
+    return s
+
+def prob_pari_dispari_from_matrix(mat: List[List[float]]) -> Tuple[float, float]:
+    mg = len(mat) - 1
+    even = 0.0
+    for h in range(mg + 1):
+        for a in range(mg + 1):
+            if (h + a) % 2 == 0:
+                even += mat[h][a]
+    return even, 1 - even
+
+def prob_clean_sheet_from_matrix(mat: List[List[float]]) -> Tuple[float, float]:
+    mg = len(mat) - 1
+    cs_away = sum(mat[0][a] for a in range(mg + 1))
+    cs_home = sum(mat[h][0] for h in range(mg + 1))
+    return cs_home, cs_away
+
+def dist_gol_da_matrice(mat: List[List[float]]):
+    mg = len(mat) - 1
+    dh = [0.0] * (mg + 1)
+    da = [0.0] * (mg + 1)
+    for h in range(mg + 1):
+        for a in range(mg + 1):
+            p = mat[h][a]
+            dh[h] += p
+            da[a] += p
+    return dh, da
+
+def dist_gol_totali_from_matrix(mat: List[List[float]]) -> List[float]:
+    mg = len(mat) - 1
+    max_tot = mg * 2
+    dist = [0.0] * (max_tot + 1)
+    for h in range(mg + 1):
+        for a in range(mg + 1):
+            tot = h + a
+            dist[tot] += mat[h][a]
+    return dist
+
+def prob_multigol_from_dist(dist: List[float], gmin: int, gmax: int) -> float:
+    s = 0.0
+    for k in range(gmin, gmax + 1):
+        if k < len(dist):
+            s += dist[k]
+    return s
+
+def combo_multigol_filtrata(multigol_casa: dict, multigol_away: dict, soglia: float = 0.5):
+    out = []
+    for kc, pc in multigol_casa.items():
+        for ka, pa in multigol_away.items():
+            p = pc * pa
+            if p >= soglia:
+                out.append({"combo": f"Casa {kc} + Ospite {ka}", "prob": p})
+    out.sort(key=lambda x: x["prob"], reverse=True)
+    return out
+
+def prob_esito_over_from_matrix(mat: List[List[float]], esito: str, soglia: float) -> float:
+    mg = len(mat) - 1
+    s = 0.0
+    for h in range(mg + 1):
+        for a in range(mg + 1):
+            if h + a <= soglia:
+                continue
+            p = mat[h][a]
+            if esito == '1' and h > a:
+                s += p
+            elif esito == 'X' and h == a:
+                s += p
+            elif esito == '2' and h < a:
+                s += p
+    return s
+
+def prob_dc_over_from_matrix(mat: List[List[float]], dc: str, soglia: float) -> float:
+    mg = len(mat) - 1
+    s = 0.0
+    for h in range(mg + 1):
+        for a in range(mg + 1):
+            if h + a <= soglia:
+                continue
+            p = mat[h][a]
+            if dc == '1X' and h >= a:
+                s += p
+            elif dc == 'X2' and a >= h:
+                s += p
+            elif dc == '12' and h != a:
+                s += p
+    return s
+
+def prob_esito_btts_from_matrix(mat: List[List[float]], esito: str) -> float:
+    mg = len(mat) - 1
+    s = 0.0
+    for h in range(1, mg + 1):
+        for a in range(1, mg + 1):
+            p = mat[h][a]
+            if esito == '1' and h > a:
+                s += p
+            elif esito == 'X' and h == a:
+                s += p
+            elif esito == '2' and h < a:
+                s += p
+    return s
+
+def prob_dc_btts_from_matrix(mat: List[List[float]], dc: str) -> float:
+    mg = len(mat) - 1
+    s = 0.0
+    for h in range(1, mg + 1):
+        for a in range(1, mg + 1):
+            p = mat[h][a]
+            ok = False
+            if dc == '1X' and h >= a:
+                ok = True
+            elif dc == 'X2' and a >= h:
+                ok = True
+            elif dc == '12' and h != a:
+                ok = True
+            if ok:
+                s += p
+    return s
+
+def combo_over_ht_ft(lh: float, la: float) -> Dict[str, float]:
+    soglie = [0.5, 1.5, 2.5, 3.5]
+    out = {}
+    for ht in soglie:
+        lam_ht = (lh + la) * 0.5
+        p_under_ht = sum(poisson_pmf(k, lam_ht) for k in range(int(ht) + 1))
+        p_over_ht = 1 - p_under_ht
+        for ft in soglie:
+            lam_ft = lh + la
+            p_under_ft = sum(poisson_pmf(k, lam_ft) for k in range(int(ft) + 1))
+            p_over_ft = 1 - p_under_ft
+            out[f"Over HT {ht} + Over FT {ft}"] = min(1.0, p_over_ht * p_over_ft)
+    return out
+
+def top_results_from_matrix(mat, top_n=10, soglia_min=0.005):
+    mg = len(mat) - 1
+    risultati = []
+    for h in range(mg + 1):
+        for a in range(mg + 1):
+            p = mat[h][a]
+            if p >= soglia_min:
+                risultati.append((h, a, p * 100))
+    risultati.sort(key=lambda x: x[2], reverse=True)
+    return risultati[:top_n]
+
+def risultato_completo(
+    spread: float,
+    total: float,
+    odds_1: float,
+    odds_x: float,
+    odds_2: float,
+    odds_btts: float,
+    xg_for_home: float = None,
+    xg_against_home: float = None,
+    xg_for_away: float = None,
+    xg_against_away: float = None,
+    odds_dnb_home: float = None,
+    odds_dnb_away: float = None,
+) -> Dict[str, Any]:
+
+    p1, px, p2 = normalize_1x2_from_odds(odds_1, odds_x, odds_2)
+
+    if odds_dnb_home and odds_dnb_home > 1 and odds_dnb_away and odds_dnb_away > 1:
+        pdnb_home = 1 / odds_dnb_home
+        pdnb_away = 1 / odds_dnb_away
+        tot_dnb = pdnb_home + pdnb_away
+        if tot_dnb > 0:
+            pdnb_home /= tot_dnb
+            pdnb_away /= tot_dnb
+            p1 = p1 * 0.7 + pdnb_home * 0.3
+            p2 = p2 * 0.7 + pdnb_away * 0.3
+            px = max(0.0, 1.0 - (p1 + p2))
+
+    lh, la = gol_attesi_migliorati(spread, total, p1, p2)
+
+    if (xg_for_home is not None and xg_against_home is not None and
+        xg_for_away is not None and xg_against_away is not None):
+        lh, la = blend_lambda_market_xg(
+            lh, la,
+            xg_for_home, xg_against_home,
+            xg_for_away, xg_against_away,
+            w_market=0.6
+        )
+
+    if odds_btts and odds_btts > 1:
+        p_btts_market = 1 / odds_btts
+        rho = 0.15 + (p_btts_market - 0.55) * 0.5
+        rho = max(0.05, min(0.45, rho))
+    else:
+        rho = 0.15 + (px * 0.4)
+        rho = max(0.05, min(0.4, rho))
+
+    mat_ft = build_score_matrix(lh, la, rho)
+    ratio_ht = 0.46 + 0.02 * (total - 2.5)
+    ratio_ht = max(0.35, min(0.55, ratio_ht))
+    mat_ht = build_score_matrix(lh * ratio_ht, la * ratio_ht, rho)
+
+    p_home, p_draw, p_away = calc_match_result_from_matrix(mat_ft)
+    over_15, under_15 = calc_over_under_from_matrix(mat_ft, 1.5)
+    over_25, under_25 = calc_over_under_from_matrix(mat_ft, 2.5)
+    over_35, under_35 = calc_over_under_from_matrix(mat_ft, 3.5)
+    over_05_ht = 1 - mat_ht[0][0]
+    btts = calc_bt_ts_from_matrix(mat_ft)
+    gg_over25 = calc_gg_over25_from_matrix(mat_ft)
+
+    even_ft, odd_ft = prob_pari_dispari_from_matrix(mat_ft)
+    even_ht, odd_ht = prob_pari_dispari_from_matrix(mat_ht)
+
+    cs_home, cs_away = prob_clean_sheet_from_matrix(mat_ft)
+    clean_sheet_qualcuno = 1 - btts
+
+    dist_home_ft, dist_away_ft = dist_gol_da_matrice(mat_ft)
+    dist_home_ht, dist_away_ht = dist_gol_da_matrice(mat_ht)
+
+    dist_tot_ft = dist_gol_totali_from_matrix(mat_ft)
+    odd_mass = sum(p for i, p in enumerate(dist_tot_ft) if i % 2 == 1)
+    even_mass2 = 1 - odd_mass
+    cover_0_2 = sum(dist_tot_ft[i] for i in range(0, min(3, len(dist_tot_ft))))
+    cover_0_3 = sum(dist_tot_ft[i] for i in range(0, min(4, len(dist_tot_ft))))
+
+    ranges = [(0,1),(1,3),(1,4),(1,5),(2,3),(2,4),(2,5),(3,5)]
+    multigol_home = {f"{a}-{b}": prob_multigol_from_dist(dist_home_ft, a, b) for a,b in ranges}
+    multigol_away = {f"{a}-{b}": prob_multigol_from_dist(dist_away_ft, a, b) for a,b in ranges}
+    multigol_home_ht = {f"{a}-{b}": prob_multigol_from_dist(dist_home_ht, a, b) for a,b in ranges}
+    multigol_away_ht = {f"{a}-{b}": prob_multigol_from_dist(dist_away_ht, a, b) for a,b in ranges}
+
+    combo_ft_filtrate = combo_multigol_filtrata(multigol_home, multigol_away, 0.5)
+    combo_ht_filtrate = combo_multigol_filtrata(multigol_home_ht, multigol_away_ht, 0.5)
+
+    dc = {
+        "DC Casa o Pareggio": p_home + p_draw,
+        "DC Trasferta o Pareggio": p_away + p_draw,
+        "DC Casa o Trasferta": p_home + p_away
+    }
+
+    mg = len(mat_ft) - 1
+    marg2 = marg3 = 0.0
+    for h in range(mg + 1):
+        for a in range(mg + 1):
+            p = mat_ft[h][a]
+            if h - a >= 2:
+                marg2 += p
+            if h - a >= 3:
+                marg3 += p
+
+    combo_book = {
+        "1 & Over 1.5": prob_esito_over_from_matrix(mat_ft, '1', 1.5),
+        "1 & Over 2.5": prob_esito_over_from_matrix(mat_ft, '1', 2.5),
+        "2 & Over 1.5": prob_esito_over_from_matrix(mat_ft, '2', 1.5),
+        "2 & Over 2.5": prob_esito_over_from_matrix(mat_ft, '2', 2.5),
+        "1X & Over 1.5": prob_dc_over_from_matrix(mat_ft, '1X', 1.5),
+        "X2 & Over 1.5": prob_dc_over_from_matrix(mat_ft, 'X2', 1.5),
+        "1X & Over 2.5": prob_dc_over_from_matrix(mat_ft, '1X', 2.5),
+        "X2 & Over 2.5": prob_dc_over_from_matrix(mat_ft, 'X2', 2.5),
+        "1X & BTTS": prob_dc_btts_from_matrix(mat_ft, '1X'),
+        "X2 & BTTS": prob_dc_btts_from_matrix(mat_ft, 'X2'),
+        "1 & BTTS": prob_esito_btts_from_matrix(mat_ft, '1'),
+        "2 & BTTS": prob_esito_btts_from_matrix(mat_ft, '2'),
+    }
+
+    combo_ht_ft = combo_over_ht_ft(lh, la)
+    top10 = top_results_from_matrix(mat_ft, 10, 0.005)
+
+    ent_home = entropia_poisson(lh)
+    ent_away = entropia_poisson(la)
+
+    odds_prob = {
+        "1": decimali_a_prob(odds_1),
+        "X": decimali_a_prob(odds_x),
+        "2": decimali_a_prob(odds_2)
+    }
+    scost = {
+        "1": (p_home - odds_prob["1"]) * 100,
+        "X": (p_draw - odds_prob["X"]) * 100,
+        "2": (p_away - odds_prob["2"]) * 100
+    }
+
+    return {
+        "lambda_home": lh,
+        "lambda_away": la,
+        "rho": rho,
+        "p_home": p_home,
+        "p_draw": p_draw,
+        "p_away": p_away,
+        "over_15": over_15,
+        "under_15": under_15,
+        "over_25": over_25,
+        "under_25": under_25,
+        "over_35": over_35,
+        "under_35": under_35,
+        "over_05_ht": over_05_ht,
+        "btts": btts,
+        "gg_over25": gg_over25,
+        "even_ft": even_ft,
+        "odd_ft": odd_ft,
+        "even_ht": even_ht,
+        "odd_ht": odd_ht,
+        "cs_home": cs_home,
+        "cs_away": cs_away,
+        "clean_sheet_qualcuno": clean_sheet_qualcuno,
+        "multigol_home": multigol_home,
+        "multigol_away": multigol_away,
+        "multigol_home_ht": multigol_home_ht,
+        "multigol_away_ht": multigol_away_ht,
+        "dc": dc,
+        "marg2": marg2,
+        "marg3": marg3,
+        "combo_ft_filtrate": combo_ft_filtrate,
+        "combo_ht_filtrate": combo_ht_filtrate,
+        "combo_book": combo_book,
+        "combo_ht_ft": combo_ht_ft,
+        "top10": top10,
+        "ent_home": ent_home,
+        "ent_away": ent_away,
+        "odds_prob": odds_prob,
+        "scost": scost,
+        "odd_mass": odd_mass,
+        "even_mass2": even_mass2,
+        "cover_0_2": cover_0_2,
+        "cover_0_3": cover_0_3,
+    }
+
+# ============================================================
+#   FUNZIONI DI CONTROLLO
+# ============================================================
+
+def check_coerenza_quote(
+    odds_1: float,
+    odds_x: float,
+    odds_2: float,
+    odds_over25: float,
+    odds_under25: float,
+) -> List[str]:
+    warnings = []
+    if odds_1 and odds_2 and odds_1 < 1.25 and odds_2 < 5:
+        warnings.append("Casa troppo favorita ma trasferta non abbastanza alta.")
+    if odds_1 and odds_2 and odds_1 > 3.0 and odds_2 > 3.0:
+        warnings.append("Sia casa che trasferta sopra 3.0 → match molto caotico.")
+    if odds_over25 and odds_under25:
+        p_over = 1 / odds_over25
+        p_under = 1 / odds_under25
+        somma = p_over + p_under
+        if not (1.01 < somma < 1.15):
+            warnings.append("Mercato over/under 2.5 con margine anomalo (controlla le quote).")
+        if odds_1 and odds_1 < 1.5 and odds_over25 > 2.2:
+            warnings.append("Favorita netta ma over 2.5 alto → controlla linea gol.")
+    else:
+        warnings.append("Manca almeno una quota Over/Under 2.5 → controlli incompleti.")
+    return warnings
+
+def compute_market_pressure_index(
+    odds_1: float,
+    odds_x: float,
+    odds_2: float,
+    odds_over25: float,
+    odds_under25: float,
+    odds_dnb_home: float,
+    odds_dnb_away: float,
+) -> int:
+    score = 40
+    if odds_1 and odds_2 and odds_1 > 0:
+        ratio = odds_2 / odds_1
+        if ratio >= 2.5:
+            score += 25
+        elif ratio >= 2.0:
+            score += 18
+        elif ratio >= 1.6:
+            score += 10
+        else:
+            score += 4
+
+    dnb_bonus = 0
+    if odds_dnb_home and odds_dnb_home > 1 and odds_1:
+        if odds_1 < 2.1 and odds_dnb_home < 1.55:
+            dnb_bonus += 8
+        elif odds_1 < 2.4 and odds_dnb_home < 1.65:
+            dnb_bonus += 4
+    if odds_dnb_away and odds_dnb_away > 1 and odds_2:
+        if odds_2 < 2.1 and odds_dnb_away < 1.55:
+            dnb_bonus += 8
+        elif odds_2 < 2.4 and odds_dnb_away < 1.65:
+            dnb_bonus += 4
+    score += dnb_bonus
+
+    if odds_over25 and odds_under25:
+        p_over = 1 / odds_over25
+        p_under = 1 / odds_under25
+        somma = p_over + p_under
+        if 1.01 < somma < 1.14:
+            score += 6
+        elif 1.14 <= somma < 1.20:
+            score += 2
+        else:
+            score -= 5
+    else:
+        score -= 5
+
+    return max(0, min(100, score))
+
+def compute_structure_affidability(
+    spread_ap: float,
+    spread_co: float,
+    total_ap: float,
+    total_co: float,
+    ent_media: float,
+    has_xg: bool,
+    odds_1: float,
+    odds_x: float,
+    odds_2: float
+) -> int:
+    aff = 100
+    diff_spread = abs(spread_ap - spread_co)
+    diff_total = abs(total_ap - total_co)
+    aff -= min(3, int(diff_spread / 0.25)) * 8
+    aff -= min(3, int(diff_total / 0.25)) * 5
+
+    if ent_media > 2.25 and total_co >= 2.0:
+        aff -= 15
+    elif ent_media > 2.10 and total_co >= 2.0:
+        aff -= 8
+
+    if not has_xg:
+        aff -= 7
+
+    if odds_1 and odds_x and odds_2:
+        probs = [1/odds_1, 1/odds_x, 1/odds_2]
+        spread_prob = max(probs) - min(probs)
+        if spread_prob < 0.10:
+            aff -= 8
+
+    return max(0, min(100, aff))
+
+def compute_global_confidence(
+    base_aff: int,
+    n_warnings: int,
+    mpi: int,
+    has_xg: bool,
+) -> int:
+    conf = base_aff
+    conf -= n_warnings * 5
+    conf += int((mpi - 50) * 0.3)
+    if has_xg:
+        conf += 5
+    return max(0, min(100, conf))
+
+def valuta_evento_rapido(event: dict) -> dict:
+    prices = oddsapi_extract_prices(event)
+    home = prices.get("home") or event.get("home_team") or "Casa"
+    away = prices.get("away") or event.get("away_team") or "Ospite"
+    match_name = f"{home} vs {away}"
+
+    if not prices.get("odds_1") or not prices.get("odds_2"):
+        return {
+            "match": match_name,
+            "start": event.get("commence_time", ""),
+            "confidence": 0,
+            "mpi": 0,
+            "affidabilita": 0,
+            "warnings": "quote 1/2 mancanti",
+        }
+
+    ris = risultato_completo(
+        spread=0.0,
+        total=2.5,
+        odds_1=prices.get("odds_1"),
+        odds_x=prices.get("odds_x"),
+        odds_2=prices.get("odds_2"),
+        odds_btts=prices.get("odds_btts"),
+        odds_dnb_home=prices.get("odds_dnb_home"),
+        odds_dnb_away=prices.get("odds_dnb_away"),
+    )
+
+    warnings = check_coerenza_quote(
+        prices.get("odds_1"),
+        prices.get("odds_x"),
+        prices.get("odds_2"),
+        prices.get("odds_over25"),
+        prices.get("odds_under25"),
+    )
+    mpi = compute_market_pressure_index(
+        prices.get("odds_1"),
+        prices.get("odds_x"),
+        prices.get("odds_2"),
+        prices.get("odds_over25"),
+        prices.get("odds_under25"),
+        prices.get("odds_dnb_home"),
+        prices.get("odds_dnb_away"),
+    )
+    ent_media = (ris["ent_home"] + ris["ent_away"]) / 2
+    aff = compute_structure_affidability(
+        spread_ap=0.0,
+        spread_co=0.0,
+        total_ap=2.5,
+        total_co=2.5,
+        ent_media=ent_media,
+        has_xg=False,
+        odds_1=prices.get("odds_1"),
+        odds_x=prices.get("odds_x"),
+        odds_2=prices.get("odds_2"),
+    )
+    conf = compute_global_confidence(
+        base_aff=aff,
+        n_warnings=len(warnings),
+        mpi=mpi,
+        has_xg=False,
+    )
+
+    return {
+        "match": match_name,
+        "start": event.get("commence_time", ""),
+        "confidence": conf,
+        "mpi": mpi,
+        "affidabilita": aff,
+        "p_home": ris["p_home"] * 100,
+        "p_draw": ris["p_draw"] * 100,
+        "p_away": ris["p_away"] * 100,
+        "warnings": "; ".join(warnings),
+    }
+
+# ============================================================
+#              STREAMLIT APP
+# ============================================================
+
+st.set_page_config(page_title="Modello Scommesse – Odds API PRO", layout="wide")
+st.title("⚽ Modello Scommesse – versione cloud")
+st.caption(f"Esecuzione: {datetime.utcnow().isoformat(timespec='seconds')}Z")
+
+# init session state
+if "soccer_leagues" not in st.session_state:
+    st.session_state.soccer_leagues = []
+if "events_for_league" not in st.session_state:
+    st.session_state.events_for_league = []
+if "selected_event_prices" not in st.session_state:
+    st.session_state.selected_event_prices = {}
+if "selected_league_key" not in st.session_state:
+    st.session_state.selected_league_key = None
+if "selected_event_id" not in st.session_state:
+    st.session_state.selected_event_id = None
+if "selected_event_key" not in st.session_state:
+    st.session_state.selected_event_key = "match"
+if "refresh_done" not in st.session_state:
+    st.session_state.refresh_done = False
+if "last_refresh_ts" not in st.session_state:
+    st.session_state.last_refresh_ts = None
+if "last_refresh_diffs" not in st.session_state:
+    st.session_state.last_refresh_diffs = []
+
+# ============================================================
+#               SEZIONE STORICO (ATTENZIONE SU CLOUD)
+# ============================================================
+
+st.subheader("📁 Stato storico")
+if os.path.exists(ARCHIVE_FILE):
+    df_st = pd.read_csv(ARCHIVE_FILE)
+    st.write(f"Analisi salvate: **{len(df_st)}**")
+    st.dataframe(df_st.tail(30))
+else:
+    st.info("Nessuno storico ancora (su Streamlit Cloud il file potrebbe non persistere).")
+
+st.markdown("---")
+
+# ============================================================
+# 📅 PALINSESTO RAPIDO DEL GIORNO
+# ============================================================
+
+st.subheader("📅 Palinsesto rapido (solo le partite di oggi)")
+
+if st.button("Genera palinsesto del giorno"):
+    leagues = oddsapi_get_soccer_leagues()
+    all_rows = []
+    today_iso = date.today().isoformat()
+
+    for lg in leagues:
+        lg_key = lg.get("key")
+        events = oddsapi_get_events_for_league(lg_key)
+        for ev in events:
+            start_raw = ev.get("commence_time")
+            if not start_raw:
+                continue
+            try:
+                dt_utc = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+                if dt_utc.date().isoformat() != today_iso:
+                    continue
+            except Exception:
+                continue
+
+            row = valuta_evento_rapido(ev)
+            if row["confidence"] > 0:
+                row["lega"] = lg.get("title", lg_key)
+                all_rows.append(row)
+
+    if not all_rows:
+        st.warning("Oggi non ho trovato partite di calcio con quote utilizzabili.")
+    else:
+        df_pal = (
+            pd.DataFrame(all_rows)
+            .sort_values(by=["confidence", "mpi"], ascending=False)
+            .reset_index(drop=True)
+        )
+        st.write("Qui sotto le migliori di oggi (in alto le più ‘pulite’):")
+        st.dataframe(df_pal.head(20))
+
+# ============================================================
+# 0. PRENDI PARTITA DALL’API
+# ============================================================
+
+st.subheader("🔍 Prendi una partita da The Odds API e riempi le quote")
+
+col_a, col_b = st.columns([1, 2])
+
+with col_a:
+    if st.button("1) Carica leghe di calcio"):
+        st.session_state.soccer_leagues = oddsapi_get_soccer_leagues()
+        st.session_state.events_for_league = []
+        if st.session_state.soccer_leagues:
+            st.success(f"Trovate {len(st.session_state.soccer_leagues)} leghe calcio.")
+        else:
+            st.warning("Non sono riuscito a caricare le leghe. Controlla API key / limiti.")
+
+if st.session_state.soccer_leagues:
+    league_names = [f"{l['title']} ({l['key']})" for l in st.session_state.soccer_leagues]
+    selected_league_label = st.selectbox("2) Seleziona la lega", league_names)
+    selected_league_key = selected_league_label.split("(")[-1].replace(")", "").strip()
+
+    if st.button("3) Carica partite di questa lega"):
+        st.session_state.events_for_league = oddsapi_get_events_for_league(selected_league_key)
+        st.success(f"Partite trovate: {len(st.session_state.events_for_league)}")
+
+    if st.session_state.events_for_league:
+        match_labels = []
+        for ev in st.session_state.events_for_league:
+            home = ev.get("home_team")
+            away = ev.get("away_team")
+            start = ev.get("commence_time", "")[:16].replace("T", " ")
+            match_labels.append(f"{home} vs {away} – {start}")
+
+        selected_match_label = st.selectbox("4) Seleziona la partita", match_labels)
+        idx = match_labels.index(selected_match_label)
+        event = st.session_state.events_for_league[idx]
+
+        st.session_state.selected_league_key = selected_league_key
+
+        event_id = event.get("id") or event.get("event_id") or event.get("key")
+        home_n = event.get("home_team") or ""
+        away_n = event.get("away_team") or ""
+        if event_id:
+            event_key = str(event_id)
+        else:
+            event_key = f"{normalize_key(home_n)}_{normalize_key(away_n)}"
+
+        st.session_state.selected_event_id = event_id
+        st.session_state.selected_event_key = event_key
+
+        prices = oddsapi_extract_prices(event)
+        st.session_state.selected_event_prices = prices
+        st.success("Quote prese dall’API e precompilate più sotto ✅")
+
+        if st.session_state.get("refresh_done"):
+            st.success("Quote aggiornate dalla API ✅")
+            st.session_state.refresh_done = False
+
+        if st.session_state.get("last_refresh_ts"):
+            st.caption(f"🕓 Ultimo refresh quote: {st.session_state.last_refresh_ts}")
+
+        if st.button("🔁 Refresh quote partita"):
+            ref_ev = oddsapi_refresh_event(
+                st.session_state.selected_league_key,
+                st.session_state.selected_event_id
+            )
+            if ref_ev:
+                old_prices = st.session_state.get("selected_event_prices", {})
+                new_prices = oddsapi_extract_prices(ref_ev)
+
+                diffs = []
+                for k in ["odds_1", "odds_x", "odds_2", "odds_over25", "odds_under25", "odds_btts"]:
+                    ov = old_prices.get(k)
+                    nv = new_prices.get(k)
+                    if ov != nv:
+                        diffs.append(f"{k}: {ov} → {nv}")
+
+                st.session_state.selected_event_prices = new_prices
+
+                ek = st.session_state.selected_event_key
+                for k in [
+                    f"spread_co_{ek}",
+                    f"odds1_{ek}",
+                    f"oddsx_{ek}",
+                    f"odds2_{ek}",
+                    f"odds_btts_{ek}",
+                    f"dnb_home_{ek}",
+                    f"dnb_away_{ek}",
+                    f"over25_{ek}",
+                    f"under25_{ek}",
+                    f"total_co_{ek}",
+                ]:
+                    if k in st.session_state:
+                        del st.session_state[k]
+
+                st.session_state.last_refresh_ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+                st.session_state.refresh_done = True
+                st.session_state.last_refresh_diffs = diffs
+                st.rerun()
+            else:
+                st.warning("Non sono riuscito ad aggiornare le quote.")
+
+        if st.session_state.get("last_refresh_diffs"):
+            if len(st.session_state.last_refresh_diffs) > 0:
+                st.subheader("📊 Quote cambiate con l'ultimo refresh")
+                for d in st.session_state.last_refresh_diffs:
+                    st.write("-", d)
+            else:
+                st.info("ℹ️ Refresh riuscito, ma le quote erano identiche.")
+            st.session_state.last_refresh_diffs = []
+
+# ============================================================
+# 1. DATI PARTITA
+# ============================================================
+
+st.subheader("1. Dati partita")
+
+default_match_name = ""
+if st.session_state.get("selected_event_prices", {}).get("home"):
+    default_match_name = f"{st.session_state['selected_event_prices']['home']} vs {st.session_state['selected_event_prices']['away']}"
+
+match_name = st.text_input("Nome partita (es. Milan vs Inter)", value=default_match_name)
+
+# ============================================================
+# 2. LINEE DI APERTURA
+# ============================================================
+
+st.subheader("2. Linee di apertura (manuali)")
+col_ap1, col_ap2 = st.columns(2)
+with col_ap1:
+    spread_ap = st.number_input("Spread apertura", value=0.0, step=0.25)
+with col_ap2:
+    total_ap = st.number_input("Total apertura", value=2.5, step=0.25)
+
+# ============================================================
+# 3. LINEE CORRENTI E QUOTE
+# ============================================================
+
+st.subheader("3. Linee correnti e quote (precompilate)")
+
+api_prices = st.session_state.get("selected_event_prices", {})
+
+if not api_prices.get("odds_btts") or api_prices.get("odds_btts") <= 1.01:
+    api_prices["odds_btts"] = estimate_btts_from_basic_odds(
+        odds_1=api_prices.get("odds_1"),
+        odds_x=api_prices.get("odds_x"),
+        odds_2=api_prices.get("odds_2"),
+        odds_over25=api_prices.get("odds_over25"),
+        odds_under25=api_prices.get("odds_under25"),
+    )
+
+odds1_tmp = api_prices.get("odds_1")
+oddsx_tmp = api_prices.get("odds_x")
+odds2_tmp = api_prices.get("odds_2")
+
+def _safe_div(a, b):
+    try:
+        return a / b
+    except Exception:
+        return None
+
+if (not api_prices.get("odds_dnb_home")) and odds1_tmp and oddsx_tmp:
+    dnb_home_calc = _safe_div(odds1_tmp * oddsx_tmp, (odds1_tmp + oddsx_tmp))
+    if dnb_home_calc:
+        api_prices["odds_dnb_home"] = round(dnb_home_calc * 0.995, 3)
+
+if (not api_prices.get("odds_dnb_away")) and odds2_tmp and oddsx_tmp:
+    dnb_away_calc = _safe_div(odds2_tmp * oddsx_tmp, (odds2_tmp + oddsx_tmp))
+    if dnb_away_calc:
+        api_prices["odds_dnb_away"] = round(dnb_away_calc * 0.995, 3)
+
+key_suffix = st.session_state.get("selected_event_key", "match")
+
+col_co1, col_co2, col_co3 = st.columns(3)
+with col_co1:
+    spread_co = st.number_input(
+        "Spread corrente",
+        value=0.0,
+        step=0.25,
+        key=f"spread_co_{key_suffix}"
+    )
+    odds_1 = st.number_input(
+        "Quota 1",
+        value=float(api_prices.get("odds_1") or 1.80),
+        step=0.01,
+        key=f"odds1_{key_suffix}"
+    )
+
+with col_co2:
+    total_co = st.number_input(
+        "Total corrente",
+        value=2.5,
+        step=0.25,
+        key=f"total_co_{key_suffix}"
+    )
+    odds_x = st.number_input(
+        "Quota X",
+        value=float(api_prices.get("odds_x") or 3.50),
+        step=0.01,
+        key=f"oddsx_{key_suffix}"
+    )
+
+with col_co3:
+    odds_2 = st.number_input(
+        "Quota 2",
+        value=float(api_prices.get("odds_2") or 4.50),
+        step=0.01,
+        key=f"odds2_{key_suffix}"
+    )
+    odds_btts = st.number_input(
+        "Quota GG (BTTS sì)",
+        value=float(api_prices.get("odds_btts") or 1.95),
+        step=0.01,
+        key=f"odds_btts_{key_suffix}"
+    )
+
+st.subheader("3.b DNB (Draw No Bet)")
+col_dnb1, col_dnb2 = st.columns(2)
+with col_dnb1:
+    odds_dnb_home = st.number_input(
+        "Quota DNB Casa",
+        value=float(api_prices.get("odds_dnb_home") or 0.0),
+        step=0.01,
+        key=f"dnb_home_{key_suffix}"
+    )
+with col_dnb2:
+    odds_dnb_away = st.number_input(
+        "Quota DNB Trasferta",
+        value=float(api_prices.get("odds_dnb_away") or 0.0),
+        step=0.01,
+        key=f"dnb_away_{key_suffix}"
+    )
+
+st.subheader("3.c Quote Over/Under 2.5")
+col_ou1, col_ou2 = st.columns(2)
+with col_ou1:
+    odds_over25 = st.number_input(
+        "Quota Over 2.5",
+        value=float(api_prices.get("odds_over25") or 0.0),
+        step=0.01,
+        key=f"over25_{key_suffix}"
+    )
+with col_ou2:
+    odds_under25 = st.number_input(
+        "Quota Under 2.5",
+        value=float(api_prices.get("odds_under25") or 0.0),
+        step=0.01,
+        key=f"under25_{key_suffix}"
+    )
+
+# ============================================================
+# 4. XG (manuali)
+# ============================================================
+
+st.subheader("4. xG avanzati (opzionali)")
+col_xg1, col_xg2 = st.columns(2)
+with col_xg1:
+    xg_tot_home = st.text_input("xG totali CASA", "")
+    xga_tot_home = st.text_input("xGA totali CASA", "")
+    partite_home = st.text_input("Partite giocate CASA (es. 10 o 5-3-2)", "")
+with col_xg2:
+    xg_tot_away = st.text_input("xG totali OSPITE", "")
+    xga_tot_away = st.text_input("xGA totali OSPITE", "")
+    partite_away = st.text_input("Partite giocate OSPITE (es. 10 o 5-3-2)", "")
+
+def parse_xg_block(xg_tot_s: str, xga_tot_s: str, record_s: str):
+    if xg_tot_s.strip() == "" or xga_tot_s.strip() == "" or record_s.strip() == "":
+        return None, None
+    try:
+        xg_tot = float(xg_tot_s.replace(",", "."))
+        xga_tot = float(xga_tot_s.replace(",", "."))
+        if "-" in record_s:
+            parts = record_s.split("-")
+            matches = sum(int(p) for p in parts if p.strip() != "")
+        else:
+            matches = int(record_s.strip())
+        if matches <= 0:
+            return None, None
+        return xg_tot / matches, xga_tot / matches
+    except Exception:
+        return None, None
+
+xg_home_for, xg_home_against = parse_xg_block(xg_tot_home, xga_tot_home, partite_home)
+xg_away_for, xg_away_against = parse_xg_block(xg_tot_away, xga_tot_away, partite_away)
+
+has_xg = not (
+    xg_home_for is None or xg_home_against is None or
+    xg_away_for is None or xg_away_against is None
+)
+
+if not has_xg:
+    st.info("Modalità: BASE (spread/total/quote). Se inserisci xG passo in modalità avanzata.")
+else:
+    st.success("Modalità: AVANZATA (spread/total + quote + xG/xGA).")
+
+# ============================================================
+# 5. CALCOLO MODELLO
+# ============================================================
+
+if st.button("CALCOLA MODELLO"):
+    ris_ap = risultato_completo(
+        spread_ap, total_ap,
+        odds_1, odds_x, odds_2,
+        0.0,
+        xg_home_for, xg_home_against,
+        xg_away_for, xg_away_against,
+        odds_dnb_home=odds_dnb_home if odds_dnb_home > 0 else None,
+        odds_dnb_away=odds_dnb_away if odds_dnb_away > 0 else None,
+    )
+
+    ris_co = risultato_completo(
+        spread_co, total_co,
+        odds_1, odds_x, odds_2,
+        odds_btts,
+        xg_home_for, xg_home_against,
+        xg_away_for, xg_away_against,
+        odds_dnb_home=odds_dnb_home if odds_dnb_home > 0 else None,
+        odds_dnb_away=odds_dnb_away if odds_dnb_away > 0 else None,
+    )
+
+    if not odds_btts or odds_btts <= 1.01:
+        p_gg_modello = ris_co["btts"]
+        if p_gg_modello and p_gg_modello > 0:
+            quota_gg_modello = 1 / p_gg_modello
+            odds_btts = round(quota_gg_modello * 0.99, 3)
+
+    ent_media = (ris_co["ent_home"] + ris_co["ent_away"]) / 2
+
+    warnings = check_coerenza_quote(
+        odds_1, odds_x, odds_2,
+        odds_over25, odds_under25
+    )
+
+    mpi = compute_market_pressure_index(
+        odds_1, odds_x, odds_2,
+        odds_over25, odds_under25,
+        odds_dnb_home, odds_dnb_away
+    )
+
+    aff = compute_structure_affidability(
+        spread_ap, spread_co,
+        total_ap, total_co,
+        ent_media,
+        has_xg,
+        odds_1, odds_x, odds_2
+    )
+
+    global_conf = compute_global_confidence(
+        base_aff=aff,
+        n_warnings=len(warnings),
+        mpi=mpi,
+        has_xg=has_xg
+    )
+
+    st.success("Calcolo completato ✅")
+    st.subheader("⭐ Sintesi Match")
+    st.write(f"Affidabilità del match (struttura): **{aff}/100**")
+    st.write(f"Confidence globale: **{global_conf}/100**")
+    st.write(f"Market Pressure Index: **{mpi}/100**")
+
+    if warnings:
+        st.subheader("⚠️ Check coerenza quote")
+        for w in warnings:
+            st.write(f"- {w}")
+    else:
+        st.subheader("✅ Check coerenza quote")
+        st.write("Quote coerenti con il modello minimo.")
+
+    delta_spread = spread_co - spread_ap
+    delta_total = total_co - total_ap
+
+    st.subheader("🔁 Movimento di mercato")
+    if abs(delta_spread) < 0.01 and abs(delta_total) < 0.01:
+        st.write("Linee stabili.")
+    else:
+        if abs(delta_spread) >= 0.01:
+            if delta_spread < 0:
+                st.write(f"- Spread sceso di {abs(delta_spread):.2f} → mercato più pro CASA")
+            else:
+                st.write(f"- Spread salito di {abs(delta_spread):.2f} → mercato più pro TRASFERTA")
+        if abs(delta_total) >= 0.01:
+            if delta_total > 0:
+                st.write(f"- Total salito di {delta_total:.2f} → mercato si aspetta più gol")
+            else:
+                st.write(f"- Total sceso di {abs(delta_total):.2f} → mercato si aspetta meno gol")
+
+    st.subheader("💰 Value Finder")
+    rows = []
+    anomalo_ou = any("over/under 2.5" in w.lower() for w in warnings)
+
+    for lab, p_mod, odd in [
+        ("1", ris_co["p_home"], odds_1),
+        ("X", ris_co["p_draw"], odds_x),
+        ("2", ris_co["p_away"], odds_2),
+    ]:
+        p_book = decimali_a_prob(odd)
+        diff = (p_mod - p_book) * 100
+        rows.append({
+            "Mercato": "1X2",
+            "Esito": lab,
+            "Prob modello %": round(p_mod*100, 2),
+            "Prob quota %": round(p_book*100, 2),
+            "Δ pp": round(diff, 2),
+        })
+
+    if not anomalo_ou:
+        if odds_over25 and odds_over25 > 1:
+            p_mod = ris_co["over_25"]
+            p_book = decimali_a_prob(odds_over25)
+            diff = (p_mod - p_book) * 100
+            rows.append({
+                "Mercato": "Over/Under 2.5",
+                "Esito": "Over 2.5",
+                "Prob modello %": round(p_mod*100, 2),
+                "Prob quota %": round(p_book*100, 2),
+                "Δ pp": round(diff, 2),
+            })
+
+        if odds_under25 and odds_under25 > 1:
+            p_mod = ris_co["under_25"]
+            p_book = decimali_a_prob(odds_under25)
+            diff = (p_mod - p_book) * 100
+            rows.append({
+                "Mercato": "Over/Under 2.5",
+                "Esito": "Under 2.5",
+                "Prob modello %": round(p_mod*100, 2),
+                "Prob quota %": round(p_book*100, 2),
+                "Δ pp": round(diff, 2),
+            })
+
+    if odds_btts and odds_btts > 1:
+        p_mod = ris_co["btts"]
+        p_book = decimali_a_prob(odds_btts)
+        diff = (p_mod - p_book) * 100
+        rows.append({
+            "Mercato": "Entrambe segnano",
+            "Esito": "Sì",
+            "Prob modello %": round(p_mod*100, 2),
+            "Prob quota %": round(p_book*100, 2),
+            "Δ pp": round(diff, 2),
+        })
+
+    df_vf = pd.DataFrame(rows)
+    df_vf_pos = df_vf[df_vf["Δ pp"] >= 2]
+    st.dataframe(df_vf_pos if not df_vf_pos.empty else df_vf)
+
+    with st.expander("① Probabilità principali"):
+        st.write(f"BTTS: {ris_co['btts']*100:.1f}%")
+        st.write(f"No Goal: {(1 - ris_co['btts'])*100:.1f}%")
+        st.write(f"GG + Over 2.5: {ris_co['gg_over25']*100:.1f}%")
+
+    with st.expander("② Esito finale e parziale"):
+        st.write(f"Vittoria Casa: {ris_co['p_home']*100:.1f}% (apertura {ris_ap['p_home']*100:.1f}%)")
+        st.write(f"Pareggio: {ris_co['p_draw']*100:.1f}% (apertura {ris_ap['p_draw']*100:.1f}%)")
+        st.write(f"Vittoria Trasferta: {ris_co['p_away']*100:.1f}% (apertura {ris_ap['p_away']*100:.1f}%)")
+        st.write("Double Chance:")
+        for k, v in ris_co["dc"].items():
+            st.write(f"- {k}: {v*100:.1f}%")
+
+    with st.expander("③ Over / Under"):
+        st.write(f"Over 1.5: {ris_co['over_15']*100:.1f}%")
+        st.write(f"Under 1.5: {ris_co['under_15']*100:.1f}%")
+        st.write(f"Over 2.5: {ris_co['over_25']*100:.1f}%")
+        st.write(f"Under 2.5: {ris_co['under_25']*100:.1f}%")
+        st.write(f"Over 3.5: {ris_co['over_35']*100:.1f}%")
+        st.write(f"Under 3.5: {ris_co['under_35']*100:.1f}%")
+        st.write(f"Over 0.5 HT: {ris_co['over_05_ht']*100:.1f}%")
+
+    with st.expander("④ Gol pari/dispari"):
+        st.write(f"Gol pari FT (classico): {ris_co['even_ft']*100:.1f}%")
+        st.write(f"Gol dispari FT (classico): {ris_co['odd_ft']*100:.1f}%")
+        st.write(f"Gol pari HT: {ris_co['even_ht']*100:.1f}%")
+        st.write(f"Gol dispari HT: {ris_co['odd_ht']*100:.1f}%")
+
+    with st.expander("⑤ Clean sheet e info modello"):
+        st.write(f"Clean Sheet Casa: {ris_co['cs_home']*100:.1f}%")
+        st.write(f"Clean Sheet Trasferta: {ris_co['cs_away']*100:.1f}%")
+        st.write(f"Clean Sheet qualcuno (No Goal): {ris_co['clean_sheet_qualcuno']*100:.1f}%")
+        st.write(f"λ Casa: {ris_co['lambda_home']:.3f}")
+        st.write(f"λ Trasferta: {ris_co['lambda_away']:.3f}")
+        st.write(f"Entropia Casa: {ris_co['ent_home']:.3f}")
+        st.write(f"Entropia Trasferta: {ris_co['ent_away']:.3f}")
+
+    with st.expander("⑥ Multigol Casa"):
+        st.write({k: f"{v*100:.1f}%" for k, v in ris_co["multigol_home"].items()})
+
+    with st.expander("⑦ Multigol Trasferta"):
+        st.write({k: f"{v*100:.1f}%" for k, v in ris_co["multigol_away"].items()})
+
+    with st.expander("⑧ Vittoria con margine"):
+        st.write(f"Vittoria casa almeno 2 gol scarto: {ris_co['marg2']*100:.1f}%")
+        st.write(f"Vittoria casa almeno 3 gol scarto: {ris_co['marg3']*100:.1f}%")
+
+    with st.expander("⑨ Combo mercati (1&Over, DC+GG, ecc.)"):
+        for k, v in ris_co["combo_book"].items():
+            st.write(f"{k}: {v*100:.1f}%")
+
+    with st.expander("⑩ Top 10 risultati esatti"):
+        for h, a, p in ris_co["top10"]:
+            st.write(f"{h}-{a}: {p:.1f}%")
+
+    with st.expander("⑪ Combo Multigol Filtrate (>=50%)"):
+        for c in ris_co["combo_ft_filtrate"]:
+            st.write(f"{c['combo']}: {c['prob']*100:.1f}%")
+
+    with st.expander("⑫ Combo Over HT + Over FT"):
+        for k, v in ris_co["combo_ht_ft"].items():
+            st.write(f"{k}: {v*100:.1f}%")
+
+    with st.expander("⑬ Statistiche globali (pari/dispari & coperture)"):
+        st.write(f"Somma gol DISPARI (robusta): {ris_co['odd_mass']*100:.1f}%")
+        st.write(f"Somma gol PARI (robusta): {ris_co['even_mass2']*100:.1f}%")
+        st.write(f"Copertura 0–2 gol (FT): {ris_co['cover_0_2']*100:.1f}%")
+        st.write(f"Copertura 0–3 gol (FT): {ris_co['cover_0_3']*100:.1f}%")
+        st.caption("Queste usano la distribuzione dei gol totali, quindi sono più stabili.")
+
+    # salvataggio nel CSV (non sempre persistente su cloud)
+    row = {
+        "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "match": match_name,
+        "match_date": date.today().isoformat(),
+        "spread_ap": spread_ap,
+        "total_ap": total_ap,
+        "spread_co": spread_co,
+        "total_co": total_co,
+        "odds_1": odds_1,
+        "odds_x": odds_x,
+        "odds_2": odds_2,
+        "odds_over25": odds_over25,
+        "odds_under25": odds_under25,
+        "odds_dnb_home": odds_dnb_home,
+        "odds_dnb_away": odds_dnb_away,
+        "odds_btts": odds_btts,
+        "p_home": round(ris_co["p_home"]*100, 2),
+        "p_draw": round(ris_co["p_draw"]*100, 2),
+        "p_away": round(ris_co["p_away"]*100, 2),
+        "btts": round(ris_co["btts"]*100, 2),
+        "over_25": round(ris_co["over_25"]*100, 2),
+        "affidabilita": aff,
+        "confidence_globale": global_conf,
+        "market_pressure_index": mpi,
+    }
+
+    try:
+        if os.path.exists(ARCHIVE_FILE):
+            df_old = pd.read_csv(ARCHIVE_FILE)
+            df_new = pd.concat([df_old, pd.DataFrame([row])], ignore_index=True)
+            df_new.to_csv(ARCHIVE_FILE, index=False)
+        else:
+            pd.DataFrame([row]).to_csv(ARCHIVE_FILE, index=False)
+        st.success("📁 Analisi salvata in storico_analisi.csv (se il cloud lo consente).")
+    except Exception as e:
+        st.warning(f"Non sono riuscito a salvare l'analisi: {e}")
+
+# ============================================================
+#           AGGIORNA RISULTATI REALI (API-FOOTBALL)
+# ============================================================
+
+st.subheader("🔄 Aggiorna risultati reali nello storico (API-Football)")
+
+if st.button("Recupera risultati degli ultimi 3 giorni"):
+    if not os.path.exists(ARCHIVE_FILE):
+        st.warning("Non c'è ancora uno storico da aggiornare.")
+    else:
+        df = pd.read_csv(ARCHIVE_FILE)
+        today = date.today()
+        giorni_da_controllare = [(today - timedelta(days=i)).isoformat() for i in range(0, 4)]
+        fixtures_by_day = {}
+        for d in giorni_da_controllare:
+            fixtures_by_day[d] = apifootball_get_fixtures_by_date(d)
+
+        results_map = {}
+        for d, fixtures in fixtures_by_day.items():
+            for f in fixtures:
+                if f["fixture"]["status"]["short"] in ["FT", "AET", "PEN"]:
+                    home = f["teams"]["home"]["name"]
+                    away = f["teams"]["away"]["name"]
+                    key = f"{home} vs {away}".strip().lower()
+                    goals_home = f["goals"]["home"]
+                    goals_away = f["goals"]["away"]
+                    results_map[key] = (goals_home, goals_away)
+
+        updated = 0
+        for idx, row in df.iterrows():
+            key_row = str(row.get("match", "")).strip().lower()
+            if key_row in results_map and (pd.isna(row.get("risultato_reale")) or row.get("risultato_reale") == ""):
+                gh, ga = results_map[key_row]
+                if gh is None or ga is None:
+                    continue
+                if gh > ga:
+                    esito_real = "1"
+                elif gh == ga:
+                    esito_real = "X"
+                else:
+                    esito_real = "2"
+                df.at[idx, "risultato_reale"] = f"{gh}-{ga}"
+                df.at[idx, "esito_reale"] = esito_real
+                updated += 1
+
+        df.to_csv(ARCHIVE_FILE, index=False)
+        st.success(f"Aggiornamento completato. Partite aggiornate: {updated}")
+        st.dataframe(df.tail(30))
