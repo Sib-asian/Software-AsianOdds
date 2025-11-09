@@ -12,6 +12,13 @@ from scipy.stats import poisson
 import warnings
 warnings.filterwarnings('ignore')
 
+# Carica variabili d'ambiente da file .env (se disponibile)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # Carica .env dalla directory corrente
+except ImportError:
+    pass  # python-dotenv non installato, usa solo variabili d'ambiente di sistema
+
 # Import per calibrazione (opzionale)
 try:
     from sklearn.linear_model import LogisticRegression
@@ -24,20 +31,24 @@ except ImportError:
 #                 CONFIG
 # ============================================================
 
-THE_ODDS_API_KEY = "06c16ede44d09f9b3498bb63354930c4"
+# IMPORTANTE: Configura tramite variabili d'ambiente per sicurezza
+THE_ODDS_API_KEY = os.getenv("THE_ODDS_API_KEY", "")  # API key The Odds API (da variabile d'ambiente)
 THE_ODDS_BASE = "https://api.the-odds-api.com/v4"
 
-API_FOOTBALL_KEY = "95c43f936816cd4389a747fd2cfe061a"
+API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY", "")  # API key API-Football (da variabile d'ambiente)
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 
 # API Gratuite Aggiuntive
-OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "01afa2183566fcf16d98b5a33c91eae1")  # API key OpenWeatherMap
-FOOTBALL_DATA_API_KEY = os.getenv("FOOTBALL_DATA_API_KEY", "ca816dc8504543768e8adfaf128ecffc")  # API key Football-Data.org
-THESPORTSDB_API_KEY = "3"  # TheSportsDB usa chiave fissa "3" (gratuita)
+# IMPORTANTE: Configura le API keys tramite variabili d'ambiente per sicurezza
+# Esempio: export OPENWEATHER_API_KEY="your_key_here"
+OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "")  # API key OpenWeatherMap (da variabile d'ambiente)
+FOOTBALL_DATA_API_KEY = os.getenv("FOOTBALL_DATA_API_KEY", "")  # API key Football-Data.org (da variabile d'ambiente)
+THESPORTSDB_API_KEY = "3"  # TheSportsDB usa chiave fissa "3" (gratuita, pubblica)
 
 # Telegram Bot Configuration (opzionale)
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8530766126:AAHs1ZoLwrwvT7JuPyn_9ymNVyddPtUXi-g")  # Token del bot (da @BotFather)
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1003278011521")  # Chat ID canale (o chat privata: "311951419")
+# IMPORTANTE: Configura tramite variabili d'ambiente per sicurezza
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")  # Token del bot (da @BotFather, via variabile d'ambiente)
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")  # Chat ID canale (via variabile d'ambiente)
 TELEGRAM_ENABLED = False  # Abilita/disabilita invio automatico
 
 ARCHIVE_FILE = "storico_analisi.csv"
@@ -5379,42 +5390,6 @@ def compute_market_confidence_score(
 st.set_page_config(page_title="⚽ Modello Scommesse PRO – Dixon-Coles Bayesiano", layout="wide")
 
 st.title("⚽ Modello Scommesse Avanzato")
-st.markdown("""
-### 🎯 Miglioramenti Implementati:
-- ✅ **Shin Normalization** per rimozione bias bookmaker
-- ✅ **Ottimizzazione numerica** per stima λ e ρ (minimizza errore tra probabilità osservate/attese)
-- ✅ **BTTS da modello bivariato** Poisson con formula corretta Dixon-Coles
-- ✅ **Outlier detection** con metodo IQR
-- ✅ **Home advantage** calibrato per lega
-- ✅ **Quality scoring** e market confidence
-- ✅ **Metriche validazione** (Brier Score, Log Loss, ROI)
-- ✅ **Blending xG bayesiano** con confidence e consistency weighting
-- ✅ **HT ratio migliorato** basato su analisi empirica
-- ✅ **Matrice score ad alta precisione** (fino a 20 gol, normalizzazione accurata)
-- ✅ **Intervalli di confidenza** Monte Carlo per probabilità principali
-- ✅ **Calibrazione probabilità** (Platt Scaling) per correggere bias sistematici
-- ✅ **Kelly Criterion** per sizing ottimale delle scommesse
-- ✅ **Ensemble di modelli** per maggiore robustezza e affidabilità
-- ✅ **Market efficiency tracking** per valutare efficienza del mercato
-- ✅ **Export Report** (CSV/Excel) per analisi approfondite
-- ✅ **Comparazione Bookmakers** per trovare migliori quote
-- ✅ **Portfolio Tracking** per gestione scommesse multiple
-- ✅ **Dashboard Analytics** con metriche aggregate e trend
-- ✅ **Caching API** per performance e rate limiting
-- ✅ **Feature Engineering** avanzato (forma squadre, H2H - pronto per integrazione)
-- ✅ **Market Movement Tracking** - traccia cambiamenti quote nel tempo
-- ✅ **Time-based Adjustments** - aggiustamenti per ora/giorno/periodo stagione
-- ✅ **Fatigue & Motivation Factors** - fatica squadre e motivazione (automatico da API-Football)
-- ✅ **Statistiche Squadre** - forma attacco/difesa calcolata automaticamente da API-Football
-- ✅ **Head-to-Head Reali** - analisi H2H storica per aggiustare probabilità
-- ✅ **Infortuni & Squalifiche** - impatto automatico su lambda se giocatori chiave assenti
-- ✅ **Anomaly Detection** - rileva errori bookmaker e opportunità arbitraggio
-- ✅ **Advanced Risk Management** - stop loss, position sizing dinamico
-- ✅ **Feature Importance Analysis** - analizza quali features contano di più
-- ✅ **Real-time Alerts** - notifiche per value bets e cambiamenti quote
-- ✅ **Market Correlation Analysis** - correlazioni tra mercati diversi
-- ✅ **Market Movement Intelligence** - blend bayesiano dinamico tra apertura e corrente basato su movimento mercato
-""")
 
 st.caption(f"🕐 Esecuzione: {datetime.now().isoformat(timespec='seconds')}")
 
