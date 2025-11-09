@@ -2294,15 +2294,24 @@ def estimate_lambda_from_market_optimized(
         # Per una distribuzione Poisson con lambda_tot, P(goals > 2.5) = 1 - sum(P(k) per k=0..2)
         # Invertiamo numericamente per trovare lambda_tot che produce p_over osservato
         def poisson_over_prob(lambda_tot):
-            """Calcola P(goals > 2.5) per una Poisson con lambda_tot"""
-            # Approssimazione: per lambda_tot, P(>2.5) ≈ 1 - P(0) - P(1) - P(2)
-            # Usiamo approssimazione più accurata considerando che total = somma di due Poisson
-            # Per semplicità, usiamo approssimazione normale: P(X > 2.5) ≈ 1 - Φ((2.5 - lambda) / sqrt(lambda))
-            # Ma per precisione, calcoliamo direttamente con Poisson
+            """
+            Calcola P(goals > 2.5) per la somma di due Poisson indipendenti.
+            
+            ⚠️ CORREZIONE: Il total è la somma di due Poisson (lambda_h + lambda_a),
+            quindi la distribuzione è ancora Poisson con lambda = lambda_tot.
+            Formula corretta: P(X > 2.5) = 1 - P(X <= 2) dove X ~ Poisson(lambda_tot)
+            """
+            # Calcola P(X <= 2) = P(0) + P(1) + P(2) per Poisson(lambda_tot)
+            if lambda_tot <= 0:
+                return 0.0
+            
+            # Formula esatta Poisson: P(k) = (lambda^k * exp(-lambda)) / k!
             p_0 = math.exp(-lambda_tot)
             p_1 = lambda_tot * math.exp(-lambda_tot)
-            p_2 = (lambda_tot**2 / 2) * math.exp(-lambda_tot)
-            return 1 - (p_0 + p_1 + p_2)
+            p_2 = (lambda_tot**2 / 2.0) * math.exp(-lambda_tot)
+            
+            # P(X > 2.5) = 1 - P(X <= 2)
+            return 1.0 - (p_0 + p_1 + p_2)
         
         # Inversione numerica: trova lambda_tot tale che poisson_over_prob(lambda_tot) ≈ p_over
         # Usiamo metodo bisezione per robustezza
@@ -2319,11 +2328,16 @@ def estimate_lambda_from_market_optimized(
         
         total_market = (lambda_min + lambda_max) / 2
         
-        # Aggiustamento per casi estremi (ridotto, dato che l'inversione è già precisa)
-        if p_over > 0.85:
-            total_market += 0.15  # Over molto probabile → più gol
+        # ⚠️ CORREZIONE: Aggiustamento per casi estremi (più conservativo)
+        # L'inversione numerica è già precisa, quindi aggiustamenti minimi
+        if p_over > 0.90:
+            total_market += 0.12  # Over molto probabile → più gol (ridotto da 0.15)
+        elif p_over > 0.85:
+            total_market += 0.08
+        elif p_over < 0.10:
+            total_market -= 0.08  # Under molto probabile → meno gol (ridotto da 0.10)
         elif p_over < 0.15:
-            total_market -= 0.10  # Under molto probabile → meno gol
+            total_market -= 0.05
     else:
         total_market = total
     
@@ -2332,11 +2346,28 @@ def estimate_lambda_from_market_optimized(
     
     # Spread da probabilità 1X2 (più accurato)
     prob_diff = p1_target - p2_target
-    # Formula migliorata: spread_factor = exp(prob_diff * log(2))
+    # ⚠️ CORREZIONE: Formula più accurata basata su relazione logaritmica
+    # spread_factor = exp(prob_diff * log(2.5)) per prob_diff in [-1, 1]
+    # Usa log(2.5) per maggiore sensibilità (più accurato di log(2))
     spread_factor = math.exp(prob_diff * math.log(2.5))
     
+    # ⚠️ PROTEZIONE: Limita spread_factor a range ragionevole per evitare valori estremi
+    spread_factor = max(0.5, min(2.0, spread_factor))
+    
+    # ⚠️ CORREZIONE: Home advantage applicato correttamente
+    # Home advantage aumenta lambda_h e riduce lambda_a proporzionalmente
+    # Usa sqrt per distribuzione più bilanciata
     lambda_h_init = lambda_total * spread_factor * math.sqrt(home_advantage)
     lambda_a_init = lambda_total / spread_factor / math.sqrt(home_advantage)
+    
+    # ⚠️ VERIFICA: Assicura che lambda_h + lambda_a ≈ 2 * lambda_total (con tolleranza)
+    # Questo garantisce che il total atteso sia coerente
+    total_check = lambda_h_init + lambda_a_init
+    if abs(total_check - 2 * lambda_total) > 0.5:
+        # Ricalibra per mantenere total coerente
+        scale_factor = (2 * lambda_total) / max(0.1, total_check)
+        lambda_h_init *= scale_factor
+        lambda_a_init *= scale_factor
     
     # Aggiustamento DNB se disponibile
     if odds_dnb_home and odds_dnb_home > 1 and odds_dnb_away and odds_dnb_away > 1:
@@ -2347,8 +2378,22 @@ def estimate_lambda_from_market_optimized(
             p_dnb_h /= tot_dnb
             p_dnb_a /= tot_dnb
             # DNB più informativo: blend usando ModelConfig
-            lambda_h_init = model_config.MARKET_WEIGHT * lambda_h_init + model_config.DNB_WEIGHT * (lambda_total * (p_dnb_h / p_dnb_a) * math.sqrt(home_advantage))
-            lambda_a_init = model_config.MARKET_WEIGHT * lambda_a_init + model_config.DNB_WEIGHT * (lambda_total / (p_dnb_h / p_dnb_a) / math.sqrt(home_advantage))
+            # ⚠️ CORREZIONE: Calcolo lambda da DNB più accurato
+            # Stima lambda da probabilità DNB: se p_dnb_h > p_dnb_a, lambda_h > lambda_a
+            dnb_ratio = p_dnb_h / max(0.01, p_dnb_a)  # Evita divisione per zero
+            lambda_h_dnb = lambda_total * dnb_ratio * math.sqrt(home_advantage)
+            lambda_a_dnb = lambda_total / max(0.01, dnb_ratio) / math.sqrt(home_advantage)
+            
+            # Blend pesato
+            lambda_h_init = model_config.MARKET_WEIGHT * lambda_h_init + model_config.DNB_WEIGHT * lambda_h_dnb
+            lambda_a_init = model_config.MARKET_WEIGHT * lambda_a_init + model_config.DNB_WEIGHT * lambda_a_dnb
+            
+            # ⚠️ VERIFICA: Ricalibra per mantenere total coerente dopo blend DNB
+            total_check_dnb = lambda_h_init + lambda_a_init
+            if abs(total_check_dnb - 2 * lambda_total) > 0.5:
+                scale_factor_dnb = (2 * lambda_total) / max(0.1, total_check_dnb)
+                lambda_h_init *= scale_factor_dnb
+                lambda_a_init *= scale_factor_dnb
     
     # Constraints iniziali
     lambda_h_init = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, lambda_h_init))
@@ -2371,10 +2416,12 @@ def estimate_lambda_from_market_optimized(
             (p2_pred - p2_target)**2 * 1.0
         )
         
-        # Penalità se total atteso si discosta troppo
+        # ⚠️ CORREZIONE: Penalità se total atteso si discosta troppo (peso ottimizzato)
         total_pred = lh + la
         if total_market > 0:
-            error += 0.3 * ((total_pred - total_market) / total_market)**2
+            # Usa errore relativo normalizzato per evitare penalità eccessive
+            relative_error = abs(total_pred - total_market) / max(0.1, total_market)
+            error += 0.25 * (relative_error ** 2)  # Ridotto da 0.3 a 0.25 per maggiore flessibilità
         
         return error
     
@@ -2485,10 +2532,12 @@ def estimate_lambda_rho_joint_optimization(
         if p_btts_target is not None:
             error += 0.4 * (btts_pred - p_btts_target)**2
         
-        # Penalità per total atteso
+        # ⚠️ CORREZIONE: Penalità per total atteso (peso ottimizzato)
         total_pred = lh + la
         if total > 0:
-            error += 0.3 * ((total_pred - total) / total)**2
+            # Usa errore relativo normalizzato
+            relative_error = abs(total_pred - total) / max(0.1, total)
+            error += 0.25 * (relative_error ** 2)  # Ridotto da 0.3 a 0.25 per maggiore flessibilità
         
         return error
     
@@ -2717,8 +2766,14 @@ def estimate_rho_optimized(
     Metodo: minimizza errore tra P(BTTS) osservata e P(BTTS) attesa.
     """
     # Prior basato su draw probability (più accurato)
-    # Relazione empirica: rho ≈ -0.12 + (p_draw - 0.25) * 1.2
-    rho_from_draw = -0.12 + (p_draw - 0.25) * 1.2
+    # ⚠️ CORREZIONE: Relazione empirica migliorata basata su analisi Dixon-Coles
+    # rho ≈ -0.12 + (p_draw - 0.25) * 1.2 per p_draw in [0.2, 0.35]
+    # Per p_draw estremi, limita l'effetto
+    p_draw_clamped = max(0.15, min(0.40, p_draw))
+    rho_from_draw = -0.12 + (p_draw_clamped - 0.25) * 1.2
+    
+    # ⚠️ PROTEZIONE: Limita rho_from_draw a range ragionevole
+    rho_from_draw = max(-0.30, min(0.30, rho_from_draw))
     
     # Se abbiamo BTTS dal mercato, ottimizziamo
     if odds_btts and odds_btts > 1:
@@ -2754,23 +2809,33 @@ def estimate_rho_optimized(
     else:
         rho = rho_from_draw
     
-    # Adjustment basato su lambda (più gol attesi → più rho negativo)
+    # ⚠️ CORREZIONE: Adjustment basato su lambda (più gol attesi → più rho negativo)
     expected_total = lambda_h + lambda_a
-    if expected_total > 3.0:
-        rho -= 0.08  # Alta scoring → meno correlazione low-score
+    if expected_total > 3.5:
+        rho -= 0.10  # Alta scoring → meno correlazione low-score (aumentato da 0.08)
+    elif expected_total > 3.0:
+        rho -= 0.06  # Media-alta scoring
     elif expected_total < 2.0:
-        rho += 0.05  # Bassa scoring → più correlazione low-score
+        rho += 0.06  # Bassa scoring → più correlazione low-score (aumentato da 0.05)
+    elif expected_total < 2.3:
+        rho += 0.03  # Media-bassa scoring
     
-    # Adjustment basato su probabilità low-score
+    # ⚠️ CORREZIONE: Adjustment basato su probabilità low-score (più accurato)
+    # Calcola probabilità low-score usando Poisson (senza tau per semplicità)
     p_0_0 = poisson.pmf(0, lambda_h) * poisson.pmf(0, lambda_a)
     p_1_0 = poisson.pmf(1, lambda_h) * poisson.pmf(0, lambda_a)
     p_0_1 = poisson.pmf(0, lambda_h) * poisson.pmf(1, lambda_a)
     p_low_score = p_0_0 + p_1_0 + p_0_1
     
-    if p_low_score > 0.25:  # Molti low-score attesi
-        rho += 0.03
-    elif p_low_score < 0.10:  # Pochi low-score attesi
-        rho -= 0.05
+    # ⚠️ CORREZIONE: Aggiustamenti più graduali e accurati
+    if p_low_score > 0.30:  # Molti low-score attesi (soglia aumentata)
+        rho += 0.04  # Aumentato da 0.03
+    elif p_low_score > 0.20:
+        rho += 0.02
+    elif p_low_score < 0.08:  # Pochi low-score attesi (soglia ridotta)
+        rho -= 0.06  # Aumentato da 0.05
+    elif p_low_score < 0.12:
+        rho -= 0.03
     
     # Bounds empirici (più ampi per maggiore flessibilità)
     return max(-0.35, min(0.35, round(rho, 4)))
@@ -2974,14 +3039,35 @@ def prob_esito_over_from_matrix(mat: List[List[float]], esito: str, soglia: floa
                 s += p
     return s
 
-def prob_dc_over_from_matrix(mat: List[List[float]], dc: str, soglia: float) -> float:
+def prob_dc_over_from_matrix(mat: List[List[float]], dc: str, soglia: float, inverse: bool = False) -> float:
+    """
+    Calcola probabilità Double Chance & Over/Under dalla matrice.
+    
+    Args:
+        mat: Matrice score
+        dc: Double Chance ('1X', 'X2', '12')
+        soglia: Soglia gol (es. 2.5, 3.5)
+        inverse: Se True, calcola Under invece di Over
+    
+    Returns:
+        Probabilità combinata
+    """
     mg = len(mat) - 1
     s = 0.0
     for h in range(mg + 1):
         for a in range(mg + 1):
-            if h + a <= soglia:
-                continue
+            # Controlla Over/Under
+            if inverse:
+                # Under: h + a <= soglia
+                if h + a > soglia:
+                    continue
+            else:
+                # Over: h + a > soglia
+                if h + a <= soglia:
+                    continue
+            
             p = mat[h][a]
+            # Controlla Double Chance
             if dc == '1X' and h >= a:
                 s += p
             elif dc == 'X2' and a >= h:
@@ -4256,37 +4342,90 @@ def apply_market_movement_blend(
     
     # Calcola lambda da apertura (se disponibile)
     if spread_apertura is not None and total_apertura is not None:
-        # Stima lambda da spread/total apertura
-        lambda_total_ap = total_apertura / 2.0
+        # ⚠️ VALIDAZIONE: Verifica che spread_apertura e total_apertura siano ragionevoli
+        # Clamp per sicurezza (anche se dovrebbero essere già validati)
+        spread_apertura_safe = max(-3.0, min(3.0, spread_apertura))
+        total_apertura_safe = max(0.5, min(6.0, total_apertura))
         
-        # Spread apertura → lambda
-        spread_factor_ap = math.exp(spread_apertura * 0.5)  # Conversione spread → factor
+        # Stima lambda da spread/total apertura
+        lambda_total_ap = total_apertura_safe / 2.0
+        
+        # ⚠️ CORREZIONE: Spread apertura → lambda con protezione
+        # spread_factor_ap = exp(spread * 0.5) può esplodere se spread è alto
+        # Limita spread_factor_ap per evitare valori estremi
+        spread_factor_ap_raw = math.exp(spread_apertura_safe * 0.5)
+        spread_factor_ap = max(0.5, min(2.0, spread_factor_ap_raw))  # Limita a range ragionevole
+        
         lambda_h_ap = lambda_total_ap * spread_factor_ap * math.sqrt(home_advantage)
         lambda_a_ap = lambda_total_ap / spread_factor_ap / math.sqrt(home_advantage)
+        
+        # ⚠️ VERIFICA: Assicura coerenza total dopo calcolo da apertura
+        total_check_ap = lambda_h_ap + lambda_a_ap
+        if abs(total_check_ap - total_apertura_safe) > 0.5:
+            # Ricalibra per mantenere total coerente
+            scale_factor_ap = total_apertura_safe / max(0.1, total_check_ap)
+            lambda_h_ap *= scale_factor_ap
+            lambda_a_ap *= scale_factor_ap
         
         # Constraints
         lambda_h_ap = max(0.3, min(4.5, lambda_h_ap))
         lambda_a_ap = max(0.3, min(4.5, lambda_a_ap))
         
+        # ⚠️ CONTROLLO: Limita effetto del blend per evitare valori estremi
+        # Il blend non può cambiare i lambda più del 40% rispetto a corrente
+        max_blend_adjustment = 1.4
+        lambda_h_ap_limited = max(
+            lambda_h_current / max_blend_adjustment,
+            min(lambda_h_current * max_blend_adjustment, lambda_h_ap)
+        )
+        lambda_a_ap_limited = max(
+            lambda_a_current / max_blend_adjustment,
+            min(lambda_a_current * max_blend_adjustment, lambda_a_ap)
+        )
+        
         # Blend bayesiano
         w_ap = movement_factor["weight_apertura"]
         w_curr = movement_factor["weight_corrente"]
         
-        lambda_h_blended = w_ap * lambda_h_ap + w_curr * lambda_h_current
-        lambda_a_blended = w_ap * lambda_a_ap + w_curr * lambda_a_current
+        lambda_h_blended = w_ap * lambda_h_ap_limited + w_curr * lambda_h_current
+        lambda_a_blended = w_ap * lambda_a_ap_limited + w_curr * lambda_a_current
+        
+        # ⚠️ VERIFICA FINALE: Limita variazione totale del blend
+        lambda_h_blended = max(
+            lambda_h_current / max_blend_adjustment,
+            min(lambda_h_current * max_blend_adjustment, lambda_h_blended)
+        )
+        lambda_a_blended = max(
+            lambda_a_current / max_blend_adjustment,
+            min(lambda_a_current * max_blend_adjustment, lambda_a_blended)
+        )
         
         return lambda_h_blended, lambda_a_blended
     
     # Se non abbiamo spread apertura ma abbiamo total apertura
     elif total_apertura is not None:
+        # ⚠️ VALIDAZIONE: Verifica che total_apertura sia ragionevole
+        total_apertura_safe = max(0.5, min(6.0, total_apertura))
+        
         # Usa total apertura per calibrare total corrente
-        lambda_total_ap = total_apertura / 2.0
+        lambda_total_ap = total_apertura_safe / 2.0
         lambda_total_curr = total_current / 2.0
+        
+        # ⚠️ CONTROLLO: Limita differenza tra total apertura e corrente
+        # Se differiscono troppo, riduci peso apertura
+        total_diff = abs(total_apertura_safe - total_current) / max(0.1, total_current)
+        if total_diff > 0.5:  # Se differiscono più del 50%
+            # Riduci peso apertura se differenza è troppo grande
+            movement_factor["weight_apertura"] = min(0.3, movement_factor["weight_apertura"])
+            movement_factor["weight_corrente"] = 1.0 - movement_factor["weight_apertura"]
         
         # Blend dei total
         w_ap = movement_factor["weight_apertura"]
         w_curr = movement_factor["weight_corrente"]
         lambda_total_blended = w_ap * lambda_total_ap + w_curr * lambda_total_curr
+        
+        # ⚠️ VERIFICA: Limita lambda_total_blended a range ragionevole
+        lambda_total_blended = max(0.5, min(5.0, lambda_total_blended))
         
         # Mantieni proporzione corrente tra lambda_h e lambda_a
         ratio_h = lambda_h_current / (lambda_h_current + lambda_a_current) if (lambda_h_current + lambda_a_current) > 0 else 0.5
@@ -4294,6 +4433,17 @@ def apply_market_movement_blend(
         
         lambda_h_blended = lambda_total_blended * ratio_h * 2.0
         lambda_a_blended = lambda_total_blended * ratio_a * 2.0
+        
+        # ⚠️ CONTROLLO: Limita effetto del blend
+        max_blend_adjustment = 1.4
+        lambda_h_blended = max(
+            lambda_h_current / max_blend_adjustment,
+            min(lambda_h_current * max_blend_adjustment, lambda_h_blended)
+        )
+        lambda_a_blended = max(
+            lambda_a_current / max_blend_adjustment,
+            min(lambda_a_current * max_blend_adjustment, lambda_a_blended)
+        )
         
         return lambda_h_blended, lambda_a_blended
     
@@ -6052,9 +6202,30 @@ def risultato_completo_improved(
             la = max(la_initial / max_adjustment_factor, min(la_initial * max_adjustment_factor, la))
     
     # 5.5. Applica Market Movement Intelligence (blend apertura/corrente)
+    # ⚠️ VALIDAZIONE: Verifica che spread_corrente e total_corrente siano ragionevoli se forniti
+    if spread_corrente is not None:
+        spread_corrente = max(-3.0, min(3.0, spread_corrente))  # Clamp a range ragionevole
+    if total_corrente is not None:
+        total_corrente = max(0.5, min(6.0, total_corrente))  # Clamp a range ragionevole
+    
     # Calcola spread e total correnti dai lambda (prima degli aggiustamenti finali)
     spread_curr_calc = spread_corrente if spread_corrente is not None else (lh - la)
     total_curr_calc = total_corrente if total_corrente is not None else (lh + la)
+    
+    # ⚠️ VERIFICA: Se spread/total correnti forniti differiscono troppo dai lambda, usa lambda
+    # Questo previene errori se spread/total correnti sono sbagliati
+    spread_from_lambda = lh - la
+    total_from_lambda = lh + la
+    
+    if spread_corrente is not None:
+        spread_diff = abs(spread_curr_calc - spread_from_lambda) / max(0.1, abs(spread_from_lambda))
+        if spread_diff > 0.5:  # Se differiscono più del 50%, usa lambda
+            spread_curr_calc = spread_from_lambda
+    
+    if total_corrente is not None:
+        total_diff = abs(total_curr_calc - total_from_lambda) / max(0.1, total_from_lambda)
+        if total_diff > 0.5:  # Se differiscono più del 50%, usa lambda
+            total_curr_calc = total_from_lambda
     
     # Applica blend bayesiano basato su movimento mercato
     lh, la = apply_market_movement_blend(
@@ -6145,10 +6316,28 @@ def risultato_completo_improved(
     la = max(la_initial / max_adjustment_factor, min(la_initial * max_adjustment_factor, la))
     
     # 7. Blend con xG usando approccio bayesiano migliorato (MIGLIORATO: confidence più accurata)
+    # ⚠️ IMPORTANTE: Salva lambda prima del blend xG per limitare effetto
+    lh_before_xg = lh
+    la_before_xg = la
+    
     if all(x is not None for x in [xg_for_home, xg_against_home, xg_for_away, xg_against_away]):
         # Stima xG per la partita: media tra xG for e xG against avversario
         xg_h_est = (xg_for_home + xg_against_away) / 2.0
         xg_a_est = (xg_for_away + xg_against_home) / 2.0
+        
+        # ⚠️ VALIDAZIONE: Limita xG stimati a range ragionevole (0.3 - 4.0)
+        # xG molto alti (>4.0) o molto bassi (<0.3) sono probabilmente errori
+        xg_h_est = max(0.3, min(4.0, xg_h_est))
+        xg_a_est = max(0.3, min(4.0, xg_a_est))
+        
+        # ⚠️ CONTROLLO: Se xG è molto diverso dai lambda di mercato, riduci peso xG
+        # Questo evita che xG sbagliato sostituisca completamente i lambda di mercato
+        xg_h_diff = abs(xg_h_est - lh) / max(0.1, lh)  # Differenza percentuale
+        xg_a_diff = abs(xg_a_est - la) / max(0.1, la)
+        
+        # Se differenza > 50%, riduci peso xG
+        xg_penalty_h = 1.0 if xg_h_diff <= 0.5 else max(0.3, 1.0 - (xg_h_diff - 0.5))
+        xg_penalty_a = 1.0 if xg_a_diff <= 0.5 else max(0.3, 1.0 - (xg_a_diff - 0.5))
         
         # MIGLIORAMENTO: Confidence più accurata basata su:
         # 1. Dimensione campione (proxy: valore xG - più alto = più dati)
@@ -6156,8 +6345,9 @@ def risultato_completo_improved(
         # 3. NUOVO: Validazione con dati reali dalle API (se disponibili)
         
         # Base confidence: valore xG normalizzato (più alto = più affidabile)
-        xg_h_base_conf = min(1.0, (xg_for_home + xg_against_away) / 3.0)  # Normalizza a max 3.0
-        xg_a_base_conf = min(1.0, (xg_for_away + xg_against_home) / 3.0)
+        # ⚠️ CORREZIONE: Non usare somma, usa media per evitare valori troppo alti
+        xg_h_base_conf = min(1.0, (xg_for_home + xg_against_away) / 4.0)  # Normalizza a max 4.0 (2.0 per squadra)
+        xg_a_base_conf = min(1.0, (xg_for_away + xg_against_home) / 4.0)
         
         # Coerenza: se xG for e against sono simili, più affidabile
         consistency_h = 1.0 - abs(xg_for_home - xg_against_away) / max(0.1, (xg_for_home + xg_against_away) / 2)
@@ -6170,14 +6360,15 @@ def risultato_completo_improved(
             if advanced_data.get("home_team_stats") or advanced_data.get("away_team_stats"):
                 api_boost = model_config.XG_API_BOOST
         
-        # Confidence finale: base * consistency * api_boost
-        xg_h_confidence = xg_h_base_conf * consistency_h * api_boost
-        xg_a_confidence = xg_a_base_conf * consistency_a * api_boost
+        # Confidence finale: base * consistency * api_boost * penalty
+        xg_h_confidence = xg_h_base_conf * consistency_h * api_boost * xg_penalty_h
+        xg_a_confidence = xg_a_base_conf * consistency_a * api_boost * xg_penalty_a
         
         # Pesatura bayesiana: w = confidence * consistency usando ModelConfig
-        max_xg_weight = model_config.XG_MAX_WEIGHT if api_boost > 1.0 else model_config.XG_XG_WEIGHT
-        w_xg_h = min(max_xg_weight, xg_h_confidence * 0.5)
-        w_xg_a = min(max_xg_weight, xg_a_confidence * 0.5)
+        # ⚠️ RIDOTTO: Peso massimo xG più conservativo per evitare esplosioni
+        max_xg_weight = min(0.35, model_config.XG_MAX_WEIGHT if api_boost > 1.0 else model_config.XG_XG_WEIGHT)
+        w_xg_h = min(max_xg_weight, xg_h_confidence * 0.4)  # Ridotto da 0.5 a 0.4
+        w_xg_a = min(max_xg_weight, xg_a_confidence * 0.4)
         
         w_market_h = 1.0 - w_xg_h
         w_market_a = 1.0 - w_xg_a
@@ -6185,6 +6376,12 @@ def risultato_completo_improved(
         # Blend finale
         lh = w_market_h * lh + w_xg_h * xg_h_est
         la = w_market_a * la + w_xg_a * xg_a_est
+        
+        # ⚠️ CONTROLLO CRITICO: Limita effetto totale del blend xG
+        # Il blend xG non può cambiare i lambda più del 30% rispetto a prima del blend
+        max_xg_adjustment = 1.3  # Massimo 30% di variazione
+        lh = max(lh_before_xg / max_xg_adjustment, min(lh_before_xg * max_xg_adjustment, lh))
+        la = max(la_before_xg / max_xg_adjustment, min(la_before_xg * max_xg_adjustment, la))
     
     # Constraints finali
     lh = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, lh))
@@ -6314,10 +6511,10 @@ def risultato_completo_improved(
         "X2 & BTTS": prob_dc_btts_from_matrix(mat_ft, 'X2'),
         "1 & BTTS": prob_esito_btts_from_matrix(mat_ft, '1'),
         "2 & BTTS": prob_esito_btts_from_matrix(mat_ft, '2'),
-        "1X & Under 3.5": (p_home + p_draw) * (1 - over_35),
-        "X2 & Under 3.5": (p_away + p_draw) * (1 - over_35),
-        "1X & GG": (p_home + p_draw) * btts,
-        "X2 & GG": (p_away + p_draw) * btts,
+        "1X & Under 3.5": prob_dc_over_from_matrix(mat_ft, '1X', 3.5, inverse=True),  # Under 3.5 = NOT Over 3.5
+        "X2 & Under 3.5": prob_dc_over_from_matrix(mat_ft, 'X2', 3.5, inverse=True),
+        "1X & GG": prob_dc_btts_from_matrix(mat_ft, '1X'),  # Già calcolato correttamente dalla matrice
+        "X2 & GG": prob_dc_btts_from_matrix(mat_ft, 'X2'),  # Già calcolato correttamente dalla matrice
     }
     
     # 14. Top risultati
@@ -6351,12 +6548,20 @@ def risultato_completo_improved(
         p_home_cal = calibrate_func(p_home)
         p_draw_cal = calibrate_func(p_draw)
         p_away_cal = calibrate_func(p_away)
-        # Normalizza
+        # ⚠️ CORREZIONE: Normalizza con protezione contro valori estremi
         tot_cal = p_home_cal + p_draw_cal + p_away_cal
         if tot_cal > 0:
             p_home_cal /= tot_cal
             p_draw_cal /= tot_cal
             p_away_cal /= tot_cal
+        else:
+            # Fallback se calibrazione produce valori non validi
+            p_home_cal, p_draw_cal, p_away_cal = p_home, p_draw, p_away
+        
+        # ⚠️ VERIFICA: Assicura che probabilità calibrate siano ragionevoli
+        if p_home_cal < 0 or p_home_cal > 1 or p_draw_cal < 0 or p_draw_cal > 1 or p_away_cal < 0 or p_away_cal > 1:
+            # Se calibrazione produce valori fuori range, usa valori non calibrati
+            p_home_cal, p_draw_cal, p_away_cal = p_home, p_draw, p_away
     else:
         p_home_cal, p_draw_cal, p_away_cal = p_home, p_draw, p_away
     
@@ -6369,19 +6574,35 @@ def risultato_completo_improved(
             odds_over25, odds_under25, odds_btts,
             odds_dnb_home, odds_dnb_away, league
         )
+        # ⚠️ CORREZIONE: Blend con normalizzazione finale
         # Blend: 80% modello principale, 20% ensemble
         p_home_final = 0.8 * p_home_cal + 0.2 * ensemble_result["p_home"]
         p_draw_final = 0.8 * p_draw_cal + 0.2 * ensemble_result["p_draw"]
         p_away_final = 0.8 * p_away_cal + 0.2 * ensemble_result["p_away"]
+        
+        # ⚠️ VERIFICA: Normalizza probabilità finali dopo ensemble
+        tot_final = p_home_final + p_draw_final + p_away_final
+        if tot_final > 0:
+            p_home_final /= tot_final
+            p_draw_final /= tot_final
+            p_away_final /= tot_final
+        else:
+            # Fallback se ensemble produce valori non validi
+            p_home_final, p_draw_final, p_away_final = p_home_cal, p_draw_cal, p_away_cal
     else:
         p_home_final, p_draw_final, p_away_final = p_home_cal, p_draw_cal, p_away_cal
     
-    # Normalizza finale
-    tot_final = p_home_final + p_draw_final + p_away_final
-    if tot_final > 0:
-        p_home_final /= tot_final
-        p_draw_final /= tot_final
-        p_away_final /= tot_final
+    # ⚠️ VERIFICA FINALE: Assicura che probabilità finali siano valide e normalizzate
+    # (La normalizzazione è già stata fatta dopo ensemble, ma verifichiamo per sicurezza)
+    tot_final_check = p_home_final + p_draw_final + p_away_final
+    if abs(tot_final_check - 1.0) > 0.01:  # Se non è già normalizzato
+        if tot_final_check > 0:
+            p_home_final /= tot_final_check
+            p_draw_final /= tot_final_check
+            p_away_final /= tot_final_check
+        else:
+            # Fallback estremo: usa probabilità raw
+            p_home_final, p_draw_final, p_away_final = p_home, p_draw, p_away
     
     # Calcola market movement info per output (usa spread e total correnti calcolati)
     movement_info = calculate_market_movement_factor(
