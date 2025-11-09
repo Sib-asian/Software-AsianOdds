@@ -7033,7 +7033,10 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
         
         # Mostra confronto apertura vs corrente e Market Movement Intelligence
         movement_info = ris.get("market_movement", {})
-        if movement_info and (spread_apertura != 0.0 or total_apertura != 2.5):
+        # Verifica se abbiamo dati apertura validi (non None e non valori di default)
+        has_spread_ap = spread_apertura is not None and spread_apertura != 0.0
+        has_total_ap = total_apertura is not None and total_apertura != 2.5
+        if movement_info and (has_spread_ap or has_total_ap):
             with st.expander("📊 Market Movement Intelligence", expanded=False):
                 col_comp1, col_comp2, col_comp3 = st.columns(3)
                 
@@ -7041,21 +7044,31 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                     st.markdown("**📈 Spread**")
                     # Usa spread corrente calcolato dai lambda finali (dopo tutti gli aggiustamenti)
                     spread_curr = ris.get("spread_corrente", ris["lambda_home"] - ris["lambda_away"])
-                    st.write(f"Apertura: {spread_apertura:.3f}")
+                    # Gestisci spread_apertura che può essere None
+                    if spread_apertura is not None:
+                        st.write(f"Apertura: {spread_apertura:.3f}")
+                    else:
+                        st.write("Apertura: N/A")
                     st.write(f"Corrente: {spread_curr:.3f} ⭐")
                     st.caption("⭐ Calcolato dai lambda finali (dopo aggiustamenti API)")
-                    if movement_info.get("movement_spread") and spread_apertura != 0.0:
+                    if movement_info.get("movement_spread") and spread_apertura is not None and spread_apertura != 0.0:
                         diff_spread = movement_info["movement_spread"]
-                        st.write(f"**Movimento**: {diff_spread:+.3f} {'(→ casa)' if spread_curr > spread_apertura else '(→ trasferta)'}")
+                        # Assicurati che spread_apertura sia un numero per il confronto
+                        spread_ap_num = float(spread_apertura) if spread_apertura is not None else 0.0
+                        st.write(f"**Movimento**: {diff_spread:+.3f} {'(→ casa)' if spread_curr > spread_ap_num else '(→ trasferta)'}")
                 
                 with col_comp2:
                     st.markdown("**⚽ Total**")
                     # Usa total corrente calcolato dai lambda finali (dopo tutti gli aggiustamenti)
                     total_curr = ris.get("total_corrente", ris["lambda_home"] + ris["lambda_away"])
-                    st.write(f"Apertura: {total_apertura:.3f}")
+                    # Gestisci total_apertura che può essere None
+                    if total_apertura is not None:
+                        st.write(f"Apertura: {total_apertura:.3f}")
+                    else:
+                        st.write("Apertura: N/A")
                     st.write(f"Corrente: {total_curr:.3f} ⭐")
                     st.caption("⭐ Calcolato dai lambda finali (dopo aggiustamenti API)")
-                    if movement_info.get("movement_total") and total_apertura != 2.5:
+                    if movement_info.get("movement_total") and total_apertura is not None and total_apertura != 2.5:
                         diff_total = movement_info["movement_total"]
                         st.write(f"**Movimento**: {diff_total:+.3f} {'(↑ più gol)' if diff_total > 0 else '(↓ meno gol)'}")
                 
@@ -7146,7 +7159,10 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             adjustments_applied.append(f"🌤️ Meteo: {impact:+.1f}% gol")
         
         # Market Movement Intelligence (sempre mostrato se dati apertura disponibili)
-        if spread_apertura != 0.0 or total_apertura != 2.5:
+        # Verifica se abbiamo dati apertura validi (non None e non valori di default)
+        has_spread_ap_check = spread_apertura is not None and spread_apertura != 0.0
+        has_total_ap_check = total_apertura is not None and total_apertura != 2.5
+        if has_spread_ap_check or has_total_ap_check:
             movement_info = ris.get("market_movement", {})
             if movement_info:
                 movement_type = movement_info.get("movement_type", "")
