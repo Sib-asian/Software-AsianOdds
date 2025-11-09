@@ -1000,27 +1000,48 @@ def oddsapi_extract_prices_improved(event: dict) -> dict:
 def oddsapi_get_soccer_leagues() -> List[dict]:
     if not THE_ODDS_API_KEY:
         logger.warning("THE_ODDS_API_KEY non configurata. Configura tramite variabile d'ambiente.")
+        if st:
+            st.error("⚠️ THE_ODDS_API_KEY non configurata. Configura tramite variabile d'ambiente.")
         return []
     try:
+        timeout_val = app_config.api_timeout if hasattr(app_config, 'api_timeout') else 10.0
         r = requests.get(
             f"{THE_ODDS_BASE}/sports",
             params={"apiKey": THE_ODDS_API_KEY, "all": "true"},
-            timeout=app_config.api_timeout,
+            timeout=timeout_val,
         )
         r.raise_for_status()
         data = r.json()
-        return [s for s in data if s.get("key", "").startswith("soccer")]
+        leagues = [s for s in data if s.get("key", "").startswith("soccer")]
+        if not leagues:
+            logger.warning("Nessuna lega di calcio trovata nella risposta API")
+        return leagues
     except requests.exceptions.Timeout:
-        logger.error("Timeout richiesta The Odds API (sports)")
+        error_msg = "Timeout richiesta The Odds API (sports)"
+        logger.error(error_msg)
+        if st:
+            st.error(f"⏱️ {error_msg}")
         return []
     except requests.exceptions.HTTPError as e:
-        logger.error(f"Errore HTTP The Odds API (sports): {e.response.status_code}")
+        error_msg = f"Errore HTTP The Odds API (sports): {e.response.status_code}"
+        logger.error(error_msg)
+        if st:
+            if e.response.status_code == 401:
+                st.error("🔑 API key non valida o scaduta. Controlla THE_ODDS_API_KEY.")
+            else:
+                st.error(f"❌ {error_msg}")
         return []
     except requests.exceptions.RequestException as e:
-        logger.error(f"Errore richiesta The Odds API (sports): {e}")
+        error_msg = f"Errore richiesta The Odds API (sports): {e}"
+        logger.error(error_msg)
+        if st:
+            st.error(f"❌ {error_msg}")
         return []
     except (ValueError, KeyError, json.JSONDecodeError) as e:
-        logger.error(f"Errore parsing risposta The Odds API (sports): {e}")
+        error_msg = f"Errore parsing risposta The Odds API (sports): {e}"
+        logger.error(error_msg)
+        if st:
+            st.error(f"❌ {error_msg}")
         return []
 
 def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
@@ -6368,9 +6389,12 @@ col_load1, col_load2 = st.columns([1, 2])
 
 with col_load1:
     if st.button("1️⃣ Carica Leghe"):
-        st.session_state.soccer_leagues = oddsapi_get_soccer_leagues()
+        with st.spinner("Caricamento leghe in corso..."):
+            st.session_state.soccer_leagues = oddsapi_get_soccer_leagues()
         if st.session_state.soccer_leagues:
-            st.success(f"✅ {len(st.session_state.soccer_leagues)} leghe")
+            st.success(f"✅ {len(st.session_state.soccer_leagues)} leghe caricate")
+        else:
+            st.warning("⚠️ Nessuna lega caricata. Controlla i messaggi di errore sopra o verifica la configurazione dell'API key.")
 
 if st.session_state.soccer_leagues:
     league_names = [f"{l['title']} ({l['key']})" for l in st.session_state.soccer_leagues]
