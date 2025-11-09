@@ -4205,6 +4205,12 @@ def apply_market_movement_blend(
     
     Se abbiamo dati apertura, calcola lambda da apertura e fa blend con corrente.
     """
+    # Se spread/total correnti non forniti, calcolali dai lambda
+    if spread_corrente is None:
+        spread_corrente = lambda_h_current - lambda_a_current
+    if total_corrente is None:
+        total_corrente = lambda_h_current + lambda_a_current
+    
     # Calcola market movement factor
     movement_factor = calculate_market_movement_factor(
         spread_apertura, total_apertura, spread_corrente, total_corrente
@@ -5828,17 +5834,15 @@ def risultato_completo_improved(
             lh, la = apply_stadium_adjustments(lh, la, stadium_data)
     
     # 5.5. Applica Market Movement Intelligence (blend apertura/corrente)
-    # Se abbiamo dati apertura, calcola spread corrente se non fornito
-    spread_curr_calc = spread_corrente
-    if spread_curr_calc is None or spread_curr_calc == 0.0:
-        # Calcola spread corrente da lambda
-        spread_curr_calc = lh - la
+    # Calcola spread e total correnti dai lambda (prima degli aggiustamenti finali)
+    spread_curr_calc = spread_corrente if spread_corrente is not None else (lh - la)
+    total_curr_calc = total_corrente if total_corrente is not None else (lh + la)
     
     # Applica blend bayesiano basato su movimento mercato
     lh, la = apply_market_movement_blend(
-        lh, la, total,
+        lh, la, total_curr_calc,
         spread_apertura, total_apertura,
-        spread_curr_calc, total,
+        spread_curr_calc, total_curr_calc,
         home_advantage=ha
     )
     
@@ -5942,6 +5946,11 @@ def risultato_completo_improved(
     # Constraints finali
     lh = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, lh))
     la = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, la))
+    
+    # 7.5. ⭐ CALCOLA SPREAD E TOTAL CORRENTI DAI LAMBDA FINALI ⭐
+    # Importante per statistiche e calcoli successivi
+    spread_corrente_calculated = lh - la
+    total_corrente_calculated = lh + la
     
     # 8. Ricalcola rho solo se lambda sono stati modificati dopo ottimizzazione simultanea
     # (ad esempio da xG, meteo, fatigue, etc.)
@@ -6107,9 +6116,9 @@ def risultato_completo_improved(
         p_draw_final /= tot_final
         p_away_final /= tot_final
     
-    # Calcola market movement info per output
+    # Calcola market movement info per output (usa spread e total correnti calcolati)
     movement_info = calculate_market_movement_factor(
-        spread_apertura, total_apertura, spread_curr_calc, total
+        spread_apertura, total_apertura, spread_corrente_calculated, total_corrente_calculated
     )
     
     # Recupera dati API aggiuntive per output
@@ -6137,6 +6146,10 @@ def risultato_completo_improved(
         "lambda_home": lh,
         "lambda_away": la,
         "rho": rho,
+        "spread_corrente": round(spread_corrente_calculated, 3),  # Spread corrente calcolato dai lambda finali
+        "total_corrente": round(total_corrente_calculated, 3),  # Total corrente calcolato dai lambda finali
+        "spread_apertura": spread_apertura if spread_apertura is not None else None,
+        "total_apertura": total_apertura if total_apertura is not None else None,
         "p_home": p_home_final,
         "p_draw": p_draw_final,
         "p_away": p_away_final,
@@ -6632,9 +6645,10 @@ with col_q3:
     total_line = st.number_input("Total Corrente", value=2.5, step=0.25,
                                  help="Total gol atteso corrente (se diverso da apertura)")
 
-# Spread corrente (opzionale, calcolato automaticamente se non inserito)
-spread_corrente = st.number_input("Spread Corrente (Opzionale)", value=0.0, step=0.25,
-                                 help="Inserisci solo se diverso da apertura. Se lasci 0.0, viene calcolato automaticamente dalle quote.")
+# Spread corrente (opzionale, calcolato automaticamente dai lambda finali)
+spread_corrente_input = st.number_input("Spread Corrente (Opzionale)", value=0.0, step=0.25,
+                                       help="Inserisci solo se diverso da apertura. Se lasci 0.0, viene calcolato automaticamente dai lambda finali dopo tutti gli aggiustamenti.")
+spread_corrente = spread_corrente_input if spread_corrente_input != 0.0 else None
 
 st.subheader("🎲 Quote Speciali")
 
@@ -6845,7 +6859,8 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             advanced_data=advanced_team_data,  # Dati avanzati in background
             spread_apertura=spread_apertura if spread_apertura != 0.0 else None,
             total_apertura=total_apertura if total_apertura != 2.5 else None,  # Default 2.5 = non specificato
-            spread_corrente=spread_corrente if spread_corrente != 0.0 else None,
+            spread_corrente=spread_corrente,
+            total_corrente=total_line if total_line != 2.5 else None,  # Total corrente (se diverso da default)
             **xg_args
         )
         
@@ -6939,14 +6954,22 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
         with col_m4:
             st.metric("✈️ λ Trasferta", f"{ris['lambda_away']:.3f}")
         
-        # Mostra rho e precisione
-        col_m5, col_m6 = st.columns(2)
+        # Mostra rho, precisione, spread e total correnti
+        col_m5, col_m6, col_m7, col_m8 = st.columns(4)
         with col_m5:
             st.metric("🔗 ρ (correlazione)", f"{ris['rho']:.4f}")
         with col_m6:
             # Calcola precisione: quanto si discosta il modello dalle quote
             avg_error = np.mean([abs(v) for v in ris['scost'].values()])
             st.metric("📊 Avg Scostamento", f"{avg_error:.2f}%")
+        with col_m7:
+            # Spread corrente calcolato dai lambda finali
+            spread_curr = ris.get("spread_corrente", ris["lambda_home"] - ris["lambda_away"])
+            st.metric("📈 Spread Corrente", f"{spread_curr:.3f}")
+        with col_m8:
+            # Total corrente calcolato dai lambda finali
+            total_curr = ris.get("total_corrente", ris["lambda_home"] + ris["lambda_away"])
+            st.metric("⚽ Total Corrente", f"{total_curr:.3f}")
         
         # Mostra confronto apertura vs corrente e Market Movement Intelligence
         movement_info = ris.get("market_movement", {})
@@ -6956,20 +6979,25 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                 
                 with col_comp1:
                     st.markdown("**📈 Spread**")
-                    spread_curr = spread_corrente if spread_corrente != 0.0 else (ris["lambda_home"] - ris["lambda_away"])
-                    st.write(f"Apertura: {spread_apertura:.2f}")
-                    st.write(f"Corrente: {spread_curr:.2f}")
-                    if movement_info.get("movement_spread"):
+                    # Usa spread corrente calcolato dai lambda finali (dopo tutti gli aggiustamenti)
+                    spread_curr = ris.get("spread_corrente", ris["lambda_home"] - ris["lambda_away"])
+                    st.write(f"Apertura: {spread_apertura:.3f}")
+                    st.write(f"Corrente: {spread_curr:.3f} ⭐")
+                    st.caption("⭐ Calcolato dai lambda finali (dopo aggiustamenti API)")
+                    if movement_info.get("movement_spread") and spread_apertura != 0.0:
                         diff_spread = movement_info["movement_spread"]
-                        st.write(f"**Movimento**: {diff_spread:+.2f} {'(→ casa)' if spread_curr > spread_apertura else '(→ trasferta)'}")
+                        st.write(f"**Movimento**: {diff_spread:+.3f} {'(→ casa)' if spread_curr > spread_apertura else '(→ trasferta)'}")
                 
                 with col_comp2:
                     st.markdown("**⚽ Total**")
-                    st.write(f"Apertura: {total_apertura:.2f}")
-                    st.write(f"Corrente: {total_line:.2f}")
-                    if movement_info.get("movement_total"):
+                    # Usa total corrente calcolato dai lambda finali (dopo tutti gli aggiustamenti)
+                    total_curr = ris.get("total_corrente", ris["lambda_home"] + ris["lambda_away"])
+                    st.write(f"Apertura: {total_apertura:.3f}")
+                    st.write(f"Corrente: {total_curr:.3f} ⭐")
+                    st.caption("⭐ Calcolato dai lambda finali (dopo aggiustamenti API)")
+                    if movement_info.get("movement_total") and total_apertura != 2.5:
                         diff_total = movement_info["movement_total"]
-                        st.write(f"**Movimento**: {diff_total:+.2f} {'(↑ più gol)' if diff_total > 0 else '(↓ meno gol)'}")
+                        st.write(f"**Movimento**: {diff_total:+.3f} {'(↑ più gol)' if diff_total > 0 else '(↓ meno gol)'}")
                 
                 with col_comp3:
                     st.markdown("**🎯 Strategia Blend**")
