@@ -1719,6 +1719,44 @@ if st.button("CALCOLA MODELLO"):
         st.warning(f"Non sono riuscito a salvare l'analisi: {e}")
 
 # ============================================================
+#       🔢 SEZIONE FACOLTATIVA: COMBINATORE DI PROBABILITÀ
+# ============================================================
+
+st.markdown("---")
+st.subheader("🧮 Calcola combinazioni di mercati (facoltativo)")
+
+def calcola_combinata(prob_a, prob_b, correlazione=0.1):
+    """
+    Calcola la probabilità combinata di due eventi, tenendo conto di una correlazione positiva (default 10%).
+    Esempio: 1X + Under 3.5
+    """
+    try:
+        prob_a = float(prob_a) / 100.0
+        prob_b = float(prob_b) / 100.0
+    except Exception:
+        st.warning("Inserisci due percentuali valide.")
+        return None
+
+    # A * (B aggiustato per correlazione)
+    prob_b_cond = min(prob_b + correlazione, 1.0)
+    prob_comb = prob_a * prob_b_cond
+    return round(prob_comb * 100, 2)
+
+col_ca, col_cb, col_cc = st.columns([1, 1, 1])
+with col_ca:
+    prob_a = st.number_input("Probabilità evento A (%)", value=81.5, step=0.1)
+with col_cb:
+    prob_b = st.number_input("Probabilità evento B (%)", value=72.0, step=0.1)
+with col_cc:
+    correl = st.slider("Correlazione (%)", min_value=0, max_value=20, value=10, step=1) / 100.0
+
+if st.button("Calcola combinazione"):
+    res = calcola_combinata(prob_a, prob_b, correl)
+    if res:
+        st.success(f"Probabilità combinata ≈ **{res}%**")
+        st.caption("Esempio: se A=1X e B=Under 3.5 con correlazione 10%, la combinazione è circa questa.")
+
+# ============================================================
 #           AGGIORNA RISULTATI REALI (API-FOOTBALL)
 # ============================================================
 
@@ -1769,3 +1807,4 @@ if st.button("Recupera risultati degli ultimi 3 giorni"):
         df.to_csv(ARCHIVE_FILE, index=False)
         st.success(f"Aggiornamento completato. Partite aggiornate: {updated}")
         st.dataframe(df.tail(30))
+
