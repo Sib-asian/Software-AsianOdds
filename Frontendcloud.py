@@ -12891,13 +12891,13 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                 total_apertura=total_apertura if total_apertura != 2.5 else None,
                 spread_corrente=spread_corrente if spread_corrente != 0.0 else None,
                 xg_for_home=xg_home_for if (xg_home_for and isinstance(xg_home_for, (int, float)) and xg_home_for > 0) else None,
-                xg_against_home=xg_home_against if (xg_home_against and isinstance(xg_home_against, (int, float)) and xg_home_against > 0) else None,
+                xg_against_home=xg_against_home if (xg_against_home and isinstance(xg_against_home, (int, float)) and xg_against_home > 0) else None,
                 xg_for_away=xg_away_for if (xg_away_for and isinstance(xg_away_for, (int, float)) and xg_away_for > 0) else None,
-                xg_against_away=xg_away_against if (xg_away_against and isinstance(xg_away_against, (int, float)) and xg_away_against > 0) else None,
+                xg_against_away=xg_against_away if (xg_against_away and isinstance(xg_against_away, (int, float)) and xg_against_away > 0) else None,
                 xa_for_home=xa_home_for if (xa_home_for and isinstance(xa_home_for, (int, float)) and xa_home_for > 0) else None,
-                xa_against_home=xa_home_against if (xa_home_against and isinstance(xa_home_against, (int, float)) and xa_home_against > 0) else None,
+                xa_against_home=xa_against_home if (xa_against_home and isinstance(xa_against_home, (int, float)) and xa_against_home > 0) else None,
                 xa_for_away=xa_away_for if (xa_away_for and isinstance(xa_away_for, (int, float)) and xa_away_for > 0) else None,
-                xa_against_away=xa_away_against if (xa_away_against and isinstance(xa_away_against, (int, float)) and xa_away_against > 0) else None,
+                xa_against_away=xa_against_away if (xa_against_away and isinstance(xa_against_away, (int, float)) and xa_against_away > 0) else None,
             )
             
             validated = validation_result["validated"]
@@ -13026,17 +13026,17 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
         if has_xg:
             xg_args = {
                 "xg_for_home": xg_home_for,
-                "xg_against_home": xg_home_against,
+                "xg_against_home": xg_against_home,
                 "xg_for_away": xg_away_for,
-                "xg_against_away": xg_away_against,
+                "xg_against_away": xg_against_away,
             }
         xa_args = {}
         if has_xa:
             xa_args = {
                 "xa_for_home": xa_home_for if xa_home_for > 0 else None,
-                "xa_against_home": xa_home_against if xa_home_against > 0 else None,
+                "xa_against_home": xa_against_home if xa_against_home > 0 else None,
                 "xa_for_away": xa_away_for if xa_away_for > 0 else None,
-                "xa_against_away": xa_away_against if xa_away_against > 0 else None,
+                "xa_against_away": xa_against_away if xa_against_away > 0 else None,
             }
         
         ris = risultato_completo_improved(
