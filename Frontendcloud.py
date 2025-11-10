@@ -1119,7 +1119,7 @@ def btts_probability_bivariate(lambda_h: float, lambda_a: float, rho: float) -> 
     
     # ⚠️ PRECISIONE: Calcola p_h0_a0 con protezione overflow
     try:
-    p_h0_a0 = p_h0 * p_a0 * tau_00
+        p_h0_a0 = p_h0 * p_a0 * tau_00
         if not math.isfinite(p_h0_a0) or p_h0_a0 < 0:
             logger.warning(f"p_h0_a0 non valido: {p_h0_a0}, correggo")
             p_h0_a0 = max(0.0, min(1.0, p_h0 * p_a0))
@@ -1169,7 +1169,7 @@ def estimate_btts_from_basic_odds_improved(
         if isinstance(lambda_h, (int, float)) and isinstance(lambda_a, (int, float)) and \
            math.isfinite(lambda_h) and math.isfinite(lambda_a) and \
            lambda_h > 0 and lambda_a > 0:
-        prob_btts = btts_probability_bivariate(lambda_h, lambda_a, rho)
+            prob_btts = btts_probability_bivariate(lambda_h, lambda_a, rho)
             # ⚠️ PROTEZIONE: Protezione divisione per zero
             if prob_btts > model_config.TOL_DIVISION_ZERO:
                 odds_btts = 1.0 / prob_btts
@@ -1255,7 +1255,7 @@ def blend_btts_sources_improved(
     # ⚠️ VALIDAZIONE: Verifica manual_btts
     if manual_btts is not None:
         if isinstance(manual_btts, (int, float)) and math.isfinite(manual_btts) and manual_btts > 1.01:
-        return round(manual_btts, 3), "BTTS manuale (bet365)"
+            return round(manual_btts, 3), "BTTS manuale (bet365)"
     
     # ⚠️ VALIDAZIONE: Verifica che entrambi siano validi per blend
     if odds_btts_api is not None and btts_from_model is not None:
@@ -1264,7 +1264,7 @@ def blend_btts_sources_improved(
            odds_btts_api > 1.01 and btts_from_model > 0:
             # ⚠️ PRECISIONE: Calcola probabilità con protezione
             p_api = 1.0 / max(odds_btts_api, model_config.TOL_DIVISION_ZERO)
-        p_mod = btts_from_model
+            p_mod = btts_from_model
         
             # ⚠️ PROTEZIONE: Limita probabilità a range [0, 1]
             p_api = max(0.0, min(1.0, p_api))
@@ -1289,8 +1289,8 @@ def blend_btts_sources_improved(
                 p_final = posterior_p
                 blend_source = f"BTTS beta-posterior (prior={prior_strength:.2f}, obs={observed_strength:.2f})"
             else:
-        # Pesatura dinamica: più confidence → più peso al mercato
-        w_market = 0.55 + market_confidence * 0.20
+                # Pesatura dinamica: più confidence → più peso al mercato
+                w_market = 0.55 + market_confidence * 0.20
                 w_market = max(0.0, min(1.0, w_market))  # Limita a [0, 1]
                 w_model = 1.0 - w_market
                 
@@ -1322,7 +1322,7 @@ def blend_btts_sources_improved(
     # ⚠️ VALIDAZIONE: Verifica odds_btts_api
     if odds_btts_api is not None:
         if isinstance(odds_btts_api, (int, float)) and math.isfinite(odds_btts_api) and odds_btts_api > 1.01:
-        return round(odds_btts_api, 3), "BTTS da API"
+            return round(odds_btts_api, 3), "BTTS da API"
     
     # ⚠️ VALIDAZIONE: Verifica btts_from_model
     if btts_from_model is not None:
@@ -3115,7 +3115,7 @@ def estimate_lambda_from_market_optimized(
             # Usa log-space: log(P(k)) = k*log(lambda) - lambda - log(k!)
             # Poi exp(log(P(k))) per ottenere P(k)
             try:
-            exp_neg_lambda = math.exp(-lambda_tot)
+                exp_neg_lambda = math.exp(-lambda_tot)
                 if exp_neg_lambda == 0.0 or not math.isfinite(exp_neg_lambda):
                     return 1.0
                 
@@ -3123,25 +3123,25 @@ def estimate_lambda_from_market_optimized(
                 # P(0) = exp(-lambda)
                 # P(1) = lambda * P(0)
                 # P(2) = (lambda/2) * P(1)
-            p_0 = exp_neg_lambda
+                p_0 = exp_neg_lambda
                 p_1 = lambda_tot * p_0
                 p_2 = (lambda_tot / 2.0) * p_1
-            
+                
                 # ⚠️ PRECISIONE ESTESA: Kahan summation per somma precisa
-            c_sum = 0.0  # Compensazione Kahan
-            sum_p = 0.0
-            for p_val in [p_0, p_1, p_2]:
+                c_sum = 0.0  # Compensazione Kahan
+                sum_p = 0.0
+                for p_val in [p_0, p_1, p_2]:
                     if not math.isfinite(p_val) or p_val < 0:
                         continue
-                y = p_val - c_sum
-                t = sum_p + y
-                c_sum = (t - sum_p) - y
-                sum_p = t
+                    y = p_val - c_sum
+                    t = sum_p + y
+                    c_sum = (t - sum_p) - y
+                    sum_p = t
                 
-            # P(X > 2.5) = 1 - P(X <= 2)
-            result = 1.0 - sum_p
-            
-            # ⚠️ PROTEZIONE: Limita risultato a range [0, 1]
+                # P(X > 2.5) = 1 - P(X <= 2)
+                result = 1.0 - sum_p
+                
+                # ⚠️ PROTEZIONE: Limita risultato a range [0, 1]
                 result = max(0.0, min(1.0, result))
                 
                 # ⚠️ VERIFICA: Assicura che risultato sia finito
@@ -3168,7 +3168,7 @@ def estimate_lambda_from_market_optimized(
             # ⚠️ PRECISIONE ESTESA: Usa scipy.optimize.brentq per maggiore precisione
             # Brent's method combina bisezione, secante e inversa quadratica
             # Converge in ~10-15 iterazioni invece di 30
-        lambda_min, lambda_max = 0.5, 6.0
+            lambda_min, lambda_max = 0.5, 6.0
             
             # Verifica che la funzione cambi segno nell'intervallo
             error_min = poisson_over_error(lambda_min)
@@ -3204,29 +3204,29 @@ def estimate_lambda_from_market_optimized(
                     logger.warning(f"Metodo Brent fallito: {e}, uso bisezione migliorata")
                     # Fallback: bisezione migliorata con più iterazioni
                     best_lambda = (lambda_min + lambda_max) / 2.0
-        best_error = float('inf')
-        
+                    best_error = float('inf')
+                    
                     for _ in range(50):  # Più iterazioni per precisione
-            lambda_mid = (lambda_min + lambda_max) / 2.0
-            p_mid = poisson_over_prob(lambda_mid)
+                        lambda_mid = (lambda_min + lambda_max) / 2.0
+                        p_mid = poisson_over_prob(lambda_mid)
                         if not math.isfinite(p_mid):
                             break
-            error = abs(p_mid - p_over)
-            
-            if error < best_error:
-                best_error = error
-                best_lambda = lambda_mid
-            
+                        error = abs(p_mid - p_over)
+                        
+                        if error < best_error:
+                            best_error = error
+                            best_lambda = lambda_mid
+                        
                         if error < model_config.TOL_OPTIMIZATION:
-                best_lambda = lambda_mid
-                break
-            
-            if p_mid < p_over:
-                lambda_min = lambda_mid
-            else:
-                lambda_max = lambda_mid
-        
-        total_market = best_lambda
+                            best_lambda = lambda_mid
+                            break
+                        
+                        if p_mid < p_over:
+                            lambda_min = lambda_mid
+                        else:
+                            lambda_max = lambda_mid
+                    
+                    total_market = best_lambda
         except Exception as e:
             logger.warning(f"Errore ottimizzazione lambda: {e}, uso stima euristica")
             # Fallback: stima euristica basata su p_over
@@ -4104,48 +4104,48 @@ def tau_dixon_coles(h: int, a: int, lh: float, la: float, rho: float) -> float:
     if h == 0 and a == 0:
         # tau(0,0) = 1 - lambda_h * lambda_a * rho
         try:
-        val = 1.0 - (lh * la * rho)
+            val = 1.0 - (lh * la * rho)
             if not math.isfinite(val):
                 logger.warning(f"tau(0,0) non finito: {val}, uso default 0.5")
                 val = 0.5
-        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0] per evitare valori estremi
-        return max(0.1, min(2.0, val))
+            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0] per evitare valori estremi
+            return max(0.1, min(2.0, val))
         except (ValueError, OverflowError) as e:
             logger.warning(f"Errore calcolo tau(0,0): {e}, uso default 0.5")
             return 0.5
     elif h == 0 and a == 1:
         # tau(0,1) = 1 + lambda_h * rho
         try:
-        val = 1.0 + (lh * rho)
+            val = 1.0 + (lh * rho)
             if not math.isfinite(val):
                 logger.warning(f"tau(0,1) non finito: {val}, uso default 1.0")
                 val = 1.0
-        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
-        return max(0.1, min(2.0, val))
+            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
+            return max(0.1, min(2.0, val))
         except (ValueError, OverflowError) as e:
             logger.warning(f"Errore calcolo tau(0,1): {e}, uso default 1.0")
             return 1.0
     elif h == 1 and a == 0:
         # tau(1,0) = 1 + lambda_a * rho
         try:
-        val = 1.0 + (la * rho)
+            val = 1.0 + (la * rho)
             if not math.isfinite(val):
                 logger.warning(f"tau(1,0) non finito: {val}, uso default 1.0")
                 val = 1.0
-        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
-        return max(0.1, min(2.0, val))
+            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
+            return max(0.1, min(2.0, val))
         except (ValueError, OverflowError) as e:
             logger.warning(f"Errore calcolo tau(1,0): {e}, uso default 1.0")
             return 1.0
     elif h == 1 and a == 1:
         # tau(1,1) = 1 - rho
         try:
-        val = 1.0 - rho
+            val = 1.0 - rho
             if not math.isfinite(val):
                 logger.warning(f"tau(1,1) non finito: {val}, uso default 1.0")
                 val = 1.0
-        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
-        return max(0.1, min(2.0, val))
+            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
+            return max(0.1, min(2.0, val))
         except (ValueError, OverflowError) as e:
             logger.warning(f"Errore calcolo tau(1,1): {e}, uso default 1.0")
             return 1.0
@@ -4459,8 +4459,8 @@ def calc_over_under_from_matrix(mat: List[List[float]], soglia: float) -> Tuple[
     if abs(sum_check - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         # Ricalibra se necessario con precisione
         if sum_check > model_config.TOL_DIVISION_ZERO:
-        over = over / sum_check
-        under = 1.0 - over
+            over = over / sum_check
+            under = 1.0 - over
         else:
             # Fallback: distribuzione uniforme se somma è zero
             logger.warning(f"Somma over+under = {sum_check}, uso distribuzione uniforme")
@@ -4636,8 +4636,8 @@ def prob_pari_dispari_from_matrix(mat: List[List[float]]) -> Tuple[float, float]
     if abs(sum_check - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         # Ricalibra se necessario con precisione
         if sum_check > model_config.TOL_DIVISION_ZERO:
-        even = even / sum_check
-        odd = 1.0 - even
+            even = even / sum_check
+            odd = 1.0 - even
         else:
             # Fallback: distribuzione uniforme se somma è zero
             logger.warning(f"Somma even+odd = {sum_check}, uso distribuzione uniforme")
@@ -6531,7 +6531,7 @@ def apply_market_movement_blend(
         
         # ⚠️ PRECISIONE: Calcola exp con protezione overflow
         try:
-        spread_factor_ap_raw = math.exp(spread_clamped * 0.5)
+            spread_factor_ap_raw = math.exp(spread_clamped * 0.5)
             if not math.isfinite(spread_factor_ap_raw):
                 logger.warning(f"spread_factor_ap_raw non finito: {spread_factor_ap_raw}, uso default 1.0")
                 spread_factor_ap_raw = 1.0
@@ -6570,8 +6570,8 @@ def apply_market_movement_blend(
             if total_check_ap > model_config.TOL_DIVISION_ZERO:
                 scale_factor_ap = total_apertura_safe / total_check_ap
                 if math.isfinite(scale_factor_ap) and scale_factor_ap > 0:
-            lambda_h_ap *= scale_factor_ap
-            lambda_a_ap *= scale_factor_ap
+                    lambda_h_ap *= scale_factor_ap
+                    lambda_a_ap *= scale_factor_ap
                     
                     # ⚠️ VERIFICA FINALE: Double-check coerenza dopo ricalibrazione
                     total_check_final = lambda_h_ap + lambda_a_ap
@@ -8710,31 +8710,31 @@ def risultato_completo_improved(
         xg_h_est = max(0.3, min(4.0, xg_h_est))
         xg_a_est = max(0.3, min(4.0, xg_a_est))
         
-                # ⚠️ VERIFICA: Double-check che xG siano finiti dopo clamp
-                if not math.isfinite(xg_h_est) or not math.isfinite(xg_a_est):
-                    logger.warning(f"xG stimati non finiti dopo clamp: xg_h={xg_h_est}, xg_a={xg_a_est}, ignoro blend xG")
-                else:
-        # ⚠️ CONTROLLO: Se xG è molto diverso dai lambda di mercato, riduci peso xG
-        # Questo evita che xG sbagliato sostituisca completamente i lambda di mercato
-        # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata per protezione divisione per zero
-                    lh_safe = max(model_config.TOL_DIVISION_ZERO, abs(lh))
-                    la_safe = max(model_config.TOL_DIVISION_ZERO, abs(la))
-                    xg_h_diff = abs(xg_h_est - lh) / lh_safe  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
-                    xg_a_diff = abs(xg_a_est - la) / la_safe  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
-                    
-                    # ⚠️ VERIFICA: Assicura che differenze siano finite
-                    if not math.isfinite(xg_h_diff):
-                        xg_h_diff = 0.0
-                    if not math.isfinite(xg_a_diff):
-                        xg_a_diff = 0.0
+        # ⚠️ VERIFICA: Double-check che xG siano finiti dopo clamp
+        if not math.isfinite(xg_h_est) or not math.isfinite(xg_a_est):
+            logger.warning(f"xG stimati non finiti dopo clamp: xg_h={xg_h_est}, xg_a={xg_a_est}, ignoro blend xG")
+        else:
+            # ⚠️ CONTROLLO: Se xG è molto diverso dai lambda di mercato, riduci peso xG
+            # Questo evita che xG sbagliato sostituisca completamente i lambda di mercato
+            # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata per protezione divisione per zero
+            lh_safe = max(model_config.TOL_DIVISION_ZERO, abs(lh))
+            la_safe = max(model_config.TOL_DIVISION_ZERO, abs(la))
+            xg_h_diff = abs(xg_h_est - lh) / lh_safe  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+            xg_a_diff = abs(xg_a_est - la) / la_safe  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+            
+            # ⚠️ VERIFICA: Assicura che differenze siano finite
+            if not math.isfinite(xg_h_diff):
+                xg_h_diff = 0.0
+            if not math.isfinite(xg_a_diff):
+                xg_a_diff = 0.0
         
         # Se differenza > 50%, riduci peso xG
         xg_penalty_h = 1.0 if xg_h_diff <= 0.5 else max(0.3, 1.0 - (xg_h_diff - 0.5))
         xg_penalty_a = 1.0 if xg_a_diff <= 0.5 else max(0.3, 1.0 - (xg_a_diff - 0.5))
-                    
-                    # ⚠️ PROTEZIONE: Limita penalty a range [0, 1]
-                    xg_penalty_h = max(0.0, min(1.0, xg_penalty_h))
-                    xg_penalty_a = max(0.0, min(1.0, xg_penalty_a))
+        
+        # ⚠️ PROTEZIONE: Limita penalty a range [0, 1]
+        xg_penalty_h = max(0.0, min(1.0, xg_penalty_h))
+        xg_penalty_a = max(0.0, min(1.0, xg_penalty_a))
         
         # MIGLIORAMENTO: Confidence più accurata basata su:
         # 1. Dimensione campione (proxy: valore xG - più alto = più dati)
@@ -8742,23 +8742,23 @@ def risultato_completo_improved(
         # 3. NUOVO: Validazione con dati reali dalle API (se disponibili)
         
         # Base confidence: valore xG normalizzato (più alto = più affidabile)
-                    # ⚠️ PRECISIONE: Calcola con protezione overflow
-                    xg_h_sum_conf = xg_for_home + xg_against_away
-                    xg_a_sum_conf = xg_for_away + xg_against_home
-                    xg_h_base_conf = min(1.0, xg_h_sum_conf / 4.0) if math.isfinite(xg_h_sum_conf) else 0.5  # Normalizza a max 4.0 (2.0 per squadra)
-                    xg_a_base_conf = min(1.0, xg_a_sum_conf / 4.0) if math.isfinite(xg_a_sum_conf) else 0.5
+        # ⚠️ PRECISIONE: Calcola con protezione overflow
+        xg_h_sum_conf = xg_for_home + xg_against_away
+        xg_a_sum_conf = xg_for_away + xg_against_home
+        xg_h_base_conf = min(1.0, xg_h_sum_conf / 4.0) if math.isfinite(xg_h_sum_conf) else 0.5  # Normalizza a max 4.0 (2.0 per squadra)
+        xg_a_base_conf = min(1.0, xg_a_sum_conf / 4.0) if math.isfinite(xg_a_sum_conf) else 0.5
         
         # Coerenza: se xG for e against sono simili, più affidabile
         # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata per protezione divisione per zero
         xg_sum_h = xg_for_home + xg_against_away
         xg_sum_a = xg_for_away + xg_against_home
-                    xg_sum_h_safe = max(model_config.TOL_DIVISION_ZERO, xg_sum_h / 2.0)
-                    xg_sum_a_safe = max(model_config.TOL_DIVISION_ZERO, xg_sum_a / 2.0)
-                    consistency_h = 1.0 - abs(xg_for_home - xg_against_away) / xg_sum_h_safe  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
-                    consistency_a = 1.0 - abs(xg_for_away - xg_against_home) / xg_sum_a_safe  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
-                    # ⚠️ MICRO-PRECISIONE: Limita consistency a range [0, 1] e verifica finitezza
-                    consistency_h = max(0.0, min(1.0, consistency_h)) if math.isfinite(consistency_h) else 0.5
-                    consistency_a = max(0.0, min(1.0, consistency_a)) if math.isfinite(consistency_a) else 0.5
+        xg_sum_h_safe = max(model_config.TOL_DIVISION_ZERO, xg_sum_h / 2.0)
+        xg_sum_a_safe = max(model_config.TOL_DIVISION_ZERO, xg_sum_a / 2.0)
+        consistency_h = 1.0 - abs(xg_for_home - xg_against_away) / xg_sum_h_safe  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        consistency_a = 1.0 - abs(xg_for_away - xg_against_home) / xg_sum_a_safe  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        # ⚠️ MICRO-PRECISIONE: Limita consistency a range [0, 1] e verifica finitezza
+        consistency_h = max(0.0, min(1.0, consistency_h)) if math.isfinite(consistency_h) else 0.5
+        consistency_a = max(0.0, min(1.0, consistency_a)) if math.isfinite(consistency_a) else 0.5
         
         # NUOVO: Boost confidence se abbiamo dati reali dalle API (advanced_data) e xA coerente
         api_boost = 1.0
@@ -8766,32 +8766,32 @@ def risultato_completo_improved(
             # Se abbiamo statistiche reali dalle API, aumenta confidence in xG
             if advanced_data.get("home_team_stats") or advanced_data.get("away_team_stats"):
                 api_boost = model_config.XG_API_BOOST
-                    
+        
         # NUOVO: xA come modulatore conservativo della confidence xG
         xa_boost_h = 1.0
         xa_boost_a = 1.0
         if all(v is not None for v in [xa_for_home, xa_against_away]):
-                        # ⚠️ PRECISIONE: Calcola xA con protezione
+            # ⚠️ PRECISIONE: Calcola xA con protezione
             xa_h_est = (xa_for_home + xa_against_away) / 2.0
-                        if math.isfinite(xa_h_est) and math.isfinite(xg_h_est):
-            align_h = 1.0 - abs(xa_h_est - xg_h_est) / max(0.2, (xa_h_est + xg_h_est) / 2.0)
-            xa_boost_h = 0.95 + 0.1 * max(0.0, min(1.0, align_h))  # range ~[0.95, 1.05]
-                            xa_boost_h = max(0.9, min(1.1, xa_boost_h))  # Protezione extra
+            if math.isfinite(xa_h_est) and math.isfinite(xg_h_est):
+                align_h = 1.0 - abs(xa_h_est - xg_h_est) / max(0.2, (xa_h_est + xg_h_est) / 2.0)
+                xa_boost_h = 0.95 + 0.1 * max(0.0, min(1.0, align_h))  # range ~[0.95, 1.05]
+                xa_boost_h = max(0.9, min(1.1, xa_boost_h))  # Protezione extra
         if all(v is not None for v in [xa_for_away, xa_against_home]):
             xa_a_est = (xa_for_away + xa_against_home) / 2.0
-                        if math.isfinite(xa_a_est) and math.isfinite(xg_a_est):
-            align_a = 1.0 - abs(xa_a_est - xg_a_est) / max(0.2, (xa_a_est + xg_a_est) / 2.0)
-            xa_boost_a = 0.95 + 0.1 * max(0.0, min(1.0, align_a))
-                            xa_boost_a = max(0.9, min(1.1, xa_boost_a))  # Protezione extra
+            if math.isfinite(xa_a_est) and math.isfinite(xg_a_est):
+                align_a = 1.0 - abs(xa_a_est - xg_a_est) / max(0.2, (xa_a_est + xg_a_est) / 2.0)
+                xa_boost_a = 0.95 + 0.1 * max(0.0, min(1.0, align_a))
+                xa_boost_a = max(0.9, min(1.1, xa_boost_a))  # Protezione extra
         
         # Confidence finale: base * consistency * api_boost * xa_boost * penalty
-                    # ⚠️ PRECISIONE: Calcola con protezione overflow
+        # ⚠️ PRECISIONE: Calcola con protezione overflow
         xg_h_confidence = xg_h_base_conf * consistency_h * api_boost * xa_boost_h * xg_penalty_h
         xg_a_confidence = xg_a_base_conf * consistency_a * api_boost * xa_boost_a * xg_penalty_a
-                    
-                    # ⚠️ VERIFICA: Assicura che confidence siano finite e in range [0, 1]
-                    xg_h_confidence = max(0.0, min(1.0, xg_h_confidence)) if math.isfinite(xg_h_confidence) else 0.3
-                    xg_a_confidence = max(0.0, min(1.0, xg_a_confidence)) if math.isfinite(xg_a_confidence) else 0.3
+        
+        # ⚠️ VERIFICA: Assicura che confidence siano finite e in range [0, 1]
+        xg_h_confidence = max(0.0, min(1.0, xg_h_confidence)) if math.isfinite(xg_h_confidence) else 0.3
+        xg_a_confidence = max(0.0, min(1.0, xg_a_confidence)) if math.isfinite(xg_a_confidence) else 0.3
         
         # Pesatura bayesiana: w = confidence * consistency usando ModelConfig
         # ⚠️ RIDOTTO: Peso massimo xG più conservativo per evitare esplosioni
@@ -8799,31 +8799,31 @@ def risultato_completo_improved(
         w_xg_h = min(max_xg_weight, xg_h_confidence * 0.4)  # Ridotto da 0.5 a 0.4
         w_xg_a = min(max_xg_weight, xg_a_confidence * 0.4)
         
-                    # ⚠️ VERIFICA: Assicura che pesi sommino correttamente
+        # ⚠️ VERIFICA: Assicura che pesi sommino correttamente
         w_market_h = 1.0 - w_xg_h
         w_market_a = 1.0 - w_xg_a
         
-                    # ⚠️ PRECISIONE: Verifica che pesi siano in range [0, 1]
-                    w_xg_h = max(0.0, min(1.0, w_xg_h))
-                    w_xg_a = max(0.0, min(1.0, w_xg_a))
-                    w_market_h = max(0.0, min(1.0, w_market_h))
-                    w_market_a = max(0.0, min(1.0, w_market_a))
-                    
-                    # Blend finale con precisione
+        # ⚠️ PRECISIONE: Verifica che pesi siano in range [0, 1]
+        w_xg_h = max(0.0, min(1.0, w_xg_h))
+        w_xg_a = max(0.0, min(1.0, w_xg_a))
+        w_market_h = max(0.0, min(1.0, w_market_h))
+        w_market_a = max(0.0, min(1.0, w_market_a))
+        
+        # Blend finale con precisione
         lh = w_market_h * lh + w_xg_h * xg_h_est
         la = w_market_a * la + w_xg_a * xg_a_est
         
-                    # ⚠️ VERIFICA: Assicura che lambda blended siano finiti
-                    if not math.isfinite(lh) or not math.isfinite(la):
-                        logger.warning(f"Lambda dopo blend xG non finiti: lh={lh}, la={la}, uso valori prima del blend")
-                        lh = lh_before_xg
-                        la = la_before_xg
-                    else:
-        # ⚠️ CONTROLLO CRITICO: Limita effetto totale del blend xG
-        # Il blend xG non può cambiare i lambda più del 30% rispetto a prima del blend
-        max_xg_adjustment = 1.3  # Massimo 30% di variazione
-        lh = max(lh_before_xg / max_xg_adjustment, min(lh_before_xg * max_xg_adjustment, lh))
-        la = max(la_before_xg / max_xg_adjustment, min(la_before_xg * max_xg_adjustment, la))
+        # ⚠️ VERIFICA: Assicura che lambda blended siano finiti
+        if not math.isfinite(lh) or not math.isfinite(la):
+            logger.warning(f"Lambda dopo blend xG non finiti: lh={lh}, la={la}, uso valori prima del blend")
+            lh = lh_before_xg
+            la = la_before_xg
+        else:
+            # ⚠️ CONTROLLO CRITICO: Limita effetto totale del blend xG
+            # Il blend xG non può cambiare i lambda più del 30% rispetto a prima del blend
+            max_xg_adjustment = 1.3  # Massimo 30% di variazione
+            lh = max(lh_before_xg / max_xg_adjustment, min(lh_before_xg * max_xg_adjustment, lh))
+            la = max(la_before_xg / max_xg_adjustment, min(la_before_xg * max_xg_adjustment, la))
     
     # Constraints finali
     lh = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, lh))
