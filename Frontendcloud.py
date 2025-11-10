@@ -5240,6 +5240,126 @@ def prob_dc_btts_from_matrix(mat: List[List[float]], dc: str) -> float:
     
     return s
 
+def prob_esito_multigol_from_matrix(mat: List[List[float]], esito: str, gmin: int, gmax: int) -> float:
+    """
+    Calcola probabilità Esito & Multigol dalla matrice dei punteggi.
+    
+    ⚠️ PRECISIONE MANIACALE: Usa Kahan summation per minimizzare errori numerici e valida ogni input.
+    """
+    # ⚠️ CRITICO: Validazione input robusta
+    if esito not in ['1', 'X', '2']:
+        logger.error(f"esito non valido per multigol: {esito}, uso default '1'")
+        esito = '1'
+    
+    if not isinstance(gmin, int) or not isinstance(gmax, int) or gmin < 0 or gmax < gmin:
+        logger.error(f"Range multigol non valido: gmin={gmin}, gmax={gmax}, uso fallback 1-3")
+        gmin, gmax = 1, 3
+    
+    if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
+        logger.warning("Matrice vuota o non valida per esito+multigol, ritorno 0.5")
+        return 0.5
+    
+    mg = len(mat) - 1
+    if mg < 0:
+        logger.warning("mg < 0 per esito+multigol, ritorno 0.5")
+        return 0.5
+    
+    for i, row in enumerate(mat):
+        if len(row) != mg + 1:
+            logger.error(f"Matrice inconsistente (riga {i}) per esito+multigol, ritorno 0.5")
+            return 0.5
+    
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation
+    s = 0.0
+    c = 0.0  # Compensazione
+    
+    for h in range(mg + 1):
+        for a in range(mg + 1):
+            tot = h + a
+            if tot < gmin or tot > gmax:
+                continue
+            p = mat[h][a]
+            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
+                continue
+            esito_ok = (
+                (esito == '1' and h > a) or
+                (esito == 'X' and h == a) or
+                (esito == '2' and h < a)
+            )
+            if esito_ok:
+                y = p - c
+                t = s + y
+                c = (t - s) - y
+                s = t
+    
+    s = max(0.0, min(1.0, s))
+    if not (0.0 <= s <= 1.0):
+        logger.warning(f"Probabilità esito+multigol fuori range: {s}, imposto 0.5")
+        s = 0.5
+    
+    return s
+
+def prob_dc_multigol_from_matrix(mat: List[List[float]], dc: str, gmin: int, gmax: int) -> float:
+    """
+    Calcola probabilità Double Chance & Multigol dalla matrice dei punteggi.
+    
+    ⚠️ PRECISIONE MANIACALE: Usa Kahan summation, validazione completa e clamp finale.
+    """
+    # ⚠️ CRITICO: Validazione input robusta
+    if dc not in ['1X', 'X2', '12']:
+        logger.error(f"Double Chance non valida per multigol: {dc}, uso default '1X'")
+        dc = '1X'
+    
+    if not isinstance(gmin, int) or not isinstance(gmax, int) or gmin < 0 or gmax < gmin:
+        logger.error(f"Range multigol DC non valido: gmin={gmin}, gmax={gmax}, uso fallback 1-3")
+        gmin, gmax = 1, 3
+    
+    if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
+        logger.warning("Matrice vuota o non valida per DC+multigol, ritorno 0.5")
+        return 0.5
+    
+    mg = len(mat) - 1
+    if mg < 0:
+        logger.warning("mg < 0 per DC+multigol, ritorno 0.5")
+        return 0.5
+    
+    for i, row in enumerate(mat):
+        if len(row) != mg + 1:
+            logger.error(f"Matrice inconsistente (riga {i}) per DC+multigol, ritorno 0.5")
+            return 0.5
+    
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation
+    s = 0.0
+    c = 0.0
+    
+    for h in range(mg + 1):
+        for a in range(mg + 1):
+            tot = h + a
+            if tot < gmin or tot > gmax:
+                continue
+            p = mat[h][a]
+            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
+                continue
+            ok = False
+            if dc == '1X' and h >= a:
+                ok = True
+            elif dc == 'X2' and a >= h:
+                ok = True
+            elif dc == '12' and h != a:
+                ok = True
+            if ok:
+                y = p - c
+                t = s + y
+                c = (t - s) - y
+                s = t
+    
+    s = max(0.0, min(1.0, s))
+    if not (0.0 <= s <= 1.0):
+        logger.warning(f"Probabilità DC+multigol fuori range: {s}, imposto 0.5")
+        s = 0.5
+    
+    return s
+
 def top_results_from_matrix(mat, top_n=10, soglia_min=0.005):
     mg = len(mat) - 1
     risultati = []
@@ -8974,6 +9094,13 @@ def risultato_completo_improved(
     ranges = [(0,1),(1,3),(1,4),(1,5),(2,3),(2,4),(2,5),(3,5)]
     multigol_home = {f"{a}-{b}": prob_multigol_from_dist(dist_home_ft, a, b) for a,b in ranges}
     multigol_away = {f"{a}-{b}": prob_multigol_from_dist(dist_away_ft, a, b) for a,b in ranges}
+    # Totale (home + away) con range arricchiti per combo dedicate
+    multigol_total_ranges = set(ranges)
+    multigol_total_ranges.update([(0,2), (1,2), (1,3), (2,3), (2,4), (2,5), (3,5)])
+    multigol_total = {
+        f"{a}-{b}": prob_multigol_from_dist(dist_tot_ft, a, b)
+        for a, b in sorted(multigol_total_ranges, key=lambda x: (x[0], x[1]))
+    }
     
     # 11. Double Chance
     dc = {
@@ -9016,6 +9143,18 @@ def risultato_completo_improved(
         "X2 & Under 3.5": prob_dc_over_from_matrix(mat_ft, 'X2', 3.5, inverse=True),
         "1X & GG": prob_dc_btts_from_matrix(mat_ft, '1X'),  # Già calcolato correttamente dalla matrice
         "X2 & GG": prob_dc_btts_from_matrix(mat_ft, 'X2'),  # Già calcolato correttamente dalla matrice
+        "1X & Under 2.5": prob_dc_over_from_matrix(mat_ft, '1X', 2.5, inverse=True),
+        "X2 & Under 2.5": prob_dc_over_from_matrix(mat_ft, 'X2', 2.5, inverse=True),
+        "1X & Multigol 1-3": prob_dc_multigol_from_matrix(mat_ft, '1X', 1, 3),
+        "1X & Multigol 2-4": prob_dc_multigol_from_matrix(mat_ft, '1X', 2, 4),
+        "X2 & Multigol 1-3": prob_dc_multigol_from_matrix(mat_ft, 'X2', 1, 3),
+        "X2 & Multigol 2-4": prob_dc_multigol_from_matrix(mat_ft, 'X2', 2, 4),
+        "12 & Multigol 2-4": prob_dc_multigol_from_matrix(mat_ft, '12', 2, 4),
+        "12 & Multigol 3-5": prob_dc_multigol_from_matrix(mat_ft, '12', 3, 5),
+        "1 & Multigol 2-3": prob_esito_multigol_from_matrix(mat_ft, '1', 2, 3),
+        "1 & Multigol 2-4": prob_esito_multigol_from_matrix(mat_ft, '1', 2, 4),
+        "2 & Multigol 2-3": prob_esito_multigol_from_matrix(mat_ft, '2', 2, 3),
+        "2 & Multigol 2-4": prob_esito_multigol_from_matrix(mat_ft, '2', 2, 4),
     }
     
     # 14. Top risultati
@@ -9253,6 +9392,37 @@ def risultato_completo_improved(
                 logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(DC {dc_key}, BTTS) ({max_combo:.4f}), correggo")
                 combo_book[combo_key] = max_combo
     
+    # Esito & Multigol vs Esito e Multigol totale
+    for esito_key, esito_prob in [("1", p_home_final), ("X", p_draw_final), ("2", p_away_final)]:
+        for range_key, mult_prob in multigol_total.items():
+            if not isinstance(mult_prob, (int, float)) or not math.isfinite(mult_prob):
+                continue
+            combo_key = f"{esito_key} & Multigol {range_key}"
+            if combo_key in combo_book:
+                combo_prob = combo_book[combo_key]
+                max_combo = min(esito_prob, mult_prob)
+                if combo_prob > max_combo + model_config.TOL_PROBABILITY_CHECK:
+                    logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(P({esito_key}), Multigol {range_key}) ({max_combo:.4f}), correggo")
+                    combo_book[combo_key] = max_combo
+    
+    # DC & Multigol vs DC e Multigol totale
+    dc_prob_map = {
+        "1X": p_home_final + p_draw_final,
+        "X2": p_draw_final + p_away_final,
+        "12": p_home_final + p_away_final
+    }
+    for dc_key, dc_prob in dc_prob_map.items():
+        for range_key, mult_prob in multigol_total.items():
+            if not isinstance(mult_prob, (int, float)) or not math.isfinite(mult_prob):
+                continue
+            combo_key = f"{dc_key} & Multigol {range_key}"
+            if combo_key in combo_book:
+                combo_prob = combo_book[combo_key]
+                max_combo = min(dc_prob, mult_prob)
+                if combo_prob > max_combo + model_config.TOL_PROBABILITY_CHECK:
+                    logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(DC {dc_key}, Multigol {range_key}) ({max_combo:.4f}), correggo")
+                    combo_book[combo_key] = max_combo
+    
     # 3. Coerenza Clean Sheet: CS Home + (almeno 1 gol away) = 1.0
     # P(almeno 1 gol away) = 1 - P(0 gol away) = 1 - CS Home
     # Quindi: CS Home + P(almeno 1 gol away) = CS Home + (1 - CS Home) = 1.0
@@ -9402,6 +9572,7 @@ def risultato_completo_improved(
         "clean_sheet_qualcuno": 1 - btts,
         "multigol_home": multigol_home,
         "multigol_away": multigol_away,
+        "multigol_totale": multigol_total,
         "dc": dc,
         "validation_warnings": validation_warnings,  # Warning per probabilità anomale
         "matrix_sum": matrix_sum,  # Somma matrice per debug
@@ -9973,35 +10144,35 @@ telegram_prob_threshold = st.slider(
 )
 st.session_state["telegram_prob_threshold"] = telegram_prob_threshold
 
-    # Pulsante per testare la configurazione
-    if telegram_token and telegram_chat_id:
-        col_test1, col_test2 = st.columns([1, 2])
-        with col_test1:
-            if st.button("🧪 Testa Configurazione", help="Invia un messaggio di test per verificare che token e chat ID siano corretti"):
-                with st.spinner("Invio messaggio di test..."):
-                    test_result = test_telegram_chat_id(
-                        bot_token=telegram_token,
-                        chat_id=telegram_chat_id
-                    )
+# Pulsante per testare la configurazione
+if telegram_token and telegram_chat_id:
+    col_test1, col_test2 = st.columns([1, 2])
+    with col_test1:
+        if st.button("🧪 Testa Configurazione", help="Invia un messaggio di test per verificare che token e chat ID siano corretti"):
+            with st.spinner("Invio messaggio di test..."):
+                test_result = test_telegram_chat_id(
+                    bot_token=telegram_token,
+                    chat_id=telegram_chat_id
+                )
                     
-                    if test_result.get("success"):
-                        st.success("✅ **Test riuscito!** Messaggio di test inviato con successo. La configurazione è corretta.")
-                    else:
-                        error_msg = test_result.get("error_message", "Errore sconosciuto")
-                        error_type = test_result.get("error_type", "other")
-                        
-                        # Mostra messaggio di errore dettagliato
-                        if error_type == "no_token":
-                            st.error(f"❌ **Token Bot non configurato**\n\n{error_msg}")
-                        elif error_type == "no_chat_id":
-                            st.error(f"❌ **Chat ID non configurato**\n\n{error_msg}")
-                        elif error_type == "invalid_token":
-                            st.error(f"❌ **Token non valido**\n\n{error_msg}\n\nVerifica che il token sia corretto e che il bot sia ancora attivo.")
-                        elif error_type == "invalid_chat_id":
-                            st.error("❌ **Chat ID non valido**")
-                            st.markdown(error_msg)
-                            with st.expander("🔍 **Guida passo-passo per risolvere**", expanded=True):
-                                st.markdown("""
+                if test_result.get("success"):
+                    st.success("✅ **Test riuscito!** Messaggio di test inviato con successo. La configurazione è corretta.")
+                else:
+                    error_msg = test_result.get("error_message", "Errore sconosciuto")
+                    error_type = test_result.get("error_type", "other")
+                    
+                    # Mostra messaggio di errore dettagliato
+                    if error_type == "no_token":
+                        st.error(f"❌ **Token Bot non configurato**\n\n{error_msg}")
+                    elif error_type == "no_chat_id":
+                        st.error(f"❌ **Chat ID non configurato**\n\n{error_msg}")
+                    elif error_type == "invalid_token":
+                        st.error(f"❌ **Token non valido**\n\n{error_msg}\n\nVerifica che il token sia corretto e che il bot sia ancora attivo.")
+                    elif error_type == "invalid_chat_id":
+                        st.error("❌ **Chat ID non valido**")
+                        st.markdown(error_msg)
+                        with st.expander("🔍 **Guida passo-passo per risolvere**", expanded=True):
+                            st.markdown("""
                                 **Per Chat Private:**
                                 1. Apri Telegram e cerca [@userinfobot](https://t.me/userinfobot)
                                 2. Avvia una conversazione e invia `/start`
@@ -10025,14 +10196,14 @@ st.session_state["telegram_prob_threshold"] = telegram_prob_threshold
                                 - Chat ID gruppo: numero negativo (es. `-123456789`)
                                 - Chat ID canale: numero negativo che inizia con `-100` (es. `-1001234567890`)
                                 """)
-                        elif error_type == "rate_limit":
-                            st.warning(f"⏱️ **Rate Limit**\n\n{error_msg}")
-                        elif error_type == "timeout" or error_type == "connection_error":
-                            st.warning(f"🌐 **Problema di connessione**\n\n{error_msg}")
-                        else:
-                            st.warning(f"⚠️ **Errore test Telegram**\n\n{error_msg}")
-        with col_test2:
-            st.caption("💡 **Suggerimento**: Testa sempre la configurazione prima di abilitare l'invio automatico")
+                    elif error_type == "rate_limit":
+                        st.warning(f"⏱️ **Rate Limit**\n\n{error_msg}")
+                    elif error_type == "timeout" or error_type == "connection_error":
+                        st.warning(f"🌐 **Problema di connessione**\n\n{error_msg}")
+                    else:
+                        st.warning(f"⚠️ **Errore test Telegram**\n\n{error_msg}")
+    with col_test2:
+        st.caption("💡 **Suggerimento**: Testa sempre la configurazione prima di abilitare l'invio automatico")
     
     if telegram_enabled and (not telegram_token or not telegram_chat_id):
         st.warning("⚠️ Inserisci Bot Token e Chat ID per abilitare Telegram")
