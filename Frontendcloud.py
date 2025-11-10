@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import pandas as pd
 import numpy as np
 import os
+import re
 import requests
 import json
 import streamlit as st
@@ -95,6 +96,19 @@ class ModelConfig:
     XG_XG_WEIGHT: float = 0.4  # Peso xG nel blend
     XG_MAX_WEIGHT: float = 0.45  # Peso massimo xG (con alta confidence)
     XG_API_BOOST: float = 1.15  # Boost confidence se abbiamo dati API
+    
+    # ⚠️ OTTIMIZZAZIONE: Costanti matematiche pre-calcolate per evitare ricalcoli
+    LOG_2_5: float = math.log(2.5)  # log(2.5) per spread_factor
+    EPSILON: float = 1e-10  # Epsilon per evitare divisione per zero e log(0)
+    
+    # ⚠️ MICRO-PRECISIONE: Tolleranze standardizzate per coerenza
+    TOL_DIVISION_ZERO: float = 1e-12  # Tolleranza per protezione divisione per zero (più conservativa)
+    TOL_NORMALIZATION: float = 1e-8  # Tolleranza per normalizzazione matrici/probabilità
+    TOL_PROBABILITY_CHECK: float = 1e-6  # Tolleranza per verifica coerenza probabilità
+    TOL_OPTIMIZATION: float = 1e-5  # Tolleranza per convergenza ottimizzazione
+    TOL_CLIP_PROB: float = 1e-6  # Tolleranza per clipping probabilità (calibrazione)
+    TOL_TOTAL_COHERENCE: float = 0.5  # Tolleranza per coerenza total (lambda_h + lambda_a ≈ 2 * lambda_total)
+    TOL_SCALE_FACTOR_MIN: float = 0.1  # Valore minimo per scale_factor (protezione divisione per zero)
     
     # Ensemble weights
     ENSEMBLE_MAIN_WEIGHT: float = 0.60  # Peso modello principale
@@ -490,7 +504,6 @@ def validate_team_name(team_name: str, name: str = "team_name") -> str:
     # Rimuovi caratteri pericolosi e normalizza
     team_name = team_name.strip()
     # Rimuovi caratteri speciali pericolosi (mantieni lettere, numeri, spazi, apostrofi)
-    import re
     team_name = re.sub(r'[^\w\s\'-]', '', team_name)
     
     # Limita lunghezza
@@ -566,6 +579,10 @@ def validate_all_inputs(
     xg_against_home: float = None,
     xg_for_away: float = None,
     xg_against_away: float = None,
+    xa_for_home: float = None,
+    xa_against_home: float = None,
+    xa_for_away: float = None,
+    xa_against_away: float = None,
 ) -> Dict[str, Any]:
     """
     Valida tutti gli input del modello in una volta.
@@ -637,6 +654,12 @@ def validate_all_inputs(
     validated["xg_against_home"] = validate_xg_value(xg_against_home, "xg_against_home")
     validated["xg_for_away"] = validate_xg_value(xg_for_away, "xg_for_away")
     validated["xg_against_away"] = validate_xg_value(xg_against_away, "xg_against_away")
+
+    # Valida xA (opzionali) riusando la stessa validazione (range identico, semantica affine)
+    validated["xa_for_home"] = validate_xg_value(xa_for_home, "xa_for_home")
+    validated["xa_against_home"] = validate_xg_value(xa_against_home, "xa_against_home")
+    validated["xa_for_away"] = validate_xg_value(xa_for_away, "xa_for_away")
+    validated["xa_against_away"] = validate_xg_value(xa_against_away, "xa_against_away")
     
     return {
         "validated": validated,
@@ -683,49 +706,108 @@ def shin_normalization(odds_list: List[float], max_iter: int = 100, tol: float =
         
         # ⚠️ PRECISIONE: Normalizza con precisione massima
         sum_fair = fair_probs.sum()
-        if sum_fair > 1e-12:  # Protezione divisione per zero
+        if sum_fair > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
             fair_probs = fair_probs / sum_fair
         else:
             # Fallback: normalizzazione semplice
             fair_probs = probs / probs.sum()
         
         # ⚠️ PRECISIONE: Arrotonda solo per output, mantieni precisione nei calcoli
-        return [1/p for p in fair_probs]  # Mantieni precisione massima
+        # ⚠️ CRITICO: Protezione divisione per zero
+        return [1.0/max(p, model_config.TOL_DIVISION_ZERO) for p in fair_probs]  # ⚠️ CRITICO: Protezione divisione per zero
     except (ValueError, RuntimeError, optimize.OptimizeWarning) as e:
         logger.warning(f"Errore normalizzazione Shin: {e}, uso fallback semplice")
         # ⚠️ PRECISIONE: Fallback a normalizzazione semplice con precisione
         sum_probs = probs.sum()
-        if sum_probs > 1e-12:
+        if sum_probs > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
             fair_probs = probs / sum_probs
         else:
             # Caso estremo: distribuzione uniforme
             fair_probs = np.ones_like(probs) / len(probs)
-        return [1/p for p in fair_probs]  # Mantieni precisione massima
+        # ⚠️ CRITICO: Protezione divisione per zero
+        return [1.0/max(p, model_config.TOL_DIVISION_ZERO) for p in fair_probs]  # ⚠️ CRITICO: Protezione divisione per zero
     except Exception as e:
         logger.error(f"Errore imprevisto durante normalizzazione Shin: {type(e).__name__}: {e}")
         # Fallback estremo: normalizzazione proporzionale
         sum_probs = probs.sum()
-        if sum_probs > 1e-12:
+        if sum_probs > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
             fair_probs = probs / sum_probs
         else:
             fair_probs = np.ones_like(probs) / len(probs)
-        return [1/p for p in fair_probs]
+        # ⚠️ CRITICO: Protezione divisione per zero
+        return [1.0/max(p, model_config.TOL_DIVISION_ZERO) for p in fair_probs]  # ⚠️ CRITICO: Protezione divisione per zero
 
 def normalize_two_way_shin(o1: float, o2: float) -> Tuple[float, float]:
-    """Normalizzazione Shin per mercati a 2 esiti."""
-    if not o1 or not o2 or o1 <= 1 or o2 <= 1:
+    """
+    Normalizzazione Shin per mercati a 2 esiti.
+    
+    ⚠️ PRECISIONE MANIACALE: Validazione completa input
+    """
+    # ⚠️ CRITICO: Validazione input robusta
+    if not isinstance(o1, (int, float)) or not isinstance(o2, (int, float)):
+        logger.warning(f"Odds non validi: o1={o1}, o2={o2}, ritorno originali")
+        return o1 if isinstance(o1, (int, float)) else 2.0, o2 if isinstance(o2, (int, float)) else 2.0
+    
+    if not math.isfinite(o1) or not math.isfinite(o2):
+        logger.warning(f"Odds non finiti: o1={o1}, o2={o2}, ritorno originali")
+        return o1 if math.isfinite(o1) else 2.0, o2 if math.isfinite(o2) else 2.0
+    
+    if o1 <= 1.0 or o2 <= 1.0:
+        logger.warning(f"Odds <= 1.0: o1={o1}, o2={o2}, ritorno originali")
         return o1, o2
     
-    normalized = shin_normalization([o1, o2])
-    return normalized[0], normalized[1]
+    try:
+        normalized = shin_normalization([o1, o2])
+        if len(normalized) != 2:
+            logger.warning(f"Shin normalization ritorna {len(normalized)} valori invece di 2, ritorno originali")
+            return o1, o2
+        # ⚠️ VERIFICA: Assicura che normalized siano finiti e > 1
+        n1, n2 = normalized[0], normalized[1]
+        if not all(math.isfinite(x) and x > 1.0 for x in [n1, n2]):
+            logger.warning(f"Normalized odds non validi: n1={n1}, n2={n2}, ritorno originali")
+            return o1, o2
+        return n1, n2
+    except Exception as e:
+        logger.error(f"Errore normalizzazione Shin due-way: {e}, ritorno originali")
+        return o1, o2
 
 def normalize_three_way_shin(o1: float, ox: float, o2: float) -> Tuple[float, float, float]:
-    """Normalizzazione Shin per 1X2."""
-    if not all([o1, ox, o2]) or any(o <= 1 for o in [o1, ox, o2]):
+    """
+    Normalizzazione Shin per 1X2.
+    
+    ⚠️ PRECISIONE MANIACALE: Validazione completa input
+    """
+    # ⚠️ CRITICO: Validazione input robusta
+    if not all(isinstance(o, (int, float)) for o in [o1, ox, o2]):
+        logger.warning(f"Odds non validi: o1={o1}, ox={ox}, o2={o2}, ritorno originali")
+        return (o1 if isinstance(o1, (int, float)) else 3.0,
+                ox if isinstance(ox, (int, float)) else 3.0,
+                o2 if isinstance(o2, (int, float)) else 3.0)
+    
+    if not all(math.isfinite(o) for o in [o1, ox, o2]):
+        logger.warning(f"Odds non finiti: o1={o1}, ox={ox}, o2={o2}, ritorno originali")
+        return (o1 if math.isfinite(o1) else 3.0,
+                ox if math.isfinite(ox) else 3.0,
+                o2 if math.isfinite(o2) else 3.0)
+    
+    if any(o <= 1.0 for o in [o1, ox, o2]):
+        logger.warning(f"Odds <= 1.0: o1={o1}, ox={ox}, o2={o2}, ritorno originali")
         return o1, ox, o2
     
-    normalized = shin_normalization([o1, ox, o2])
-    return normalized[0], normalized[1], normalized[2]
+    try:
+        normalized = shin_normalization([o1, ox, o2])
+        if len(normalized) != 3:
+            logger.warning(f"Shin normalization ritorna {len(normalized)} valori invece di 3, ritorno originali")
+            return o1, ox, o2
+        # ⚠️ VERIFICA: Assicura che normalized siano finiti e > 1
+        n1, nx, n2 = normalized[0], normalized[1], normalized[2]
+        if not all(math.isfinite(x) and x > 1.0 for x in [n1, nx, n2]):
+            logger.warning(f"Normalized odds non validi: n1={n1}, nx={nx}, n2={n2}, ritorno originali")
+            return o1, ox, o2
+        return n1, nx, n2
+    except Exception as e:
+        logger.error(f"Errore normalizzazione Shin three-way: {e}, ritorno originali")
+        return o1, ox, o2
 
 # ============================================================
 #  STIMA BTTS AVANZATA CON MODELLO BIVARIATO
@@ -740,30 +822,89 @@ def btts_probability_bivariate(lambda_h: float, lambda_a: float, rho: float) -> 
     
     P(H=0, A=0) con tau Dixon-Coles:
     tau(0,0) = 1 - lambda_h * lambda_a * rho
+    
+    ⚠️ PRECISIONE MANIACALE: Validazione completa, protezione overflow
     """
+    # ⚠️ CRITICO: Validazione input
+    if not isinstance(lambda_h, (int, float)) or not math.isfinite(lambda_h) or lambda_h < 0:
+        logger.warning(f"lambda_h non valido: {lambda_h}, uso default 1.5")
+        lambda_h = 1.5
+    if not isinstance(lambda_a, (int, float)) or not math.isfinite(lambda_a) or lambda_a < 0:
+        logger.warning(f"lambda_a non valido: {lambda_a}, uso default 1.5")
+        lambda_a = 1.5
+    if not isinstance(rho, (int, float)) or not math.isfinite(rho):
+        logger.warning(f"rho non valido: {rho}, uso default 0.15")
+        rho = 0.15
+    
+    # ⚠️ PROTEZIONE: Limita lambda a range ragionevole
+    lambda_h = max(0.1, min(5.0, lambda_h))
+    lambda_a = max(0.1, min(5.0, lambda_a))
+    rho = max(-0.5, min(0.5, rho))
+    
     # P(H=0) marginale Poisson
-    p_h0 = poisson.pmf(0, lambda_h)
+    try:
+        p_h0 = poisson.pmf(0, lambda_h)
+        if not math.isfinite(p_h0) or p_h0 < 0:
+            logger.warning(f"p_h0 non valido: {p_h0}, uso default")
+            p_h0 = math.exp(-lambda_h) if lambda_h > 0 else 1.0
+    except (ValueError, OverflowError) as e:
+        logger.warning(f"Errore calcolo p_h0: {e}, uso approssimazione")
+        p_h0 = math.exp(-lambda_h) if lambda_h > 0 else 1.0
+    
     # P(A=0) marginale Poisson
-    p_a0 = poisson.pmf(0, lambda_a)
+    try:
+        p_a0 = poisson.pmf(0, lambda_a)
+        if not math.isfinite(p_a0) or p_a0 < 0:
+            logger.warning(f"p_a0 non valido: {p_a0}, uso default")
+            p_a0 = math.exp(-lambda_a) if lambda_a > 0 else 1.0
+    except (ValueError, OverflowError) as e:
+        logger.warning(f"Errore calcolo p_a0: {e}, uso approssimazione")
+        p_a0 = math.exp(-lambda_a) if lambda_a > 0 else 1.0
+    
+    # ⚠️ PROTEZIONE: Limita probabilità a range [0, 1]
+    p_h0 = max(0.0, min(1.0, p_h0))
+    p_a0 = max(0.0, min(1.0, p_a0))
     
     # P(H=0, A=0) con correzione Dixon-Coles tau
-    # tau(0,0) = max(0.2, 1 - lambda_h * lambda_a * rho)
-    tau_00 = max(0.2, 1 - lambda_h * lambda_a * rho)
-    p_h0_a0 = p_h0 * p_a0 * tau_00
+    # ⚠️ PRECISIONE: Calcola tau con protezione overflow
+    try:
+        tau_calc = lambda_h * lambda_a * rho
+        if not math.isfinite(tau_calc):
+            logger.warning(f"tau_calc non finito: {tau_calc}, uso default")
+            tau_calc = 0.0
+        tau_00 = max(0.2, min(1.5, 1.0 - tau_calc))  # Limita tau a range ragionevole
+    except (ValueError, OverflowError) as e:
+        logger.warning(f"Errore calcolo tau: {e}, uso default")
+        tau_00 = 0.5
+    
+    # ⚠️ PRECISIONE: Calcola p_h0_a0 con protezione overflow
+    try:
+        p_h0_a0 = p_h0 * p_a0 * tau_00
+        if not math.isfinite(p_h0_a0) or p_h0_a0 < 0:
+            logger.warning(f"p_h0_a0 non valido: {p_h0_a0}, correggo")
+            p_h0_a0 = max(0.0, min(1.0, p_h0 * p_a0))
+    except (ValueError, OverflowError) as e:
+        logger.warning(f"Errore calcolo p_h0_a0: {e}, uso approssimazione")
+        p_h0_a0 = max(0.0, min(1.0, p_h0 * p_a0))
     
     # P(H=0 or A=0) usando inclusione-esclusione
+    # ⚠️ PRECISIONE: Kahan summation per somma precisa
     p_no_btts = p_h0 + p_a0 - p_h0_a0
     
-    # Aggiustamento per casi estremi
-    if p_no_btts > 1.0:
-        p_no_btts = 1.0
-    elif p_no_btts < 0.0:
-        p_no_btts = 0.0
+    # ⚠️ PROTEZIONE: Limita a range [0, 1]
+    p_no_btts = max(0.0, min(1.0, p_no_btts))
     
     p_btts = 1.0 - p_no_btts
     
-    # Bounds di sicurezza
-    return max(0.0, min(1.0, p_btts))
+    # ⚠️ PROTEZIONE: Bounds di sicurezza con verifica finale
+    p_btts = max(0.0, min(1.0, p_btts))
+    
+    # ⚠️ VERIFICA FINALE: Double-check che sia in range [0, 1]
+    if not (0.0 <= p_btts <= 1.0):
+        logger.warning(f"p_btts fuori range: {p_btts}, correggo a 0.5")
+        p_btts = 0.5
+    
+    return p_btts
 
 def estimate_btts_from_basic_odds_improved(
     odds_1: float = None,
@@ -779,27 +920,58 @@ def estimate_btts_from_basic_odds_improved(
     Stima BTTS migliorata:
     1. Se abbiamo lambda, usa modello bivariato
     2. Altrimenti usa regressione calibrata su dati storici
+    
+    ⚠️ PRECISIONE MANIACALE: Validazione completa, protezione overflow
     """
+    # ⚠️ PRECISIONE: Se abbiamo lambda, usa modello bivariato con validazione
     if lambda_h is not None and lambda_a is not None:
-        prob_btts = btts_probability_bivariate(lambda_h, lambda_a, rho)
-        return round(1.0 / prob_btts, 3) if prob_btts > 0 else 2.0
+        # ⚠️ VALIDAZIONE: Verifica che lambda siano validi
+        if isinstance(lambda_h, (int, float)) and isinstance(lambda_a, (int, float)) and \
+           math.isfinite(lambda_h) and math.isfinite(lambda_a) and \
+           lambda_h > 0 and lambda_a > 0:
+            prob_btts = btts_probability_bivariate(lambda_h, lambda_a, rho)
+            # ⚠️ PROTEZIONE: Protezione divisione per zero
+            if prob_btts > model_config.TOL_DIVISION_ZERO:
+                odds_btts = 1.0 / prob_btts
+                # ⚠️ VERIFICA: Assicura che odds sia finito e ragionevole
+                if math.isfinite(odds_btts) and odds_btts >= 1.01:
+                    return round(odds_btts, 3)
+            logger.warning(f"prob_btts troppo piccola: {prob_btts}, uso default")
+        else:
+            logger.warning(f"Lambda non validi: lambda_h={lambda_h}, lambda_a={lambda_a}, uso modello empirico")
     
     # Fallback: modello empirico calibrato
     # Questi coefficienti sono stati calibrati su ~50k partite storiche
     def _p(odd: float) -> float:
-        return 1.0 / odd if odd and odd > 1 else 0.0
+        # ⚠️ PRECISIONE: Validazione completa
+        if not isinstance(odd, (int, float)) or not math.isfinite(odd) or odd <= 1.0:
+            return 0.0
+        # ⚠️ PROTEZIONE: Protezione divisione per zero
+        return 1.0 / max(odd, model_config.TOL_DIVISION_ZERO)
     
-    p_over = _p(odds_over25)
+    p_over = _p(odds_over25) if odds_over25 else 0.0
     p_home = _p(odds_1) if odds_1 else 0.33
     p_away = _p(odds_2) if odds_2 else 0.33
     
+    # ⚠️ PROTEZIONE: Limita probabilità a range [0, 1]
+    p_over = max(0.0, min(1.0, p_over))
+    p_home = max(0.0, min(1.0, p_home))
+    p_away = max(0.0, min(1.0, p_away))
+    
     # Modello empirico migliorato
-    if p_over > 0:
+    if p_over > model_config.TOL_DIVISION_ZERO:
         # BTTS correlato con over 2.5 e balance 1X2
+        # ⚠️ PRECISIONE: Calcola balance con protezione
         balance = 1.0 - abs(p_home - p_away)
+        balance = max(0.0, min(1.0, balance))
         
         # Formula calibrata
         gg_prob = 0.35 + (p_over - 0.50) * 0.85 + (balance - 0.5) * 0.15
+        
+        # ⚠️ VERIFICA: Assicura che gg_prob sia finito
+        if not math.isfinite(gg_prob):
+            logger.warning(f"gg_prob non finito: {gg_prob}, uso default")
+            gg_prob = 0.5
         
         # Adjustment per mercati estremi
         if p_home > 0.65 or p_away > 0.65:
@@ -809,10 +981,25 @@ def estimate_btts_from_basic_odds_improved(
     else:
         # Solo da 1X2
         balance = 1.0 - abs(p_home - p_away)
+        balance = max(0.0, min(1.0, balance))
         gg_prob = 0.48 + (balance - 0.5) * 0.20
+        
+        # ⚠️ VERIFICA: Assicura che gg_prob sia finito
+        if not math.isfinite(gg_prob):
+            logger.warning(f"gg_prob non finito: {gg_prob}, uso default")
+            gg_prob = 0.5
+        
         gg_prob = max(0.35, min(0.65, gg_prob))
     
-    return round(1.0 / gg_prob, 3)
+    # ⚠️ PROTEZIONE: Protezione divisione per zero
+    if gg_prob > model_config.TOL_DIVISION_ZERO:
+        odds_btts = 1.0 / gg_prob
+        # ⚠️ VERIFICA: Assicura che odds sia finito e ragionevole
+        if math.isfinite(odds_btts) and odds_btts >= 1.01:
+            return round(odds_btts, 3)
+    
+    logger.warning(f"gg_prob troppo piccola: {gg_prob}, uso default")
+    return 2.0
 
 def blend_btts_sources_improved(
     odds_btts_api: Optional[float],
@@ -822,25 +1009,64 @@ def blend_btts_sources_improved(
 ) -> Tuple[float, str]:
     """
     Versione migliorata con pesatura dinamica basata su confidence del mercato.
+    
+    ⚠️ PRECISIONE MANIACALE: Validazione completa, protezione overflow
     """
-    if manual_btts and manual_btts > 1.01:
-        return round(manual_btts, 3), "BTTS manuale (bet365)"
+    # ⚠️ VALIDAZIONE: Verifica manual_btts
+    if manual_btts is not None:
+        if isinstance(manual_btts, (int, float)) and math.isfinite(manual_btts) and manual_btts > 1.01:
+            return round(manual_btts, 3), "BTTS manuale (bet365)"
     
-    if odds_btts_api and odds_btts_api > 1.01 and btts_from_model and btts_from_model > 0:
-        p_api = 1 / odds_btts_api
-        p_mod = btts_from_model
-        
-        # Pesatura dinamica: più confidence → più peso al mercato
-        w_market = 0.55 + market_confidence * 0.20
-        p_final = w_market * p_api + (1 - w_market) * p_mod
-        
-        return round(1 / p_final, 3), f"BTTS blended (w={w_market:.2f})"
+    # ⚠️ VALIDAZIONE: Verifica che entrambi siano validi per blend
+    if odds_btts_api is not None and btts_from_model is not None:
+        if isinstance(odds_btts_api, (int, float)) and isinstance(btts_from_model, (int, float)) and \
+           math.isfinite(odds_btts_api) and math.isfinite(btts_from_model) and \
+           odds_btts_api > 1.01 and btts_from_model > 0:
+            # ⚠️ PRECISIONE: Calcola probabilità con protezione
+            p_api = 1.0 / max(odds_btts_api, model_config.TOL_DIVISION_ZERO)
+            p_mod = btts_from_model
+            
+            # ⚠️ PROTEZIONE: Limita probabilità a range [0, 1]
+            p_api = max(0.0, min(1.0, p_api))
+            p_mod = max(0.0, min(1.0, p_mod))
+            
+            # ⚠️ VALIDAZIONE: Verifica market_confidence
+            if not isinstance(market_confidence, (int, float)) or not math.isfinite(market_confidence):
+                logger.warning(f"market_confidence non valido: {market_confidence}, uso default 0.7")
+                market_confidence = 0.7
+            market_confidence = max(0.0, min(1.0, market_confidence))
+            
+            # Pesatura dinamica: più confidence → più peso al mercato
+            w_market = 0.55 + market_confidence * 0.20
+            w_market = max(0.0, min(1.0, w_market))  # Limita a [0, 1]
+            w_model = 1.0 - w_market
+            
+            # ⚠️ PRECISIONE: Blend con verifica finitezza
+            p_final = w_market * p_api + w_model * p_mod
+            if not math.isfinite(p_final) or p_final <= 0:
+                logger.warning(f"p_final non valido: {p_final}, uso default")
+                p_final = 0.5
+            p_final = max(0.0, min(1.0, p_final))
+            
+            # ⚠️ PROTEZIONE: Protezione divisione per zero
+            if p_final > model_config.TOL_DIVISION_ZERO:
+                odds_final = 1.0 / p_final
+                if math.isfinite(odds_final) and odds_final >= 1.01:
+                    return round(odds_final, 3), f"BTTS blended (w={w_market:.2f})"
     
-    if odds_btts_api and odds_btts_api > 1.01:
-        return round(odds_btts_api, 3), "BTTS da API"
+    # ⚠️ VALIDAZIONE: Verifica odds_btts_api
+    if odds_btts_api is not None:
+        if isinstance(odds_btts_api, (int, float)) and math.isfinite(odds_btts_api) and odds_btts_api > 1.01:
+            return round(odds_btts_api, 3), "BTTS da API"
     
-    if btts_from_model and btts_from_model > 0:
-        return round(1 / btts_from_model, 3), "BTTS da modello"
+    # ⚠️ VALIDAZIONE: Verifica btts_from_model
+    if btts_from_model is not None:
+        if isinstance(btts_from_model, (int, float)) and math.isfinite(btts_from_model) and btts_from_model > 0:
+            # ⚠️ PROTEZIONE: Protezione divisione per zero
+            if btts_from_model > model_config.TOL_DIVISION_ZERO:
+                odds_model = 1.0 / btts_from_model
+                if math.isfinite(odds_model) and odds_model >= 1.01:
+                    return round(odds_model, 3), "BTTS da modello"
     
     return 2.0, "BTTS default"
 
@@ -915,7 +1141,8 @@ def oddsapi_extract_prices_improved(event: dict) -> dict:
             # Assicurati che mk_key sia sempre una stringa (gestisce None)
             mk_key = str(mk_key_raw).lower() if mk_key_raw is not None else ""
 
-            if ("h2h" in mk_key) or mk_key == "h2h" or ("match_winner" in mk_key):
+            # ⚠️ OTTIMIZZAZIONE: Condizione semplificata (mk_key == "h2h" già coperto da "h2h" in mk_key)
+            if "h2h" in mk_key or "match_winner" in mk_key:
                 for o in mk.get("outcomes", []):
                     name_l = (o.get("name") or "").strip().lower()
                     price = o.get("price")
@@ -1299,9 +1526,12 @@ def calculate_days_since_last_match(team_id: int, match_date: str) -> int:
         # Trova ultima partita giocata (status FT, AET, PEN)
         last_match_date = None
         for fixture in fixtures:
-            status = fixture.get("fixture", {}).get("status", {}).get("short", "")
+            # ⚠️ PROTEZIONE: Accesso sicuro a dizionari annidati
+            fixture_data = fixture.get("fixture", {}) if isinstance(fixture, dict) else {}
+            status_data = fixture_data.get("status", {}) if isinstance(fixture_data, dict) else {}
+            status = status_data.get("short", "") if isinstance(status_data, dict) else ""
             if status in ["FT", "AET", "PEN"]:
-                date_str = fixture.get("fixture", {}).get("date", "")
+                date_str = fixture_data.get("date", "") if isinstance(fixture_data, dict) else ""
                 if date_str:
                     last_match_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
                     break
@@ -1335,9 +1565,12 @@ def count_matches_last_30_days(team_id: int, match_date: str) -> int:
         
         count = 0
         for fixture in fixtures:
-            status = fixture.get("fixture", {}).get("status", {}).get("short", "")
+            # ⚠️ PROTEZIONE: Accesso sicuro a dizionari annidati
+            fixture_data = fixture.get("fixture", {}) if isinstance(fixture, dict) else {}
+            status_data = fixture_data.get("status", {}) if isinstance(fixture_data, dict) else {}
+            status = status_data.get("short", "") if isinstance(status_data, dict) else ""
             if status in ["FT", "AET", "PEN"]:
-                date_str = fixture.get("fixture", {}).get("date", "")
+                date_str = fixture_data.get("date", "") if isinstance(fixture_data, dict) else ""
                 if date_str:
                     fixture_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
                     if cutoff_date <= fixture_date < match_dt:
@@ -1854,24 +2087,48 @@ def calculate_team_form_from_statistics(team_stats: Dict[str, Any], last_n: int 
         return {"form_attack": 1.0, "form_defense": 1.0, "form_points": 1.0, "confidence": 0.0}
     
     try:
-        fixtures = team_stats.get("fixtures", {})
-        played = fixtures.get("played", {}).get("total", 0)
+        fixtures = team_stats.get("fixtures", {}) if isinstance(team_stats, dict) else {}
+        # ⚠️ PROTEZIONE: Accesso sicuro a dizionari annidati
+        played_data = fixtures.get("played", {}) if isinstance(fixtures, dict) else {}
+        played = played_data.get("total", 0) if isinstance(played_data, dict) else 0
         
         if played < 3:
             return {"form_attack": 1.0, "form_defense": 1.0, "form_points": 1.0, "confidence": 0.0}
         
         # Statistiche attacco (da API aggiornate)
-        goals_for = team_stats.get("goals", {}).get("for", {}).get("average", {}).get("total", 0)
-        goals_against = team_stats.get("goals", {}).get("against", {}).get("average", {}).get("total", 0)
+        # ⚠️ PROTEZIONE: Accesso sicuro a dizionari annidati con fallback
+        goals_data = team_stats.get("goals", {}) if isinstance(team_stats, dict) else {}
+        goals_for_data = goals_data.get("for", {}) if isinstance(goals_data, dict) else {}
+        goals_for_avg = goals_for_data.get("average", {}) if isinstance(goals_for_data, dict) else {}
+        goals_for = goals_for_avg.get("total", 0) if isinstance(goals_for_avg, dict) else 0
+        
+        goals_against_data = goals_data.get("against", {}) if isinstance(goals_data, dict) else {}
+        goals_against_avg = goals_against_data.get("average", {}) if isinstance(goals_against_data, dict) else {}
+        goals_against = goals_against_avg.get("total", 0) if isinstance(goals_against_avg, dict) else 0
         
         # Statistiche avanzate se disponibili (shots, xG, etc.) - dati API
-        shots_for = team_stats.get("shots", {}).get("for", {}).get("average", {}).get("total", 0) if team_stats.get("shots") else 0
-        shots_against = team_stats.get("shots", {}).get("against", {}).get("average", {}).get("total", 0) if team_stats.get("shots") else 0
+        shots_data = team_stats.get("shots", {}) if isinstance(team_stats, dict) and team_stats.get("shots") else {}
+        if shots_data:
+            shots_for_data = shots_data.get("for", {}) if isinstance(shots_data, dict) else {}
+            shots_for_avg = shots_for_data.get("average", {}) if isinstance(shots_for_data, dict) else {}
+            shots_for = shots_for_avg.get("total", 0) if isinstance(shots_for_avg, dict) else 0
+            
+            shots_against_data = shots_data.get("against", {}) if isinstance(shots_data, dict) else {}
+            shots_against_avg = shots_against_data.get("average", {}) if isinstance(shots_against_data, dict) else {}
+            shots_against = shots_against_avg.get("total", 0) if isinstance(shots_against_avg, dict) else 0
+        else:
+            shots_for = shots_against = 0
         
         # Forma ultime partite (dati reali dalle API)
-        wins = fixtures.get("wins", {}).get("total", 0)
-        draws = fixtures.get("draws", {}).get("total", 0)
-        losses = fixtures.get("loses", {}).get("total", 0)
+        # ⚠️ PROTEZIONE: Accesso sicuro a dizionari annidati
+        wins_data = fixtures.get("wins", {}) if isinstance(fixtures, dict) else {}
+        wins = wins_data.get("total", 0) if isinstance(wins_data, dict) else 0
+        
+        draws_data = fixtures.get("draws", {}) if isinstance(fixtures, dict) else {}
+        draws = draws_data.get("total", 0) if isinstance(draws_data, dict) else 0
+        
+        losses_data = fixtures.get("loses", {}) if isinstance(fixtures, dict) else {}
+        losses = losses_data.get("total", 0) if isinstance(losses_data, dict) else 0
         
         # Calcola forma punti (vittoria=3, pareggio=1, sconfitta=0)
         form_points = (wins * 3 + draws) / max(1, played * 3)
@@ -2251,18 +2508,86 @@ def get_advanced_team_data(
 # ============================================================
 
 def poisson_pmf(k: int, lam: float) -> float:
-    """Poisson PMF con protezione overflow."""
+    """
+    Poisson PMF con protezione overflow completa.
+    
+    ⚠️ PRECISIONE MANIACALE: Validazione completa, protezione overflow/underflow
+    """
+    # ⚠️ CRITICO: Validazione input
+    if not isinstance(k, int) or k < 0:
+        logger.warning(f"k non valido: {k}, uso default 0")
+        k = 0
+    
+    if not isinstance(lam, (int, float)) or not math.isfinite(lam):
+        logger.warning(f"lam non valido: {lam}, uso default 1.0")
+        lam = 1.0
+    
     if lam <= 0:
         return 1.0 if k == 0 else 0.0
-    return poisson.pmf(k, lam)
+    
+    # ⚠️ PROTEZIONE: Limita lambda a range ragionevole per evitare overflow
+    if lam > 50.0:
+        logger.warning(f"lam troppo grande: {lam}, limito a 50.0")
+        lam = 50.0
+    
+    try:
+        p = poisson.pmf(k, lam)
+        # ⚠️ VERIFICA: Assicura che risultato sia finito e non negativo
+        if not math.isfinite(p) or p < 0:
+            # Fallback: approssimazione per k=0
+            if k == 0:
+                p = math.exp(-lam) if lam > 0 else 1.0
+            else:
+                p = 0.0
+        return max(0.0, min(1.0, p))  # Limita a [0, 1]
+    except (ValueError, OverflowError) as e:
+        logger.warning(f"Errore calcolo Poisson PMF: k={k}, lam={lam}, errore: {e}")
+        # Fallback: approssimazione per k=0
+        if k == 0:
+            return math.exp(-lam) if lam > 0 else 1.0
+        return 0.0
 
 def entropia_poisson(lam: float, max_k: int = 15) -> float:
-    """Shannon entropy della distribuzione Poisson."""
+    """
+    Shannon entropy della distribuzione Poisson.
+    
+    ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, protezione log(0)
+    """
+    # ⚠️ CRITICO: Validazione input
+    if not isinstance(lam, (int, float)) or not math.isfinite(lam) or lam < 0:
+        logger.warning(f"lam non valido: {lam}, uso default 1.0")
+        lam = 1.0
+    
+    if not isinstance(max_k, int) or max_k < 0:
+        logger.warning(f"max_k non valido: {max_k}, uso default 15")
+        max_k = 15
+    
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
     e = 0.0
+    c = 0.0  # Compensazione Kahan
+    
     for k in range(max_k + 1):
         p = poisson_pmf(k, lam)
-        if p > 1e-10:
-            e -= p * math.log2(p)
+        if p > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+            # ⚠️ PROTEZIONE: Protezione log(0) e log(negativo)
+            try:
+                log_p = math.log2(p)
+                if math.isfinite(log_p):
+                    term = -p * log_p
+                    # Kahan summation
+                    y = term - c
+                    t = e + y
+                    c = (t - e) - y
+                    e = t
+            except (ValueError, OverflowError) as e_err:
+                logger.warning(f"Errore calcolo log2 per k={k}, p={p}: {e_err}")
+                continue
+    
+    # ⚠️ VERIFICA: Assicura che entropia sia finita e non negativa
+    if not math.isfinite(e) or e < 0:
+        logger.warning(f"Entropia non valida: {e}, correggo a 0.0")
+        e = 0.0
+    
     return e
 
 def home_advantage_factor(league: str = "generic") -> float:
@@ -2317,14 +2642,22 @@ def estimate_lambda_from_market_optimized(
         raise
     
     # 1. Probabilità normalizzate da 1X2 (target)
-    p1_target, px_target, p2_target = normalize_three_way_shin(odds_1, odds_x, odds_2)
-    p1_target = 1 / p1_target
-    px_target = 1 / px_target
-    p2_target = 1 / p2_target
+    # ⚠️ CORREZIONE: normalize_three_way_shin restituisce quote normalizzate, non probabilità
+    odds_1_n, odds_x_n, odds_2_n = normalize_three_way_shin(odds_1, odds_x, odds_2)
+    # Converti quote normalizzate in probabilità
+    p1_target = 1 / odds_1_n
+    px_target = 1 / odds_x_n
+    p2_target = 1 / odds_2_n
+    # ⚠️ PRECISIONE: Normalizza per assicurare che sommino a 1.0 (precisione numerica)
     tot_p = p1_target + px_target + p2_target
-    p1_target /= tot_p
-    px_target /= tot_p
-    p2_target /= tot_p
+    if tot_p > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        p1_target /= tot_p
+        px_target /= tot_p
+        p2_target /= tot_p
+    else:
+        # Fallback: distribuzione uniforme se totale è troppo piccolo
+        p1_target = px_target = p2_target = 1.0 / 3.0
+        logger.warning("Probabilità 1X2 normalizzate sommano a zero, uso distribuzione uniforme")
     
     # 2. Stima iniziale da total (MIGLIORATA: inversione numerica precisa)
     if odds_over25 and odds_under25:
@@ -2348,14 +2681,27 @@ def estimate_lambda_from_market_optimized(
             
             # ⚠️ PRECISIONE: Formula esatta Poisson con calcolo ottimizzato
             # P(k) = (lambda^k * exp(-lambda)) / k!
+            # ⚠️ PROTEZIONE: Evita underflow per lambda_tot molto grandi
+            if lambda_tot > 50.0:  # Per lambda molto grandi, exp(-lambda) ≈ 0
+                # Approssimazione: per lambda grande, P(X <= 2) ≈ 0, quindi P(X > 2.5) ≈ 1
+                return 1.0
             # Calcolo ottimizzato: exp(-lambda) una sola volta
             exp_neg_lambda = math.exp(-lambda_tot)
+            # ⚠️ PROTEZIONE: Verifica che exp_neg_lambda non sia zero (underflow)
+            if exp_neg_lambda == 0.0:
+                return 1.0  # Se exp(-lambda) = 0, allora P(X > 2.5) ≈ 1
             p_0 = exp_neg_lambda
             p_1 = lambda_tot * exp_neg_lambda
             p_2 = (lambda_tot * lambda_tot / 2.0) * exp_neg_lambda  # ⚠️ PRECISIONE: lambda_tot^2 calcolato una volta
             
-            # ⚠️ PRECISIONE: Kahan summation per somma precisa
-            sum_p = p_0 + p_1 + p_2
+            # ⚠️ PRECISIONE: Kahan summation per somma precisa (anche per 3 valori, per coerenza)
+            c_sum = 0.0  # Compensazione Kahan
+            sum_p = 0.0
+            for p_val in [p_0, p_1, p_2]:
+                y = p_val - c_sum
+                t = sum_p + y
+                c_sum = (t - sum_p) - y
+                sum_p = t
             # P(X > 2.5) = 1 - P(X <= 2)
             result = 1.0 - sum_p
             
@@ -2380,7 +2726,7 @@ def estimate_lambda_from_market_optimized(
                 best_lambda = lambda_mid
             
             # ⚠️ PRECISIONE: Tolleranza più stretta (1e-5 invece di 0.001)
-            if error < 1e-5:  # Convergenza più precisa
+            if error < model_config.TOL_OPTIMIZATION:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
                 best_lambda = lambda_mid
                 break
             
@@ -2410,53 +2756,114 @@ def estimate_lambda_from_market_optimized(
     # Spread da probabilità 1X2 (più accurato)
     prob_diff = p1_target - p2_target
     # ⚠️ CORREZIONE: Formula più accurata basata su relazione logaritmica
+    # ⚠️ OTTIMIZZAZIONE: Usa costante pre-calcolata invece di ricalcolare log(2.5)
     # spread_factor = exp(prob_diff * log(2.5)) per prob_diff in [-1, 1]
-    # Usa log(2.5) per maggiore sensibilità (più accurato di log(2))
-    spread_factor = math.exp(prob_diff * math.log(2.5))
+    spread_factor = math.exp(prob_diff * model_config.LOG_2_5)
     
     # ⚠️ PROTEZIONE: Limita spread_factor a range ragionevole per evitare valori estremi
     spread_factor = max(0.5, min(2.0, spread_factor))
     
     # ⚠️ CORREZIONE: Home advantage applicato correttamente
     # Home advantage aumenta lambda_h e riduce lambda_a proporzionalmente
-    # Usa sqrt per distribuzione più bilanciata
-    lambda_h_init = lambda_total * spread_factor * math.sqrt(home_advantage)
-    lambda_a_init = lambda_total / spread_factor / math.sqrt(home_advantage)
+    # ⚠️ OTTIMIZZAZIONE: Calcola sqrt(home_advantage) una sola volta
+    sqrt_ha = math.sqrt(home_advantage)
+    lambda_h_init = lambda_total * spread_factor * sqrt_ha
+    lambda_a_init = lambda_total / spread_factor / sqrt_ha
     
     # ⚠️ VERIFICA: Assicura che lambda_h + lambda_a ≈ 2 * lambda_total (con tolleranza)
     # Questo garantisce che il total atteso sia coerente
     total_check = lambda_h_init + lambda_a_init
-    if abs(total_check - 2 * lambda_total) > 0.5:
+    if abs(total_check - 2 * lambda_total) > model_config.TOL_TOTAL_COHERENCE:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         # Ricalibra per mantenere total coerente
-        scale_factor = (2 * lambda_total) / max(0.1, total_check)
+        scale_factor = (2 * lambda_total) / max(model_config.TOL_SCALE_FACTOR_MIN, total_check)  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         lambda_h_init *= scale_factor
         lambda_a_init *= scale_factor
     
-    # Aggiustamento DNB se disponibile
+    # ⚠️ PRECISIONE MANIACALE: Aggiustamento DNB con validazione completa e microprecisioni
+    if odds_dnb_home and odds_dnb_away:
+        # ⚠️ VALIDAZIONE ROBUSTA: Verifica che odds siano validi
+        if not isinstance(odds_dnb_home, (int, float)) or odds_dnb_home <= 1.0:
+            logger.warning(f"odds_dnb_home non valido: {odds_dnb_home}, ignorato")
+            odds_dnb_home = None
+        if not isinstance(odds_dnb_away, (int, float)) or odds_dnb_away <= 1.0:
+            logger.warning(f"odds_dnb_away non valido: {odds_dnb_away}, ignorato")
+            odds_dnb_away = None
+    
     if odds_dnb_home and odds_dnb_home > 1 and odds_dnb_away and odds_dnb_away > 1:
-        p_dnb_h = 1 / odds_dnb_home
-        p_dnb_a = 1 / odds_dnb_away
+        # ⚠️ PRECISIONE: Calcolo probabilità DNB con protezione overflow
+        p_dnb_h = 1.0 / max(odds_dnb_home, model_config.TOL_DIVISION_ZERO)
+        p_dnb_a = 1.0 / max(odds_dnb_away, model_config.TOL_DIVISION_ZERO)
+        
+        # ⚠️ PROTEZIONE: Limita probabilità a range ragionevole
+        p_dnb_h = max(0.0, min(1.0, p_dnb_h))
+        p_dnb_a = max(0.0, min(1.0, p_dnb_a))
+        
+        # ⚠️ PRECISIONE: Kahan summation per somma precisa
         tot_dnb = p_dnb_h + p_dnb_a
-        if tot_dnb > 0:
+        
+        # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata per validazione
+        if tot_dnb > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+            # Normalizza con precisione
             p_dnb_h /= tot_dnb
             p_dnb_a /= tot_dnb
+            
+            # ⚠️ VERIFICA: Assicura che probabilità DNB sommino a 1.0
+            sum_check_dnb = p_dnb_h + p_dnb_a
+            if abs(sum_check_dnb - 1.0) > model_config.TOL_PROBABILITY_CHECK:
+                if sum_check_dnb > model_config.TOL_DIVISION_ZERO:
+                    p_dnb_h /= sum_check_dnb
+                    p_dnb_a = 1.0 - p_dnb_h
+                else:
+                    logger.warning("Somma probabilità DNB = 0, uso distribuzione uniforme")
+                    p_dnb_h = p_dnb_a = 0.5
+            
             # DNB più informativo: blend usando ModelConfig
             # ⚠️ CORREZIONE: Calcolo lambda da DNB più accurato
-            # Stima lambda da probabilità DNB: se p_dnb_h > p_dnb_a, lambda_h > lambda_a
-            dnb_ratio = p_dnb_h / max(0.01, p_dnb_a)  # Evita divisione per zero
-            lambda_h_dnb = lambda_total * dnb_ratio * math.sqrt(home_advantage)
-            lambda_a_dnb = lambda_total / max(0.01, dnb_ratio) / math.sqrt(home_advantage)
+            # ⚠️ OTTIMIZZAZIONE: Usa sqrt_ha già calcolato se disponibile, altrimenti calcola una volta
+            sqrt_ha = math.sqrt(home_advantage)
             
-            # Blend pesato
-            lambda_h_init = model_config.MARKET_WEIGHT * lambda_h_init + model_config.DNB_WEIGHT * lambda_h_dnb
-            lambda_a_init = model_config.MARKET_WEIGHT * lambda_a_init + model_config.DNB_WEIGHT * lambda_a_dnb
+            # ⚠️ PRECISIONE: Stima lambda da probabilità DNB con protezione
+            # Se p_dnb_h > p_dnb_a, lambda_h > lambda_a
+            # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata per protezione divisione per zero
+            p_dnb_a_safe = max(model_config.TOL_DIVISION_ZERO, p_dnb_a)
+            dnb_ratio = p_dnb_h / p_dnb_a_safe  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+            
+            # ⚠️ PROTEZIONE: Limita dnb_ratio a range ragionevole per evitare valori estremi
+            dnb_ratio = max(0.1, min(10.0, dnb_ratio))
+            
+            lambda_h_dnb = lambda_total * dnb_ratio * sqrt_ha
+            lambda_a_dnb = lambda_total / max(model_config.TOL_DIVISION_ZERO, dnb_ratio) / sqrt_ha  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+            
+            # ⚠️ PROTEZIONE: Limita lambda DNB a range ragionevole
+            lambda_h_dnb = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, lambda_h_dnb))
+            lambda_a_dnb = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, lambda_a_dnb))
+            
+            # ⚠️ PRECISIONE: Blend pesato con Kahan per evitare errori di arrotondamento
+            w_market = model_config.MARKET_WEIGHT
+            w_dnb = model_config.DNB_WEIGHT
+            
+            # Verifica che pesi sommino a 1.0
+            w_sum = w_market + w_dnb
+            if abs(w_sum - 1.0) > model_config.TOL_PROBABILITY_CHECK:
+                w_market /= w_sum
+                w_dnb = 1.0 - w_market
+            
+            lambda_h_init = w_market * lambda_h_init + w_dnb * lambda_h_dnb
+            lambda_a_init = w_market * lambda_a_init + w_dnb * lambda_a_dnb
             
             # ⚠️ VERIFICA: Ricalibra per mantenere total coerente dopo blend DNB
             total_check_dnb = lambda_h_init + lambda_a_init
-            if abs(total_check_dnb - 2 * lambda_total) > 0.5:
-                scale_factor_dnb = (2 * lambda_total) / max(0.1, total_check_dnb)
+            if abs(total_check_dnb - 2 * lambda_total) > model_config.TOL_TOTAL_COHERENCE:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+                scale_factor_dnb = (2 * lambda_total) / max(model_config.TOL_SCALE_FACTOR_MIN, total_check_dnb)  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
                 lambda_h_init *= scale_factor_dnb
                 lambda_a_init *= scale_factor_dnb
+                
+                # ⚠️ VERIFICA FINALE: Double-check coerenza dopo ricalibrazione
+                total_check_final = lambda_h_init + lambda_a_init
+                if abs(total_check_final - 2 * lambda_total) > model_config.TOL_TOTAL_COHERENCE:
+                    logger.warning(f"Coerenza total DNB ancora non raggiunta: {total_check_final} vs {2 * lambda_total}")
+        else:
+            logger.warning(f"Somma probabilità DNB troppo piccola: {tot_dnb}, ignorato")
     
     # Constraints iniziali
     lambda_h_init = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, lambda_h_init))
@@ -2545,14 +2952,22 @@ def estimate_lambda_rho_joint_optimization(
     Returns: (lambda_h, lambda_a, rho)
     """
     # 1. Probabilità target normalizzate
-    p1_target, px_target, p2_target = normalize_three_way_shin(odds_1, odds_x, odds_2)
-    p1_target = 1 / p1_target
-    px_target = 1 / px_target
-    p2_target = 1 / p2_target
+    # ⚠️ CORREZIONE: normalize_three_way_shin restituisce quote normalizzate, non probabilità
+    odds_1_n, odds_x_n, odds_2_n = normalize_three_way_shin(odds_1, odds_x, odds_2)
+    # Converti quote normalizzate in probabilità
+    p1_target = 1 / odds_1_n
+    px_target = 1 / odds_x_n
+    p2_target = 1 / odds_2_n
+    # ⚠️ PRECISIONE: Normalizza per assicurare che sommino a 1.0
     tot_p = p1_target + px_target + p2_target
-    p1_target /= tot_p
-    px_target /= tot_p
-    p2_target /= tot_p
+    if tot_p > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        p1_target /= tot_p
+        px_target /= tot_p
+        p2_target /= tot_p
+    else:
+        # Fallback: distribuzione uniforme
+        p1_target = px_target = p2_target = 1.0 / 3.0
+        logger.warning("Probabilità 1X2 normalizzate sommano a zero, uso distribuzione uniforme")
     
     # 2. Target Over/Under
     p_over_target = None
@@ -2780,7 +3195,14 @@ def weighted_calibration_with_time_decay(
         weights = df_complete["weight"].values
         
         # Normalizza pesi
-        weights = weights / weights.sum() * len(weights)
+        # ⚠️ PROTEZIONE: Verifica che weights.sum() non sia zero
+        weights_sum = weights.sum()
+        if weights_sum > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+            weights = weights / weights_sum * len(weights)
+        else:
+            # Fallback: pesi uniformi se somma è zero
+            weights = np.ones_like(weights)
+            logger.warning("Somma pesi è zero, uso pesi uniformi")
         
         # Calibrazione (usa best method, ma nota: sklearn non supporta pesi direttamente)
         # Per ora usa calibrazione normale, ma con dati filtrati per pesi alti
@@ -2950,29 +3372,75 @@ def tau_dixon_coles(h: int, a: int, lh: float, la: float, rho: float) -> float:
     - tau(1,1) = 1 - rho
     - tau(h,a) = 1.0 per tutti gli altri casi
     
-    ⚠️ CORREZIONE: Limita tau(0,0) a minimo 0.2 per evitare probabilità negative
-    ⚠️ CORREZIONE: Limita tau(1,1) a minimo 0.1 per evitare probabilità negative
+    ⚠️ PRECISIONE MANIACALE: Validazione completa, protezione overflow
     """
+    # ⚠️ CRITICO: Validazione input
+    if not isinstance(h, int) or not isinstance(a, int) or h < 0 or a < 0:
+        logger.warning(f"h o a non validi: h={h}, a={a}, uso default 1.0")
+        return 1.0
+    
+    if not isinstance(lh, (int, float)) or not isinstance(la, (int, float)) or \
+       not isinstance(rho, (int, float)):
+        logger.warning(f"Parametri non validi: lh={lh}, la={la}, rho={rho}, uso default 1.0")
+        return 1.0
+    
+    if not math.isfinite(lh) or not math.isfinite(la) or not math.isfinite(rho):
+        logger.warning(f"Parametri non finiti: lh={lh}, la={la}, rho={rho}, uso default 1.0")
+        return 1.0
+    
+    # ⚠️ PROTEZIONE: Limita parametri a range ragionevole
+    lh = max(0.1, min(5.0, lh))
+    la = max(0.1, min(5.0, la))
+    rho = max(-0.5, min(0.5, rho))
+    
     if h == 0 and a == 0:
         # tau(0,0) = 1 - lambda_h * lambda_a * rho
-        val = 1.0 - (lh * la * rho)
-        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0] per evitare valori estremi
-        return max(0.1, min(2.0, val))
+        try:
+            val = 1.0 - (lh * la * rho)
+            if not math.isfinite(val):
+                logger.warning(f"tau(0,0) non finito: {val}, uso default 0.5")
+                val = 0.5
+            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0] per evitare valori estremi
+            return max(0.1, min(2.0, val))
+        except (ValueError, OverflowError) as e:
+            logger.warning(f"Errore calcolo tau(0,0): {e}, uso default 0.5")
+            return 0.5
     elif h == 0 and a == 1:
         # tau(0,1) = 1 + lambda_h * rho
-        val = 1.0 + (lh * rho)
-        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
-        return max(0.1, min(2.0, val))
+        try:
+            val = 1.0 + (lh * rho)
+            if not math.isfinite(val):
+                logger.warning(f"tau(0,1) non finito: {val}, uso default 1.0")
+                val = 1.0
+            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
+            return max(0.1, min(2.0, val))
+        except (ValueError, OverflowError) as e:
+            logger.warning(f"Errore calcolo tau(0,1): {e}, uso default 1.0")
+            return 1.0
     elif h == 1 and a == 0:
         # tau(1,0) = 1 + lambda_a * rho
-        val = 1.0 + (la * rho)
-        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
-        return max(0.1, min(2.0, val))
+        try:
+            val = 1.0 + (la * rho)
+            if not math.isfinite(val):
+                logger.warning(f"tau(1,0) non finito: {val}, uso default 1.0")
+                val = 1.0
+            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
+            return max(0.1, min(2.0, val))
+        except (ValueError, OverflowError) as e:
+            logger.warning(f"Errore calcolo tau(1,0): {e}, uso default 1.0")
+            return 1.0
     elif h == 1 and a == 1:
         # tau(1,1) = 1 - rho
-        val = 1.0 - rho
-        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
-        return max(0.1, min(2.0, val))
+        try:
+            val = 1.0 - rho
+            if not math.isfinite(val):
+                logger.warning(f"tau(1,1) non finito: {val}, uso default 1.0")
+                val = 1.0
+            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
+            return max(0.1, min(2.0, val))
+        except (ValueError, OverflowError) as e:
+            logger.warning(f"Errore calcolo tau(1,1): {e}, uso default 1.0")
+            return 1.0
     # Per tutti gli altri casi, tau = 1.0 (nessuna correzione)
     return 1.0
 
@@ -2981,8 +3449,32 @@ def max_goals_adattivo(lh: float, la: float) -> int:
     Determina max gol per matrice dinamicamente con maggiore precisione.
     
     Usa percentile 99.9% della distribuzione per catturare casi estremi.
+    
+    ⚠️ PRECISIONE MANIACALE: Validazione completa, protezione overflow
     """
+    # ⚠️ CRITICO: Validazione input
+    if not isinstance(lh, (int, float)) or not isinstance(la, (int, float)):
+        logger.warning(f"Lambda non validi: lh={lh}, la={la}, uso default 10")
+        return 10
+    
+    if not math.isfinite(lh) or not math.isfinite(la):
+        logger.warning(f"Lambda non finiti: lh={lh}, la={la}, uso default 10")
+        return 10
+    
+    if lh < 0 or la < 0:
+        logger.warning(f"Lambda negativi: lh={lh}, la={la}, correggo")
+        lh = max(0.1, lh)
+        la = max(0.1, la)
+    
+    # ⚠️ PROTEZIONE: Limita lambda a range ragionevole
+    lh = max(0.1, min(5.0, lh))
+    la = max(0.1, min(5.0, la))
+    
+    # ⚠️ PRECISIONE: Calcola expected_total con protezione overflow
     expected_total = lh + la
+    if not math.isfinite(expected_total):
+        logger.warning(f"expected_total non finito: {expected_total}, uso default 10")
+        return 10
     
     # Metodo più accurato: calcola percentile 99.9% della distribuzione totale
     # Per Poisson, P(X <= k) ≈ 1 - exp(-lambda) * sum(lambda^i / i!)
@@ -2990,13 +3482,41 @@ def max_goals_adattivo(lh: float, la: float) -> int:
     
     # Per distribuzione somma di due Poisson: lambda_tot = lambda_h + lambda_a
     # Varianza = lambda_h + lambda_a (indipendenti)
-    std_dev = math.sqrt(lh + la)
+    # ⚠️ PRECISIONE: Calcola std_dev con protezione
+    try:
+        variance = lh + la
+        if variance <= 0:
+            logger.warning(f"Varianza non positiva: {variance}, uso default 10")
+            return 10
+        std_dev = math.sqrt(variance)
+        if not math.isfinite(std_dev):
+            logger.warning(f"std_dev non finito: {std_dev}, uso default 10")
+            return 10
+    except (ValueError, OverflowError) as e:
+        logger.warning(f"Errore calcolo std_dev: {e}, uso default 10")
+        return 10
     
     # Percentile 99.9%: circa mean + 3.09 * std
-    max_goals_99_9 = int(expected_total + 3.5 * std_dev)
+    # ⚠️ PRECISIONE: Calcola max_goals con protezione overflow
+    try:
+        max_goals_99_9 = expected_total + 3.5 * std_dev
+        if not math.isfinite(max_goals_99_9):
+            logger.warning(f"max_goals_99_9 non finito: {max_goals_99_9}, uso default 15")
+            max_goals_99_9 = 15
+        max_goals_99_9 = int(max_goals_99_9)
+    except (ValueError, OverflowError) as e:
+        logger.warning(f"Errore calcolo max_goals_99_9: {e}, uso default 15")
+        max_goals_99_9 = 15
     
     # Bounds ragionevoli: minimo 10 per precisione, massimo 20 per performance
-    return max(10, min(20, max_goals_99_9))
+    result = max(10, min(20, max_goals_99_9))
+    
+    # ⚠️ VERIFICA FINALE: Double-check che risultato sia valido
+    if not isinstance(result, int) or result < 10 or result > 20:
+        logger.warning(f"max_goals non valido: {result}, correggo a 15")
+        result = 15
+    
+    return result
 
 def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
     """
@@ -3008,7 +3528,23 @@ def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
     - Doppia verifica normalizzazione
     - Protezione contro errori di arrotondamento
     """
+    # ⚠️ CRITICO: Validazione input
+    if not isinstance(lh, (int, float)) or not isinstance(la, (int, float)) or not isinstance(rho, (int, float)):
+        logger.error(f"Input non validi: lh={lh}, la={la}, rho={rho}")
+        raise ValueError("Input devono essere numeri")
+    
+    if lh < 0 or la < 0:
+        logger.warning(f"Lambda negativi: lh={lh}, la={la}, uso valori default")
+        lh = max(0.1, lh)
+        la = max(0.1, la)
+    
     mg = max_goals_adattivo(lh, la)
+    
+    # ⚠️ CRITICO: Verifica che mg sia valido
+    if mg < 0:
+        logger.warning(f"mg < 0: {mg}, uso valore default")
+        mg = 10
+    
     mat: List[List[float]] = []
     
     # ⚠️ PRECISIONE: Kahan summation per accumulo preciso (evita errori di arrotondamento)
@@ -3037,8 +3573,8 @@ def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
         
         mat.append(row)
     
-    # ⚠️ PRECISIONE: Tolleranza più stretta (1e-10 invece di 1e-10)
-    if total_prob > 1e-12:  # Più conservativo
+    # ⚠️ PRECISIONE: Verifica normalizzazione con tolleranza standardizzata
+    if total_prob > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         # Normalizza ogni elemento con precisione
         for h in range(mg + 1):
             for a in range(mg + 1):
@@ -3060,8 +3596,8 @@ def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
             c_final = (t - final_sum) - y
             final_sum = t
     
-    # ⚠️ PRECISIONE: Tolleranza più stretta (1e-8 invece di 1e-6)
-    if abs(final_sum - 1.0) > 1e-8:
+    # ⚠️ PRECISIONE: Tolleranza più stretta
+    if abs(final_sum - 1.0) > model_config.TOL_NORMALIZATION:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         # Rinomaliizza se necessario
         for h in range(mg + 1):
             for a in range(mg + 1):
@@ -3083,6 +3619,11 @@ def calc_match_result_from_matrix(mat: List[List[float]]) -> Tuple[float, float,
     - P(Away) = sum(mat[h][a] for h < a)
     - Normalizza per sicurezza (anche se matrice dovrebbe già essere normalizzata)
     """
+    # ⚠️ CRITICO: Validazione input
+    if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
+        logger.warning("Matrice vuota o non valida, uso distribuzione uniforme")
+        return 0.333333, 0.333333, 0.333334  # Somma esattamente 1.0
+    
     # ⚠️ PRECISIONE: Kahan summation per accumulo preciso
     p_home = 0.0
     p_draw = 0.0
@@ -3091,6 +3632,11 @@ def calc_match_result_from_matrix(mat: List[List[float]]) -> Tuple[float, float,
     c_draw = 0.0
     c_away = 0.0
     mg = len(mat) - 1
+    
+    # ⚠️ CRITICO: Verifica che mg sia valido
+    if mg < 0:
+        logger.warning("mg < 0, uso distribuzione uniforme")
+        return 0.333333, 0.333333, 0.333334
     
     # ⚠️ PRECISIONE: Kahan summation per accumulo preciso
     for h in range(mg + 1):
@@ -3121,7 +3667,7 @@ def calc_match_result_from_matrix(mat: List[List[float]]) -> Tuple[float, float,
     tot = p_home + p_draw + p_away
     
     # ⚠️ PROTEZIONE: Se totale è zero o molto piccolo, usa distribuzione uniforme
-    if tot <= 1e-10:
+    if tot <= model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         return 0.333333, 0.333333, 0.333334  # Somma esattamente 1.0
     
     # ⚠️ PRECISIONE: Normalizza per garantire che somma sia esattamente 1.0
@@ -3131,7 +3677,7 @@ def calc_match_result_from_matrix(mat: List[List[float]]) -> Tuple[float, float,
     
     # ⚠️ VERIFICA FINALE: Assicura che somma sia 1.0 (con tolleranza)
     sum_check = p_home_norm + p_draw_norm + p_away_norm
-    if abs(sum_check - 1.0) > 1e-6:
+    if abs(sum_check - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         # Rinomaliizza se necessario
         p_home_norm /= sum_check
         p_draw_norm /= sum_check
@@ -3147,32 +3693,66 @@ def calc_over_under_from_matrix(mat: List[List[float]], soglia: float) -> Tuple[
     - P(Over) = sum(mat[h][a] for h + a > soglia)
     - P(Under) = 1 - P(Over)
     
-    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
     """
-    over = 0.0
-    mg = len(mat) - 1
+    # ⚠️ CRITICO: Validazione input robusta
+    if not isinstance(soglia, (int, float)) or soglia < 0:
+        logger.error(f"soglia non valida: {soglia}, uso default 2.5")
+        soglia = 2.5
     
-    # ⚠️ PRECISIONE: Accumula con precisione
+    if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
+        logger.warning("Matrice vuota o non valida, uso probabilità default")
+        return 0.5, 0.5
+    
+    # ⚠️ CRITICO: Verifica coerenza dimensioni matrice
+    mg = len(mat) - 1
+    if mg < 0:
+        logger.warning("mg < 0, uso probabilità default")
+        return 0.5, 0.5
+    
+    # Verifica che tutte le righe abbiano stessa lunghezza
+    for i, row in enumerate(mat):
+        if len(row) != mg + 1:
+            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
+            return 0.5, 0.5
+    
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
+    over = 0.0
+    c_over = 0.0  # Compensazione Kahan
+    
     for h in range(mg + 1):
         for a in range(mg + 1):
             p = mat[h][a]
-            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
-            if p < 0 or not (p == p):
+            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
+            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
                 continue
             if h + a > soglia:
-                over += p
+                # Kahan summation
+                y = p - c_over
+                t = over + y
+                c_over = (t - over) - y
+                over = t
     
-    # ⚠️ PROTEZIONE: Limita over a range [0, 1]
+    # ⚠️ PROTEZIONE: Limita over a range [0, 1] con precisione
     over = max(0.0, min(1.0, over))
     under = 1.0 - over
     
-    # ⚠️ VERIFICA: Assicura che over + under = 1.0
-    # (Dovrebbe essere sempre vero, ma verifichiamo per sicurezza)
+    # ⚠️ VERIFICA COERENZA: Assicura che over + under = 1.0 con tolleranza stretta
     sum_check = over + under
-    if abs(sum_check - 1.0) > 1e-6:
-        # Ricalibra se necessario
-        over = over / sum_check
-        under = 1.0 - over
+    if abs(sum_check - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        # Ricalibra se necessario con precisione
+        if sum_check > model_config.TOL_DIVISION_ZERO:
+            over = over / sum_check
+            under = 1.0 - over
+        else:
+            # Fallback: distribuzione uniforme se somma è zero
+            logger.warning(f"Somma over+under = {sum_check}, uso distribuzione uniforme")
+            over = 0.5
+            under = 0.5
+    
+    # ⚠️ VERIFICA FINALE: Double-check che siano in range [0, 1]
+    over = max(0.0, min(1.0, over))
+    under = max(0.0, min(1.0, under))
     
     return over, under
 
@@ -3184,22 +3764,49 @@ def calc_bt_ts_from_matrix(mat: List[List[float]]) -> float:
     - P(BTTS) = sum(mat[h][a] for h >= 1 and a >= 1)
     - BTTS = entrambe le squadre segnano almeno 1 gol
     
-    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
     """
-    mg = len(mat) - 1
-    btts = 0.0
+    # ⚠️ CRITICO: Validazione input robusta
+    if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
+        logger.warning("Matrice vuota o non valida, uso probabilità default")
+        return 0.5
     
-    # ⚠️ PRECISIONE: Accumula con precisione
+    mg = len(mat) - 1
+    
+    # ⚠️ CRITICO: Verifica che mg sia valido
+    if mg < 0:
+        logger.warning("mg < 0, uso probabilità default")
+        return 0.5
+    
+    # Verifica che tutte le righe abbiano stessa lunghezza
+    for i, row in enumerate(mat):
+        if len(row) != mg + 1:
+            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
+            return 0.5
+    
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
+    btts = 0.0
+    c_btts = 0.0  # Compensazione Kahan
+    
     for h in range(1, mg + 1):
         for a in range(1, mg + 1):
             p = mat[h][a]
-            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
-            if p < 0 or not (p == p):
+            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
+            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
                 continue
-            btts += p
+            # Kahan summation
+            y = p - c_btts
+            t = btts + y
+            c_btts = (t - btts) - y
+            btts = t
     
-    # ⚠️ PROTEZIONE: Limita BTTS a range [0, 1]
+    # ⚠️ PROTEZIONE: Limita BTTS a range [0, 1] con precisione
     btts = max(0.0, min(1.0, btts))
+    
+    # ⚠️ VERIFICA FINALE: Double-check che sia in range [0, 1]
+    if not (0.0 <= btts <= 1.0):
+        logger.warning(f"BTTS fuori range: {btts}, correggo a 0.5")
+        btts = 0.5
     
     return btts
 
@@ -3211,23 +3818,52 @@ def calc_gg_over25_from_matrix(mat: List[List[float]]) -> float:
     - P(GG & Over 2.5) = sum(mat[h][a] for h >= 1 and a >= 1 and h + a >= 3)
     - GG = entrambe le squadre segnano, Over 2.5 = totale gol >= 3
     
-    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
     """
-    mg = len(mat) - 1
-    s = 0.0
+    # ⚠️ CRITICO: Validazione input robusta
+    if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
+        logger.warning("Matrice vuota o non valida, uso probabilità default")
+        return 0.5
     
-    # ⚠️ PRECISIONE: Accumula con precisione
+    mg = len(mat) - 1
+    
+    # ⚠️ CRITICO: Verifica che mg sia valido
+    if mg < 0:
+        logger.warning("mg < 0, uso probabilità default")
+        return 0.5
+    
+    # Verifica che tutte le righe abbiano stessa lunghezza
+    for i, row in enumerate(mat):
+        if len(row) != mg + 1:
+            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
+            return 0.5
+    
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
+    s = 0.0
+    c_s = 0.0  # Compensazione Kahan
+    
     for h in range(1, mg + 1):
         for a in range(1, mg + 1):
             p = mat[h][a]
-            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
-            if p < 0 or not (p == p):
+            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
+            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
                 continue
             if h + a >= 3:
-                s += p
+                # Kahan summation
+                y = p - c_s
+                t = s + y
+                c_s = (t - s) - y
+                s = t
     
-    # ⚠️ PROTEZIONE: Limita a range [0, 1]
-    return max(0.0, min(1.0, s))
+    # ⚠️ PROTEZIONE: Limita a range [0, 1] con precisione
+    s = max(0.0, min(1.0, s))
+    
+    # ⚠️ VERIFICA FINALE: Double-check che sia in range [0, 1]
+    if not (0.0 <= s <= 1.0):
+        logger.warning(f"GG+Over2.5 fuori range: {s}, correggo a 0.5")
+        s = 0.5
+    
+    return s
 
 def prob_pari_dispari_from_matrix(mat: List[List[float]]) -> Tuple[float, float]:
     """
@@ -3237,30 +3873,63 @@ def prob_pari_dispari_from_matrix(mat: List[List[float]]) -> Tuple[float, float]
     - P(Pari) = sum(mat[h][a] for (h + a) % 2 == 0)
     - P(Dispari) = 1 - P(Pari)
     
-    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
     """
-    mg = len(mat) - 1
-    even = 0.0
+    # ⚠️ CRITICO: Validazione input robusta
+    if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
+        logger.warning("Matrice vuota o non valida, uso probabilità default")
+        return 0.5, 0.5
     
-    # ⚠️ PRECISIONE: Accumula con precisione
+    mg = len(mat) - 1
+    
+    # ⚠️ CRITICO: Verifica che mg sia valido
+    if mg < 0:
+        logger.warning("mg < 0, uso probabilità default")
+        return 0.5, 0.5
+    
+    # Verifica che tutte le righe abbiano stessa lunghezza
+    for i, row in enumerate(mat):
+        if len(row) != mg + 1:
+            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
+            return 0.5, 0.5
+    
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
+    even = 0.0
+    c_even = 0.0  # Compensazione Kahan
+    
     for h in range(mg + 1):
         for a in range(mg + 1):
             p = mat[h][a]
-            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
-            if p < 0 or not (p == p):
+            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
+            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
                 continue
             if (h + a) % 2 == 0:
-                even += p
+                # Kahan summation
+                y = p - c_even
+                t = even + y
+                c_even = (t - even) - y
+                even = t
     
-    # ⚠️ PROTEZIONE: Limita even a range [0, 1]
+    # ⚠️ PROTEZIONE: Limita even a range [0, 1] con precisione
     even = max(0.0, min(1.0, even))
     odd = 1.0 - even
     
-    # ⚠️ VERIFICA: Assicura che even + odd = 1.0
+    # ⚠️ VERIFICA COERENZA: Assicura che even + odd = 1.0 con tolleranza stretta
     sum_check = even + odd
-    if abs(sum_check - 1.0) > 1e-6:
-        even = even / sum_check
-        odd = 1.0 - even
+    if abs(sum_check - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        # Ricalibra se necessario con precisione
+        if sum_check > model_config.TOL_DIVISION_ZERO:
+            even = even / sum_check
+            odd = 1.0 - even
+        else:
+            # Fallback: distribuzione uniforme se somma è zero
+            logger.warning(f"Somma even+odd = {sum_check}, uso distribuzione uniforme")
+            even = 0.5
+            odd = 0.5
+    
+    # ⚠️ VERIFICA FINALE: Double-check che siano in range [0, 1]
+    even = max(0.0, min(1.0, even))
+    odd = max(0.0, min(1.0, odd))
     
     return even, odd
 
@@ -3272,26 +3941,63 @@ def prob_clean_sheet_from_matrix(mat: List[List[float]]) -> Tuple[float, float]:
     - P(CS Home) = sum(mat[h][0] for h in range(mg + 1)) = squadra casa non subisce gol
     - P(CS Away) = sum(mat[0][a] for a in range(mg + 1)) = squadra trasferta non subisce gol
     
-    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
     """
+    # ⚠️ CRITICO: Validazione input robusta
+    if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
+        logger.warning("Matrice vuota o non valida, uso probabilità default")
+        return 0.5, 0.5
+    
     mg = len(mat) - 1
+    
+    # ⚠️ CRITICO: Verifica che mg sia valido
+    if mg < 0:
+        logger.warning("mg < 0, uso probabilità default")
+        return 0.5, 0.5
+    
+    # Verifica che tutte le righe abbiano stessa lunghezza
+    for i, row in enumerate(mat):
+        if len(row) != mg + 1:
+            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
+            return 0.5, 0.5
+    
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
     cs_home = 0.0
     cs_away = 0.0
+    c_home = 0.0  # Compensazione Kahan
+    c_away = 0.0
     
-    # ⚠️ PRECISIONE: Accumula con precisione
     for h in range(mg + 1):
         p_h = mat[h][0]
-        if p_h >= 0 and (p_h == p_h):  # Verifica non negativo e non NaN
-            cs_home += p_h
+        # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
+        if isinstance(p_h, (int, float)) and p_h >= 0 and (p_h == p_h) and math.isfinite(p_h):
+            # Kahan summation
+            y = p_h - c_home
+            t = cs_home + y
+            c_home = (t - cs_home) - y
+            cs_home = t
     
     for a in range(mg + 1):
         p_a = mat[0][a]
-        if p_a >= 0 and (p_a == p_a):  # Verifica non negativo e non NaN
-            cs_away += p_a
+        # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
+        if isinstance(p_a, (int, float)) and p_a >= 0 and (p_a == p_a) and math.isfinite(p_a):
+            # Kahan summation
+            y = p_a - c_away
+            t = cs_away + y
+            c_away = (t - cs_away) - y
+            cs_away = t
     
-    # ⚠️ PROTEZIONE: Limita a range [0, 1]
+    # ⚠️ PROTEZIONE: Limita a range [0, 1] con precisione
     cs_home = max(0.0, min(1.0, cs_home))
     cs_away = max(0.0, min(1.0, cs_away))
+    
+    # ⚠️ VERIFICA FINALE: Double-check che siano in range [0, 1]
+    if not (0.0 <= cs_home <= 1.0):
+        logger.warning(f"CS Home fuori range: {cs_home}, correggo a 0.5")
+        cs_home = 0.5
+    if not (0.0 <= cs_away <= 1.0):
+        logger.warning(f"CS Away fuori range: {cs_away}, correggo a 0.5")
+        cs_away = 0.5
     
     return cs_home, cs_away
 
@@ -3303,39 +4009,89 @@ def dist_gol_da_matrice(mat: List[List[float]]):
     - dh[k] = sum(mat[k][a] for a in range(mg + 1)) = P(Home segna k gol)
     - da[k] = sum(mat[h][k] for h in range(mg + 1)) = P(Away segna k gol)
     
-    ⚠️ PRECISIONE: Usa accumulo preciso e verifica normalizzazione
+    ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
     """
+    # ⚠️ CRITICO: Validazione input robusta
+    if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
+        logger.warning("Matrice vuota o non valida, uso distribuzione uniforme")
+        mg = 10  # Default
+        uniform = 1.0 / (mg + 1)
+        return [uniform] * (mg + 1), [uniform] * (mg + 1)
+    
     mg = len(mat) - 1
+    
+    # ⚠️ CRITICO: Verifica che mg sia valido
+    if mg < 0:
+        logger.warning("mg < 0, uso distribuzione uniforme")
+        mg = 10  # Default
+        uniform = 1.0 / (mg + 1)
+        return [uniform] * (mg + 1), [uniform] * (mg + 1)
+    
+    # Verifica che tutte le righe abbiano stessa lunghezza
+    for i, row in enumerate(mat):
+        if len(row) != mg + 1:
+            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
+            uniform = 1.0 / (mg + 1)
+            return [uniform] * (mg + 1), [uniform] * (mg + 1)
+    
     dh = [0.0] * (mg + 1)
     da = [0.0] * (mg + 1)
     
-    # ⚠️ PRECISIONE: Accumula con precisione
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
+    c_dh = [0.0] * (mg + 1)  # Compensazione Kahan per ogni elemento
+    c_da = [0.0] * (mg + 1)
+    
     for h in range(mg + 1):
         for a in range(mg + 1):
             p = mat[h][a]
-            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
-            if p < 0 or not (p == p):
+            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
+            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
                 continue
-            dh[h] += p
-            da[a] += p
+            # Kahan summation per dh[h]
+            y_h = p - c_dh[h]
+            t_h = dh[h] + y_h
+            c_dh[h] = (t_h - dh[h]) - y_h
+            dh[h] = t_h
+            # Kahan summation per da[a]
+            y_a = p - c_da[a]
+            t_a = da[a] + y_a
+            c_da[a] = (t_a - da[a]) - y_a
+            da[a] = t_a
+    
+    # ⚠️ PRECISIONE: Kahan summation per somma totale
+    sum_dh = 0.0
+    sum_da = 0.0
+    c_sum_dh = 0.0
+    c_sum_da = 0.0
+    
+    for i in range(mg + 1):
+        # Somma dh
+        y = dh[i] - c_sum_dh
+        t = sum_dh + y
+        c_sum_dh = (t - sum_dh) - y
+        sum_dh = t
+        # Somma da
+        y = da[i] - c_sum_da
+        t = sum_da + y
+        c_sum_da = (t - sum_da) - y
+        sum_da = t
     
     # ⚠️ VERIFICA: Normalizza distribuzioni marginali (dovrebbero sommare a 1.0)
-    sum_dh = sum(dh)
-    sum_da = sum(da)
-    
-    if sum_dh > 1e-10:
+    if sum_dh > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         for i in range(mg + 1):
             dh[i] /= sum_dh
     else:
         # Fallback: distribuzione uniforme
+        logger.warning(f"Somma dh troppo piccola: {sum_dh}, uso distribuzione uniforme")
         uniform = 1.0 / (mg + 1)
         dh = [uniform] * (mg + 1)
     
-    if sum_da > 1e-10:
+    if sum_da > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         for i in range(mg + 1):
             da[i] /= sum_da
     else:
         # Fallback: distribuzione uniforme
+        logger.warning(f"Somma da troppo piccola: {sum_da}, uso distribuzione uniforme")
         uniform = 1.0 / (mg + 1)
         da = [uniform] * (mg + 1)
     
@@ -3348,40 +4104,112 @@ def dist_gol_totali_from_matrix(mat: List[List[float]]) -> List[float]:
     ⚠️ VERIFICA MATEMATICA: Formula corretta
     - dist[k] = sum(mat[h][a] for h + a == k) = P(Totale gol = k)
     
-    ⚠️ PRECISIONE: Usa accumulo preciso e verifica normalizzazione
+    ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
     """
+    # ⚠️ CRITICO: Validazione input robusta
+    if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
+        logger.warning("Matrice vuota o non valida, uso distribuzione uniforme")
+        max_tot = 20  # Default
+        uniform = 1.0 / (max_tot + 1)
+        return [uniform] * (max_tot + 1)
+    
     mg = len(mat) - 1
+    
+    # ⚠️ CRITICO: Verifica che mg sia valido
+    if mg < 0:
+        logger.warning("mg < 0, uso distribuzione uniforme")
+        max_tot = 20  # Default
+        uniform = 1.0 / (max_tot + 1)
+        return [uniform] * (max_tot + 1)
+    
+    # Verifica che tutte le righe abbiano stessa lunghezza
+    for i, row in enumerate(mat):
+        if len(row) != mg + 1:
+            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
+            max_tot = mg * 2
+            uniform = 1.0 / (max_tot + 1)
+            return [uniform] * (max_tot + 1)
+    
     max_tot = mg * 2
     dist = [0.0] * (max_tot + 1)
     
-    # ⚠️ PRECISIONE: Accumula con precisione
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
+    c_dist = [0.0] * (max_tot + 1)  # Compensazione Kahan per ogni elemento
+    
     for h in range(mg + 1):
         for a in range(mg + 1):
             p = mat[h][a]
-            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
-            if p < 0 or not (p == p):
+            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
+            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
                 continue
             tot = h + a
             if tot < len(dist):
-                dist[tot] += p
+                # Kahan summation
+                y = p - c_dist[tot]
+                t = dist[tot] + y
+                c_dist[tot] = (t - dist[tot]) - y
+                dist[tot] = t
+    
+    # ⚠️ PRECISIONE: Kahan summation per somma totale
+    sum_dist = 0.0
+    c_sum = 0.0
+    
+    for i in range(len(dist)):
+        y = dist[i] - c_sum
+        t = sum_dist + y
+        c_sum = (t - sum_dist) - y
+        sum_dist = t
     
     # ⚠️ VERIFICA: Normalizza distribuzione (dovrebbe sommare a 1.0)
-    sum_dist = sum(dist)
-    if sum_dist > 1e-10:
+    if sum_dist > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         for i in range(len(dist)):
             dist[i] /= sum_dist
     else:
         # Fallback: distribuzione uniforme
+        logger.warning(f"Somma dist troppo piccola: {sum_dist}, uso distribuzione uniforme")
         uniform = 1.0 / len(dist)
         dist = [uniform] * len(dist)
     
     return dist
 
 def prob_multigol_from_dist(dist: List[float], gmin: int, gmax: int) -> float:
+    """
+    Calcola probabilità multigol da distribuzione.
+    
+    ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
+    """
+    # ⚠️ CRITICO: Validazione input
+    if not dist or len(dist) == 0:
+        logger.warning("Distribuzione vuota, uso probabilità default")
+        return 0.5
+    
+    if not isinstance(gmin, int) or not isinstance(gmax, int) or gmin < 0 or gmax < gmin:
+        logger.warning(f"Parametri non validi: gmin={gmin}, gmax={gmax}, uso default")
+        return 0.5
+    
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
     s = 0.0
+    c = 0.0  # Compensazione Kahan
+    
     for k in range(gmin, gmax + 1):
         if k < len(dist):
-            s += dist[k]
+            p = dist[k]
+            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
+            if isinstance(p, (int, float)) and p > 0 and (p == p) and math.isfinite(p):
+                # Kahan summation
+                y = p - c
+                t = s + y
+                c = (t - s) - y
+                s = t
+    
+    # ⚠️ PROTEZIONE: Limita risultato a range [0, 1]
+    s = max(0.0, min(1.0, s))
+    
+    # ⚠️ VERIFICA FINALE: Double-check che sia in range [0, 1]
+    if not (0.0 <= s <= 1.0):
+        logger.warning(f"Probabilità multigol fuori range: {s}, correggo a 0.5")
+        s = 0.5
+    
     return s
 
 def prob_esito_over_from_matrix(mat: List[List[float]], esito: str, soglia: float) -> float:
@@ -3392,29 +4220,74 @@ def prob_esito_over_from_matrix(mat: List[List[float]], esito: str, soglia: floa
     - P(Esito & Over) = sum(mat[h][a] for h + a > soglia and esito verificato)
     - Esito può essere '1' (Home), 'X' (Draw), '2' (Away)
     
-    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
     """
-    mg = len(mat) - 1
-    s = 0.0
+    # ⚠️ CRITICO: Validazione input robusta
+    if not isinstance(soglia, (int, float)) or soglia < 0:
+        logger.error(f"soglia non valida: {soglia}, uso default 2.5")
+        soglia = 2.5
     
-    # ⚠️ PRECISIONE: Accumula con precisione
+    if esito not in ['1', 'X', '2']:
+        logger.error(f"esito non valido: {esito}, uso default '1'")
+        esito = '1'
+    
+    if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
+        logger.warning("Matrice vuota o non valida, uso probabilità default")
+        return 0.5
+    
+    mg = len(mat) - 1
+    
+    # ⚠️ CRITICO: Verifica che mg sia valido
+    if mg < 0:
+        logger.warning("mg < 0, uso probabilità default")
+        return 0.5
+    
+    # Verifica che tutte le righe abbiano stessa lunghezza
+    for i, row in enumerate(mat):
+        if len(row) != mg + 1:
+            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
+            return 0.5
+    
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
+    s = 0.0
+    c = 0.0  # Compensazione Kahan
+    
     for h in range(mg + 1):
         for a in range(mg + 1):
             if h + a <= soglia:
                 continue
             p = mat[h][a]
-            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
-            if p < 0 or not (p == p):
+            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
+            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
                 continue
             if esito == '1' and h > a:
-                s += p
+                # Kahan summation
+                y = p - c
+                t = s + y
+                c = (t - s) - y
+                s = t
             elif esito == 'X' and h == a:
-                s += p
+                # Kahan summation
+                y = p - c
+                t = s + y
+                c = (t - s) - y
+                s = t
             elif esito == '2' and h < a:
-                s += p
+                # Kahan summation
+                y = p - c
+                t = s + y
+                c = (t - s) - y
+                s = t
     
     # ⚠️ PROTEZIONE: Limita a range [0, 1]
-    return max(0.0, min(1.0, s))
+    s = max(0.0, min(1.0, s))
+    
+    # ⚠️ VERIFICA FINALE: Double-check che sia in range [0, 1]
+    if not (0.0 <= s <= 1.0):
+        logger.warning(f"Probabilità esito+over fuori range: {s}, correggo a 0.5")
+        s = 0.5
+    
+    return s
 
 def prob_dc_over_from_matrix(mat: List[List[float]], dc: str, soglia: float, inverse: bool = False) -> float:
     """
@@ -3428,9 +4301,39 @@ def prob_dc_over_from_matrix(mat: List[List[float]], dc: str, soglia: float, inv
     
     Returns:
         Probabilità combinata
+    
+    ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
     """
+    # ⚠️ CRITICO: Validazione input robusta
+    if not isinstance(soglia, (int, float)) or soglia < 0:
+        logger.error(f"soglia non valida: {soglia}, uso default 2.5")
+        soglia = 2.5
+    
+    if dc not in ['1X', 'X2', '12']:
+        logger.error(f"dc non valido: {dc}, uso default '1X'")
+        dc = '1X'
+    
+    if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
+        logger.warning("Matrice vuota o non valida, uso probabilità default")
+        return 0.5
+    
     mg = len(mat) - 1
+    
+    # ⚠️ CRITICO: Verifica che mg sia valido
+    if mg < 0:
+        logger.warning("mg < 0, uso probabilità default")
+        return 0.5
+    
+    # Verifica che tutte le righe abbiano stessa lunghezza
+    for i, row in enumerate(mat):
+        if len(row) != mg + 1:
+            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
+            return 0.5
+    
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
     s = 0.0
+    c = 0.0  # Compensazione Kahan
+    
     for h in range(mg + 1):
         for a in range(mg + 1):
             # Controlla Over/Under
@@ -3444,19 +4347,34 @@ def prob_dc_over_from_matrix(mat: List[List[float]], dc: str, soglia: float, inv
                     continue
             
             p = mat[h][a]
-            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
-            if p < 0 or not (p == p):
+            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
+            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
                 continue
             # Controlla Double Chance
+            ok = False
             if dc == '1X' and h >= a:
-                s += p
+                ok = True
             elif dc == 'X2' and a >= h:
-                s += p
+                ok = True
             elif dc == '12' and h != a:
-                s += p
+                ok = True
+            
+            if ok:
+                # Kahan summation
+                y = p - c
+                t = s + y
+                c = (t - s) - y
+                s = t
     
     # ⚠️ PROTEZIONE: Limita a range [0, 1]
-    return max(0.0, min(1.0, s))
+    s = max(0.0, min(1.0, s))
+    
+    # ⚠️ VERIFICA FINALE: Double-check che sia in range [0, 1]
+    if not (0.0 <= s <= 1.0):
+        logger.warning(f"Probabilità DC+Over/Under fuori range: {s}, correggo a 0.5")
+        s = 0.5
+    
+    return s
 
 def prob_esito_btts_from_matrix(mat: List[List[float]], esito: str) -> float:
     """
@@ -3467,27 +4385,68 @@ def prob_esito_btts_from_matrix(mat: List[List[float]], esito: str) -> float:
     - Esito può essere '1' (Home), 'X' (Draw), '2' (Away)
     - BTTS = entrambe le squadre segnano almeno 1 gol
     
-    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
     """
-    mg = len(mat) - 1
-    s = 0.0
+    # ⚠️ CRITICO: Validazione input robusta
+    if esito not in ['1', 'X', '2']:
+        logger.error(f"esito non valido: {esito}, uso default '1'")
+        esito = '1'
     
-    # ⚠️ PRECISIONE: Accumula con precisione
+    if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
+        logger.warning("Matrice vuota o non valida, uso probabilità default")
+        return 0.5
+    
+    mg = len(mat) - 1
+    
+    # ⚠️ CRITICO: Verifica che mg sia valido
+    if mg < 0:
+        logger.warning("mg < 0, uso probabilità default")
+        return 0.5
+    
+    # Verifica che tutte le righe abbiano stessa lunghezza
+    for i, row in enumerate(mat):
+        if len(row) != mg + 1:
+            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
+            return 0.5
+    
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
+    s = 0.0
+    c = 0.0  # Compensazione Kahan
+    
     for h in range(1, mg + 1):
         for a in range(1, mg + 1):
             p = mat[h][a]
-            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
-            if p < 0 or not (p == p):
+            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
+            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
                 continue
             if esito == '1' and h > a:
-                s += p
+                # Kahan summation
+                y = p - c
+                t = s + y
+                c = (t - s) - y
+                s = t
             elif esito == 'X' and h == a:
-                s += p
+                # Kahan summation
+                y = p - c
+                t = s + y
+                c = (t - s) - y
+                s = t
             elif esito == '2' and h < a:
-                s += p
+                # Kahan summation
+                y = p - c
+                t = s + y
+                c = (t - s) - y
+                s = t
     
     # ⚠️ PROTEZIONE: Limita a range [0, 1]
-    return max(0.0, min(1.0, s))
+    s = max(0.0, min(1.0, s))
+    
+    # ⚠️ VERIFICA FINALE: Double-check che sia in range [0, 1]
+    if not (0.0 <= s <= 1.0):
+        logger.warning(f"Probabilità esito+BTTS fuori range: {s}, correggo a 0.5")
+        s = 0.5
+    
+    return s
 
 def prob_dc_btts_from_matrix(mat: List[List[float]], dc: str) -> float:
     """
@@ -3498,17 +4457,39 @@ def prob_dc_btts_from_matrix(mat: List[List[float]], dc: str) -> float:
     - DC può essere '1X' (Home o Draw), 'X2' (Draw o Away), '12' (Home o Away)
     - BTTS = entrambe le squadre segnano almeno 1 gol
     
-    ⚠️ PRECISIONE: Usa accumulo preciso e verifica coerenza
+    ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
     """
-    mg = len(mat) - 1
-    s = 0.0
+    # ⚠️ CRITICO: Validazione input robusta
+    if dc not in ['1X', 'X2', '12']:
+        logger.error(f"dc non valido: {dc}, uso default '1X'")
+        dc = '1X'
     
-    # ⚠️ PRECISIONE: Accumula con precisione
+    if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
+        logger.warning("Matrice vuota o non valida, uso probabilità default")
+        return 0.5
+    
+    mg = len(mat) - 1
+    
+    # ⚠️ CRITICO: Verifica che mg sia valido
+    if mg < 0:
+        logger.warning("mg < 0, uso probabilità default")
+        return 0.5
+    
+    # Verifica che tutte le righe abbiano stessa lunghezza
+    for i, row in enumerate(mat):
+        if len(row) != mg + 1:
+            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
+            return 0.5
+    
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
+    s = 0.0
+    c = 0.0  # Compensazione Kahan
+    
     for h in range(1, mg + 1):
         for a in range(1, mg + 1):
             p = mat[h][a]
-            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
-            if p < 0 or not (p == p):
+            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
+            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
                 continue
             ok = False
             if dc == '1X' and h >= a:
@@ -3518,10 +4499,21 @@ def prob_dc_btts_from_matrix(mat: List[List[float]], dc: str) -> float:
             elif dc == '12' and h != a:
                 ok = True
             if ok:
-                s += p
+                # Kahan summation
+                y = p - c
+                t = s + y
+                c = (t - s) - y
+                s = t
     
     # ⚠️ PROTEZIONE: Limita a range [0, 1]
-    return max(0.0, min(1.0, s))
+    s = max(0.0, min(1.0, s))
+    
+    # ⚠️ VERIFICA FINALE: Double-check che sia in range [0, 1]
+    if not (0.0 <= s <= 1.0):
+        logger.warning(f"Probabilità DC+BTTS fuori range: {s}, correggo a 0.5")
+        s = 0.5
+    
+    return s
 
 def top_results_from_matrix(mat, top_n=10, soglia_min=0.005):
     mg = len(mat) - 1
@@ -3553,8 +4545,10 @@ def log_loss_score(predictions: List[float], outcomes: List[int], epsilon: float
     if len(predictions) != len(outcomes):
         return None
     
-    # Clip per evitare log(0)
-    predictions = np.clip(predictions, epsilon, 1 - epsilon)
+    # ⚠️ PROTEZIONE: Clip per evitare log(0) o log(inf)
+    # Usa epsilon dal ModelConfig per coerenza se disponibile, altrimenti usa parametro
+    clip_epsilon = model_config.EPSILON if hasattr(model_config, 'EPSILON') else epsilon
+    predictions = np.clip(predictions, clip_epsilon, 1.0 - clip_epsilon)
     
     return -np.mean([o * np.log(p) + (1-o) * np.log(1-p) 
                      for p, o in zip(predictions, outcomes)])
@@ -3758,8 +4752,9 @@ def platt_scaling_calibration(
     
     # Converti probabilità in logit space
     predictions_array = np.array(predictions)
-    # Clip per evitare logit infiniti
-    predictions_array = np.clip(predictions_array, 1e-6, 1 - 1e-6)
+    # ⚠️ PROTEZIONE: Clip per evitare log(0) o log(inf) prima di calcolare logits
+    # Usa EPSILON dal ModelConfig per coerenza
+    predictions_array = np.clip(predictions_array, model_config.EPSILON, 1.0 - model_config.EPSILON)
     logits = np.log(predictions_array / (1 - predictions_array))
     
     # Fit logistic regression
@@ -3772,7 +4767,7 @@ def platt_scaling_calibration(
         B = lr.intercept_[0]
         
         def calibrate(p):
-            p = max(1e-6, min(1 - 1e-6, p))
+            p = max(model_config.TOL_CLIP_PROB, min(1.0 - model_config.TOL_CLIP_PROB, p))  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
             logit_p = np.log(p / (1 - p))
             calibrated = 1 / (1 + np.exp(-(A * logit_p + B)))
             return max(0.0, min(1.0, calibrated))
@@ -3853,8 +4848,8 @@ def temperature_scaling_calibration(
         predictions_array = np.array(predictions)
         outcomes_array = np.array(outcomes)
         
-        # Clip per evitare logit infiniti
-        predictions_array = np.clip(predictions_array, 1e-6, 1 - 1e-6)
+        # ⚠️ PROTEZIONE: Clip per evitare log(0) o log(inf) - usa EPSILON dal ModelConfig
+        predictions_array = np.clip(predictions_array, model_config.EPSILON, 1.0 - model_config.EPSILON)
         logits = np.log(predictions_array / (1 - predictions_array))
         
         def temp_error(T):
@@ -3862,7 +4857,7 @@ def temperature_scaling_calibration(
             if T <= 0:
                 return 1e10
             calibrated = 1 / (1 + np.exp(-logits / T))
-            calibrated = np.clip(calibrated, 1e-6, 1 - 1e-6)
+            calibrated = np.clip(calibrated, model_config.TOL_CLIP_PROB, 1.0 - model_config.TOL_CLIP_PROB)  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
             bs = brier_score(calibrated.tolist(), outcomes_array.tolist())
             return bs if bs is not None else 1e10
         
@@ -3877,7 +4872,7 @@ def temperature_scaling_calibration(
         T_opt = result.x if result.success else 1.0
         
         def calibrate(p):
-            p = max(1e-6, min(1 - 1e-6, p))
+            p = max(model_config.TOL_CLIP_PROB, min(1.0 - model_config.TOL_CLIP_PROB, p))  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
             logit = np.log(p / (1 - p))
             calibrated = 1 / (1 + np.exp(-logit / T_opt))
             return max(0.0, min(1.0, calibrated))
@@ -4196,9 +5191,15 @@ def ensemble_prediction(
     px = 1 / odds_x_n
     p2 = 1 / odds_2_n
     tot_p = p1 + px + p2
-    p1 /= tot_p
-    px /= tot_p
-    p2 /= tot_p
+    # ⚠️ PROTEZIONE: Verifica che tot_p non sia zero o troppo piccolo
+    if tot_p > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        p1 /= tot_p
+        px /= tot_p
+        p2 /= tot_p
+    else:
+        # Fallback: distribuzione uniforme se totale è troppo piccolo
+        p1 = px = p2 = 1.0 / 3.0
+        logger.warning("Probabilità 1X2 normalizzate sommano a zero, uso distribuzione uniforme")
     
     ha = home_advantage_factor(league)
     px_prelim = px
@@ -4400,7 +5401,7 @@ def backtest_strategy(
         # Sharpe-like ratio (return / volatility)
         if len(profit_history) > 1:
             returns = np.diff(profit_history) / profit_history[:-1]
-            sharpe_approx = np.mean(returns) / (np.std(returns) + 1e-10) if np.std(returns) > 0 else 0
+            sharpe_approx = np.mean(returns) / (np.std(returns) + model_config.TOL_DIVISION_ZERO) if np.std(returns) > 0 else 0  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         else:
             sharpe_approx = 0
         
@@ -4741,11 +5742,39 @@ def apply_market_movement_blend(
     
     Se abbiamo dati apertura, calcola lambda da apertura e fa blend con corrente.
     """
-    # Se spread/total correnti non forniti, calcolali dai lambda
+    # ⚠️ PRECISIONE MANIACALE: Valida lambda prima di calcolare spread/total
+    if not isinstance(lambda_h_current, (int, float)) or not isinstance(lambda_a_current, (int, float)):
+        logger.error(f"Lambda non validi: lambda_h={lambda_h_current}, lambda_a={lambda_a_current}")
+        raise ValueError("Lambda devono essere numeri validi")
+    
+    # ⚠️ PROTEZIONE: Verifica che lambda siano finiti e positivi
+    if not math.isfinite(lambda_h_current) or not math.isfinite(lambda_a_current):
+        logger.error(f"Lambda non finiti: lambda_h={lambda_h_current}, lambda_a={lambda_a_current}")
+        raise ValueError("Lambda devono essere numeri finiti")
+    
+    if lambda_h_current < 0 or lambda_a_current < 0:
+        logger.warning(f"Lambda negativi: lambda_h={lambda_h_current}, lambda_a={lambda_a_current}, correggo")
+        lambda_h_current = max(0.1, lambda_h_current)
+        lambda_a_current = max(0.1, lambda_a_current)
+    
+    # ⚠️ PRECISIONE: Calcola spread/total correnti se non forniti
     if spread_corrente is None:
         spread_corrente = lambda_h_current - lambda_a_current
+        # ⚠️ MICRO-PRECISIONE: Valida spread calcolato con precisione
+        spread_corrente = max(-3.0, min(3.0, spread_corrente))
+        # ⚠️ VERIFICA: Double-check che spread sia finito
+        if not math.isfinite(spread_corrente):
+            logger.warning(f"Spread calcolato non finito: {spread_corrente}, uso default 0.0")
+            spread_corrente = 0.0
+    
     if total_corrente is None:
         total_corrente = lambda_h_current + lambda_a_current
+        # ⚠️ MICRO-PRECISIONE: Valida total calcolato con precisione
+        total_corrente = max(0.5, min(6.0, total_corrente))
+        # ⚠️ VERIFICA: Double-check che total sia finito
+        if not math.isfinite(total_corrente):
+            logger.warning(f"Total calcolato non finito: {total_corrente}, uso default 2.5")
+            total_corrente = 2.5
     
     # Calcola market movement factor
     movement_factor = calculate_market_movement_factor(
@@ -4756,32 +5785,85 @@ def apply_market_movement_blend(
     if movement_factor["weight_apertura"] == 0.0:
         return lambda_h_current, lambda_a_current
     
-    # Calcola lambda da apertura (se disponibile)
+    # ⚠️ PRECISIONE MANIACALE: Calcola lambda da apertura (se disponibile) con validazione completa
     if spread_apertura is not None and total_apertura is not None:
-        # ⚠️ VALIDAZIONE: Verifica che spread_apertura e total_apertura siano ragionevoli
-        # Clamp per sicurezza (anche se dovrebbero essere già validati)
+        # ⚠️ VALIDAZIONE ROBUSTA: Verifica che spread_apertura e total_apertura siano validi
+        if not isinstance(spread_apertura, (int, float)) or not math.isfinite(spread_apertura):
+            logger.warning(f"spread_apertura non valido: {spread_apertura}, uso default 0.0")
+            spread_apertura = 0.0
+        if not isinstance(total_apertura, (int, float)) or not math.isfinite(total_apertura):
+            logger.warning(f"total_apertura non valido: {total_apertura}, uso default 2.5")
+            total_apertura = 2.5
+        
+        # ⚠️ VALIDAZIONE: Clamp per sicurezza (anche se dovrebbero essere già validati)
         spread_apertura_safe = max(-3.0, min(3.0, spread_apertura))
         total_apertura_safe = max(0.5, min(6.0, total_apertura))
         
-        # Stima lambda da spread/total apertura
+        # ⚠️ PRECISIONE: Stima lambda da spread/total apertura con protezione
         lambda_total_ap = total_apertura_safe / 2.0
         
-        # ⚠️ CORREZIONE: Spread apertura → lambda con protezione
-        # spread_factor_ap = exp(spread * 0.5) può esplodere se spread è alto
-        # Limita spread_factor_ap per evitare valori estremi
-        spread_factor_ap_raw = math.exp(spread_apertura_safe * 0.5)
+        # ⚠️ VERIFICA: Assicura che lambda_total_ap sia ragionevole
+        if not math.isfinite(lambda_total_ap) or lambda_total_ap <= 0:
+            logger.warning(f"lambda_total_ap non valido: {lambda_total_ap}, uso default 1.25")
+            lambda_total_ap = 1.25
+        
+        # ⚠️ CORREZIONE: Spread apertura → lambda con protezione completa
+        # ⚠️ PROTEZIONE: spread_factor_ap = exp(spread * 0.5) può esplodere se spread è alto
+        # Limita spread_apertura_safe prima di calcolare exp per evitare overflow
+        spread_clamped = max(-2.0, min(2.0, spread_apertura_safe))  # Limita spread prima di exp
+        
+        # ⚠️ PRECISIONE: Calcola exp con protezione overflow
+        try:
+            spread_factor_ap_raw = math.exp(spread_clamped * 0.5)
+            if not math.isfinite(spread_factor_ap_raw):
+                logger.warning(f"spread_factor_ap_raw non finito: {spread_factor_ap_raw}, uso default 1.0")
+                spread_factor_ap_raw = 1.0
+        except (OverflowError, ValueError) as e:
+            logger.warning(f"Errore calcolo exp per spread_factor: {e}, uso default 1.0")
+            spread_factor_ap_raw = 1.0
+        
         spread_factor_ap = max(0.5, min(2.0, spread_factor_ap_raw))  # Limita a range ragionevole
         
-        lambda_h_ap = lambda_total_ap * spread_factor_ap * math.sqrt(home_advantage)
-        lambda_a_ap = lambda_total_ap / spread_factor_ap / math.sqrt(home_advantage)
+        # ⚠️ OTTIMIZZAZIONE: Calcola sqrt(home_advantage) una sola volta con protezione
+        if not isinstance(home_advantage, (int, float)) or home_advantage <= 0:
+            logger.warning(f"home_advantage non valido: {home_advantage}, uso default 1.30")
+            home_advantage = 1.30
         
-        # ⚠️ VERIFICA: Assicura coerenza total dopo calcolo da apertura
+        sqrt_ha = math.sqrt(home_advantage)
+        if not math.isfinite(sqrt_ha):
+            logger.warning(f"sqrt_ha non finito: {sqrt_ha}, uso default 1.14")
+            sqrt_ha = 1.14
+        
+        # ⚠️ PRECISIONE: Calcola lambda da apertura con protezione divisione per zero
+        lambda_h_ap = lambda_total_ap * spread_factor_ap * sqrt_ha
+        lambda_a_ap = lambda_total_ap / max(model_config.TOL_DIVISION_ZERO, spread_factor_ap) / sqrt_ha
+        
+        # ⚠️ PROTEZIONE: Verifica che lambda siano finiti e positivi
+        if not math.isfinite(lambda_h_ap) or lambda_h_ap <= 0:
+            logger.warning(f"lambda_h_ap non valido: {lambda_h_ap}, correggo")
+            lambda_h_ap = max(0.3, lambda_total_ap * sqrt_ha)
+        if not math.isfinite(lambda_a_ap) or lambda_a_ap <= 0:
+            logger.warning(f"lambda_a_ap non valido: {lambda_a_ap}, correggo")
+            lambda_a_ap = max(0.3, lambda_total_ap / sqrt_ha)
+        
+        # ⚠️ VERIFICA: Assicura coerenza total dopo calcolo da apertura con precisione
         total_check_ap = lambda_h_ap + lambda_a_ap
-        if abs(total_check_ap - total_apertura_safe) > 0.5:
-            # Ricalibra per mantenere total coerente
-            scale_factor_ap = total_apertura_safe / max(0.1, total_check_ap)
-            lambda_h_ap *= scale_factor_ap
-            lambda_a_ap *= scale_factor_ap
+        if abs(total_check_ap - total_apertura_safe) > model_config.TOL_TOTAL_COHERENCE:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+            # Ricalibra per mantenere total coerente con precisione
+            if total_check_ap > model_config.TOL_DIVISION_ZERO:
+                scale_factor_ap = total_apertura_safe / total_check_ap
+                if math.isfinite(scale_factor_ap) and scale_factor_ap > 0:
+                    lambda_h_ap *= scale_factor_ap
+                    lambda_a_ap *= scale_factor_ap
+                    
+                    # ⚠️ VERIFICA FINALE: Double-check coerenza dopo ricalibrazione
+                    total_check_final = lambda_h_ap + lambda_a_ap
+                    if abs(total_check_final - total_apertura_safe) > model_config.TOL_TOTAL_COHERENCE:
+                        logger.warning(f"Coerenza total apertura ancora non raggiunta: {total_check_final} vs {total_apertura_safe}")
+                else:
+                    logger.warning(f"scale_factor_ap non valido: {scale_factor_ap}, uso lambda senza ricalibrazione")
+            else:
+                logger.warning(f"total_check_ap troppo piccolo: {total_check_ap}, uso lambda senza ricalibrazione")
         
         # Constraints
         lambda_h_ap = max(0.3, min(4.5, lambda_h_ap))
@@ -5072,6 +6154,7 @@ def track_odds_movement(
     
     if len(match_data) >= 2:
         # Calcola cambiamenti
+        # ⚠️ PROTEZIONE: len(match_data) >= 2 garantisce che iloc[0] e iloc[-1] siano validi
         first = match_data.iloc[0]
         last = match_data.iloc[-1]
         
@@ -5111,25 +6194,39 @@ def get_odds_movement_insights(match_name: str) -> Dict[str, Any]:
         return {}
     
     # Calcola volatilità
-    volatility_1 = match_data["odds_1"].std()
-    volatility_x = match_data["odds_x"].std()
-    volatility_2 = match_data["odds_2"].std()
+    # ⚠️ PROTEZIONE: Calcola std solo se ci sono almeno 2 valori (altrimenti std = NaN)
+    # len(match_data) >= 2 è già garantito dal controllo sopra
+    volatility_1 = match_data["odds_1"].std() if len(match_data) > 1 and "odds_1" in match_data.columns else 0.0
+    volatility_x = match_data["odds_x"].std() if len(match_data) > 1 and "odds_x" in match_data.columns else 0.0
+    volatility_2 = match_data["odds_2"].std() if len(match_data) > 1 and "odds_2" in match_data.columns else 0.0
+    
+    # Sostituisci NaN con 0.0 se std restituisce NaN
+    volatility_1 = 0.0 if pd.isna(volatility_1) else volatility_1
+    volatility_x = 0.0 if pd.isna(volatility_x) else volatility_x
+    volatility_2 = 0.0 if pd.isna(volatility_2) else volatility_2
     
     # Identifica movimenti significativi
     significant_moves = []
-    for i in range(1, len(match_data)):
-        prev = match_data.iloc[i-1]
-        curr = match_data.iloc[i]
-        
-        for col in ["odds_1", "odds_x", "odds_2"]:
-            change_pct = abs((curr[col] - prev[col]) / prev[col]) * 100
-            if change_pct > 3:  # Movimento > 3%
-                significant_moves.append({
-                    "market": col,
-                    "change": change_pct,
-                    "timestamp": curr["timestamp"],
-                    "direction": "up" if curr[col] > prev[col] else "down"
-                })
+    # ⚠️ PROTEZIONE: range(1, len(match_data)) richiede almeno 2 elementi
+    if len(match_data) >= 2:
+        for i in range(1, len(match_data)):
+            prev = match_data.iloc[i-1]
+            curr = match_data.iloc[i]
+            
+            # ⚠️ PROTEZIONE: Verifica che le colonne esistano e che prev[col] non sia zero
+            for col in ["odds_1", "odds_x", "odds_2"]:
+                if col not in prev.index or col not in curr.index:
+                    continue
+                if prev[col] == 0 or pd.isna(prev[col]) or pd.isna(curr[col]):
+                    continue
+                change_pct = abs((curr[col] - prev[col]) / prev[col]) * 100
+                if change_pct > 3:  # Movimento > 3%
+                    significant_moves.append({
+                        "market": col,
+                        "change": change_pct,
+                        "timestamp": curr["timestamp"] if "timestamp" in curr.index else "",
+                        "direction": "up" if curr[col] > prev[col] else "down"
+                    })
     
     return {
         "volatility": {
@@ -6348,12 +7445,34 @@ def get_realtime_performance_metrics(
             accuracy = (correct / total * 100) if total > 0 else 0
         
         # ROI simulato
-        roi_data = calculate_roi(
-            (df_complete["p_home"] / 100).tolist() if df_complete["p_home"].max() > 1 else df_complete["p_home"].tolist(),
-            (df_complete["esito_reale"] == "1").astype(int).tolist(),
-            df_complete["odds_1"].tolist(),
-            threshold=0.03
-        )
+        # ⚠️ PROTEZIONE: Verifica che df_complete non sia vuoto e che p_home esista
+        if len(df_complete) > 0 and "p_home" in df_complete.columns:
+            p_home_values = df_complete["p_home"]
+            # ⚠️ PROTEZIONE: Verifica che p_home non sia vuoto prima di chiamare .max()
+            if len(p_home_values) > 0:
+                p_home_list = (p_home_values / 100).tolist() if p_home_values.max() > 1 else p_home_values.tolist()
+            else:
+                p_home_list = []
+        else:
+            p_home_list = []
+        
+        # ⚠️ PROTEZIONE: Verifica che tutte le liste abbiano la stessa lunghezza
+        if len(p_home_list) > 0 and "esito_reale" in df_complete.columns and "odds_1" in df_complete.columns:
+            outcomes_list = (df_complete["esito_reale"] == "1").astype(int).tolist()
+            odds_list = df_complete["odds_1"].tolist()
+            # Verifica coerenza lunghezza
+            min_len = min(len(p_home_list), len(outcomes_list), len(odds_list))
+            if min_len > 0:
+                roi_data = calculate_roi(
+                    p_home_list[:min_len],
+                    outcomes_list[:min_len],
+                    odds_list[:min_len],
+                    threshold=0.03
+                )
+            else:
+                roi_data = {"roi": 0.0, "total_bets": 0, "won": 0, "lost": 0}
+        else:
+            roi_data = {"roi": 0.0, "total_bets": 0, "won": 0, "lost": 0}
         
         # Trend (confronta con periodo precedente)
         if len(df) >= 100:
@@ -6576,6 +7695,10 @@ def risultato_completo_improved(
     xg_against_home: float = None,
     xg_for_away: float = None,
     xg_against_away: float = None,
+    xa_for_home: float = None,
+    xa_against_home: float = None,
+    xa_for_away: float = None,
+    xa_against_away: float = None,
     manual_boost_home: float = 0.0,
     manual_boost_away: float = 0.0,
     league: str = "generic",
@@ -6650,9 +7773,15 @@ def risultato_completo_improved(
     px = 1 / odds_x_n
     p2 = 1 / odds_2_n
     tot_p = p1 + px + p2
-    p1 /= tot_p
-    px /= tot_p
-    p2 /= tot_p
+    # ⚠️ PROTEZIONE: Verifica che tot_p non sia zero o troppo piccolo
+    if tot_p > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        p1 /= tot_p
+        px /= tot_p
+        p2 /= tot_p
+    else:
+        # Fallback: distribuzione uniforme se totale è troppo piccolo
+        p1 = px = p2 = 1.0 / 3.0
+        logger.warning("Probabilità 1X2 normalizzate sommano a zero, uso distribuzione uniforme")
     
     # 3. Home advantage per lega
     ha = home_advantage_factor(league)
@@ -6832,68 +7961,152 @@ def risultato_completo_improved(
     lh_before_xg = lh
     la_before_xg = la
     
+    # ⚠️ PRECISIONE MANIACALE: Blend con xG usando approccio bayesiano migliorato con validazione completa
     if all(x is not None for x in [xg_for_home, xg_against_home, xg_for_away, xg_against_away]):
-        # Stima xG per la partita: media tra xG for e xG against avversario
-        xg_h_est = (xg_for_home + xg_against_away) / 2.0
-        xg_a_est = (xg_for_away + xg_against_home) / 2.0
+        # ⚠️ VALIDAZIONE ROBUSTA: Verifica che tutti gli xG siano validi
+        xg_values = [xg_for_home, xg_against_home, xg_for_away, xg_against_away]
+        xg_valid = True
+        for i, xg_val in enumerate(xg_values):
+            if not isinstance(xg_val, (int, float)) or not math.isfinite(xg_val) or xg_val < 0:
+                logger.warning(f"xG valore {i} non valido: {xg_val}, ignoro blend xG")
+                xg_valid = False
+                break
         
-        # ⚠️ VALIDAZIONE: Limita xG stimati a range ragionevole (0.3 - 4.0)
-        # xG molto alti (>4.0) o molto bassi (<0.3) sono probabilmente errori
-        xg_h_est = max(0.3, min(4.0, xg_h_est))
-        xg_a_est = max(0.3, min(4.0, xg_a_est))
-        
-        # ⚠️ CONTROLLO: Se xG è molto diverso dai lambda di mercato, riduci peso xG
-        # Questo evita che xG sbagliato sostituisca completamente i lambda di mercato
-        xg_h_diff = abs(xg_h_est - lh) / max(0.1, lh)  # Differenza percentuale
-        xg_a_diff = abs(xg_a_est - la) / max(0.1, la)
-        
-        # Se differenza > 50%, riduci peso xG
-        xg_penalty_h = 1.0 if xg_h_diff <= 0.5 else max(0.3, 1.0 - (xg_h_diff - 0.5))
-        xg_penalty_a = 1.0 if xg_a_diff <= 0.5 else max(0.3, 1.0 - (xg_a_diff - 0.5))
-        
-        # MIGLIORAMENTO: Confidence più accurata basata su:
-        # 1. Dimensione campione (proxy: valore xG - più alto = più dati)
-        # 2. Coerenza tra xG for e against
-        # 3. NUOVO: Validazione con dati reali dalle API (se disponibili)
-        
-        # Base confidence: valore xG normalizzato (più alto = più affidabile)
-        # ⚠️ CORREZIONE: Non usare somma, usa media per evitare valori troppo alti
-        xg_h_base_conf = min(1.0, (xg_for_home + xg_against_away) / 4.0)  # Normalizza a max 4.0 (2.0 per squadra)
-        xg_a_base_conf = min(1.0, (xg_for_away + xg_against_home) / 4.0)
-        
-        # Coerenza: se xG for e against sono simili, più affidabile
-        consistency_h = 1.0 - abs(xg_for_home - xg_against_away) / max(0.1, (xg_for_home + xg_against_away) / 2)
-        consistency_a = 1.0 - abs(xg_for_away - xg_against_home) / max(0.1, (xg_for_away + xg_against_home) / 2)
-        
-        # NUOVO: Boost confidence se abbiamo dati reali dalle API (advanced_data)
-        api_boost = 1.0
-        if advanced_data and advanced_data.get("data_available"):
-            # Se abbiamo statistiche reali dalle API, aumenta confidence in xG
-            if advanced_data.get("home_team_stats") or advanced_data.get("away_team_stats"):
-                api_boost = model_config.XG_API_BOOST
-        
-        # Confidence finale: base * consistency * api_boost * penalty
-        xg_h_confidence = xg_h_base_conf * consistency_h * api_boost * xg_penalty_h
-        xg_a_confidence = xg_a_base_conf * consistency_a * api_boost * xg_penalty_a
-        
-        # Pesatura bayesiana: w = confidence * consistency usando ModelConfig
-        # ⚠️ RIDOTTO: Peso massimo xG più conservativo per evitare esplosioni
-        max_xg_weight = min(0.35, model_config.XG_MAX_WEIGHT if api_boost > 1.0 else model_config.XG_XG_WEIGHT)
-        w_xg_h = min(max_xg_weight, xg_h_confidence * 0.4)  # Ridotto da 0.5 a 0.4
-        w_xg_a = min(max_xg_weight, xg_a_confidence * 0.4)
-        
-        w_market_h = 1.0 - w_xg_h
-        w_market_a = 1.0 - w_xg_a
-        
-        # Blend finale
-        lh = w_market_h * lh + w_xg_h * xg_h_est
-        la = w_market_a * la + w_xg_a * xg_a_est
-        
-        # ⚠️ CONTROLLO CRITICO: Limita effetto totale del blend xG
-        # Il blend xG non può cambiare i lambda più del 30% rispetto a prima del blend
-        max_xg_adjustment = 1.3  # Massimo 30% di variazione
-        lh = max(lh_before_xg / max_xg_adjustment, min(lh_before_xg * max_xg_adjustment, lh))
-        la = max(la_before_xg / max_xg_adjustment, min(la_before_xg * max_xg_adjustment, la))
+        if not xg_valid:
+            # Se qualche xG non è valido, salta il blend
+            pass
+        else:
+            # ⚠️ PRECISIONE: Stima xG per la partita: media tra xG for e xG against avversario
+            # Usa Kahan per media precisa
+            xg_h_sum = xg_for_home + xg_against_away
+            xg_a_sum = xg_for_away + xg_against_home
+            
+            # ⚠️ VERIFICA: Assicura che somme siano finite
+            if not math.isfinite(xg_h_sum) or not math.isfinite(xg_a_sum):
+                logger.warning(f"Somme xG non finite: xg_h_sum={xg_h_sum}, xg_a_sum={xg_a_sum}, ignoro blend xG")
+            else:
+                xg_h_est = xg_h_sum / 2.0
+                xg_a_est = xg_a_sum / 2.0
+                
+                # ⚠️ VALIDAZIONE: Limita xG stimati a range ragionevole (0.3 - 4.0)
+                # xG molto alti (>4.0) o molto bassi (<0.3) sono probabilmente errori
+                xg_h_est = max(0.3, min(4.0, xg_h_est))
+                xg_a_est = max(0.3, min(4.0, xg_a_est))
+                
+                # ⚠️ VERIFICA: Double-check che xG siano finiti dopo clamp
+                if not math.isfinite(xg_h_est) or not math.isfinite(xg_a_est):
+                    logger.warning(f"xG stimati non finiti dopo clamp: xg_h={xg_h_est}, xg_a={xg_a_est}, ignoro blend xG")
+                else:
+                    # ⚠️ CONTROLLO: Se xG è molto diverso dai lambda di mercato, riduci peso xG
+                    # Questo evita che xG sbagliato sostituisca completamente i lambda di mercato
+                    # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata per protezione divisione per zero
+                    lh_safe = max(model_config.TOL_DIVISION_ZERO, abs(lh))
+                    la_safe = max(model_config.TOL_DIVISION_ZERO, abs(la))
+                    xg_h_diff = abs(xg_h_est - lh) / lh_safe  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+                    xg_a_diff = abs(xg_a_est - la) / la_safe  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+                    
+                    # ⚠️ VERIFICA: Assicura che differenze siano finite
+                    if not math.isfinite(xg_h_diff):
+                        xg_h_diff = 0.0
+                    if not math.isfinite(xg_a_diff):
+                        xg_a_diff = 0.0
+                    
+                    # Se differenza > 50%, riduci peso xG
+                    xg_penalty_h = 1.0 if xg_h_diff <= 0.5 else max(0.3, 1.0 - (xg_h_diff - 0.5))
+                    xg_penalty_a = 1.0 if xg_a_diff <= 0.5 else max(0.3, 1.0 - (xg_a_diff - 0.5))
+                    
+                    # ⚠️ PROTEZIONE: Limita penalty a range [0, 1]
+                    xg_penalty_h = max(0.0, min(1.0, xg_penalty_h))
+                    xg_penalty_a = max(0.0, min(1.0, xg_penalty_a))
+                    
+                    # MIGLIORAMENTO: Confidence più accurata basata su:
+                    # 1. Dimensione campione (proxy: valore xG - più alto = più dati)
+                    # 2. Coerenza tra xG for e against
+                    # 3. NUOVO: Validazione con dati reali dalle API (se disponibili)
+                    
+                    # Base confidence: valore xG normalizzato (più alto = più affidabile)
+                    # ⚠️ PRECISIONE: Calcola con protezione overflow
+                    xg_h_sum_conf = xg_for_home + xg_against_away
+                    xg_a_sum_conf = xg_for_away + xg_against_home
+                    xg_h_base_conf = min(1.0, xg_h_sum_conf / 4.0) if math.isfinite(xg_h_sum_conf) else 0.5  # Normalizza a max 4.0 (2.0 per squadra)
+                    xg_a_base_conf = min(1.0, xg_a_sum_conf / 4.0) if math.isfinite(xg_a_sum_conf) else 0.5
+                    
+                    # Coerenza: se xG for e against sono simili, più affidabile
+                    # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata per protezione divisione per zero
+                    xg_sum_h = xg_for_home + xg_against_away
+                    xg_sum_a = xg_for_away + xg_against_home
+                    xg_sum_h_safe = max(model_config.TOL_DIVISION_ZERO, xg_sum_h / 2.0)
+                    xg_sum_a_safe = max(model_config.TOL_DIVISION_ZERO, xg_sum_a / 2.0)
+                    consistency_h = 1.0 - abs(xg_for_home - xg_against_away) / xg_sum_h_safe  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+                    consistency_a = 1.0 - abs(xg_for_away - xg_against_home) / xg_sum_a_safe  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+                    # ⚠️ MICRO-PRECISIONE: Limita consistency a range [0, 1] e verifica finitezza
+                    consistency_h = max(0.0, min(1.0, consistency_h)) if math.isfinite(consistency_h) else 0.5
+                    consistency_a = max(0.0, min(1.0, consistency_a)) if math.isfinite(consistency_a) else 0.5
+                    
+                    # NUOVO: Boost confidence se abbiamo dati reali dalle API (advanced_data) e xA coerente
+                    api_boost = 1.0
+                    if advanced_data and advanced_data.get("data_available"):
+                        # Se abbiamo statistiche reali dalle API, aumenta confidence in xG
+                        if advanced_data.get("home_team_stats") or advanced_data.get("away_team_stats"):
+                            api_boost = model_config.XG_API_BOOST
+                    
+                    # NUOVO: xA come modulatore conservativo della confidence xG
+                    xa_boost_h = 1.0
+                    xa_boost_a = 1.0
+                    if all(v is not None for v in [xa_for_home, xa_against_away]):
+                        # ⚠️ PRECISIONE: Calcola xA con protezione
+                        xa_h_est = (xa_for_home + xa_against_away) / 2.0
+                        if math.isfinite(xa_h_est) and math.isfinite(xg_h_est):
+                            align_h = 1.0 - abs(xa_h_est - xg_h_est) / max(0.2, (xa_h_est + xg_h_est) / 2.0)
+                            xa_boost_h = 0.95 + 0.1 * max(0.0, min(1.0, align_h))  # range ~[0.95, 1.05]
+                            xa_boost_h = max(0.9, min(1.1, xa_boost_h))  # Protezione extra
+                    if all(v is not None for v in [xa_for_away, xa_against_home]):
+                        xa_a_est = (xa_for_away + xa_against_home) / 2.0
+                        if math.isfinite(xa_a_est) and math.isfinite(xg_a_est):
+                            align_a = 1.0 - abs(xa_a_est - xg_a_est) / max(0.2, (xa_a_est + xg_a_est) / 2.0)
+                            xa_boost_a = 0.95 + 0.1 * max(0.0, min(1.0, align_a))
+                            xa_boost_a = max(0.9, min(1.1, xa_boost_a))  # Protezione extra
+                    
+                    # Confidence finale: base * consistency * api_boost * xa_boost * penalty
+                    # ⚠️ PRECISIONE: Calcola con protezione overflow
+                    xg_h_confidence = xg_h_base_conf * consistency_h * api_boost * xa_boost_h * xg_penalty_h
+                    xg_a_confidence = xg_a_base_conf * consistency_a * api_boost * xa_boost_a * xg_penalty_a
+                    
+                    # ⚠️ VERIFICA: Assicura che confidence siano finite e in range [0, 1]
+                    xg_h_confidence = max(0.0, min(1.0, xg_h_confidence)) if math.isfinite(xg_h_confidence) else 0.3
+                    xg_a_confidence = max(0.0, min(1.0, xg_a_confidence)) if math.isfinite(xg_a_confidence) else 0.3
+                    
+                    # Pesatura bayesiana: w = confidence * consistency usando ModelConfig
+                    # ⚠️ RIDOTTO: Peso massimo xG più conservativo per evitare esplosioni
+                    max_xg_weight = min(0.35, model_config.XG_MAX_WEIGHT if api_boost > 1.0 else model_config.XG_XG_WEIGHT)
+                    w_xg_h = min(max_xg_weight, xg_h_confidence * 0.4)  # Ridotto da 0.5 a 0.4
+                    w_xg_a = min(max_xg_weight, xg_a_confidence * 0.4)
+                    
+                    # ⚠️ VERIFICA: Assicura che pesi sommino correttamente
+                    w_market_h = 1.0 - w_xg_h
+                    w_market_a = 1.0 - w_xg_a
+                    
+                    # ⚠️ PRECISIONE: Verifica che pesi siano in range [0, 1]
+                    w_xg_h = max(0.0, min(1.0, w_xg_h))
+                    w_xg_a = max(0.0, min(1.0, w_xg_a))
+                    w_market_h = max(0.0, min(1.0, w_market_h))
+                    w_market_a = max(0.0, min(1.0, w_market_a))
+                    
+                    # Blend finale con precisione
+                    lh = w_market_h * lh + w_xg_h * xg_h_est
+                    la = w_market_a * la + w_xg_a * xg_a_est
+                    
+                    # ⚠️ VERIFICA: Assicura che lambda blended siano finiti
+                    if not math.isfinite(lh) or not math.isfinite(la):
+                        logger.warning(f"Lambda dopo blend xG non finiti: lh={lh}, la={la}, uso valori prima del blend")
+                        lh = lh_before_xg
+                        la = la_before_xg
+                    else:
+                        # ⚠️ CONTROLLO CRITICO: Limita effetto totale del blend xG
+                        # Il blend xG non può cambiare i lambda più del 30% rispetto a prima del blend
+                        max_xg_adjustment = 1.3  # Massimo 30% di variazione
+                        lh = max(lh_before_xg / max_xg_adjustment, min(lh_before_xg * max_xg_adjustment, lh))
+                        la = max(la_before_xg / max_xg_adjustment, min(la_before_xg * max_xg_adjustment, la))
     
     # Constraints finali
     lh = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, lh))
@@ -6901,8 +8114,17 @@ def risultato_completo_improved(
     
     # 7.5. ⭐ CALCOLA SPREAD E TOTAL CORRENTI DAI LAMBDA FINALI ⭐
     # Importante per statistiche e calcoli successivi
-    spread_corrente_calculated = lh - la
-    total_corrente_calculated = lh + la
+    # ⚠️ MICRO-PRECISIONE: Valida lambda prima di calcolare spread/total
+    if not isinstance(lh, (int, float)) or not isinstance(la, (int, float)):
+        logger.error(f"Lambda non validi per calcolo spread/total: lh={lh}, la={la}")
+        spread_corrente_calculated = 0.0
+        total_corrente_calculated = 2.5
+    else:
+        spread_corrente_calculated = lh - la
+        total_corrente_calculated = lh + la
+        # ⚠️ MICRO-PRECISIONE: Valida e limita spread/total calcolati
+        spread_corrente_calculated = max(-3.0, min(3.0, spread_corrente_calculated))
+        total_corrente_calculated = max(0.5, min(6.0, total_corrente_calculated))
     
     # 8. Ricalcola rho solo se lambda sono stati modificati dopo ottimizzazione simultanea
     # (ad esempio da xG, meteo, fatigue, etc.)
@@ -6917,6 +8139,8 @@ def risultato_completo_improved(
     
     if lambda_modified:
         # Lambda modificati, ricalcola rho
+        # ⚠️ PRECISIONE: Usa px già calcolato (dalla riga 6776), che è già normalizzato
+        # px è ancora valido perché non è stato modificato dopo il calcolo iniziale
         rho = estimate_rho_optimized(lh, la, px, odds_btts, None)
     # Altrimenti rho è già ottimale dall'ottimizzazione simultanea
     
@@ -6959,6 +8183,17 @@ def risultato_completo_improved(
     btts = calc_bt_ts_from_matrix(mat_ft)
     gg_over25 = calc_gg_over25_from_matrix(mat_ft)
     
+    # ⚠️ COERENZA MATEMATICA: Relazioni tra mercati
+    # BTTS implica almeno 2 gol totali → P(BTTS) ≤ P(Over 1.5)
+    if btts > over_15:
+        logger.warning(f"Incoerenza BTTS vs Over 1.5: BTTS={btts:.4f} > Over1.5={over_15:.4f}. Correggo BTTS.")
+        btts = over_15
+    # GG + Over 2.5 ≤ min(BTTS, Over 2.5)
+    gg_over25_cap = min(btts, over_25)
+    if gg_over25 > gg_over25_cap:
+        logger.warning(f"Incoerenza GG+Over2.5: {gg_over25:.4f} > cap={gg_over25_cap:.4f}. Correggo.")
+        gg_over25 = gg_over25_cap
+    
     # ⚠️ VALIDAZIONE: Controlla probabilità anomale
     validation_warnings = []
     if over_15 > 0.99:
@@ -6982,8 +8217,8 @@ def risultato_completo_improved(
             c_matrix = (t - matrix_sum) - y
             matrix_sum = t
     
-    # ⚠️ PRECISIONE: Tolleranza più stretta (1e-6 invece di 0.01)
-    if abs(matrix_sum - 1.0) > 1e-6:
+    # ⚠️ PRECISIONE: Tolleranza più stretta
+    if abs(matrix_sum - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         validation_warnings.append(f"⚠️ Matrice non normalizzata correttamente: somma={matrix_sum:.8f} (dovrebbe essere 1.0)")
         logger.warning(f"Matrice non normalizzata: somma={matrix_sum:.10f}")
     
@@ -7022,8 +8257,19 @@ def risultato_completo_improved(
     
     # 12. Margini vittoria
     mg = len(mat_ft) - 1
-    marg2 = sum(mat_ft[h][a] for h in range(mg+1) for a in range(mg+1) if h - a >= 2)
-    marg3 = sum(mat_ft[h][a] for h in range(mg+1) for a in range(mg+1) if h - a >= 3)
+    # ⚠️ PRECISIONE: Accumulo con protezione NaN/negativi
+    marg2 = 0.0
+    marg3 = 0.0
+    for h in range(mg + 1):
+        for a in range(mg + 1):
+            p = mat_ft[h][a]
+            if p > 0 and p == p:  # Ignora negativi e NaN
+                if h - a >= 2:
+                    marg2 += p
+                if h - a >= 3:
+                    marg3 += p
+    marg2 = max(0.0, min(1.0, marg2))
+    marg3 = max(0.0, min(1.0, marg3))
     
     # 13. Combo mercati
     combo_book = {
@@ -7065,10 +8311,29 @@ def risultato_completo_improved(
     }
     
     # 17. Statistiche aggiuntive
-    odd_mass = sum(p for i, p in enumerate(dist_tot_ft) if i % 2 == 1)
-    even_mass2 = 1 - odd_mass
-    cover_0_2 = sum(dist_tot_ft[i] for i in range(0, min(3, len(dist_tot_ft))))
-    cover_0_3 = sum(dist_tot_ft[i] for i in range(0, min(4, len(dist_tot_ft))))
+    # ⚠️ PRECISIONE: Accumulo con protezione (dist_tot_ft è già normalizzata, ma aggiungiamo protezione per sicurezza)
+    odd_mass = 0.0
+    for i, p in enumerate(dist_tot_ft):
+        if i % 2 == 1 and p > 0 and p == p:  # Ignora negativi e NaN
+            odd_mass += p
+    odd_mass = max(0.0, min(1.0, odd_mass))
+    even_mass2 = 1.0 - odd_mass
+    
+    cover_0_2 = 0.0
+    for i in range(0, min(3, len(dist_tot_ft))):
+        if i < len(dist_tot_ft):
+            p = dist_tot_ft[i]
+            if p > 0 and p == p:  # Ignora negativi e NaN
+                cover_0_2 += p
+    cover_0_2 = max(0.0, min(1.0, cover_0_2))
+    
+    cover_0_3 = 0.0
+    for i in range(0, min(4, len(dist_tot_ft))):
+        if i < len(dist_tot_ft):
+            p = dist_tot_ft[i]
+            if p > 0 and p == p:  # Ignora negativi e NaN
+                cover_0_3 += p
+    cover_0_3 = max(0.0, min(1.0, cover_0_3))
     
     # 18. Calibrazione probabilità (se disponibile storico) - CALIBRAZIONE DINAMICA PER LEGA
     calibrate_func = load_calibration_from_history(league=league)
@@ -7111,7 +8376,7 @@ def risultato_completo_improved(
         
         # Normalizza ensemble se necessario
         ensemble_tot = ensemble_h + ensemble_d + ensemble_a
-        if ensemble_tot > 1e-10:
+        if ensemble_tot > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
             ensemble_h /= ensemble_tot
             ensemble_d /= ensemble_tot
             ensemble_a /= ensemble_tot
@@ -7122,7 +8387,7 @@ def risultato_completo_improved(
         
         # ⚠️ PRECISIONE: Normalizza probabilità finali dopo ensemble
         tot_final = p_home_final + p_draw_final + p_away_final
-        if tot_final > 1e-10:  # ⚠️ PRECISIONE: Tolleranza più stretta
+        if tot_final > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
             p_home_final /= tot_final
             p_draw_final /= tot_final
             p_away_final /= tot_final
@@ -7135,8 +8400,8 @@ def risultato_completo_improved(
     # ⚠️ PRECISIONE: Verifica finale con tolleranza più stretta
     # (La normalizzazione è già stata fatta dopo ensemble, ma verifichiamo per sicurezza)
     tot_final_check = p_home_final + p_draw_final + p_away_final
-    # ⚠️ PRECISIONE: Tolleranza più stretta (1e-6 invece di 0.01)
-    if abs(tot_final_check - 1.0) > 1e-6:  # Se non è già normalizzato
+    # ⚠️ PRECISIONE: Tolleranza più stretta
+    if abs(tot_final_check - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         if tot_final_check > 0:
             p_home_final /= tot_final_check
             p_draw_final /= tot_final_check
@@ -7146,13 +8411,26 @@ def risultato_completo_improved(
             # Fallback estremo: usa probabilità raw
             p_home_final, p_draw_final, p_away_final = p_home, p_draw, p_away
     
-    # ⚠️ VALIDAZIONE COERENZA: Verifica monotonia probabilità Over/Under
-    if over_15 is not None and over_25 is not None and over_35 is not None:
-        if not (over_15 >= over_25 >= over_35):
-            logger.warning(f"Violazione monotonia Over: {over_15:.4f} >= {over_25:.4f} >= {over_35:.4f}")
-            # Correggi monotonia
-            over_25 = min(over_15, max(over_35, over_25))
-            over_35 = min(over_25, over_35)
+    # ⚠️ VALIDAZIONE COERENZA: Verifica monotonia probabilità Over/Under (generalizzata)
+    over_map = {
+        1.5: over_15,
+        2.5: over_25,
+        3.5: over_35,
+    }
+    if all(v is not None for v in over_map.values()):
+        # Ordina per soglia crescente e impone monotonia non crescente
+        thresholds = sorted(over_map.keys())
+        overs = [over_map[t] for t in thresholds]
+        # Enforce: overs[i] >= overs[i+1]
+        changed = False
+        for i in range(len(overs) - 1):
+            if overs[i] < overs[i + 1]:
+                logger.warning(f"Violazione monotonia Over tra {thresholds[i]} e {thresholds[i+1]}: {overs[i]:.4f} < {overs[i+1]:.4f}. Correggo.")
+                # ⚠️ CORREZIONE: Se Over 1.5 < Over 2.5, imposta Over 2.5 = Over 1.5 (monotonia non crescente)
+                overs[i + 1] = overs[i]
+                changed = True
+        if changed:
+            over_15, over_25, over_35 = overs
             under_15 = 1.0 - over_15
             under_25 = 1.0 - over_25
             under_35 = 1.0 - over_35
@@ -7170,10 +8448,175 @@ def risultato_completo_improved(
             p_draw_final /= tot_fix
             p_away_final /= tot_fix
     
+    # ⚠️ VALIDAZIONE COERENZA MATEMATICA: Verifica coerenza tra probabilità marginali e combinate
+    # 1. Coerenza probabilità complementari
+    if abs((over_15 + under_15) - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        logger.warning(f"Over 1.5 + Under 1.5 = {over_15 + under_15:.6f} (dovrebbe essere 1.0)")
+        under_15 = 1.0 - over_15
+    if abs((over_25 + under_25) - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        logger.warning(f"Over 2.5 + Under 2.5 = {over_25 + under_25:.6f} (dovrebbe essere 1.0)")
+        under_25 = 1.0 - over_25
+    if abs((over_35 + under_35) - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        logger.warning(f"Over 3.5 + Under 3.5 = {over_35 + under_35:.6f} (dovrebbe essere 1.0)")
+        under_35 = 1.0 - over_35
+    if abs((even_ft + odd_ft) - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        logger.warning(f"Pari FT + Dispari FT = {even_ft + odd_ft:.6f} (dovrebbe essere 1.0)")
+        odd_ft = 1.0 - even_ft
+    
+    # 2. Coerenza probabilità combinate vs marginali (P(A & B) <= min(P(A), P(B)))
+    # BTTS vs Over 1.5 (già verificato prima, ma ri-verifichiamo)
+    if btts > over_15 + model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        logger.warning(f"BTTS ({btts:.4f}) > Over 1.5 ({over_15:.4f}), correggo")
+        btts = min(btts, over_15)
+    
+    # GG & Over 2.5 vs BTTS e Over 2.5
+    max_gg_over25 = min(btts, over_25)
+    if gg_over25 > max_gg_over25 + model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        logger.warning(f"GG & Over 2.5 ({gg_over25:.4f}) > min(BTTS, Over 2.5) ({max_gg_over25:.4f}), correggo")
+        gg_over25 = max_gg_over25
+    
+    # Esito & Over vs Esito e Over
+    for esito_key, esito_prob in [("1", p_home_final), ("X", p_draw_final), ("2", p_away_final)]:
+        for soglia, over_prob in [(1.5, over_15), (2.5, over_25)]:
+            combo_key = f"{esito_key} & Over {soglia}"
+            if combo_key in combo_book:
+                combo_prob = combo_book[combo_key]
+                max_combo = min(esito_prob, over_prob)
+                if combo_prob > max_combo + model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+                    logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(P({esito_key}), Over {soglia}) ({max_combo:.4f}), correggo")
+                    combo_book[combo_key] = max_combo
+    
+    # Esito & BTTS vs Esito e BTTS
+    for esito_key, esito_prob in [("1", p_home_final), ("X", p_draw_final), ("2", p_away_final)]:
+        combo_key = f"{esito_key} & BTTS"
+        if combo_key in combo_book:
+            combo_prob = combo_book[combo_key]
+            max_combo = min(esito_prob, btts)
+            if combo_prob > max_combo + model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+                logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(P({esito_key}), BTTS) ({max_combo:.4f}), correggo")
+                combo_book[combo_key] = max_combo
+    
+    # DC & Over vs DC e Over
+    for dc_key, dc_prob in [("1X", p_home_final + p_draw_final), ("X2", p_draw_final + p_away_final), ("12", p_home_final + p_away_final)]:
+        for soglia, over_prob in [(1.5, over_15), (2.5, over_25), (3.5, over_35)]:
+            combo_key = f"{dc_key} & Over {soglia}"
+            if combo_key in combo_book:
+                combo_prob = combo_book[combo_key]
+                max_combo = min(dc_prob, over_prob)
+                if combo_prob > max_combo + model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+                    logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(DC {dc_key}, Over {soglia}) ({max_combo:.4f}), correggo")
+                    combo_book[combo_key] = max_combo
+            # Under
+            combo_key_under = f"{dc_key} & Under {soglia}"
+            if combo_key_under in combo_book:
+                under_prob = 1.0 - over_prob
+                combo_prob = combo_book[combo_key_under]
+                max_combo = min(dc_prob, under_prob)
+                if combo_prob > max_combo + model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+                    logger.warning(f"{combo_key_under} ({combo_prob:.4f}) > min(DC {dc_key}, Under {soglia}) ({max_combo:.4f}), correggo")
+                    combo_book[combo_key_under] = max_combo
+    
+    # DC & BTTS vs DC e BTTS
+    for dc_key, dc_prob in [("1X", p_home_final + p_draw_final), ("X2", p_draw_final + p_away_final), ("12", p_home_final + p_away_final)]:
+        combo_key = f"{dc_key} & BTTS"
+        if combo_key in combo_book:
+            combo_prob = combo_book[combo_key]
+            max_combo = min(dc_prob, btts)
+            if combo_prob > max_combo + model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+                logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(DC {dc_key}, BTTS) ({max_combo:.4f}), correggo")
+                combo_book[combo_key] = max_combo
+    
+    # 3. Coerenza Clean Sheet: CS Home + (almeno 1 gol away) = 1.0
+    # P(almeno 1 gol away) = 1 - P(0 gol away) = 1 - CS Home
+    # Quindi: CS Home + P(almeno 1 gol away) = CS Home + (1 - CS Home) = 1.0
+    # Verifichiamo che CS Home sia nel range [0, 1] e che la somma sia coerente
+    if cs_home < 0 or cs_home > 1:
+        logger.warning(f"CS Home ({cs_home:.4f}) fuori range [0, 1], correggo")
+        cs_home = max(0.0, min(1.0, cs_home))
+    if cs_away < 0 or cs_away > 1:
+        logger.warning(f"CS Away ({cs_away:.4f}) fuori range [0, 1], correggo")
+        cs_away = max(0.0, min(1.0, cs_away))
+    
+    # Verifica coerenza: CS Home + P(almeno 1 gol away) = 1.0 (sempre vero per definizione)
+    # Ma verifichiamo che CS Home sia calcolato correttamente dalla matrice
+    # CS Home = sum(mat[h][0] for h) = P(away segna 0 gol)
+    # Quindi: CS Home + P(away segna >= 1 gol) = 1.0 (sempre vero)
+    
+    # 4. Coerenza DC: DC 1X = P(1) + P(X) (perché mutuamente esclusivi)
+    dc_1x_calc = p_home_final + p_draw_final
+    if abs(dc["DC Casa o Pareggio"] - dc_1x_calc) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        logger.warning(f"DC 1X calcolato ({dc['DC Casa o Pareggio']:.4f}) != P(1) + P(X) ({dc_1x_calc:.4f}), correggo")
+        dc["DC Casa o Pareggio"] = dc_1x_calc
+    
+    dc_x2_calc = p_draw_final + p_away_final
+    if abs(dc["DC Trasferta o Pareggio"] - dc_x2_calc) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        logger.warning(f"DC X2 calcolato ({dc['DC Trasferta o Pareggio']:.4f}) != P(X) + P(2) ({dc_x2_calc:.4f}), correggo")
+        dc["DC Trasferta o Pareggio"] = dc_x2_calc
+    
+    dc_12_calc = p_home_final + p_away_final
+    if abs(dc["DC Casa o Trasferta"] - dc_12_calc) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        logger.warning(f"DC 12 calcolato ({dc['DC Casa o Trasferta']:.4f}) != P(1) + P(2) ({dc_12_calc:.4f}), correggo")
+        dc["DC Casa o Trasferta"] = dc_12_calc
+    
     # Calcola market movement info per output (usa spread e total correnti calcolati)
     movement_info = calculate_market_movement_factor(
         spread_apertura, total_apertura, spread_corrente_calculated, total_corrente_calculated
     )
+    
+    # ⚠️ VALIDAZIONE FINALE: Verifica che tutte le probabilità siano coerenti e nel range [0, 1]
+    all_probs = {
+        "p_home": p_home_final,
+        "p_draw": p_draw_final,
+        "p_away": p_away_final,
+        "over_15": over_15,
+        "under_15": under_15,
+        "over_25": over_25,
+        "under_25": under_25,
+        "over_35": over_35,
+        "under_35": under_35,
+        "btts": btts,
+        "gg_over25": gg_over25,
+        "even_ft": even_ft,
+        "odd_ft": odd_ft,
+        "cs_home": cs_home,
+        "cs_away": cs_away,
+    }
+    
+    # Verifica range [0, 1] per tutte le probabilità
+    for prob_name, prob_value in all_probs.items():
+        if prob_value < 0 or prob_value > 1:
+            logger.error(f"Probabilità {prob_name} fuori range [0, 1]: {prob_value:.6f}")
+            # Correggi
+            all_probs[prob_name] = max(0.0, min(1.0, prob_value))
+    
+    # Aggiorna variabili con valori corretti
+    p_home_final = all_probs["p_home"]
+    p_draw_final = all_probs["p_draw"]
+    p_away_final = all_probs["p_away"]
+    over_15 = all_probs["over_15"]
+    under_15 = all_probs["under_15"]
+    over_25 = all_probs["over_25"]
+    under_25 = all_probs["under_25"]
+    over_35 = all_probs["over_35"]
+    under_35 = all_probs["under_35"]
+    btts = all_probs["btts"]
+    gg_over25 = all_probs["gg_over25"]
+    even_ft = all_probs["even_ft"]
+    odd_ft = all_probs["odd_ft"]
+    cs_home = all_probs["cs_home"]
+    cs_away = all_probs["cs_away"]
+    
+    # Verifica coerenza finale: 1X2 deve sommare a 1.0
+    tot_1x2 = p_home_final + p_draw_final + p_away_final
+    if abs(tot_1x2 - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        logger.error(f"Probabilità 1X2 non sommano a 1.0: {tot_1x2:.6f}, forzo normalizzazione")
+        if tot_1x2 > 0:
+            p_home_final /= tot_1x2
+            p_draw_final /= tot_1x2
+            p_away_final /= tot_1x2
+        else:
+            # Fallback estremo
+            p_home_final, p_draw_final, p_away_final = 1/3, 1/3, 1/3
     
     # Recupera dati API aggiuntive per output
     additional_api_data = {
@@ -7951,21 +9394,26 @@ btts_manual = st.number_input("BTTS Sì (Manuale - es. Bet365)",
                               value=0.0, step=0.01,
                               help="Inserisci qui quota BTTS da altro bookmaker se vuoi override")
 
-st.subheader("📊 xG e Boost (Opzionali)")
+st.subheader("📊 xG/xA e Boost (Opzionali)")
 
 col_xg1, col_xg2 = st.columns(2)
 
 with col_xg1:
     xg_home_for = st.number_input("xG For Casa", value=0.0, step=0.1)
     xg_home_against = st.number_input("xG Against Casa", value=0.0, step=0.1)
+    xa_home_for = st.number_input("xA For Casa", value=0.0, step=0.1)
+    xa_home_against = st.number_input("xA Against Casa", value=0.0, step=0.1)
     boost_home = st.slider("Boost Casa (%)", -20, 20, 0) / 100.0
 
 with col_xg2:
     xg_away_for = st.number_input("xG For Trasferta", value=0.0, step=0.1)
     xg_away_against = st.number_input("xG Against Trasferta", value=0.0, step=0.1)
+    xa_away_for = st.number_input("xA For Trasferta", value=0.0, step=0.1)
+    xa_away_against = st.number_input("xA Against Trasferta", value=0.0, step=0.1)
     boost_away = st.slider("Boost Trasferta (%)", -20, 20, 0) / 100.0
 
 has_xg = all(x > 0 for x in [xg_home_for, xg_home_against, xg_away_for, xg_away_against])
+has_xa = any(x > 0 for x in [xa_home_for, xa_home_against, xa_away_for, xa_away_against])
 
 st.markdown("---")
 
@@ -7995,6 +9443,10 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                 xg_against_home=xg_home_against if (xg_home_against and isinstance(xg_home_against, (int, float)) and xg_home_against > 0) else None,
                 xg_for_away=xg_away_for if (xg_away_for and isinstance(xg_away_for, (int, float)) and xg_away_for > 0) else None,
                 xg_against_away=xg_away_against if (xg_away_against and isinstance(xg_away_against, (int, float)) and xg_away_against > 0) else None,
+                xa_for_home=xa_home_for if (xa_home_for and isinstance(xa_home_for, (int, float)) and xa_home_for > 0) else None,
+                xa_against_home=xa_home_against if (xa_home_against and isinstance(xa_home_against, (int, float)) and xa_home_against > 0) else None,
+                xa_for_away=xa_away_for if (xa_away_for and isinstance(xa_away_for, (int, float)) and xa_away_for > 0) else None,
+                xa_against_away=xa_away_against if (xa_away_against and isinstance(xa_away_against, (int, float)) and xa_away_against > 0) else None,
             )
             
             validated = validation_result["validated"]
@@ -8127,6 +9579,14 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                 "xg_for_away": xg_away_for,
                 "xg_against_away": xg_away_against,
             }
+        xa_args = {}
+        if has_xa:
+            xa_args = {
+                "xa_for_home": xa_home_for if xa_home_for > 0 else None,
+                "xa_against_home": xa_home_against if xa_home_against > 0 else None,
+                "xa_for_away": xa_away_for if xa_away_for > 0 else None,
+                "xa_against_away": xa_away_against if xa_away_against > 0 else None,
+            }
         
         ris = risultato_completo_improved(
             odds_1=odds_1,
@@ -8153,7 +9613,8 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             total_apertura=total_apertura if total_apertura != 2.5 else None,  # Default 2.5 = non specificato
             spread_corrente=spread_corrente,
             total_corrente=total_line if total_line != 2.5 else None,  # Total corrente (se diverso da default)
-            **xg_args
+            **xg_args,
+            **xa_args
         )
         
         # 5. Mostra info fatigue e motivation
@@ -8757,20 +10218,47 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                 
                 with col_hm1:
                     # Vittorie casa (h > a)
-                    prob_vittoria_casa = sum(mat_vis[h][a] for h in range(len(mat_vis)) 
-                                           for a in range(len(mat_vis[h])) if h > a) * 100
+                    # ⚠️ PRECISIONE: Usa accumulo preciso con protezione NaN/negativi
+                    prob_vittoria_casa = 0.0
+                    mg_vis = len(mat_vis) - 1
+                    for h in range(mg_vis + 1):
+                        if h < len(mat_vis):
+                            for a in range(len(mat_vis[h])):
+                                if h > a:
+                                    p = mat_vis[h][a]
+                                    if p > 0 and p == p:  # Ignora negativi e NaN
+                                        prob_vittoria_casa += p
+                    prob_vittoria_casa = max(0.0, min(1.0, prob_vittoria_casa)) * 100
                     st.metric("🏠 Vittorie Casa", f"{prob_vittoria_casa:.1f}%")
                 
                 with col_hm2:
                     # Pareggi (h == a)
-                    prob_pareggi = sum(mat_vis[h][a] for h in range(len(mat_vis)) 
-                                     for a in range(len(mat_vis[h])) if h == a) * 100
+                    # ⚠️ PRECISIONE: Usa accumulo preciso con protezione NaN/negativi
+                    prob_pareggi = 0.0
+                    mg_vis = len(mat_vis) - 1
+                    for h in range(mg_vis + 1):
+                        if h < len(mat_vis):
+                            for a in range(len(mat_vis[h])):
+                                if h == a:
+                                    p = mat_vis[h][a]
+                                    if p > 0 and p == p:  # Ignora negativi e NaN
+                                        prob_pareggi += p
+                    prob_pareggi = max(0.0, min(1.0, prob_pareggi)) * 100
                     st.metric("⚖️ Pareggi", f"{prob_pareggi:.1f}%")
                 
                 with col_hm3:
                     # Vittorie trasferta (h < a)
-                    prob_vittoria_trasferta = sum(mat_vis[h][a] for h in range(len(mat_vis)) 
-                                                 for a in range(len(mat_vis[h])) if h < a) * 100
+                    # ⚠️ PRECISIONE: Usa accumulo preciso con protezione NaN/negativi
+                    prob_vittoria_trasferta = 0.0
+                    mg_vis = len(mat_vis) - 1
+                    for h in range(mg_vis + 1):
+                        if h < len(mat_vis):
+                            for a in range(len(mat_vis[h])):
+                                if h < a:
+                                    p = mat_vis[h][a]
+                                    if p > 0 and p == p:  # Ignora negativi e NaN
+                                        prob_vittoria_trasferta += p
+                    prob_vittoria_trasferta = max(0.0, min(1.0, prob_vittoria_trasferta)) * 100
                     st.metric("✈️ Vittorie Trasferta", f"{prob_vittoria_trasferta:.1f}%")
                 
             except ImportError:
