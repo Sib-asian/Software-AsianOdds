@@ -11195,8 +11195,13 @@ def risultato_completo_improved(
     # ⚠️ CONTROLLO: Salva lambda iniziali per limitare effetto cumulativo
     lh_initial = lh
     la_initial = la
+    total_initial = lh_initial + la_initial  # Salva total iniziale per tracciamento
     max_adjustment_factor = 1.5  # Massimo 50% di variazione totale dagli aggiustamenti
-    
+
+    # 🔍 DEBUG: Traccia modifiche ai lambda per diagnostica
+    lambda_adjustments_log = []
+    lambda_adjustments_log.append(f"Iniziale: lh={lh:.3f}, la={la:.3f}, total={lh+la:.3f}")
+
     # 5.3. Applica impatto meteo (se disponibile)
     weather_data = None
     if home_team:
@@ -11204,20 +11209,30 @@ def risultato_completo_improved(
         if city:
             weather_data = get_weather_for_match(city, match_datetime)
             if weather_data.get("available"):
+                lh_before = lh
+                la_before = la
                 lh, la = apply_weather_impact(lh, la, weather_data)
                 # Controllo intermedio
                 lh = max(lh_initial / max_adjustment_factor, min(lh_initial * max_adjustment_factor, lh))
                 la = max(la_initial / max_adjustment_factor, min(la_initial * max_adjustment_factor, la))
+                # Log modifiche
+                if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
+                    lambda_adjustments_log.append(f"Meteo: lh {lh_before:.3f}→{lh:.3f}, la {la_before:.3f}→{la:.3f}, total={lh+la:.3f}")
     
     # 5.4. Applica correzioni stadio (capacità, altitudine) - NUOVO
     stadium_data = None
     if home_team:
         stadium_data = thesportsdb_get_team_info(home_team)
         if stadium_data.get("available"):
+            lh_before = lh
+            la_before = la
             lh, la = apply_stadium_adjustments(lh, la, stadium_data)
             # Controllo intermedio
             lh = max(lh_initial / max_adjustment_factor, min(lh_initial * max_adjustment_factor, lh))
             la = max(la_initial / max_adjustment_factor, min(la_initial * max_adjustment_factor, la))
+            # Log modifiche
+            if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
+                lambda_adjustments_log.append(f"Stadio: lh {lh_before:.3f}→{lh:.3f}, la {la_before:.3f}→{la:.3f}, total={lh+la:.3f}")
     
     # 5.5. Applica Market Movement Intelligence (blend apertura/corrente)
     # ⚠️ VALIDAZIONE: Verifica che spread_corrente e total_corrente siano ragionevoli se forniti
@@ -11246,6 +11261,8 @@ def risultato_completo_improved(
             total_curr_calc = total_from_lambda
     
     # Applica blend bayesiano basato su movimento mercato
+    lh_before = lh
+    la_before = la
     lh, la = apply_market_movement_blend(
         lh, la, total_curr_calc,
         spread_apertura, total_apertura,
@@ -11255,8 +11272,13 @@ def risultato_completo_improved(
     # Controllo intermedio
     lh = max(lh_initial / max_adjustment_factor, min(lh_initial * max_adjustment_factor, lh))
     la = max(la_initial / max_adjustment_factor, min(la_initial * max_adjustment_factor, la))
-    
+    # Log modifiche
+    if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
+        lambda_adjustments_log.append(f"Market Movement: lh {lh_before:.3f}→{lh:.3f}, la {la_before:.3f}→{la:.3f}, total={lh+la:.3f}")
+
     # 6. Applica boost manuali (limitati)
+    lh_before = lh
+    la_before = la
     if manual_boost_home != 0.0:
         # Limita boost manuale a max ±30%
         manual_boost_home_limited = max(-0.3, min(0.3, manual_boost_home))
@@ -11264,15 +11286,25 @@ def risultato_completo_improved(
     if manual_boost_away != 0.0:
         manual_boost_away_limited = max(-0.3, min(0.3, manual_boost_away))
         la *= (1.0 + manual_boost_away_limited)
+    # Log modifiche
+    if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
+        lambda_adjustments_log.append(f"Boost Manuali: lh {lh_before:.3f}→{lh:.3f}, la {la_before:.3f}→{la:.3f}, total={lh+la:.3f}")
     
     # 6.5. Applica time-based adjustments
     if match_datetime:
+        lh_before = lh
+        la_before = la
         lh, la = apply_time_adjustments(lh, la, match_datetime, league)
         # Controllo intermedio
         lh = max(lh_initial / max_adjustment_factor, min(lh_initial * max_adjustment_factor, lh))
         la = max(la_initial / max_adjustment_factor, min(la_initial * max_adjustment_factor, la))
-    
+        # Log modifiche
+        if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
+            lambda_adjustments_log.append(f"Time Adjustments: lh {lh_before:.3f}→{lh:.3f}, la {la_before:.3f}→{la:.3f}, total={lh+la:.3f}")
+
     # 6.6. Applica fatigue factors (limitati)
+    lh_before = lh
+    la_before = la
     if fatigue_home and fatigue_home.get("data_available"):
         fatigue_factor_h = calculate_fatigue_factor(
             home_team or "",
@@ -11282,7 +11314,7 @@ def risultato_completo_improved(
         # Limita effetto fatigue a max ±15%
         fatigue_factor_h_limited = max(0.85, min(1.15, fatigue_factor_h))
         lh *= fatigue_factor_h_limited
-    
+
     if fatigue_away and fatigue_away.get("data_available"):
         fatigue_factor_a = calculate_fatigue_factor(
             away_team or "",
@@ -11291,12 +11323,17 @@ def risultato_completo_improved(
         )
         fatigue_factor_a_limited = max(0.85, min(1.15, fatigue_factor_a))
         la *= fatigue_factor_a_limited
+    # Log modifiche
+    if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
+        lambda_adjustments_log.append(f"Fatigue: lh {lh_before:.3f}→{lh:.3f}, la {la_before:.3f}→{la:.3f}, total={lh+la:.3f}")
     
     # 6.7. Applica motivation factors (limitati)
     is_derby = False
     if home_team and away_team:
         is_derby = is_derby_match(home_team, away_team, league)
-    
+
+    lh_before = lh
+    la_before = la
     if motivation_home and motivation_home.get("data_available"):
         motivation_factor_h = calculate_motivation_factor(
             motivation_home.get("position"),
@@ -11307,7 +11344,7 @@ def risultato_completo_improved(
         # Limita effetto motivation a max ±15%
         motivation_factor_h_limited = max(0.85, min(1.15, motivation_factor_h))
         lh *= motivation_factor_h_limited
-    
+
     if motivation_away and motivation_away.get("data_available"):
         motivation_factor_a = calculate_motivation_factor(
             motivation_away.get("position"),
@@ -11317,7 +11354,10 @@ def risultato_completo_improved(
         )
         motivation_factor_a_limited = max(0.85, min(1.15, motivation_factor_a))
         la *= motivation_factor_a_limited
-    
+    # Log modifiche
+    if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
+        lambda_adjustments_log.append(f"Motivation: lh {lh_before:.3f}→{lh:.3f}, la {la_before:.3f}→{la:.3f}, total={lh+la:.3f}")
+
     # 6.8. Applica dati avanzati (statistiche, H2H, infortuni) - BACKGROUND
     # Questi dati vengono passati come parametro opzionale
     # ⚠️ IMPORTANTE: Limita effetto cumulativo degli aggiustamenti avanzati
@@ -11328,6 +11368,9 @@ def risultato_completo_improved(
         # Limita effetto totale degli aggiustamenti avanzati a max ±20%
         lh = max(lh_before_advanced * 0.8, min(lh_before_advanced * 1.2, lh))
         la = max(la_before_advanced * 0.8, min(la_before_advanced * 1.2, la))
+        # Log modifiche
+        if abs(lh - lh_before_advanced) > 0.01 or abs(la - la_before_advanced) > 0.01:
+            lambda_adjustments_log.append(f"Advanced Data: lh {lh_before_advanced:.3f}→{lh:.3f}, la {la_before_advanced:.3f}→{la:.3f}, total={lh+la:.3f}")
     
     # ⚠️ CONTROLLO FINALE: Limita variazione totale rispetto a iniziali
     lh = max(lh_initial / max_adjustment_factor, min(lh_initial * max_adjustment_factor, lh))
@@ -11472,7 +11515,7 @@ def risultato_completo_improved(
         # Blend finale con precisione
         lh = w_market_h * lh + w_xg_h * xg_h_est
         la = w_market_a * la + w_xg_a * xg_a_est
-        
+
         # ⚠️ VERIFICA: Assicura che lambda blended siano finiti
         if not math.isfinite(lh) or not math.isfinite(la):
             logger.warning(f"Lambda dopo blend xG non finiti: lh={lh}, la={la}, uso valori prima del blend")
@@ -11484,7 +11527,36 @@ def risultato_completo_improved(
             max_xg_adjustment = 1.3  # Massimo 30% di variazione
             lh = max(lh_before_xg / max_xg_adjustment, min(lh_before_xg * max_xg_adjustment, lh))
             la = max(la_before_xg / max_xg_adjustment, min(la_before_xg * max_xg_adjustment, la))
+            # Log modifiche
+            if abs(lh - lh_before_xg) > 0.01 or abs(la - la_before_xg) > 0.01:
+                lambda_adjustments_log.append(f"Blend xG: lh {lh_before_xg:.3f}→{lh:.3f}, la {la_before_xg:.3f}→{la:.3f}, total={lh+la:.3f} (xG_h={xg_h_est:.3f}, xG_a={xg_a_est:.3f}, w_h={w_xg_h:.2f}, w_a={w_xg_a:.2f})")
     
+    # ⚠️ CONTROLLO FINALE TOTAL: Limita deviazione massima dal total originale
+    # Questo previene che gli aggiustamenti cumulativi portino a total troppo diversi dal mercato
+    total_final = lh + la
+    max_total_deviation = 0.30  # Massimo 30% di deviazione dal total originale
+
+    if abs(total_final - total) / max(0.1, total) > max_total_deviation:
+        # Il total finale devia troppo dal total originale
+        # Riscala proporzionalmente i lambda per rispettare il vincolo
+        logger.info(f"Total finale {total_final:.3f} devia più del {max_total_deviation*100:.0f}% dal total originale {total:.3f}. Applico correzione proporzionale.")
+
+        # Calcola il total massimo/minimo consentito
+        total_max_allowed = total * (1 + max_total_deviation)
+        total_min_allowed = total * (1 - max_total_deviation)
+        total_target = max(total_min_allowed, min(total_max_allowed, total_final))
+
+        # Riscala i lambda mantenendo le proporzioni relative (spread)
+        scale_factor = total_target / total_final if total_final > model_config.TOL_DIVISION_ZERO else 1.0
+        lh_rescaled = lh * scale_factor
+        la_rescaled = la * scale_factor
+
+        # Log della correzione
+        lambda_adjustments_log.append(f"Correzione Total: total {total_final:.3f}→{total_target:.3f} (limite ±{max_total_deviation*100:.0f}%), lh {lh:.3f}→{lh_rescaled:.3f}, la {la:.3f}→{la_rescaled:.3f}")
+
+        lh = lh_rescaled
+        la = la_rescaled
+
     # Constraints finali
     lh = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, lh))
     la = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, la))
@@ -11602,8 +11674,40 @@ def risultato_completo_improved(
     # ⚠️ VALIDAZIONE COERENZA: Verifica coerenza lambda con total
     total_from_lambda = lh + la
     if abs(total_from_lambda - total) > 0.5:
-        validation_warnings.append(f"⚠️ Lambda non coerenti con total: lambda_sum={total_from_lambda:.2f}, total={total:.2f}")
-        logger.warning(f"Incoerenza lambda-total: {total_from_lambda:.4f} vs {total:.4f}")
+        # Costruisci messaggio dettagliato con log modifiche
+        deviation_pct = abs(total_from_lambda - total) / max(0.1, total) * 100
+        warning_msg = f"⚠️ Lambda non coerenti con total: lambda_sum={total_from_lambda:.2f}, total={total:.2f} (deviazione: {deviation_pct:.1f}%)"
+
+        # Aggiungi riepilogo modifiche se disponibile
+        if lambda_adjustments_log and len(lambda_adjustments_log) > 1:
+            # Identifica la modifica più grande
+            max_change = 0.0
+            max_change_source = ""
+            for log_entry in lambda_adjustments_log[1:]:  # Salta la prima entry (iniziale)
+                # Estrai il total dalla entry se presente
+                if "total=" in log_entry:
+                    parts = log_entry.split("total=")
+                    if len(parts) > 1:
+                        try:
+                            total_in_entry = float(parts[1].split()[0])
+                            change = abs(total_in_entry - total_initial)
+                            if change > max_change:
+                                max_change = change
+                                max_change_source = log_entry.split(":")[0]
+                        except (ValueError, IndexError):
+                            pass
+
+            if max_change_source:
+                warning_msg += f" | Modifica principale: {max_change_source}"
+
+        validation_warnings.append(warning_msg)
+        logger.warning(f"Incoerenza lambda-total: {total_from_lambda:.4f} vs {total:.4f} (deviazione {deviation_pct:.1f}%)")
+
+        # Log dettagliato delle modifiche per debugging
+        if lambda_adjustments_log:
+            logger.info("Traccia modifiche lambda:")
+            for log_entry in lambda_adjustments_log:
+                logger.info(f"  {log_entry}")
     
     # Verifica lambda ragionevoli
     if lh > 5.0 or la > 5.0:
@@ -12105,6 +12209,7 @@ def risultato_completo_improved(
         "multigol_totale": multigol_total,
         "dc": dc,
         "validation_warnings": validation_warnings,  # Warning per probabilità anomale
+        "lambda_adjustments_log": lambda_adjustments_log,  # Log modifiche lambda per debugging
         "matrix_sum": matrix_sum,  # Somma matrice per debug
         "marg2": marg2,
         "marg3": marg3,
@@ -13584,12 +13689,20 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                     st.warning("⚠️ **Avviso: Probabilità anomale rilevate**")
                     for warning in validation_warnings:
                         st.caption(warning)
-                    
+
                     # Mostra lambda per debug
                     st.caption(f"🔍 **Debug Info**: lambda_home={ris['lambda_home']:.3f}, lambda_away={ris['lambda_away']:.3f}, total={ris['lambda_home']+ris['lambda_away']:.3f}, rho={ris.get('rho', 0):.3f}")
                     matrix_sum = ris.get("matrix_sum", 1.0)
                     if abs(matrix_sum - 1.0) > 0.01:
                         st.caption(f"⚠️ Somma matrice: {matrix_sum:.6f} (dovrebbe essere 1.0)")
+
+                    # Mostra log dettagliato delle modifiche lambda se disponibile
+                    lambda_adjustments_log = ris.get("lambda_adjustments_log", [])
+                    if lambda_adjustments_log and len(lambda_adjustments_log) > 1:
+                        with st.expander("🔍 Traccia dettagliata modifiche Lambda"):
+                            st.caption("Questa traccia mostra come i lambda sono stati modificati attraverso i vari aggiustamenti:")
+                            for log_entry in lambda_adjustments_log:
+                                st.text(log_entry)
             
             with col_d3:
                 st.markdown("**Pari/Dispari**")
