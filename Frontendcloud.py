@@ -83,6 +83,7 @@ class APIConfig:
     telegram_bot_token: str = "8530766126:AAHs1ZoLwrwvT7JuPyn_9ymNVyddPtUXi-g"
     telegram_chat_id: str = "-1003278011521"
     telegram_enabled: bool = True
+    telegram_min_probability: float = 65.0
     
     def __post_init__(self):
         """Carica da variabili d'ambiente (override se presenti)"""
@@ -93,6 +94,12 @@ class APIConfig:
         self.football_data_api_key = os.getenv("FOOTBALL_DATA_API_KEY", self.football_data_api_key)
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", self.telegram_bot_token)
         self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", self.telegram_chat_id)
+        env_min_prob = os.getenv("TELEGRAM_MIN_PROBABILITY", None)
+        if env_min_prob is not None:
+            try:
+                self.telegram_min_probability = float(env_min_prob)
+            except ValueError:
+                logger.warning("Valore non valido per TELEGRAM_MIN_PROBABILITY, uso default configurato")
 
 @dataclass
 class ModelConfig:
@@ -219,6 +226,7 @@ THESPORTSDB_API_KEY = api_config.thesportsdb_api_key
 TELEGRAM_BOT_TOKEN = api_config.telegram_bot_token
 TELEGRAM_CHAT_ID = api_config.telegram_chat_id
 TELEGRAM_ENABLED = api_config.telegram_enabled
+TELEGRAM_MIN_PROBABILITY = api_config.telegram_min_probability
 
 ARCHIVE_FILE = app_config.archive_file
 VALIDATION_FILE = app_config.validation_file
@@ -7969,10 +7977,12 @@ def format_analysis_for_telegram(
         message += f"💎 <b>Value Bets Identificate</b>\n"
         for bet in value_bets[:5]:  # Max 5 value bets
             esito = bet.get("Esito", "")
+            prob = bet.get("Prob %", bet.get("Prob Modello %", ""))
             edge = bet.get("Edge %", "0")
             ev = bet.get("EV %", "0")
             rec = bet.get("Rec", "")
-            message += f"• {esito}: Edge {edge}%, EV {ev}% ({rec})\n"
+            prob_str = f"{prob}%" if prob and "%" not in str(prob) else prob
+            message += f"• {esito}: Prob {prob_str}, Edge {edge}%, EV {ev}% ({rec})\n"
         message += "\n"
     
     # Top 3 risultati
@@ -9953,6 +9963,16 @@ with st.expander("🤖 Configurazione Telegram Bot (Opzionale)", expanded=False)
                                         help="ID della chat dove inviare (da @userinfobot)",
                                         placeholder="123456789")
     
+telegram_prob_threshold = st.slider(
+    "🎯 Soglia minima probabilità per notifiche Telegram (%)",
+    min_value=0.0,
+    max_value=100.0,
+    value=float(TELEGRAM_MIN_PROBABILITY),
+    step=1.0,
+    help="Il bot invia notifiche soltanto per i mercati in cui la probabilità del modello supera questa soglia."
+)
+st.session_state["telegram_prob_threshold"] = telegram_prob_threshold
+
     # Pulsante per testare la configurazione
     if telegram_token and telegram_chat_id:
         col_test1, col_test2 = st.columns([1, 2])
@@ -11032,85 +11052,97 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
             try:
                 # Prepara value bets per Telegram
                 value_bets_list = []
+                telegram_prob_threshold = float(st.session_state.get("telegram_prob_threshold", TELEGRAM_MIN_PROBABILITY))
                 for bet in value_rows:
-                    if bet.get("Value") == "✅":
-                        value_bets_list.append({
-                            "Esito": bet.get("Esito", ""),
-                            "Edge %": bet.get("Edge %", ""),
-                            "EV %": bet.get("EV %", ""),
-                            "Rec": bet.get("Rec", "")
-                        })
+                    prob_str_raw = str(bet.get("Prob Modello %", "0")).replace(",", ".")
+                    try:
+                        prob_value = float(prob_str_raw)
+                    except ValueError:
+                        prob_value = 0.0
+                    if prob_value < telegram_prob_threshold:
+                        continue
+                    value_bets_list.append({
+                        "Esito": bet.get("Esito", ""),
+                        "Prob %": bet.get("Prob Modello %", ""),
+                        "Edge %": bet.get("Edge %", ""),
+                        "EV %": bet.get("EV %", ""),
+                        "Rec": bet.get("Rec", "")
+                    })
                 
-                # Formatta messaggio
-                telegram_message = format_analysis_for_telegram(
-                    match_name=match_name,
-                    ris=ris,
-                    odds_1=odds_1,
-                    odds_x=odds_x,
-                    odds_2=odds_2,
-                    quality_score=quality_score,
-                    market_conf=market_conf,
-                    value_bets=value_bets_list if value_bets_list else None
-                )
-                
-                # Invia messaggio
-                result = send_telegram_message(
-                    message=telegram_message,
-                    bot_token=telegram_token,
-                    chat_id=telegram_chat_id
-                )
-                
-                if result.get("success"):
-                    st.success("📤 Analisi inviata su Telegram!")
+                if not value_bets_list:
+                    st.info(f"ℹ️ Nessun mercato supera la soglia Telegram ({telegram_prob_threshold:.0f}%). Notifica non inviata.")
                 else:
-                    # Mostra messaggio di errore dettagliato
-                    error_msg = result.get("error_message", "Errore sconosciuto")
-                    error_type = result.get("error_type", "other")
+                    result = None
+                    # Formatta messaggio
+                    telegram_message = format_analysis_for_telegram(
+                        match_name=match_name,
+                        ris=ris,
+                        odds_1=odds_1,
+                        odds_x=odds_x,
+                        odds_2=odds_2,
+                        quality_score=quality_score,
+                        market_conf=market_conf,
+                        value_bets=value_bets_list
+                    )
                     
-                    # Messaggi specifici per tipo di errore
-                    if error_type == "no_token":
-                        st.error(f"❌ **Token Bot non configurato**\n\n{error_msg}\n\nPer configurare:\n1. Crea un bot su [@BotFather](https://t.me/BotFather)\n2. Invia `/newbot` e segui le istruzioni\n3. Copia il Token fornito")
-                    elif error_type == "no_chat_id":
-                        st.error(f"❌ **Chat ID non configurato**\n\n{error_msg}\n\nPer ottenere il Chat ID:\n1. Scrivi a [@userinfobot](https://t.me/userinfobot)\n2. Copia il tuo ID numerico")
-                    elif error_type == "invalid_token":
-                        st.error(f"❌ **Token non valido**\n\n{error_msg}\n\nVerifica che il token sia corretto e che il bot sia ancora attivo.")
-                    elif error_type == "invalid_chat_id":
-                        # Usa markdown per formattazione migliore
-                        st.error("❌ **Chat ID non valido**")
-                        st.markdown(error_msg)
-                        
-                        # Aggiungi sezione interattiva con suggerimenti
-                        with st.expander("🔍 **Guida passo-passo per risolvere**", expanded=True):
-                            st.markdown("""
-                            **Per Chat Private:**
-                            1. Apri Telegram e cerca [@userinfobot](https://t.me/userinfobot)
-                            2. Avvia una conversazione e invia `/start`
-                            3. Il bot ti mostrerà il tuo **User ID** (es. `123456789`)
-                            4. Copia questo numero e incollalo nel campo "Chat ID"
-                            5. **IMPORTANTE**: Prima di usare il bot, invia almeno un messaggio al tuo bot (anche solo `/start`)
-                            
-                            **Per Gruppi:**
-                            1. Aggiungi [@userinfobot](https://t.me/userinfobot) al gruppo
-                            2. Il bot mostrerà il **Group ID** (es. `-1001234567890`)
-                            3. Copia questo numero (include il segno `-`)
-                            4. Aggiungi il tuo bot al gruppo come membro
-                            
-                            **Per Canali:**
-                            1. Il bot deve essere **amministratore** del canale
-                            2. Il Chat ID del canale inizia con `-100` (es. `-1001234567890`)
-                            3. Per ottenere il Chat ID, usa [@getidsbot](https://t.me/getidsbot) nel canale
-                            
-                            **Verifica rapida:**
-                            - Chat ID privata: numero positivo (es. `123456789`)
-                            - Chat ID gruppo: numero negativo (es. `-123456789`)
-                            - Chat ID canale: numero negativo che inizia con `-100` (es. `-1001234567890`)
-                            """)
-                    elif error_type == "rate_limit":
-                        st.warning(f"⏱️ **Rate Limit**\n\n{error_msg}")
-                    elif error_type == "timeout" or error_type == "connection_error":
-                        st.warning(f"🌐 **Problema di connessione**\n\n{error_msg}")
+                    # Invia messaggio
+                    result = send_telegram_message(
+                        message=telegram_message,
+                        bot_token=telegram_token,
+                        chat_id=telegram_chat_id
+                    )
+                    
+                    if result.get("success"):
+                        st.success("📤 Analisi inviata su Telegram!")
                     else:
-                        st.warning(f"⚠️ **Errore invio Telegram**\n\n{error_msg}")
+                        # Mostra messaggio di errore dettagliato
+                        error_msg = result.get("error_message", "Errore sconosciuto")
+                        error_type = result.get("error_type", "other")
+                        
+                        # Messaggi specifici per tipo di errore
+                        if error_type == "no_token":
+                            st.error(f"❌ **Token Bot non configurato**\n\n{error_msg}\n\nPer configurare:\n1. Crea un bot su [@BotFather](https://t.me/BotFather)\n2. Invia `/newbot` e segui le istruzioni\n3. Copia il Token fornito")
+                        elif error_type == "no_chat_id":
+                            st.error(f"❌ **Chat ID non configurato**\n\n{error_msg}\n\nPer ottenere il Chat ID:\n1. Scrivi a [@userinfobot](https://t.me/userinfobot)\n2. Copia il tuo ID numerico")
+                        elif error_type == "invalid_token":
+                            st.error(f"❌ **Token non valido**\n\n{error_msg}\n\nVerifica che il token sia corretto e che il bot sia ancora attivo.")
+                        elif error_type == "invalid_chat_id":
+                            # Usa markdown per formattazione migliore
+                            st.error("❌ **Chat ID non valido**")
+                            st.markdown(error_msg)
+                            
+                            # Aggiungi sezione interattiva con suggerimenti
+                            with st.expander("🔍 **Guida passo-passo per risolvere**", expanded=True):
+                                st.markdown("""
+                                **Per Chat Private:**
+                                1. Apri Telegram e cerca [@userinfobot](https://t.me/userinfobot)
+                                2. Avvia una conversazione e invia `/start`
+                                3. Il bot ti mostrerà il tuo **User ID** (es. `123456789`)
+                                4. Copia questo numero e incollalo nel campo "Chat ID"
+                                5. **IMPORTANTE**: Prima di usare il bot, invia almeno un messaggio al tuo bot (anche solo `/start`)
+                                
+                                **Per Gruppi:**
+                                1. Aggiungi [@userinfobot](https://t.me/userinfobot) al gruppo
+                                2. Il bot mostrerà il **Group ID** (es. `-1001234567890`)
+                                3. Copia questo numero (include il segno `-`)
+                                4. Aggiungi il tuo bot al gruppo come membro
+                                
+                                **Per Canali:**
+                                1. Il bot deve essere **amministratore** del canale
+                                2. Il Chat ID del canale inizia con `-100` (es. `-1001234567890`)
+                                3. Per ottenere il Chat ID, usa [@getidsbot](https://t.me/getidsbot) nel canale
+                                
+                                **Verifica rapida:**
+                                - Chat ID privata: numero positivo (es. `123456789`)
+                                - Chat ID gruppo: numero negativo (es. `-123456789`)
+                                - Chat ID canale: numero negativo che inizia con `-100` (es. `-1001234567890`)
+                                """)
+                        elif error_type == "rate_limit":
+                            st.warning(f"⏱️ **Rate Limit**\n\n{error_msg}")
+                        elif error_type == "timeout" or error_type == "connection_error":
+                            st.warning(f"🌐 **Problema di connessione**\n\n{error_msg}")
+                        else:
+                            st.warning(f"⚠️ **Errore invio Telegram**\n\n{error_msg}")
             except Exception as e:
                 logger.error(f"Errore imprevisto in invio Telegram: {e}")
                 st.warning(f"⚠️ Errore imprevisto invio Telegram: {e}")
