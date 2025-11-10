@@ -12837,21 +12837,34 @@ st.subheader("📊 xG/xA e Boost (Opzionali)")
 col_xg1, col_xg2 = st.columns(2)
 
 with col_xg1:
-    xg_home_for = st.number_input("xG For Casa", value=0.0, step=0.1)
-    xg_home_against = st.number_input("xG Against Casa", value=0.0, step=0.1)
-    xa_home_for = st.number_input("xA For Casa", value=0.0, step=0.1)
-    xa_home_against = st.number_input("xA Against Casa", value=0.0, step=0.1)
+    xg_home = st.number_input("xG Casa", value=0.0, step=0.1,
+                              help="Expected Goals per la squadra di casa")
+    xa_home = st.number_input("xA Casa (opzionale)", value=0.0, step=0.1,
+                              help="Expected Assists per la squadra di casa")
     boost_home = st.slider("Boost Casa (%)", -20, 20, 0) / 100.0
 
 with col_xg2:
-    xg_away_for = st.number_input("xG For Trasferta", value=0.0, step=0.1)
-    xg_away_against = st.number_input("xG Against Trasferta", value=0.0, step=0.1)
-    xa_away_for = st.number_input("xA For Trasferta", value=0.0, step=0.1)
-    xa_away_against = st.number_input("xA Against Trasferta", value=0.0, step=0.1)
+    xg_away = st.number_input("xG Trasferta", value=0.0, step=0.1,
+                              help="Expected Goals per la squadra in trasferta")
+    xa_away = st.number_input("xA Trasferta (opzionale)", value=0.0, step=0.1,
+                              help="Expected Assists per la squadra in trasferta")
     boost_away = st.slider("Boost Trasferta (%)", -20, 20, 0) / 100.0
 
-has_xg = all(x > 0 for x in [xg_home_for, xg_home_against, xg_away_for, xg_away_against])
-has_xa = any(x > 0 for x in [xa_home_for, xa_home_against, xa_away_for, xa_away_against])
+# Mappa i valori semplificati ai parametri del modello
+# xG Casa = sia i goal che casa crea, sia quelli che trasferta subisce
+# xG Trasferta = sia i goal che trasferta crea, sia quelli che casa subisce
+xg_home_for = xg_home
+xg_against_away = xg_home  # Stesso valore: goal che trasferta subisce = goal che casa crea
+xg_away_for = xg_away
+xg_against_home = xg_away  # Stesso valore: goal che casa subisce = goal che trasferta crea
+
+xa_home_for = xa_home
+xa_against_away = xa_home
+xa_away_for = xa_away
+xa_against_home = xa_away
+
+has_xg = xg_home > 0 and xg_away > 0
+has_xa = xa_home > 0 or xa_away > 0
 
 st.markdown("---")
 
