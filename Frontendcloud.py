@@ -1035,7 +1035,7 @@ def normalize_three_way_shin(o1: float, ox: float, o2: float) -> Tuple[float, fl
         return o1, ox, o2
     
     try:
-    normalized = shin_normalization([o1, ox, o2])
+        normalized = shin_normalization([o1, ox, o2])
         if len(normalized) != 3:
             logger.warning(f"Shin normalization ritorna {len(normalized)} valori invece di 3, ritorno originali")
             return o1, ox, o2
