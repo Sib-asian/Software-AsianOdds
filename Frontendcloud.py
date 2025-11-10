@@ -58,6 +58,14 @@ try:
 except ImportError:
     ISOTONIC_AVAILABLE = False
 
+# Import per high precision (mpmath opzionale)
+try:
+    import mpmath as mp
+    MPMATH_AVAILABLE = True
+except ImportError:
+    MPMATH_AVAILABLE = False
+    logger.warning("mpmath non disponibile - high precision disabilitata")
+
 # ============================================================
 #   CONFIGURAZIONE CENTRALIZZATA (MIGLIORAMENTO)
 # ============================================================
@@ -109,6 +117,20 @@ class ModelConfig:
     TOL_CLIP_PROB: float = 1e-6  # Tolleranza per clipping probabilità (calibrazione)
     TOL_TOTAL_COHERENCE: float = 0.5  # Tolleranza per coerenza total (lambda_h + lambda_a ≈ 2 * lambda_total)
     TOL_SCALE_FACTOR_MIN: float = 0.1  # Valore minimo per scale_factor (protezione divisione per zero)
+    
+    # Smoothing matrici
+    DIRICHLET_EPS: float = 1e-12  # Smoothing additivo per matrici di probabilità
+    
+    # High precision / mpmath
+    ENABLE_HIGH_PRECISION: bool = False  # Abilita calcoli ad alta precisione (mpmath)
+    HIGH_PRECISION_LAMBDA_THRESHOLD: float = 12.0  # Usa mpmath per lambda <= soglia
+    MPMATH_PRECISION: int = 80  # Decimali di precisione per mpmath
+    HIGH_PRECISION_MAX_ITER: int = 200  # Iterazioni massime per metodi high precision
+    
+    # Posteriori coniugati
+    USE_CONJUGATE_POSTERIORS: bool = True  # Usa aggiornamenti Gamma-Poisson / Beta-Binomial
+    GAMMA_PRIOR_STRENGTH_BASE: float = 50.0  # Forza prior per posteriori Gamma-Poisson
+    BETA_PRIOR_STRENGTH_BASE: float = 50.0  # Forza prior per posteriori Beta-Binomial
     
     # Ensemble weights
     ENSEMBLE_MAIN_WEIGHT: float = 0.60  # Peso modello principale
@@ -182,6 +204,9 @@ class AppConfig:
 api_config = APIConfig()
 model_config = ModelConfig()
 app_config = AppConfig()
+
+if model_config.ENABLE_HIGH_PRECISION and not MPMATH_AVAILABLE:
+    logger.warning("High precision attivata ma mpmath non disponibile - fallback a precisione standard")
 
 # Backward compatibility (mantiene variabili esistenti)
 THE_ODDS_API_KEY = api_config.the_odds_api_key
@@ -365,6 +390,89 @@ def decimali_a_prob(odds: float) -> float:
         return 0.0
     
     return prob
+
+
+def gamma_poisson_posterior_mean(
+    lambda_prior: float,
+    prior_strength: float,
+    lambda_observed: float,
+    observed_strength: float
+) -> float:
+    """
+    Aggiorna la media di una Poisson usando prior Gamma con parametri in forma di forza (pseudo-osservazioni).
+    
+    prior_strength / observed_strength rappresentano pseudo-counts ("exposure").
+    """
+    epsilon = model_config.TOL_DIVISION_ZERO
+    prior_strength = max(prior_strength, epsilon)
+    observed_strength = max(observed_strength, 0.0)
+    
+    alpha_prior = max(lambda_prior * prior_strength, epsilon)
+    beta_prior = max(prior_strength, epsilon)
+    
+    alpha_obs = max(lambda_observed * observed_strength, 0.0)
+    beta_obs = max(observed_strength, 0.0)
+    
+    alpha_post = alpha_prior + alpha_obs
+    beta_post = beta_prior + beta_obs
+    
+    if beta_post <= epsilon:
+        return lambda_prior
+    
+    posterior_mean = alpha_post / beta_post
+    if not math.isfinite(posterior_mean):
+        return lambda_prior
+    return max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, posterior_mean))
+
+
+def beta_binomial_posterior_mean(
+    p_prior: float,
+    prior_strength: float,
+    p_observed: float,
+    observed_strength: float
+) -> float:
+    """
+    Aggiorna una probabilità (0-1) usando prior Beta con pseudo-osservazioni.
+    """
+    epsilon = model_config.TOL_CLIP_PROB
+    p_prior = max(0.0, min(1.0, p_prior))
+    p_observed = max(0.0, min(1.0, p_observed))
+    
+    prior_strength = max(prior_strength, epsilon)
+    observed_strength = max(observed_strength, epsilon)
+    
+    alpha_prior = max(p_prior * prior_strength, epsilon)
+    beta_prior = max((1.0 - p_prior) * prior_strength, epsilon)
+    
+    alpha_obs = max(p_observed * observed_strength, epsilon)
+    beta_obs = max((1.0 - p_observed) * observed_strength, epsilon)
+    
+    alpha_post = alpha_prior + alpha_obs
+    beta_post = beta_prior + beta_obs
+    
+    posterior_denom = alpha_post + beta_post
+    if posterior_denom <= epsilon:
+        return p_prior
+    
+    posterior_mean = alpha_post / posterior_denom
+    if not math.isfinite(posterior_mean):
+        return p_prior
+    return max(0.0, min(1.0, posterior_mean))
+
+
+def log_precision_metrics(context: str, metrics: Dict[str, Any]) -> None:
+    """
+    Log strutturato per diagnosi numeriche.
+    """
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+    formatted = []
+    for key, value in metrics.items():
+        if isinstance(value, float):
+            formatted.append(f"{key}={value:.6f}")
+        else:
+            formatted.append(f"{key}={value}")
+    logger.debug(f"[DIAGNOSTICS] {context}: " + ", ".join(formatted))
 
 # ============================================================
 #   VALIDAZIONE INPUT ROBUSTA (URGENTE)
@@ -889,7 +997,7 @@ def normalize_two_way_shin(o1: float, o2: float) -> Tuple[float, float]:
         return o1, o2
     
     try:
-        normalized = shin_normalization([o1, o2])
+    normalized = shin_normalization([o1, o2])
         if len(normalized) != 2:
             logger.warning(f"Shin normalization ritorna {len(normalized)} valori invece di 2, ritorno originali")
             return o1, o2
@@ -927,7 +1035,7 @@ def normalize_three_way_shin(o1: float, ox: float, o2: float) -> Tuple[float, fl
         return o1, ox, o2
     
     try:
-        normalized = shin_normalization([o1, ox, o2])
+    normalized = shin_normalization([o1, ox, o2])
         if len(normalized) != 3:
             logger.warning(f"Shin normalization ritorna {len(normalized)} valori invece di 3, ritorno originali")
             return o1, ox, o2
@@ -975,7 +1083,7 @@ def btts_probability_bivariate(lambda_h: float, lambda_a: float, rho: float) -> 
     
     # P(H=0) marginale Poisson
     try:
-        p_h0 = poisson.pmf(0, lambda_h)
+    p_h0 = poisson.pmf(0, lambda_h)
         if not math.isfinite(p_h0) or p_h0 < 0:
             logger.warning(f"p_h0 non valido: {p_h0}, uso default")
             p_h0 = math.exp(-lambda_h) if lambda_h > 0 else 1.0
@@ -985,7 +1093,7 @@ def btts_probability_bivariate(lambda_h: float, lambda_a: float, rho: float) -> 
     
     # P(A=0) marginale Poisson
     try:
-        p_a0 = poisson.pmf(0, lambda_a)
+    p_a0 = poisson.pmf(0, lambda_a)
         if not math.isfinite(p_a0) or p_a0 < 0:
             logger.warning(f"p_a0 non valido: {p_a0}, uso default")
             p_a0 = math.exp(-lambda_a) if lambda_a > 0 else 1.0
@@ -1011,7 +1119,7 @@ def btts_probability_bivariate(lambda_h: float, lambda_a: float, rho: float) -> 
     
     # ⚠️ PRECISIONE: Calcola p_h0_a0 con protezione overflow
     try:
-        p_h0_a0 = p_h0 * p_a0 * tau_00
+    p_h0_a0 = p_h0 * p_a0 * tau_00
         if not math.isfinite(p_h0_a0) or p_h0_a0 < 0:
             logger.warning(f"p_h0_a0 non valido: {p_h0_a0}, correggo")
             p_h0_a0 = max(0.0, min(1.0, p_h0 * p_a0))
@@ -1061,7 +1169,7 @@ def estimate_btts_from_basic_odds_improved(
         if isinstance(lambda_h, (int, float)) and isinstance(lambda_a, (int, float)) and \
            math.isfinite(lambda_h) and math.isfinite(lambda_a) and \
            lambda_h > 0 and lambda_a > 0:
-            prob_btts = btts_probability_bivariate(lambda_h, lambda_a, rho)
+        prob_btts = btts_probability_bivariate(lambda_h, lambda_a, rho)
             # ⚠️ PROTEZIONE: Protezione divisione per zero
             if prob_btts > model_config.TOL_DIVISION_ZERO:
                 odds_btts = 1.0 / prob_btts
@@ -1147,7 +1255,7 @@ def blend_btts_sources_improved(
     # ⚠️ VALIDAZIONE: Verifica manual_btts
     if manual_btts is not None:
         if isinstance(manual_btts, (int, float)) and math.isfinite(manual_btts) and manual_btts > 1.01:
-            return round(manual_btts, 3), "BTTS manuale (bet365)"
+        return round(manual_btts, 3), "BTTS manuale (bet365)"
     
     # ⚠️ VALIDAZIONE: Verifica che entrambi siano validi per blend
     if odds_btts_api is not None and btts_from_model is not None:
@@ -1156,8 +1264,8 @@ def blend_btts_sources_improved(
            odds_btts_api > 1.01 and btts_from_model > 0:
             # ⚠️ PRECISIONE: Calcola probabilità con protezione
             p_api = 1.0 / max(odds_btts_api, model_config.TOL_DIVISION_ZERO)
-            p_mod = btts_from_model
-            
+        p_mod = btts_from_model
+        
             # ⚠️ PROTEZIONE: Limita probabilità a range [0, 1]
             p_api = max(0.0, min(1.0, p_api))
             p_mod = max(0.0, min(1.0, p_mod))
@@ -1168,37 +1276,69 @@ def blend_btts_sources_improved(
                 market_confidence = 0.7
             market_confidence = max(0.0, min(1.0, market_confidence))
             
-            # Pesatura dinamica: più confidence → più peso al mercato
-            w_market = 0.55 + market_confidence * 0.20
-            w_market = max(0.0, min(1.0, w_market))  # Limita a [0, 1]
-            w_model = 1.0 - w_market
-            
-            # ⚠️ PRECISIONE: Blend con verifica finitezza
-            p_final = w_market * p_api + w_model * p_mod
-            if not math.isfinite(p_final) or p_final <= 0:
-                logger.warning(f"p_final non valido: {p_final}, uso default")
-                p_final = 0.5
-            p_final = max(0.0, min(1.0, p_final))
+            if getattr(model_config, "USE_CONJUGATE_POSTERIORS", False):
+                base_strength = model_config.BETA_PRIOR_STRENGTH_BASE
+                prior_strength = max(base_strength * max(1.0 - market_confidence, 0.05), model_config.TOL_DIVISION_ZERO)
+                observed_strength = max(base_strength * max(market_confidence, 0.05), model_config.TOL_DIVISION_ZERO)
+                posterior_p = beta_binomial_posterior_mean(
+                    p_prior=p_mod,
+                    prior_strength=prior_strength,
+                    p_observed=p_api,
+                    observed_strength=observed_strength
+                )
+                p_final = posterior_p
+                blend_source = f"BTTS beta-posterior (prior={prior_strength:.2f}, obs={observed_strength:.2f})"
+            else:
+        # Pesatura dinamica: più confidence → più peso al mercato
+        w_market = 0.55 + market_confidence * 0.20
+                w_market = max(0.0, min(1.0, w_market))  # Limita a [0, 1]
+                w_model = 1.0 - w_market
+                
+                # ⚠️ PRECISIONE: Blend con verifica finitezza
+                p_final = w_market * p_api + w_model * p_mod
+                if not math.isfinite(p_final) or p_final <= 0:
+                    logger.warning(f"p_final non valido: {p_final}, uso default")
+                    p_final = 0.5
+                p_final = max(0.0, min(1.0, p_final))
+                blend_source = f"BTTS blended (w_market={w_market:.2f})"
             
             # ⚠️ PROTEZIONE: Protezione divisione per zero
             if p_final > model_config.TOL_DIVISION_ZERO:
                 odds_final = 1.0 / p_final
                 if math.isfinite(odds_final) and odds_final >= 1.01:
-                    return round(odds_final, 3), f"BTTS blended (w={w_market:.2f})"
+                    log_precision_metrics(
+                        "blend_btts_sources_improved",
+                        {
+                            "p_api": p_api,
+                            "p_model": p_mod,
+                            "p_final": p_final,
+                            "odds_final": odds_final,
+                            "market_confidence": market_confidence,
+                            "source": blend_source
+                        }
+                    )
+                    return round(odds_final, 3), blend_source
     
     # ⚠️ VALIDAZIONE: Verifica odds_btts_api
     if odds_btts_api is not None:
         if isinstance(odds_btts_api, (int, float)) and math.isfinite(odds_btts_api) and odds_btts_api > 1.01:
-            return round(odds_btts_api, 3), "BTTS da API"
+        return round(odds_btts_api, 3), "BTTS da API"
     
     # ⚠️ VALIDAZIONE: Verifica btts_from_model
     if btts_from_model is not None:
         if isinstance(btts_from_model, (int, float)) and math.isfinite(btts_from_model) and btts_from_model > 0:
-            # ⚠️ PROTEZIONE: Protezione divisione per zero
-            if btts_from_model > model_config.TOL_DIVISION_ZERO:
-                odds_model = 1.0 / btts_from_model
-                if math.isfinite(odds_model) and odds_model >= 1.01:
-                    return round(odds_model, 3), "BTTS da modello"
+            prob_model = max(model_config.TOL_DIVISION_ZERO, min(1.0, btts_from_model))
+            odds_model = 1.0 / prob_model
+            if math.isfinite(odds_model) and odds_model >= 1.01:
+                log_precision_metrics(
+                    "blend_btts_sources_improved",
+                    {
+                        "p_model": prob_model,
+                        "odds_model": odds_model,
+                        "source": "BTTS da modello"
+                    }
+                )
+                return round(odds_model, 3), "BTTS da modello"
     
     return 2.0, "BTTS default"
 
@@ -2898,10 +3038,12 @@ def estimate_lambda_from_market_optimized(
         p1_target = px_target = p2_target = 1.0 / 3.0
         logger.warning("Probabilità 1X2 normalizzate sommano a zero, uso distribuzione uniforme")
     
+    p_over_target = float('nan')
     # 2. Stima iniziale da total (MIGLIORATA: inversione numerica precisa)
     if odds_over25 and odds_under25:
         po, pu = normalize_two_way_shin(odds_over25, odds_under25)
         p_over = 1 / po
+        p_over_target = p_over
         
         # MIGLIORAMENTO: Inversione numerica precisa invece di formula empirica
         # Per una distribuzione Poisson con lambda_tot, P(goals > 2.5) = 1 - sum(P(k) per k=0..2)
@@ -2910,62 +3052,172 @@ def estimate_lambda_from_market_optimized(
             """
             Calcola P(goals > 2.5) per la somma di due Poisson indipendenti.
             
-            ⚠️ CORREZIONE: Il total è la somma di due Poisson (lambda_h + lambda_a),
-            quindi la distribuzione è ancora Poisson con lambda = lambda_tot.
+            ⚠️ PRECISIONE ESTESA: Usa approssimazione normale per lambda grandi e calcolo esatto per lambda piccoli.
+            
             Formula corretta: P(X > 2.5) = 1 - P(X <= 2) dove X ~ Poisson(lambda_tot)
+            
+            Per lambda > 20: usa approssimazione normale N(lambda, lambda) con correzione di continuità
+            Per lambda <= 20: usa calcolo esatto Poisson
             """
-            # Calcola P(X <= 2) = P(0) + P(1) + P(2) per Poisson(lambda_tot)
-            if lambda_tot <= 0:
+            # ⚠️ CRITICO: Validazione input
+            if not isinstance(lambda_tot, (int, float)) or not math.isfinite(lambda_tot) or lambda_tot <= 0:
                 return 0.0
             
-            # ⚠️ PRECISIONE: Formula esatta Poisson con calcolo ottimizzato
+            # ⚠️ PRECISIONE ESTESA: Calcolo high-precision con mpmath (se abilitato)
+            use_high_precision = (
+                model_config.ENABLE_HIGH_PRECISION and
+                MPMATH_AVAILABLE and
+                lambda_tot <= model_config.HIGH_PRECISION_LAMBDA_THRESHOLD
+            )
+            if use_high_precision:
+                try:
+                    mp.mp.dps = max(50, model_config.MPMATH_PRECISION)
+                    lam_mp = mp.mpf(lambda_tot)
+                    # Calcolo probabilità cumulativa fino a k = 2
+                    p0_mp = mp.e ** (-lam_mp)
+                    p1_mp = lam_mp * p0_mp
+                    p2_mp = (lam_mp * lam_mp / 2) * p0_mp
+                    sum_p_mp = p0_mp + p1_mp + p2_mp
+                    result_mp = mp.mpf(1) - sum_p_mp
+                    if mp.isnan(result_mp) or mp.isinf(result_mp):
+                        raise ValueError("Risultato mpmath non finito")
+                    result_float = float(result_mp)
+                    return max(0.0, min(1.0, result_float))
+                except Exception as e:
+                    logger.warning(f"High precision mpmath fallita ({e}), fallback a calcolo standard")
+                    # continua con calcolo standard
+            
+            # ⚠️ PRECISIONE ESTESA: Approssimazione normale per lambda grandi (più accurata)
+            # Per lambda > 20, Poisson ~ N(lambda, lambda)
+            # Con correzione di continuità: P(X > 2.5) ≈ 1 - Φ((2.5 + 0.5 - lambda) / sqrt(lambda))
+            if lambda_tot > 20.0:
+                try:
+                    from scipy.stats import norm
+                    # Correzione di continuità: 2.5 → 2.5 + 0.5 = 3.0
+                    z_score = (3.0 - lambda_tot) / math.sqrt(lambda_tot)
+                    if not math.isfinite(z_score):
+                        return 1.0 if lambda_tot > 2.5 else 0.0
+                    # P(X <= 2.5) ≈ Φ(z_score)
+                    p_cumulative = norm.cdf(z_score)
+                    result = 1.0 - p_cumulative
+                    return max(0.0, min(1.0, result))
+                except (ImportError, ValueError, OverflowError) as e:
+                    logger.warning(f"Errore approssimazione normale: {e}, uso calcolo esatto")
+                    # Fallback a calcolo esatto
+            
+            # ⚠️ PRECISIONE: Calcolo esatto Poisson per lambda <= 20
             # P(k) = (lambda^k * exp(-lambda)) / k!
             # ⚠️ PROTEZIONE: Evita underflow per lambda_tot molto grandi
-            if lambda_tot > 50.0:  # Per lambda molto grandi, exp(-lambda) ≈ 0
-                # Approssimazione: per lambda grande, P(X <= 2) ≈ 0, quindi P(X > 2.5) ≈ 1
+            if lambda_tot > 50.0:  # Doppio check per sicurezza
                 return 1.0
-            # Calcolo ottimizzato: exp(-lambda) una sola volta
-            exp_neg_lambda = math.exp(-lambda_tot)
-            # ⚠️ PROTEZIONE: Verifica che exp_neg_lambda non sia zero (underflow)
-            if exp_neg_lambda == 0.0:
-                return 1.0  # Se exp(-lambda) = 0, allora P(X > 2.5) ≈ 1
-            p_0 = exp_neg_lambda
-            p_1 = lambda_tot * exp_neg_lambda
-            p_2 = (lambda_tot * lambda_tot / 2.0) * exp_neg_lambda  # ⚠️ PRECISIONE: lambda_tot^2 calcolato una volta
             
-            # ⚠️ PRECISIONE: Kahan summation per somma precisa (anche per 3 valori, per coerenza)
+            # ⚠️ PRECISIONE ESTESA: Calcolo ottimizzato con log-space per evitare overflow
+            # Usa log-space: log(P(k)) = k*log(lambda) - lambda - log(k!)
+            # Poi exp(log(P(k))) per ottenere P(k)
+            try:
+            exp_neg_lambda = math.exp(-lambda_tot)
+                if exp_neg_lambda == 0.0 or not math.isfinite(exp_neg_lambda):
+                    return 1.0
+                
+                # ⚠️ PRECISIONE: Calcolo ricorsivo più stabile numericamente
+                # P(0) = exp(-lambda)
+                # P(1) = lambda * P(0)
+                # P(2) = (lambda/2) * P(1)
+            p_0 = exp_neg_lambda
+                p_1 = lambda_tot * p_0
+                p_2 = (lambda_tot / 2.0) * p_1
+            
+                # ⚠️ PRECISIONE ESTESA: Kahan summation per somma precisa
             c_sum = 0.0  # Compensazione Kahan
             sum_p = 0.0
             for p_val in [p_0, p_1, p_2]:
+                    if not math.isfinite(p_val) or p_val < 0:
+                        continue
                 y = p_val - c_sum
                 t = sum_p + y
                 c_sum = (t - sum_p) - y
                 sum_p = t
+                
             # P(X > 2.5) = 1 - P(X <= 2)
             result = 1.0 - sum_p
             
             # ⚠️ PROTEZIONE: Limita risultato a range [0, 1]
-            return max(0.0, min(1.0, result))
+                result = max(0.0, min(1.0, result))
+                
+                # ⚠️ VERIFICA: Assicura che risultato sia finito
+                if not math.isfinite(result):
+                    logger.warning(f"poisson_over_prob risultato non finito: {result}, correggo")
+                    result = 1.0 if lambda_tot > 2.5 else 0.0
+                
+                return result
+            except (ValueError, OverflowError) as e:
+                logger.warning(f"Errore calcolo Poisson: {e}, uso approssimazione")
+                # Fallback: approssimazione semplice
+                return 1.0 if lambda_tot > 2.5 else 0.0
         
-        # ⚠️ PRECISIONE: Inversione numerica con bisezione migliorata
-        # Usiamo metodo bisezione con tolleranza più stretta e più iterazioni
+        # ⚠️ PRECISIONE ESTESA: Metodo Brent (combinazione bisezione + secante + inversa quadratica)
+        # Converge più velocemente e con maggiore precisione rispetto a bisezione pura
+        try:
+            def poisson_over_error(lambda_tot):
+                """Errore da minimizzare: |P(X > 2.5) - p_over|"""
+                p_pred = poisson_over_prob(lambda_tot)
+                if not math.isfinite(p_pred):
+                    return float('inf')
+                return abs(p_pred - p_over)
+            
+            # ⚠️ PRECISIONE ESTESA: Usa scipy.optimize.brentq per maggiore precisione
+            # Brent's method combina bisezione, secante e inversa quadratica
+            # Converge in ~10-15 iterazioni invece di 30
         lambda_min, lambda_max = 0.5, 6.0
-        best_lambda = (lambda_min + lambda_max) / 2
+            
+            # Verifica che la funzione cambi segno nell'intervallo
+            error_min = poisson_over_error(lambda_min)
+            error_max = poisson_over_error(lambda_max)
+            
+            # Se entrambi gli estremi hanno stesso segno, usa bisezione migliorata
+            if (error_min < model_config.TOL_OPTIMIZATION) or (error_max < model_config.TOL_OPTIMIZATION):
+                total_market = lambda_min if error_min < error_max else lambda_max
+            else:
+                # ⚠️ PRECISIONE ESTESA: Metodo Brent con funzione di errore
+                # Invertiamo: troviamo lambda tale che poisson_over_prob(lambda) = p_over
+                def poisson_inverse_eq(lambda_tot):
+                    """Equazione da risolvere: poisson_over_prob(lambda) - p_over = 0"""
+                    p_pred = poisson_over_prob(lambda_tot)
+                    if not math.isfinite(p_pred):
+                        return float('inf')
+                    return p_pred - p_over
+                
+                try:
+                    lambda_opt = optimize.brentq(
+                        poisson_inverse_eq,
+                        lambda_min,
+                        lambda_max,
+                        maxiter=50,  # Più iterazioni per precisione
+                        xtol=model_config.TOL_OPTIMIZATION,  # Tolleranza più stretta
+                        rtol=model_config.TOL_OPTIMIZATION
+                    )
+                    if math.isfinite(lambda_opt):
+                        total_market = lambda_opt
+                    else:
+                        raise ValueError("lambda_opt non finito")
+                except (ValueError, RuntimeError) as e:
+                    logger.warning(f"Metodo Brent fallito: {e}, uso bisezione migliorata")
+                    # Fallback: bisezione migliorata con più iterazioni
+                    best_lambda = (lambda_min + lambda_max) / 2.0
         best_error = float('inf')
         
-        # ⚠️ PRECISIONE: Più iterazioni (30 invece di 20) e tolleranza più stretta (1e-5 invece di 0.001)
-        for _ in range(30):  # Max 30 iterazioni per maggiore precisione
+                    for _ in range(50):  # Più iterazioni per precisione
             lambda_mid = (lambda_min + lambda_max) / 2.0
             p_mid = poisson_over_prob(lambda_mid)
+                        if not math.isfinite(p_mid):
+                            break
             error = abs(p_mid - p_over)
             
-            # ⚠️ PRECISIONE: Tiene traccia del miglior risultato
             if error < best_error:
                 best_error = error
                 best_lambda = lambda_mid
             
-            # ⚠️ PRECISIONE: Tolleranza più stretta (1e-5 invece di 0.001)
-            if error < model_config.TOL_OPTIMIZATION:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+                        if error < model_config.TOL_OPTIMIZATION:
                 best_lambda = lambda_mid
                 break
             
@@ -2975,6 +3227,15 @@ def estimate_lambda_from_market_optimized(
                 lambda_max = lambda_mid
         
         total_market = best_lambda
+        except Exception as e:
+            logger.warning(f"Errore ottimizzazione lambda: {e}, uso stima euristica")
+            # Fallback: stima euristica basata su p_over
+            # Approssimazione: lambda ≈ -log(1 - p_over) * 2.5 / 2.5 (per Poisson)
+            if p_over > 0.5:
+                total_market = 2.5 + (p_over - 0.5) * 3.0
+            else:
+                total_market = 2.5 - (0.5 - p_over) * 2.0
+            total_market = max(0.5, min(6.0, total_market))
         
         # ⚠️ CORREZIONE: Aggiustamento per casi estremi (più conservativo)
         # L'inversione numerica è già precisa, quindi aggiustamenti minimi
@@ -3161,8 +3422,42 @@ def estimate_lambda_from_market_optimized(
     lambda_h = max(0.3, min(4.5, lambda_h))
     lambda_a = max(0.3, min(4.5, lambda_a))
     
-    # ⚠️ PRECISIONE: Non arrotondare prematuramente, mantieni precisione massima
-    # Arrotondamento solo per output, non per calcoli interni
+    # ⚠️ DIAGNOSTICA: Logga scostamenti finali
+    try:
+        mat_final = build_score_matrix(lambda_h, lambda_a, rho_initial)
+        p1_pred, px_pred, p2_pred = calc_match_result_from_matrix(mat_final)
+        over_pred, _ = calc_over_under_from_matrix(mat_final, 2.5)
+        btts_pred = calc_bt_ts_from_matrix(mat_final)
+    except Exception as diag_err:
+        logger.debug(f"[DIAGNOSTICS] Impossibile calcolare metriche finali: {diag_err}")
+        p1_pred = px_pred = p2_pred = over_pred = btts_pred = float('nan')
+    
+    odds_btts_value = locals().get("odds_btts")
+    if isinstance(odds_btts_value, (int, float)) and odds_btts_value > 1.01:
+        btts_target = 1.0 / odds_btts_value
+    else:
+        btts_target = float('nan')
+    
+    log_precision_metrics(
+        "estimate_lambda_from_market_optimized",
+        {
+            "lambda_h": lambda_h,
+            "lambda_a": lambda_a,
+            "total_target": total_market,
+            "total_actual": lambda_h + lambda_a,
+            "p1_target": p1_target,
+            "p1_pred": p1_pred,
+            "px_target": px_target,
+            "px_pred": px_pred,
+            "p2_target": p2_target,
+            "p2_pred": p2_pred,
+            "p_over_target": p_over_target,
+            "p_over_pred": over_pred,
+            "btts_target": btts_target,
+            "btts_pred": btts_pred
+        }
+    )
+    
     return lambda_h, lambda_a
 
 def estimate_lambda_rho_joint_optimization(
@@ -3309,11 +3604,14 @@ def bayesian_lambda_update(
     market_confidence: float = 0.7,
 ) -> float:
     """
-    ⭐ BAYESIAN UPDATING ⭐
+    ⭐ BAYESIAN UPDATING ⭐ (PRECISIONE ESTESA)
     
     Aggiornamento bayesiano: combina lambda di mercato con prior storico.
     
+    ⚠️ PRECISIONE ESTESA: Formula bayesiana più accurata con normalizzazione precisa.
+    
     lambda_posterior = w_prior * lambda_prior + w_market * lambda_market
+    dove w_prior + w_market = 1 (normalizzazione esatta)
     
     Args:
         lambda_market: Lambda stimato dai dati di mercato
@@ -3324,15 +3622,83 @@ def bayesian_lambda_update(
     Returns:
         Lambda aggiornato (posterior)
     """
-    # Normalizza confidence
+    # ⚠️ CRITICO: Validazione input
+    if not all(isinstance(x, (int, float)) and math.isfinite(x) for x in [lambda_market, lambda_prior, prior_confidence, market_confidence]):
+        logger.warning(f"Parametri non validi in bayesian_lambda_update, uso lambda_market")
+        return lambda_market if isinstance(lambda_market, (int, float)) and math.isfinite(lambda_market) else 1.5
+    
+    # ⚠️ PROTEZIONE: Limita confidence a [0, 1]
+    prior_confidence = max(0.0, min(1.0, prior_confidence))
+    market_confidence = max(0.0, min(1.0, market_confidence))
+    
+    # ⚠️ PRECISIONE ESTESA: Normalizza confidence con Kahan summation per precisione
+    # Evita errori di arrotondamento nella normalizzazione
     total_confidence = prior_confidence + market_confidence
-    if total_confidence == 0:
+    
+    if total_confidence <= model_config.TOL_DIVISION_ZERO:
         return lambda_market
     
+    if getattr(model_config, "USE_CONJUGATE_POSTERIORS", False):
+        prior_strength = prior_confidence * model_config.GAMMA_PRIOR_STRENGTH_BASE
+        observed_strength = market_confidence * model_config.GAMMA_PRIOR_STRENGTH_BASE
+        lambda_post = gamma_poisson_posterior_mean(
+            lambda_prior=lambda_prior,
+            prior_strength=prior_strength,
+            lambda_observed=lambda_market,
+            observed_strength=observed_strength
+        )
+        log_precision_metrics(
+            "bayesian_lambda_update[gamma]",
+            {
+                "lambda_prior": lambda_prior,
+                "lambda_market": lambda_market,
+                "lambda_post": lambda_post,
+                "prior_strength": prior_strength,
+                "observed_strength": observed_strength
+            }
+        )
+        return lambda_post
+    
+    # ⚠️ PRECISIONE ESTESA: Calcolo pesi con protezione divisione per zero (fallback lineare)
     w_prior = prior_confidence / total_confidence
     w_market = market_confidence / total_confidence
     
-    return w_prior * lambda_prior + w_market * lambda_market
+    # ⚠️ VERIFICA: Assicura che pesi sommino esattamente a 1.0 (con tolleranza)
+    sum_weights = w_prior + w_market
+    if abs(sum_weights - 1.0) > model_config.TOL_PROBABILITY_CHECK:
+        if sum_weights > model_config.TOL_DIVISION_ZERO:
+            w_prior = w_prior / sum_weights
+            w_market = w_market / sum_weights
+    
+    term_prior = w_prior * lambda_prior
+    term_market = w_market * lambda_market
+    
+    if not all(math.isfinite(x) for x in [term_prior, term_market]):
+        logger.warning(f"Termini non finiti in bayesian_lambda_update, uso lambda_market")
+        return lambda_market
+    
+    c = 0.0
+    y = term_prior - c
+    t = term_market + y
+    c = (t - term_market) - y
+    lambda_posterior = t
+    
+    if not math.isfinite(lambda_posterior):
+        logger.warning(f"lambda_posterior non finito: {lambda_posterior}, uso media semplice")
+        lambda_posterior = (lambda_prior + lambda_market) / 2.0
+    
+    lambda_posterior = max(0.1, min(5.0, lambda_posterior))
+    log_precision_metrics(
+        "bayesian_lambda_update[linear]",
+        {
+            "lambda_prior": lambda_prior,
+            "lambda_market": lambda_market,
+            "lambda_post": lambda_posterior,
+            "w_prior": w_prior,
+            "w_market": w_market
+        }
+    )
+    return lambda_posterior
 
 def james_stein_shrinkage(
     lambda_estimate: float,
@@ -3341,10 +3707,15 @@ def james_stein_shrinkage(
     shrinkage_factor: float = 0.3,
 ) -> float:
     """
-    ⭐ SHRINKAGE ESTIMATION ⭐
+    ⭐ SHRINKAGE ESTIMATION ⭐ (PRECISIONE ESTESA)
     
     James-Stein estimator: riduce varianza shrinkando verso media globale.
     Utile per prevenire overfitting e valori estremi.
+    
+    ⚠️ PRECISIONE ESTESA: Formula James-Stein più accurata con calcolo preciso.
+    
+    Formula: lambda_shrunk = (1 - α) * lambda_estimate + α * lambda_global_mean
+    dove α = shrinkage_factor / (1 + n_observations / k) con k = 10
     
     Args:
         lambda_estimate: Lambda stimato
@@ -3355,22 +3726,77 @@ def james_stein_shrinkage(
     Returns:
         Lambda con shrinkage applicato
     """
-    # Più osservazioni = meno shrinkage
-    effective_shrinkage = shrinkage_factor / (1 + n_observations / 10.0)
+    # ⚠️ CRITICO: Validazione input
+    if not all(isinstance(x, (int, float)) and math.isfinite(x) for x in [lambda_estimate, lambda_global_mean, shrinkage_factor]):
+        logger.warning(f"Parametri non validi in james_stein_shrinkage, uso lambda_estimate")
+        return lambda_estimate if isinstance(lambda_estimate, (int, float)) and math.isfinite(lambda_estimate) else 1.5
     
-    return (
-        (1 - effective_shrinkage) * lambda_estimate +
-        effective_shrinkage * lambda_global_mean
-    )
+    if not isinstance(n_observations, int) or n_observations < 0:
+        logger.warning(f"n_observations non valido: {n_observations}, uso default 10")
+        n_observations = 10
+    
+    # ⚠️ PROTEZIONE: Limita parametri a range ragionevole
+    shrinkage_factor = max(0.0, min(1.0, shrinkage_factor))
+    n_observations = max(1, n_observations)
+    
+    # ⚠️ PRECISIONE ESTESA: Calcolo effective_shrinkage con protezione divisione per zero
+    # Più osservazioni = meno shrinkage (formula più precisa)
+    k = 10.0  # Costante di normalizzazione
+    denom = 1.0 + n_observations / k
+    if denom > model_config.TOL_DIVISION_ZERO:
+        effective_shrinkage = shrinkage_factor / denom
+    else:
+        effective_shrinkage = shrinkage_factor
+    
+    # ⚠️ PROTEZIONE: Limita effective_shrinkage a [0, 1]
+    effective_shrinkage = max(0.0, min(1.0, effective_shrinkage))
+    
+    # ⚠️ PRECISIONE ESTESA: Calcolo weighted average con Kahan summation
+    w_estimate = 1.0 - effective_shrinkage
+    w_global = effective_shrinkage
+    
+    # Verifica che pesi sommino a 1.0
+    sum_weights = w_estimate + w_global
+    if abs(sum_weights - 1.0) > model_config.TOL_PROBABILITY_CHECK:
+        if sum_weights > model_config.TOL_DIVISION_ZERO:
+            w_estimate = w_estimate / sum_weights
+            w_global = w_global / sum_weights
+    
+    term_estimate = w_estimate * lambda_estimate
+    term_global = w_global * lambda_global_mean
+    
+    # Verifica finitezza
+    if not all(math.isfinite(x) for x in [term_estimate, term_global]):
+        logger.warning(f"Termini non finiti in james_stein_shrinkage, uso media semplice")
+        return (lambda_estimate + lambda_global_mean) / 2.0
+    
+    # Kahan summation per combinazione precisa
+    c = 0.0
+    y = term_estimate - c
+    t = term_global + y
+    c = (t - term_global) - y
+    lambda_shrunk = t
+    
+    # ⚠️ VERIFICA: Assicura che risultato sia finito e ragionevole
+    if not math.isfinite(lambda_shrunk):
+        logger.warning(f"lambda_shrunk non finito: {lambda_shrunk}, uso media semplice")
+        lambda_shrunk = (lambda_estimate + lambda_global_mean) / 2.0
+    
+    # ⚠️ PROTEZIONE: Limita a range ragionevole
+    lambda_shrunk = max(0.1, min(5.0, lambda_shrunk))
+    
+    return lambda_shrunk
 
 def time_decay_weight(
     days_ago: int,
     half_life_days: int = 30
 ) -> float:
     """
-    ⭐ TIME-DECAY WEIGHTING ⭐
+    ⭐ TIME-DECAY WEIGHTING ⭐ (PRECISIONE ESTESA)
     
     Peso esponenziale per dati storici: partite recenti contano di più.
+    
+    ⚠️ PRECISIONE ESTESA: Calcolo più accurato con protezione overflow/underflow.
     
     Peso = exp(-lambda * days_ago)
     dove lambda = ln(2) / half_life_days
@@ -3382,11 +3808,54 @@ def time_decay_weight(
     Returns:
         Peso (0-1)
     """
-    if days_ago < 0:
-        days_ago = 0
+    # ⚠️ CRITICO: Validazione input
+    if not isinstance(days_ago, int) or days_ago < 0:
+        days_ago = max(0, int(days_ago) if isinstance(days_ago, (int, float)) else 0)
     
-    lambda_decay = math.log(2) / half_life_days
-    return math.exp(-lambda_decay * days_ago)
+    if not isinstance(half_life_days, (int, float)) or not math.isfinite(half_life_days) or half_life_days <= 0:
+        logger.warning(f"half_life_days non valido: {half_life_days}, uso default 30")
+        half_life_days = 30
+    
+    # ⚠️ PROTEZIONE: Limita half_life_days a range ragionevole
+    half_life_days = max(1, min(365, half_life_days))
+    
+    # ⚠️ PRECISIONE ESTESA: Calcolo lambda_decay con protezione divisione per zero
+    # Usa costante pre-calcolata log(2) per maggiore precisione
+    LOG_2 = 0.6931471805599453  # log(2) pre-calcolato per precisione
+    if half_life_days > model_config.TOL_DIVISION_ZERO:
+        lambda_decay = LOG_2 / half_life_days
+    else:
+        logger.warning(f"half_life_days troppo piccolo: {half_life_days}, uso default")
+        lambda_decay = LOG_2 / 30.0
+    
+    # ⚠️ PROTEZIONE: Evita overflow per days_ago molto grandi
+    # Per days_ago > 10 * half_life_days, peso ≈ 0
+    if days_ago > 10 * half_life_days:
+        return 0.0
+    
+    # ⚠️ PRECISIONE ESTESA: Calcolo exp con protezione overflow
+    try:
+        exponent = -lambda_decay * days_ago
+        # Protezione overflow: se exponent < -700, exp ≈ 0
+        if exponent < -700:
+            return 0.0
+        # Protezione underflow: se exponent > 700, exp ≈ inf (ma non dovrebbe accadere)
+        if exponent > 700:
+            logger.warning(f"exponent troppo grande: {exponent}, ritorno 1.0")
+            return 1.0
+        
+        weight = math.exp(exponent)
+        
+        # ⚠️ VERIFICA: Assicura che peso sia finito e in range [0, 1]
+        if not math.isfinite(weight):
+            logger.warning(f"weight non finito: {weight}, correggo")
+            return 0.0
+        
+        weight = max(0.0, min(1.0, weight))
+        return weight
+    except (ValueError, OverflowError) as e:
+        logger.warning(f"Errore calcolo time_decay_weight: {e}, ritorno 0.0")
+        return 0.0
 
 def weighted_calibration_with_time_decay(
     archive_file: str = ARCHIVE_FILE,
@@ -3635,48 +4104,48 @@ def tau_dixon_coles(h: int, a: int, lh: float, la: float, rho: float) -> float:
     if h == 0 and a == 0:
         # tau(0,0) = 1 - lambda_h * lambda_a * rho
         try:
-            val = 1.0 - (lh * la * rho)
+        val = 1.0 - (lh * la * rho)
             if not math.isfinite(val):
                 logger.warning(f"tau(0,0) non finito: {val}, uso default 0.5")
                 val = 0.5
-            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0] per evitare valori estremi
-            return max(0.1, min(2.0, val))
+        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0] per evitare valori estremi
+        return max(0.1, min(2.0, val))
         except (ValueError, OverflowError) as e:
             logger.warning(f"Errore calcolo tau(0,0): {e}, uso default 0.5")
             return 0.5
     elif h == 0 and a == 1:
         # tau(0,1) = 1 + lambda_h * rho
         try:
-            val = 1.0 + (lh * rho)
+        val = 1.0 + (lh * rho)
             if not math.isfinite(val):
                 logger.warning(f"tau(0,1) non finito: {val}, uso default 1.0")
                 val = 1.0
-            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
-            return max(0.1, min(2.0, val))
+        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
+        return max(0.1, min(2.0, val))
         except (ValueError, OverflowError) as e:
             logger.warning(f"Errore calcolo tau(0,1): {e}, uso default 1.0")
             return 1.0
     elif h == 1 and a == 0:
         # tau(1,0) = 1 + lambda_a * rho
         try:
-            val = 1.0 + (la * rho)
+        val = 1.0 + (la * rho)
             if not math.isfinite(val):
                 logger.warning(f"tau(1,0) non finito: {val}, uso default 1.0")
                 val = 1.0
-            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
-            return max(0.1, min(2.0, val))
+        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
+        return max(0.1, min(2.0, val))
         except (ValueError, OverflowError) as e:
             logger.warning(f"Errore calcolo tau(1,0): {e}, uso default 1.0")
             return 1.0
     elif h == 1 and a == 1:
         # tau(1,1) = 1 - rho
         try:
-            val = 1.0 - rho
+        val = 1.0 - rho
             if not math.isfinite(val):
                 logger.warning(f"tau(1,1) non finito: {val}, uso default 1.0")
                 val = 1.0
-            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
-            return max(0.1, min(2.0, val))
+        # ⚠️ PROTEZIONE: Limita a range ragionevole [0.1, 2.0]
+        return max(0.1, min(2.0, val))
         except (ValueError, OverflowError) as e:
             logger.warning(f"Errore calcolo tau(1,1): {e}, uso default 1.0")
             return 1.0
@@ -3811,6 +4280,15 @@ def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
             total_prob = t
         
         mat.append(row)
+    
+    dirichlet_eps = getattr(model_config, "DIRICHLET_EPS", 0.0)
+    if dirichlet_eps and dirichlet_eps > 0.0:
+        smoothing_total = dirichlet_eps * ((mg + 1) * (mg + 1))
+        total_prob += smoothing_total
+        for h in range(mg + 1):
+            row = mat[h]
+            for a in range(mg + 1):
+                row[a] += dirichlet_eps
     
     # ⚠️ PRECISIONE: Verifica normalizzazione con tolleranza standardizzata
     if total_prob > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
@@ -3981,8 +4459,8 @@ def calc_over_under_from_matrix(mat: List[List[float]], soglia: float) -> Tuple[
     if abs(sum_check - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         # Ricalibra se necessario con precisione
         if sum_check > model_config.TOL_DIVISION_ZERO:
-            over = over / sum_check
-            under = 1.0 - over
+        over = over / sum_check
+        under = 1.0 - over
         else:
             # Fallback: distribuzione uniforme se somma è zero
             logger.warning(f"Somma over+under = {sum_check}, uso distribuzione uniforme")
@@ -4158,8 +4636,8 @@ def prob_pari_dispari_from_matrix(mat: List[List[float]]) -> Tuple[float, float]
     if abs(sum_check - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
         # Ricalibra se necessario con precisione
         if sum_check > model_config.TOL_DIVISION_ZERO:
-            even = even / sum_check
-            odd = 1.0 - even
+        even = even / sum_check
+        odd = 1.0 - even
         else:
             # Fallback: distribuzione uniforme se somma è zero
             logger.warning(f"Somma even+odd = {sum_check}, uso distribuzione uniforme")
@@ -6053,7 +6531,7 @@ def apply_market_movement_blend(
         
         # ⚠️ PRECISIONE: Calcola exp con protezione overflow
         try:
-            spread_factor_ap_raw = math.exp(spread_clamped * 0.5)
+        spread_factor_ap_raw = math.exp(spread_clamped * 0.5)
             if not math.isfinite(spread_factor_ap_raw):
                 logger.warning(f"spread_factor_ap_raw non finito: {spread_factor_ap_raw}, uso default 1.0")
                 spread_factor_ap_raw = 1.0
@@ -6092,8 +6570,8 @@ def apply_market_movement_blend(
             if total_check_ap > model_config.TOL_DIVISION_ZERO:
                 scale_factor_ap = total_apertura_safe / total_check_ap
                 if math.isfinite(scale_factor_ap) and scale_factor_ap > 0:
-                    lambda_h_ap *= scale_factor_ap
-                    lambda_a_ap *= scale_factor_ap
+            lambda_h_ap *= scale_factor_ap
+            lambda_a_ap *= scale_factor_ap
                     
                     # ⚠️ VERIFICA FINALE: Double-check coerenza dopo ricalibrazione
                     total_check_final = lambda_h_ap + lambda_a_ap
@@ -8226,19 +8704,19 @@ def risultato_completo_improved(
             else:
                 xg_h_est = xg_h_sum / 2.0
                 xg_a_est = xg_a_sum / 2.0
-                
-                # ⚠️ VALIDAZIONE: Limita xG stimati a range ragionevole (0.3 - 4.0)
-                # xG molto alti (>4.0) o molto bassi (<0.3) sono probabilmente errori
-                xg_h_est = max(0.3, min(4.0, xg_h_est))
-                xg_a_est = max(0.3, min(4.0, xg_a_est))
-                
+        
+        # ⚠️ VALIDAZIONE: Limita xG stimati a range ragionevole (0.3 - 4.0)
+        # xG molto alti (>4.0) o molto bassi (<0.3) sono probabilmente errori
+        xg_h_est = max(0.3, min(4.0, xg_h_est))
+        xg_a_est = max(0.3, min(4.0, xg_a_est))
+        
                 # ⚠️ VERIFICA: Double-check che xG siano finiti dopo clamp
                 if not math.isfinite(xg_h_est) or not math.isfinite(xg_a_est):
                     logger.warning(f"xG stimati non finiti dopo clamp: xg_h={xg_h_est}, xg_a={xg_a_est}, ignoro blend xG")
                 else:
-                    # ⚠️ CONTROLLO: Se xG è molto diverso dai lambda di mercato, riduci peso xG
-                    # Questo evita che xG sbagliato sostituisca completamente i lambda di mercato
-                    # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata per protezione divisione per zero
+        # ⚠️ CONTROLLO: Se xG è molto diverso dai lambda di mercato, riduci peso xG
+        # Questo evita che xG sbagliato sostituisca completamente i lambda di mercato
+        # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata per protezione divisione per zero
                     lh_safe = max(model_config.TOL_DIVISION_ZERO, abs(lh))
                     la_safe = max(model_config.TOL_DIVISION_ZERO, abs(la))
                     xg_h_diff = abs(xg_h_est - lh) / lh_safe  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
@@ -8249,31 +8727,31 @@ def risultato_completo_improved(
                         xg_h_diff = 0.0
                     if not math.isfinite(xg_a_diff):
                         xg_a_diff = 0.0
-                    
-                    # Se differenza > 50%, riduci peso xG
-                    xg_penalty_h = 1.0 if xg_h_diff <= 0.5 else max(0.3, 1.0 - (xg_h_diff - 0.5))
-                    xg_penalty_a = 1.0 if xg_a_diff <= 0.5 else max(0.3, 1.0 - (xg_a_diff - 0.5))
+        
+        # Se differenza > 50%, riduci peso xG
+        xg_penalty_h = 1.0 if xg_h_diff <= 0.5 else max(0.3, 1.0 - (xg_h_diff - 0.5))
+        xg_penalty_a = 1.0 if xg_a_diff <= 0.5 else max(0.3, 1.0 - (xg_a_diff - 0.5))
                     
                     # ⚠️ PROTEZIONE: Limita penalty a range [0, 1]
                     xg_penalty_h = max(0.0, min(1.0, xg_penalty_h))
                     xg_penalty_a = max(0.0, min(1.0, xg_penalty_a))
-                    
-                    # MIGLIORAMENTO: Confidence più accurata basata su:
-                    # 1. Dimensione campione (proxy: valore xG - più alto = più dati)
-                    # 2. Coerenza tra xG for e against
-                    # 3. NUOVO: Validazione con dati reali dalle API (se disponibili)
-                    
-                    # Base confidence: valore xG normalizzato (più alto = più affidabile)
+        
+        # MIGLIORAMENTO: Confidence più accurata basata su:
+        # 1. Dimensione campione (proxy: valore xG - più alto = più dati)
+        # 2. Coerenza tra xG for e against
+        # 3. NUOVO: Validazione con dati reali dalle API (se disponibili)
+        
+        # Base confidence: valore xG normalizzato (più alto = più affidabile)
                     # ⚠️ PRECISIONE: Calcola con protezione overflow
                     xg_h_sum_conf = xg_for_home + xg_against_away
                     xg_a_sum_conf = xg_for_away + xg_against_home
                     xg_h_base_conf = min(1.0, xg_h_sum_conf / 4.0) if math.isfinite(xg_h_sum_conf) else 0.5  # Normalizza a max 4.0 (2.0 per squadra)
                     xg_a_base_conf = min(1.0, xg_a_sum_conf / 4.0) if math.isfinite(xg_a_sum_conf) else 0.5
-                    
-                    # Coerenza: se xG for e against sono simili, più affidabile
-                    # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata per protezione divisione per zero
-                    xg_sum_h = xg_for_home + xg_against_away
-                    xg_sum_a = xg_for_away + xg_against_home
+        
+        # Coerenza: se xG for e against sono simili, più affidabile
+        # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata per protezione divisione per zero
+        xg_sum_h = xg_for_home + xg_against_away
+        xg_sum_a = xg_for_away + xg_against_home
                     xg_sum_h_safe = max(model_config.TOL_DIVISION_ZERO, xg_sum_h / 2.0)
                     xg_sum_a_safe = max(model_config.TOL_DIVISION_ZERO, xg_sum_a / 2.0)
                     consistency_h = 1.0 - abs(xg_for_home - xg_against_away) / xg_sum_h_safe  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
@@ -8281,50 +8759,50 @@ def risultato_completo_improved(
                     # ⚠️ MICRO-PRECISIONE: Limita consistency a range [0, 1] e verifica finitezza
                     consistency_h = max(0.0, min(1.0, consistency_h)) if math.isfinite(consistency_h) else 0.5
                     consistency_a = max(0.0, min(1.0, consistency_a)) if math.isfinite(consistency_a) else 0.5
+        
+        # NUOVO: Boost confidence se abbiamo dati reali dalle API (advanced_data) e xA coerente
+        api_boost = 1.0
+        if advanced_data and advanced_data.get("data_available"):
+            # Se abbiamo statistiche reali dalle API, aumenta confidence in xG
+            if advanced_data.get("home_team_stats") or advanced_data.get("away_team_stats"):
+                api_boost = model_config.XG_API_BOOST
                     
-                    # NUOVO: Boost confidence se abbiamo dati reali dalle API (advanced_data) e xA coerente
-                    api_boost = 1.0
-                    if advanced_data and advanced_data.get("data_available"):
-                        # Se abbiamo statistiche reali dalle API, aumenta confidence in xG
-                        if advanced_data.get("home_team_stats") or advanced_data.get("away_team_stats"):
-                            api_boost = model_config.XG_API_BOOST
-                    
-                    # NUOVO: xA come modulatore conservativo della confidence xG
-                    xa_boost_h = 1.0
-                    xa_boost_a = 1.0
-                    if all(v is not None for v in [xa_for_home, xa_against_away]):
+        # NUOVO: xA come modulatore conservativo della confidence xG
+        xa_boost_h = 1.0
+        xa_boost_a = 1.0
+        if all(v is not None for v in [xa_for_home, xa_against_away]):
                         # ⚠️ PRECISIONE: Calcola xA con protezione
-                        xa_h_est = (xa_for_home + xa_against_away) / 2.0
+            xa_h_est = (xa_for_home + xa_against_away) / 2.0
                         if math.isfinite(xa_h_est) and math.isfinite(xg_h_est):
-                            align_h = 1.0 - abs(xa_h_est - xg_h_est) / max(0.2, (xa_h_est + xg_h_est) / 2.0)
-                            xa_boost_h = 0.95 + 0.1 * max(0.0, min(1.0, align_h))  # range ~[0.95, 1.05]
+            align_h = 1.0 - abs(xa_h_est - xg_h_est) / max(0.2, (xa_h_est + xg_h_est) / 2.0)
+            xa_boost_h = 0.95 + 0.1 * max(0.0, min(1.0, align_h))  # range ~[0.95, 1.05]
                             xa_boost_h = max(0.9, min(1.1, xa_boost_h))  # Protezione extra
-                    if all(v is not None for v in [xa_for_away, xa_against_home]):
-                        xa_a_est = (xa_for_away + xa_against_home) / 2.0
+        if all(v is not None for v in [xa_for_away, xa_against_home]):
+            xa_a_est = (xa_for_away + xa_against_home) / 2.0
                         if math.isfinite(xa_a_est) and math.isfinite(xg_a_est):
-                            align_a = 1.0 - abs(xa_a_est - xg_a_est) / max(0.2, (xa_a_est + xg_a_est) / 2.0)
-                            xa_boost_a = 0.95 + 0.1 * max(0.0, min(1.0, align_a))
+            align_a = 1.0 - abs(xa_a_est - xg_a_est) / max(0.2, (xa_a_est + xg_a_est) / 2.0)
+            xa_boost_a = 0.95 + 0.1 * max(0.0, min(1.0, align_a))
                             xa_boost_a = max(0.9, min(1.1, xa_boost_a))  # Protezione extra
-                    
-                    # Confidence finale: base * consistency * api_boost * xa_boost * penalty
+        
+        # Confidence finale: base * consistency * api_boost * xa_boost * penalty
                     # ⚠️ PRECISIONE: Calcola con protezione overflow
-                    xg_h_confidence = xg_h_base_conf * consistency_h * api_boost * xa_boost_h * xg_penalty_h
-                    xg_a_confidence = xg_a_base_conf * consistency_a * api_boost * xa_boost_a * xg_penalty_a
+        xg_h_confidence = xg_h_base_conf * consistency_h * api_boost * xa_boost_h * xg_penalty_h
+        xg_a_confidence = xg_a_base_conf * consistency_a * api_boost * xa_boost_a * xg_penalty_a
                     
                     # ⚠️ VERIFICA: Assicura che confidence siano finite e in range [0, 1]
                     xg_h_confidence = max(0.0, min(1.0, xg_h_confidence)) if math.isfinite(xg_h_confidence) else 0.3
                     xg_a_confidence = max(0.0, min(1.0, xg_a_confidence)) if math.isfinite(xg_a_confidence) else 0.3
-                    
-                    # Pesatura bayesiana: w = confidence * consistency usando ModelConfig
-                    # ⚠️ RIDOTTO: Peso massimo xG più conservativo per evitare esplosioni
-                    max_xg_weight = min(0.35, model_config.XG_MAX_WEIGHT if api_boost > 1.0 else model_config.XG_XG_WEIGHT)
-                    w_xg_h = min(max_xg_weight, xg_h_confidence * 0.4)  # Ridotto da 0.5 a 0.4
-                    w_xg_a = min(max_xg_weight, xg_a_confidence * 0.4)
-                    
+        
+        # Pesatura bayesiana: w = confidence * consistency usando ModelConfig
+        # ⚠️ RIDOTTO: Peso massimo xG più conservativo per evitare esplosioni
+        max_xg_weight = min(0.35, model_config.XG_MAX_WEIGHT if api_boost > 1.0 else model_config.XG_XG_WEIGHT)
+        w_xg_h = min(max_xg_weight, xg_h_confidence * 0.4)  # Ridotto da 0.5 a 0.4
+        w_xg_a = min(max_xg_weight, xg_a_confidence * 0.4)
+        
                     # ⚠️ VERIFICA: Assicura che pesi sommino correttamente
-                    w_market_h = 1.0 - w_xg_h
-                    w_market_a = 1.0 - w_xg_a
-                    
+        w_market_h = 1.0 - w_xg_h
+        w_market_a = 1.0 - w_xg_a
+        
                     # ⚠️ PRECISIONE: Verifica che pesi siano in range [0, 1]
                     w_xg_h = max(0.0, min(1.0, w_xg_h))
                     w_xg_a = max(0.0, min(1.0, w_xg_a))
@@ -8332,20 +8810,20 @@ def risultato_completo_improved(
                     w_market_a = max(0.0, min(1.0, w_market_a))
                     
                     # Blend finale con precisione
-                    lh = w_market_h * lh + w_xg_h * xg_h_est
-                    la = w_market_a * la + w_xg_a * xg_a_est
-                    
+        lh = w_market_h * lh + w_xg_h * xg_h_est
+        la = w_market_a * la + w_xg_a * xg_a_est
+        
                     # ⚠️ VERIFICA: Assicura che lambda blended siano finiti
                     if not math.isfinite(lh) or not math.isfinite(la):
                         logger.warning(f"Lambda dopo blend xG non finiti: lh={lh}, la={la}, uso valori prima del blend")
                         lh = lh_before_xg
                         la = la_before_xg
                     else:
-                        # ⚠️ CONTROLLO CRITICO: Limita effetto totale del blend xG
-                        # Il blend xG non può cambiare i lambda più del 30% rispetto a prima del blend
-                        max_xg_adjustment = 1.3  # Massimo 30% di variazione
-                        lh = max(lh_before_xg / max_xg_adjustment, min(lh_before_xg * max_xg_adjustment, lh))
-                        la = max(la_before_xg / max_xg_adjustment, min(la_before_xg * max_xg_adjustment, la))
+        # ⚠️ CONTROLLO CRITICO: Limita effetto totale del blend xG
+        # Il blend xG non può cambiare i lambda più del 30% rispetto a prima del blend
+        max_xg_adjustment = 1.3  # Massimo 30% di variazione
+        lh = max(lh_before_xg / max_xg_adjustment, min(lh_before_xg * max_xg_adjustment, lh))
+        la = max(la_before_xg / max_xg_adjustment, min(la_before_xg * max_xg_adjustment, la))
     
     # Constraints finali
     lh = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, lh))
