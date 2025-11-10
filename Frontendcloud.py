@@ -1083,7 +1083,7 @@ def btts_probability_bivariate(lambda_h: float, lambda_a: float, rho: float) -> 
     
     # P(H=0) marginale Poisson
     try:
-    p_h0 = poisson.pmf(0, lambda_h)
+        p_h0 = poisson.pmf(0, lambda_h)
         if not math.isfinite(p_h0) or p_h0 < 0:
             logger.warning(f"p_h0 non valido: {p_h0}, uso default")
             p_h0 = math.exp(-lambda_h) if lambda_h > 0 else 1.0
@@ -1093,7 +1093,7 @@ def btts_probability_bivariate(lambda_h: float, lambda_a: float, rho: float) -> 
     
     # P(A=0) marginale Poisson
     try:
-    p_a0 = poisson.pmf(0, lambda_a)
+        p_a0 = poisson.pmf(0, lambda_a)
         if not math.isfinite(p_a0) or p_a0 < 0:
             logger.warning(f"p_a0 non valido: {p_a0}, uso default")
             p_a0 = math.exp(-lambda_a) if lambda_a > 0 else 1.0
