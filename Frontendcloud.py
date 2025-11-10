@@ -83,7 +83,7 @@ class APIConfig:
     telegram_bot_token: str = "8530766126:AAHs1ZoLwrwvT7JuPyn_9ymNVyddPtUXi-g"
     telegram_chat_id: str = "-1003278011521"
     telegram_enabled: bool = True
-    telegram_min_probability: float = 65.0
+    telegram_min_probability: float = 50.0
     
     def __post_init__(self):
         """Carica da variabili d'ambiente (override se presenti)"""
