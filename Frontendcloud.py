@@ -997,7 +997,7 @@ def normalize_two_way_shin(o1: float, o2: float) -> Tuple[float, float]:
         return o1, o2
     
     try:
-    normalized = shin_normalization([o1, o2])
+        normalized = shin_normalization([o1, o2])
         if len(normalized) != 2:
             logger.warning(f"Shin normalization ritorna {len(normalized)} valori invece di 2, ritorno originali")
             return o1, o2
