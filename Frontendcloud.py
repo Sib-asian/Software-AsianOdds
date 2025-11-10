@@ -747,8 +747,10 @@ def btts_probability_bivariate(lambda_h: float, lambda_a: float, rho: float) -> 
     p_a0 = poisson.pmf(0, lambda_a)
     
     # P(H=0, A=0) con correzione Dixon-Coles tau
-    # tau(0,0) = max(0.2, 1 - lambda_h * lambda_a * rho)
-    tau_00 = max(0.2, 1 - lambda_h * lambda_a * rho)
+    # tau(0,0) = 1 - lambda_h * lambda_a * rho (con protezione [0.1, 2.0])
+    # Unificato con tau_dixon_coles per coerenza
+    tau_00_raw = 1.0 - lambda_h * lambda_a * rho
+    tau_00 = max(0.1, min(2.0, tau_00_raw))
     p_h0_a0 = p_h0 * p_a0 * tau_00
     
     # P(H=0 or A=0) usando inclusione-esclusione
@@ -2304,7 +2306,7 @@ def estimate_lambda_from_market_optimized(
     try:
         if not all(isinstance(x, (int, float)) and x > 1.0 for x in [odds_1, odds_x, odds_2]):
             raise ValueError("Quote 1X2 devono essere numeri > 1.0")
-        if not isinstance(total, (int, float)) or total <= 0 or total > 10:
+        if not isinstance(total, (int, float)) or total < 0.5 or total > 10.0:
             raise ValueError(f"total deve essere in [0.5, 10.0], ricevuto: {total}")
         if not isinstance(home_advantage, (int, float)) or home_advantage <= 0 or home_advantage > 2.0:
             logger.warning(f"home_advantage non valido: {home_advantage}, uso default 1.30")
@@ -2991,8 +2993,8 @@ def max_goals_adattivo(lh: float, la: float) -> int:
     # Per distribuzione somma di due Poisson: lambda_tot = lambda_h + lambda_a
     # Varianza = lambda_h + lambda_a (indipendenti)
     std_dev = math.sqrt(lh + la)
-    
-    # Percentile 99.9%: circa mean + 3.09 * std
+
+    # Percentile 99.977%: circa mean + 3.5 * std (più conservativo del 99.9%)
     max_goals_99_9 = int(expected_total + 3.5 * std_dev)
     
     # Bounds ragionevoli: minimo 10 per precisione, massimo 20 per performance
@@ -3780,10 +3782,11 @@ def platt_scaling_calibration(
         # Calcola score di calibrazione (Brier score migliorato)
         calibrated_preds = [calibrate(p) for p in predictions]
         calibration_score = brier_score(calibrated_preds, outcomes)
-        
+
         return calibrate, calibration_score
-    except:
+    except (ValueError, RuntimeError, AttributeError) as e:
         # Fallback: funzione identità
+        logger.warning(f"Errore durante Platt scaling calibration: {e}, uso funzione identità")
         return lambda p: p, 1.0
 
 def isotonic_calibration(
@@ -3915,22 +3918,22 @@ def best_calibration_method(
     try:
         calibrate_iso, score_iso = isotonic_calibration(predictions, outcomes, test_predictions)
         methods.append(("isotonic", calibrate_iso, score_iso))
-    except:
-        pass
-    
+    except Exception as e:
+        logger.debug(f"Isotonic calibration non disponibile: {e}")
+
     # Prova Temperature Scaling
     try:
         calibrate_temp, T, score_temp = temperature_scaling_calibration(predictions, outcomes, test_predictions)
         methods.append(("temperature", calibrate_temp, score_temp))
-    except:
-        pass
-    
+    except Exception as e:
+        logger.debug(f"Temperature scaling non disponibile: {e}")
+
     # Prova Platt Scaling
     try:
         calibrate_platt, score_platt = platt_scaling_calibration(predictions, outcomes, test_predictions)
         methods.append(("platt", calibrate_platt, score_platt))
-    except:
-        pass
+    except Exception as e:
+        logger.debug(f"Platt scaling non disponibile: {e}")
     
     if not methods:
         # Fallback: funzione identità
@@ -5157,10 +5160,11 @@ def get_time_based_adjustments(
     """
     if match_datetime is None:
         match_datetime = datetime.now().isoformat()
-    
+
     try:
         dt = datetime.fromisoformat(match_datetime.replace("Z", "+00:00"))
-    except:
+    except (ValueError, AttributeError, TypeError) as e:
+        logger.warning(f"Errore parsing datetime '{match_datetime}': {e}, uso datetime corrente")
         dt = datetime.now()
     
     adjustments = {
@@ -5983,8 +5987,8 @@ def send_telegram_message(
                         "error_message": error_msg_detailed,
                         "error_type": "invalid_chat_id"
                     }
-            except:
-                pass
+            except (KeyError, ValueError, json.JSONDecodeError) as e:
+                logger.debug(f"Errore parsing risposta Telegram: {e}")
             return {
                 "success": False,
                 "error_message": "Chat ID non valido o formato errato. Verifica che il Chat ID sia corretto.",
@@ -6238,7 +6242,8 @@ def get_unread_alerts() -> List[Dict[str, Any]]:
         with open(ALERTS_FILE, 'r') as f:
             alerts = json.load(f)
         return [a for a in alerts if not a.get("read", False)]
-    except:
+    except (FileNotFoundError, json.JSONDecodeError, PermissionError) as e:
+        logger.warning(f"Errore lettura alerts file: {e}")
         return []
 
 # ============================================================
@@ -7193,7 +7198,8 @@ def risultato_completo_improved(
             if FOOTBALL_DATA_API_KEY:
                 additional_api_data["football_data_org"] = football_data_get_team_info(home_team)
             additional_api_data["thesportsdb"] = stadium_data if stadium_data and stadium_data.get("available") else thesportsdb_get_team_info(home_team)
-        except:
+        except Exception as e:
+            logger.debug(f"Errore recupero dati API addizionali: {e}")
             pass  # Non bloccare se fallisce
     
     return {
@@ -8066,11 +8072,11 @@ if st.button("🎯 CALCOLA MODELLO AVANZATO", type="primary"):
                     if ev.get("id") == st.session_state.get("selected_event_id"):
                         current_event = ev
                         break
-                
+
                 if current_event:
                     match_datetime = current_event.get("commence_time")
-            except:
-                pass
+            except (KeyError, AttributeError, TypeError) as e:
+                logger.debug(f"Errore recupero match_datetime da session_state: {e}")
         
         # Recupera dati fatigue e motivation
         fatigue_home_data = None
@@ -9031,8 +9037,8 @@ if os.path.exists(ARCHIVE_FILE):
                             ax.grid(True, alpha=0.3)
                             st.pyplot(fig)
                             plt.close(fig)
-                        except:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Errore creazione grafico matplotlib: {e}")
 else:
     st.info("Nessuno storico disponibile per backtest")
 
