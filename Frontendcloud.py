@@ -343,7 +343,28 @@ def safe_round(x: Optional[float], nd: int = 3) -> Optional[float]:
         return x
 
 def decimali_a_prob(odds: float) -> float:
-    return 1 / odds if odds and odds > 0 else 0.0
+    """
+    ⚠️ PRECISIONE MANIACALE: Validazione completa, protezione divisione per zero
+    """
+    # ⚠️ CRITICO: Validazione input
+    if not isinstance(odds, (int, float)):
+        logger.warning(f"odds non valido: {odds}, ritorno 0.0")
+        return 0.0
+    
+    if not math.isfinite(odds) or odds <= 0:
+        logger.warning(f"odds non finito o <= 0: {odds}, ritorno 0.0")
+        return 0.0
+    
+    # ⚠️ PROTEZIONE: Protezione divisione per zero
+    odds_safe = max(odds, model_config.TOL_DIVISION_ZERO)
+    prob = 1.0 / odds_safe
+    
+    # ⚠️ VERIFICA: Assicura che prob sia finita e in range [0, 1]
+    if not math.isfinite(prob) or prob < 0 or prob > 1:
+        logger.warning(f"prob non valida: {prob}, ritorno 0.0")
+        return 0.0
+    
+    return prob
 
 # ============================================================
 #   VALIDAZIONE INPUT ROBUSTA (URGENTE)
@@ -681,36 +702,147 @@ def shin_normalization(odds_list: List[float], max_iter: int = 100, tol: float =
     if not odds_list or any(o <= 1 for o in odds_list):
         return odds_list
     
-    # Probabilità implicite
-    probs = np.array([1/o for o in odds_list])
-    margin = probs.sum() - 1
+    # ⚠️ PRECISIONE: Calcola probabilità implicite con protezione
+    probs_list = []
+    for o in odds_list:
+        # ⚠️ PROTEZIONE: Validazione e protezione divisione per zero
+        if not isinstance(o, (int, float)) or not math.isfinite(o) or o <= 1.0:
+            logger.warning(f"Odd non valido: {o}, salto")
+            continue
+        prob = 1.0 / max(o, model_config.TOL_DIVISION_ZERO)
+        if math.isfinite(prob) and 0.0 < prob < 1.0:
+            probs_list.append(prob)
     
-    if margin <= 0:
+    if len(probs_list) != len(odds_list):
+        logger.warning(f"Alcune probabilità non valide, uso solo {len(probs_list)}/{len(odds_list)}")
+        if len(probs_list) < 2:
+            return odds_list
+    
+    probs = np.array(probs_list)
+    
+    # ⚠️ PRECISIONE: Kahan summation per somma precisa
+    sum_probs = 0.0
+    c = 0.0
+    for p in probs:
+        y = p - c
+        t = sum_probs + y
+        c = (t - sum_probs) - y
+        sum_probs = t
+    
+    margin = sum_probs - 1.0
+    
+    if margin <= model_config.TOL_DIVISION_ZERO:
         return odds_list
     
     # Risolvi per z (proporzione di insider information)
     def shin_equation(z):
+        # ⚠️ PRECISIONE: Validazione z
+        if not isinstance(z, (int, float)) or not math.isfinite(z):
+            return float('inf')
         if z <= 0 or z >= 1:
             return float('inf')
-        sqrt_term = np.sqrt(z**2 + 4 * (1 - z) * probs**2)
-        fair_probs = (sqrt_term - z) / (2 * (1 - z))
-        return fair_probs.sum() - 1
+        
+        # ⚠️ PRECISIONE: Calcola sqrt_term con protezione overflow
+        try:
+            z_sq = z * z
+            term = 4 * (1.0 - z) * (probs ** 2)
+            sqrt_arg = z_sq + term
+            
+            # ⚠️ PROTEZIONE: Verifica che sqrt_arg sia non negativo e finito
+            if sqrt_arg < 0 or not math.isfinite(sqrt_arg):
+                return float('inf')
+            
+            sqrt_term = np.sqrt(sqrt_arg)
+            if not np.all(np.isfinite(sqrt_term)):
+                return float('inf')
+            
+            # ⚠️ PRECISIONE: Protezione divisione per zero
+            denom = 2.0 * (1.0 - z)
+            if abs(denom) < model_config.TOL_DIVISION_ZERO:
+                return float('inf')
+            
+            fair_probs = (sqrt_term - z) / denom
+            
+            # ⚠️ PRECISIONE: Kahan summation per somma precisa
+            sum_fair = 0.0
+            c_fair = 0.0
+            for fp in fair_probs:
+                if not math.isfinite(fp):
+                    return float('inf')
+                y = fp - c_fair
+                t = sum_fair + y
+                c_fair = (t - sum_fair) - y
+                sum_fair = t
+            
+            return sum_fair - 1.0
+        except (ValueError, OverflowError, ZeroDivisionError) as e:
+            logger.warning(f"Errore in shin_equation: {e}")
+            return float('inf')
     
     try:
         # Trova z ottimale
         z_opt = optimize.brentq(shin_equation, 0.001, 0.999, maxiter=max_iter)
         
         # ⚠️ PRECISIONE: Calcola probabilità fair con precisione massima
-        sqrt_term = np.sqrt(z_opt**2 + 4 * (1 - z_opt) * probs**2)
-        fair_probs = (sqrt_term - z_opt) / (2 * (1 - z_opt))
+        # ⚠️ VALIDAZIONE: Verifica z_opt
+        if not isinstance(z_opt, (int, float)) or not math.isfinite(z_opt) or z_opt <= 0 or z_opt >= 1:
+            raise ValueError(f"z_opt non valido: {z_opt}")
         
-        # ⚠️ PRECISIONE: Normalizza con precisione massima
-        sum_fair = fair_probs.sum()
+        try:
+            z_sq = z_opt * z_opt
+            term = 4.0 * (1.0 - z_opt) * (probs ** 2)
+            sqrt_arg = z_sq + term
+            
+            # ⚠️ PROTEZIONE: Verifica che sqrt_arg sia non negativo e finito
+            if not np.all(np.isfinite(sqrt_arg)) or np.any(sqrt_arg < 0):
+                raise ValueError("sqrt_arg non valido")
+            
+            sqrt_term = np.sqrt(sqrt_arg)
+            if not np.all(np.isfinite(sqrt_term)):
+                raise ValueError("sqrt_term non finito")
+            
+            # ⚠️ PRECISIONE: Protezione divisione per zero
+            denom = 2.0 * (1.0 - z_opt)
+            if abs(denom) < model_config.TOL_DIVISION_ZERO:
+                raise ValueError("denom troppo piccolo")
+            
+            fair_probs = (sqrt_term - z_opt) / denom
+            if not np.all(np.isfinite(fair_probs)):
+                raise ValueError("fair_probs non finito")
+        except (ValueError, OverflowError, ZeroDivisionError) as e:
+            logger.warning(f"Errore calcolo fair_probs: {e}, uso fallback")
+            raise
+        
+        # ⚠️ PRECISIONE: Normalizza con Kahan summation per precisione massima
+        sum_fair = 0.0
+        c_fair = 0.0
+        for fp in fair_probs:
+            if not math.isfinite(fp):
+                continue
+            y = fp - c_fair
+            t = sum_fair + y
+            c_fair = (t - sum_fair) - y
+            sum_fair = t
+        
         if sum_fair > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
             fair_probs = fair_probs / sum_fair
         else:
-            # Fallback: normalizzazione semplice
-            fair_probs = probs / probs.sum()
+            # Fallback: normalizzazione semplice con Kahan
+            sum_probs_safe = 0.0
+            c_probs = 0.0
+            for p in probs:
+                if not math.isfinite(p):
+                    continue
+                y = p - c_probs
+                t = sum_probs_safe + y
+                c_probs = (t - sum_probs_safe) - y
+                sum_probs_safe = t
+            
+            if sum_probs_safe > model_config.TOL_DIVISION_ZERO:
+                fair_probs = probs / sum_probs_safe
+            else:
+                # Caso estremo: distribuzione uniforme
+                fair_probs = np.ones_like(probs) / len(probs)
         
         # ⚠️ PRECISIONE: Arrotonda solo per output, mantieni precisione nei calcoli
         # ⚠️ CRITICO: Protezione divisione per zero
@@ -1219,11 +1351,46 @@ def oddsapi_extract_prices_improved(event: dict) -> dict:
     btts_list = _remove_outliers(btts_list)
 
     def weighted_avg(values: List[Tuple[float, float]]):
+        """
+        ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, protezione divisione per zero
+        """
         if not values:
             return None
-        num = sum(v * w for v, w in values)
-        den = sum(w for _, w in values)
-        return round(num / den, 3) if den else None
+        
+        # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
+        num = 0.0
+        den = 0.0
+        c_num = 0.0  # Compensazione Kahan
+        c_den = 0.0
+        
+        for v, w in values:
+            # ⚠️ PROTEZIONE: Ignora valori non validi
+            if not isinstance(v, (int, float)) or not isinstance(w, (int, float)):
+                continue
+            if not math.isfinite(v) or not math.isfinite(w) or w < 0:
+                continue
+            
+            # Kahan summation per numeratore
+            term = v * w
+            y = term - c_num
+            t = num + y
+            c_num = (t - num) - y
+            num = t
+            
+            # Kahan summation per denominatore
+            y = w - c_den
+            t = den + y
+            c_den = (t - den) - y
+            den = t
+        
+        # ⚠️ PROTEZIONE: Protezione divisione per zero
+        if den > model_config.TOL_DIVISION_ZERO:
+            result = num / den
+            if math.isfinite(result):
+                return round(result, 3)
+        
+        logger.warning(f"weighted_avg: den troppo piccolo ({den}), ritorno None")
+        return None
 
     out["odds_1"] = weighted_avg(h2h_home)
     out["odds_x"] = weighted_avg(h2h_draw)
@@ -2130,30 +2297,68 @@ def calculate_team_form_from_statistics(team_stats: Dict[str, Any], last_n: int 
         losses_data = fixtures.get("loses", {}) if isinstance(fixtures, dict) else {}
         losses = losses_data.get("total", 0) if isinstance(losses_data, dict) else 0
         
-        # Calcola forma punti (vittoria=3, pareggio=1, sconfitta=0)
-        form_points = (wins * 3 + draws) / max(1, played * 3)
+        # ⚠️ PRECISIONE: Calcola forma punti con protezione divisione per zero
+        played_safe = max(1, played)
+        form_points = (wins * 3.0 + draws) / max(model_config.TOL_DIVISION_ZERO, played_safe * 3.0)
+        form_points = max(0.0, min(1.0, form_points))  # Limita a [0, 1]
         
         # Normalizza forma punti (0.33 = media, 1.0 = perfetto)
         form_points_factor = 0.7 + (form_points - 0.33) * 0.9  # Range: 0.7 - 1.6
+        form_points_factor = max(0.7, min(1.6, form_points_factor))  # Limita range
+        
+        # ⚠️ VERIFICA: Assicura che form_points_factor sia finito
+        if not math.isfinite(form_points_factor):
+            logger.warning(f"form_points_factor non finito: {form_points_factor}, correggo")
+            form_points_factor = 1.0
         
         # Fattore attacco basato su gol fatti (dati API aggiornati)
         avg_goals_league = 1.3
-        form_attack = 0.85 + (goals_for / avg_goals_league - 1) * 0.3  # Range: 0.85 - 1.15
+        # ⚠️ PRECISIONE: Protezione divisione per zero
+        if avg_goals_league > model_config.TOL_DIVISION_ZERO:
+            form_attack = 0.85 + (goals_for / avg_goals_league - 1.0) * 0.3  # Range: 0.85 - 1.15
+        else:
+            form_attack = 1.0
+        form_attack = max(0.85, min(1.15, form_attack))  # Limita range
+        
+        # ⚠️ VERIFICA: Assicura che form_attack sia finito
+        if not math.isfinite(form_attack):
+            logger.warning(f"form_attack non finito: {form_attack}, correggo")
+            form_attack = 1.0
         
         # Migliora con dati shots se disponibili (più tiri = più opportunità)
         if shots_for > 0:
             avg_shots_league = 12.0  # Media lega
-            shots_factor = min(1.1, 0.95 + (shots_for / avg_shots_league - 1) * 0.15)
+            # ⚠️ PRECISIONE: Protezione divisione per zero
+            if avg_shots_league > model_config.TOL_DIVISION_ZERO:
+                shots_factor = min(1.1, 0.95 + (shots_for / avg_shots_league - 1.0) * 0.15)
+            else:
+                shots_factor = 1.0
             form_attack = (form_attack + shots_factor) / 2.0  # Media pesata
+            form_attack = max(0.85, min(1.15, form_attack))  # Limita range
         
         # Fattore difesa basato su gol subiti (dati API aggiornati)
-        form_defense = 0.85 + (1 - goals_against / avg_goals_league) * 0.3  # Range: 0.85 - 1.15
+        # ⚠️ PRECISIONE: Protezione divisione per zero
+        if avg_goals_league > model_config.TOL_DIVISION_ZERO:
+            form_defense = 0.85 + (1.0 - goals_against / avg_goals_league) * 0.3  # Range: 0.85 - 1.15
+        else:
+            form_defense = 1.0
+        form_defense = max(0.85, min(1.15, form_defense))  # Limita range
+        
+        # ⚠️ VERIFICA: Assicura che form_defense sia finito
+        if not math.isfinite(form_defense):
+            logger.warning(f"form_defense non finito: {form_defense}, correggo")
+            form_defense = 1.0
         
         # Migliora con dati shots against se disponibili
         if shots_against > 0:
             avg_shots_league = 12.0
-            shots_against_factor = min(1.1, 0.95 + (1 - shots_against / avg_shots_league) * 0.15)
+            # ⚠️ PRECISIONE: Protezione divisione per zero
+            if avg_shots_league > model_config.TOL_DIVISION_ZERO:
+                shots_against_factor = min(1.1, 0.95 + (1.0 - shots_against / avg_shots_league) * 0.15)
+            else:
+                shots_against_factor = 1.0
             form_defense = (form_defense + shots_against_factor) / 2.0
+            form_defense = max(0.85, min(1.15, form_defense))  # Limita range
         
         # Confidence basata su partite giocate e qualità dati
         confidence = min(1.0, played / 10.0)
@@ -2233,25 +2438,59 @@ def calculate_h2h_adjustments(h2h_matches: List[Dict[str, Any]], home_team_id: i
         if matches_played < 2:
             return {"h2h_home_advantage": 1.0, "h2h_goals_factor": 1.0, "h2h_btts_factor": 1.0, "confidence": 0.0}
         
-        # Calcola fattori
-        home_win_rate = home_wins / matches_played
-        draw_rate = draws / matches_played
-        away_win_rate = away_wins / matches_played
+        # ⚠️ PRECISIONE: Calcola fattori con protezione divisione per zero
+        matches_played_safe = max(1, matches_played)
+        
+        home_win_rate = home_wins / matches_played_safe
+        draw_rate = draws / matches_played_safe
+        away_win_rate = away_wins / matches_played_safe
+        
+        # ⚠️ PROTEZIONE: Limita rate a [0, 1]
+        home_win_rate = max(0.0, min(1.0, home_win_rate))
+        draw_rate = max(0.0, min(1.0, draw_rate))
+        away_win_rate = max(0.0, min(1.0, away_win_rate))
         
         # Se home vince spesso → aumenta vantaggio casa
         # Media: 45% vittorie casa, 25% pareggi, 30% vittorie trasferta
         expected_home_win = 0.45
         h2h_home_advantage = 0.9 + (home_win_rate - expected_home_win) * 0.4  # Range: 0.9 - 1.1
+        h2h_home_advantage = max(0.9, min(1.1, h2h_home_advantage))  # Limita range
+        
+        # ⚠️ VERIFICA: Assicura che h2h_home_advantage sia finito
+        if not math.isfinite(h2h_home_advantage):
+            logger.warning(f"h2h_home_advantage non finito: {h2h_home_advantage}, correggo")
+            h2h_home_advantage = 1.0
         
         # Fattore gol: media gol in H2H vs media generale (2.6)
-        avg_goals_h2h = total_goals / matches_played
+        avg_goals_h2h = total_goals / matches_played_safe
         avg_goals_general = 2.6
-        h2h_goals_factor = 0.9 + (avg_goals_h2h / avg_goals_general - 1) * 0.2  # Range: 0.9 - 1.1
+        # ⚠️ PRECISIONE: Protezione divisione per zero
+        if avg_goals_general > model_config.TOL_DIVISION_ZERO:
+            h2h_goals_factor = 0.9 + (avg_goals_h2h / avg_goals_general - 1.0) * 0.2  # Range: 0.9 - 1.1
+        else:
+            h2h_goals_factor = 1.0
+        h2h_goals_factor = max(0.9, min(1.1, h2h_goals_factor))  # Limita range
+        
+        # ⚠️ VERIFICA: Assicura che h2h_goals_factor sia finito
+        if not math.isfinite(h2h_goals_factor):
+            logger.warning(f"h2h_goals_factor non finito: {h2h_goals_factor}, correggo")
+            h2h_goals_factor = 1.0
         
         # Fattore BTTS
-        btts_rate = btts_count / matches_played
+        btts_rate = btts_count / matches_played_safe
+        btts_rate = max(0.0, min(1.0, btts_rate))  # Limita a [0, 1]
         avg_btts_rate = 0.52  # Media generale
-        h2h_btts_factor = 0.9 + (btts_rate / avg_btts_rate - 1) * 0.2  # Range: 0.9 - 1.1
+        # ⚠️ PRECISIONE: Protezione divisione per zero
+        if avg_btts_rate > model_config.TOL_DIVISION_ZERO:
+            h2h_btts_factor = 0.9 + (btts_rate / avg_btts_rate - 1.0) * 0.2  # Range: 0.9 - 1.1
+        else:
+            h2h_btts_factor = 1.0
+        h2h_btts_factor = max(0.9, min(1.1, h2h_btts_factor))  # Limita range
+        
+        # ⚠️ VERIFICA: Assicura che h2h_btts_factor sia finito
+        if not math.isfinite(h2h_btts_factor):
+            logger.warning(f"h2h_btts_factor non finito: {h2h_btts_factor}, correggo")
+            h2h_btts_factor = 1.0
         
         # Confidence basata su numero match
         confidence = min(1.0, matches_played / 5.0)
