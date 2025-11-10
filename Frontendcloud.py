@@ -2978,6 +2978,739 @@ class BettingHistory:
         }
 
 # ============================================================
+#  DATABASE - BETTING HISTORY & PERFORMANCE TRACKING
+# ============================================================
+
+import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
+
+# Database path
+DB_PATH = Path(__file__).parent / "betting_database.db"
+
+@contextmanager
+def get_db_connection():
+    """Context manager per connessione database con auto-commit/rollback"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row  # Permette accesso per nome colonna
+    try:
+        yield conn
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Errore database, rollback: {e}")
+        raise
+    finally:
+        conn.close()
+
+def initialize_database() -> None:
+    """
+    Inizializza il database con tutte le tabelle necessarie.
+
+    Tabelle create:
+    - matches: Storico partite con fixture e risultati
+    - predictions: Storico previsioni del modello
+    - bets: Storico scommesse piazzate
+    - performance: Metriche aggregate per periodo
+
+    Chiamare questa funzione all'avvio dell'applicazione.
+    """
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+
+        # Tabella matches - storico partite
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS matches (
+                match_id TEXT PRIMARY KEY,
+                date TEXT NOT NULL,
+                time TEXT,
+                league TEXT NOT NULL,
+                home_team TEXT NOT NULL,
+                away_team TEXT NOT NULL,
+                home_score INTEGER,
+                away_score INTEGER,
+                result TEXT CHECK(result IN ('H', 'D', 'A', NULL)),
+                total_goals INTEGER,
+                btts INTEGER CHECK(btts IN (0, 1, NULL)),
+                weather_temp REAL,
+                weather_rain REAL,
+                weather_wind REAL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Tabella predictions - storico previsioni
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS predictions (
+                prediction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                match_id TEXT NOT NULL,
+                prediction_time TEXT DEFAULT CURRENT_TIMESTAMP,
+                lambda_h REAL NOT NULL,
+                lambda_a REAL NOT NULL,
+                rho REAL,
+                tau REAL,
+                prob_home REAL NOT NULL,
+                prob_draw REAL NOT NULL,
+                prob_away REAL NOT NULL,
+                prob_over_0_5 REAL,
+                prob_over_1_5 REAL,
+                prob_over_2_5 REAL,
+                prob_over_3_5 REAL,
+                prob_btts REAL,
+                model_version TEXT DEFAULT '2.0',
+                weather_adjusted INTEGER DEFAULT 0,
+                brier_score REAL,
+                FOREIGN KEY (match_id) REFERENCES matches(match_id)
+            )
+        """)
+
+        # Tabella bets - storico scommesse
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS bets (
+                bet_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                match_id TEXT NOT NULL,
+                prediction_id INTEGER,
+                bet_time TEXT DEFAULT CURRENT_TIMESTAMP,
+                market TEXT NOT NULL,
+                selection TEXT NOT NULL,
+                probability REAL NOT NULL,
+                odds REAL NOT NULL,
+                edge REAL NOT NULL,
+                stake REAL NOT NULL,
+                kelly_fraction REAL,
+                bankroll_before REAL,
+                result TEXT CHECK(result IN ('win', 'loss', 'push', 'pending')),
+                profit REAL,
+                settled_time TEXT,
+                notes TEXT,
+                FOREIGN KEY (match_id) REFERENCES matches(match_id),
+                FOREIGN KEY (prediction_id) REFERENCES predictions(prediction_id)
+            )
+        """)
+
+        # Tabella performance - metriche aggregate
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS performance (
+                period_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                total_bets INTEGER DEFAULT 0,
+                wins INTEGER DEFAULT 0,
+                losses INTEGER DEFAULT 0,
+                pushes INTEGER DEFAULT 0,
+                win_rate REAL,
+                total_staked REAL DEFAULT 0,
+                total_profit REAL DEFAULT 0,
+                roi REAL,
+                avg_odds REAL,
+                avg_edge REAL,
+                brier_score_avg REAL,
+                max_drawdown REAL,
+                sharpe_ratio REAL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Indici per performance
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_date ON matches(date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_match ON predictions(match_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_bets_match ON bets(match_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_bets_result ON bets(result)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_bets_time ON bets(bet_time)")
+
+        logger.info(f"Database inizializzato: {DB_PATH}")
+
+def save_match(match_data: Dict[str, Any]) -> None:
+    """Salva o aggiorna una partita nel database"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO matches (
+                match_id, date, time, league, home_team, away_team,
+                home_score, away_score, result, total_goals, btts,
+                weather_temp, weather_rain, weather_wind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(match_id) DO UPDATE SET
+                home_score = excluded.home_score,
+                away_score = excluded.away_score,
+                result = excluded.result,
+                total_goals = excluded.total_goals,
+                btts = excluded.btts,
+                updated_at = CURRENT_TIMESTAMP
+        """, (
+            match_data.get('match_id'),
+            match_data.get('date'),
+            match_data.get('time'),
+            match_data.get('league'),
+            match_data.get('home_team'),
+            match_data.get('away_team'),
+            match_data.get('home_score'),
+            match_data.get('away_score'),
+            match_data.get('result'),
+            match_data.get('total_goals'),
+            match_data.get('btts'),
+            match_data.get('weather_temp'),
+            match_data.get('weather_rain'),
+            match_data.get('weather_wind')
+        ))
+
+def save_prediction(prediction_data: Dict[str, Any]) -> int:
+    """
+    Salva una previsione nel database.
+    Returns: prediction_id
+    """
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO predictions (
+                match_id, lambda_h, lambda_a, rho, tau,
+                prob_home, prob_draw, prob_away,
+                prob_over_0_5, prob_over_1_5, prob_over_2_5, prob_over_3_5,
+                prob_btts, model_version, weather_adjusted
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            prediction_data.get('match_id'),
+            prediction_data.get('lambda_h'),
+            prediction_data.get('lambda_a'),
+            prediction_data.get('rho'),
+            prediction_data.get('tau'),
+            prediction_data.get('prob_home'),
+            prediction_data.get('prob_draw'),
+            prediction_data.get('prob_away'),
+            prediction_data.get('prob_over_0_5'),
+            prediction_data.get('prob_over_1_5'),
+            prediction_data.get('prob_over_2_5'),
+            prediction_data.get('prob_over_3_5'),
+            prediction_data.get('prob_btts'),
+            prediction_data.get('model_version', '2.0'),
+            prediction_data.get('weather_adjusted', 0)
+        ))
+        return cursor.lastrowid
+
+def save_bet(bet_data: Dict[str, Any]) -> int:
+    """
+    Salva una scommessa nel database.
+    Returns: bet_id
+    """
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO bets (
+                match_id, prediction_id, market, selection,
+                probability, odds, edge, stake, kelly_fraction,
+                bankroll_before, result, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            bet_data.get('match_id'),
+            bet_data.get('prediction_id'),
+            bet_data.get('market'),
+            bet_data.get('selection'),
+            bet_data.get('probability'),
+            bet_data.get('odds'),
+            bet_data.get('edge'),
+            bet_data.get('stake'),
+            bet_data.get('kelly_fraction'),
+            bet_data.get('bankroll_before'),
+            bet_data.get('result', 'pending'),
+            bet_data.get('notes')
+        ))
+        return cursor.lastrowid
+
+def update_bet_result(bet_id: int, result: str, profit: float) -> None:
+    """Aggiorna il risultato di una scommessa"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE bets
+            SET result = ?, profit = ?, settled_time = CURRENT_TIMESTAMP
+            WHERE bet_id = ?
+        """, (result, profit, bet_id))
+
+def get_pending_bets() -> List[Dict[str, Any]]:
+    """Ritorna tutte le scommesse pending"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT b.*, m.home_team, m.away_team, m.date, m.home_score, m.away_score
+            FROM bets b
+            JOIN matches m ON b.match_id = m.match_id
+            WHERE b.result = 'pending'
+            ORDER BY m.date ASC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+def get_performance_summary(days: int = 30) -> Dict[str, Any]:
+    """
+    Calcola metriche di performance per gli ultimi N giorni.
+
+    Returns:
+        Dict con: total_bets, wins, losses, win_rate, roi, profit,
+                  avg_odds, avg_edge, brier_score, sharpe_ratio
+    """
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+
+        # Calcola data limite
+        date_limit = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+
+        # Query principale
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total_bets,
+                SUM(CASE WHEN result = 'win' THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN result = 'loss' THEN 1 ELSE 0 END) as losses,
+                SUM(CASE WHEN result = 'push' THEN 1 ELSE 0 END) as pushes,
+                SUM(stake) as total_staked,
+                SUM(COALESCE(profit, 0)) as total_profit,
+                AVG(odds) as avg_odds,
+                AVG(edge) as avg_edge
+            FROM bets
+            WHERE bet_time >= ?
+        """, (date_limit,))
+
+        row = cursor.fetchone()
+
+        total_bets = row['total_bets'] or 0
+        wins = row['wins'] or 0
+        losses = row['losses'] or 0
+        pushes = row['pushes'] or 0
+        total_staked = row['total_staked'] or 0
+        total_profit = row['total_profit'] or 0
+
+        win_rate = wins / total_bets if total_bets > 0 else 0
+        roi = (total_profit / total_staked * 100) if total_staked > 0 else 0
+
+        # Calcola Brier score medio
+        cursor.execute("""
+            SELECT AVG(p.brier_score) as avg_brier
+            FROM predictions p
+            JOIN bets b ON p.prediction_id = b.prediction_id
+            WHERE b.bet_time >= ? AND p.brier_score IS NOT NULL
+        """, (date_limit,))
+
+        brier_row = cursor.fetchone()
+        avg_brier = brier_row['avg_brier'] if brier_row and brier_row['avg_brier'] else None
+
+        # Calcola Sharpe ratio (semplificato)
+        cursor.execute("""
+            SELECT profit
+            FROM bets
+            WHERE bet_time >= ? AND result != 'pending'
+            ORDER BY bet_time ASC
+        """, (date_limit,))
+
+        profits = [row['profit'] for row in cursor.fetchall() if row['profit'] is not None]
+        sharpe_ratio = None
+        if len(profits) > 1:
+            mean_profit = sum(profits) / len(profits)
+            variance = sum((p - mean_profit) ** 2 for p in profits) / len(profits)
+            std_dev = variance ** 0.5
+            if std_dev > 0:
+                sharpe_ratio = (mean_profit * len(profits) ** 0.5) / std_dev
+
+        return {
+            'days': days,
+            'total_bets': total_bets,
+            'wins': wins,
+            'losses': losses,
+            'pushes': pushes,
+            'win_rate': round(win_rate * 100, 2),
+            'total_staked': round(total_staked, 2),
+            'total_profit': round(total_profit, 2),
+            'roi': round(roi, 2),
+            'avg_odds': round(row['avg_odds'], 2) if row['avg_odds'] else None,
+            'avg_edge': round(row['avg_edge'] * 100, 2) if row['avg_edge'] else None,
+            'brier_score': round(avg_brier, 4) if avg_brier else None,
+            'sharpe_ratio': round(sharpe_ratio, 2) if sharpe_ratio else None
+        }
+
+def get_best_worst_bets(limit: int = 10) -> Dict[str, List[Dict]]:
+    """Ritorna le migliori e peggiori scommesse (per ROI)"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+
+        # Migliori bets
+        cursor.execute("""
+            SELECT b.*, m.home_team, m.away_team, m.date,
+                   (b.profit / b.stake * 100) as roi_bet
+            FROM bets b
+            JOIN matches m ON b.match_id = m.match_id
+            WHERE b.result IN ('win', 'loss')
+            ORDER BY roi_bet DESC
+            LIMIT ?
+        """, (limit,))
+        best_bets = [dict(row) for row in cursor.fetchall()]
+
+        # Peggiori bets
+        cursor.execute("""
+            SELECT b.*, m.home_team, m.away_team, m.date,
+                   (b.profit / b.stake * 100) as roi_bet
+            FROM bets b
+            JOIN matches m ON b.match_id = m.match_id
+            WHERE b.result IN ('win', 'loss')
+            ORDER BY roi_bet ASC
+            LIMIT ?
+        """, (limit,))
+        worst_bets = [dict(row) for row in cursor.fetchall()]
+
+        return {
+            'best_bets': best_bets,
+            'worst_bets': worst_bets
+        }
+
+def get_performance_by_market() -> List[Dict[str, Any]]:
+    """Analizza performance per tipo di mercato"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                market,
+                COUNT(*) as total_bets,
+                SUM(CASE WHEN result = 'win' THEN 1 ELSE 0 END) as wins,
+                SUM(stake) as total_staked,
+                SUM(COALESCE(profit, 0)) as total_profit,
+                AVG(edge) as avg_edge
+            FROM bets
+            WHERE result != 'pending'
+            GROUP BY market
+            ORDER BY total_profit DESC
+        """)
+
+        results = []
+        for row in cursor.fetchall():
+            total = row['total_bets']
+            win_rate = (row['wins'] / total * 100) if total > 0 else 0
+            roi = (row['total_profit'] / row['total_staked'] * 100) if row['total_staked'] > 0 else 0
+
+            results.append({
+                'market': row['market'],
+                'total_bets': total,
+                'win_rate': round(win_rate, 2),
+                'total_staked': round(row['total_staked'], 2),
+                'total_profit': round(row['total_profit'], 2),
+                'roi': round(roi, 2),
+                'avg_edge': round(row['avg_edge'] * 100, 2) if row['avg_edge'] else None
+            })
+
+        return results
+
+def save_performance_snapshot() -> None:
+    """
+    Salva uno snapshot delle performance mensili.
+    Chiamare questa funzione a fine mese.
+    """
+    summary = get_performance_summary(days=30)
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+
+        period_end = datetime.now().strftime('%Y-%m-%d')
+        period_start = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+
+        cursor.execute("""
+            INSERT INTO performance (
+                period_start, period_end, total_bets, wins, losses, pushes,
+                win_rate, total_staked, total_profit, roi, avg_odds, avg_edge,
+                brier_score_avg, sharpe_ratio
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            period_start, period_end,
+            summary['total_bets'], summary['wins'], summary['losses'], summary['pushes'],
+            summary['win_rate'], summary['total_staked'], summary['total_profit'],
+            summary['roi'], summary['avg_odds'], summary['avg_edge'],
+            summary['brier_score'], summary['sharpe_ratio']
+        ))
+
+        logger.info(f"Performance snapshot salvato per periodo {period_start} - {period_end}")
+
+# ============================================================
+#  INTEGRATION HELPERS - Auto-save to Database
+# ============================================================
+
+def process_and_save_prediction(
+    match_data: Dict[str, Any],
+    prediction_result: Dict[str, Any],
+    save_to_db: bool = True
+) -> Optional[int]:
+    """
+    Wrapper per salvare automaticamente match e predizione nel database.
+
+    Args:
+        match_data: Dict con match_id, date, league, home_team, away_team
+        prediction_result: Output di calcolo_probabilita_avanzato()
+        save_to_db: Se True, salva nel database
+
+    Returns:
+        prediction_id se salvato, None altrimenti
+
+    Esempio:
+        >>> match = {'match_id': 'abc123', 'date': '2025-11-10', ...}
+        >>> pred = calcolo_probabilita_avanzato(lambda_h, lambda_a, ...)
+        >>> pred_id = process_and_save_prediction(match, pred)
+    """
+    if not save_to_db:
+        return None
+
+    try:
+        # Salva match
+        save_match(match_data)
+
+        # Prepara dati prediction
+        prediction_data = {
+            'match_id': match_data.get('match_id'),
+            'lambda_h': prediction_result.get('lambda_home'),
+            'lambda_a': prediction_result.get('lambda_away'),
+            'rho': prediction_result.get('rho'),
+            'tau': prediction_result.get('tau'),
+            'prob_home': prediction_result.get('prob_home_win'),
+            'prob_draw': prediction_result.get('prob_draw'),
+            'prob_away': prediction_result.get('prob_away_win'),
+            'prob_over_0_5': prediction_result.get('prob_over_0_5'),
+            'prob_over_1_5': prediction_result.get('prob_over_1_5'),
+            'prob_over_2_5': prediction_result.get('prob_over_2_5'),
+            'prob_over_3_5': prediction_result.get('prob_over_3_5'),
+            'prob_btts': prediction_result.get('prob_btts'),
+            'model_version': '2.0',
+            'weather_adjusted': prediction_result.get('weather_adjusted', 0)
+        }
+
+        prediction_id = save_prediction(prediction_data)
+        logger.info(f"Prediction salvata: match_id={match_data.get('match_id')}, pred_id={prediction_id}")
+
+        return prediction_id
+
+    except Exception as e:
+        logger.error(f"Errore salvataggio prediction: {e}")
+        return None
+
+def place_and_save_bet(
+    match_id: str,
+    prediction_id: Optional[int],
+    market: str,
+    selection: str,
+    probability: float,
+    odds: float,
+    stake: float,
+    kelly_fraction: float,
+    bankroll: float,
+    notes: str = None,
+    save_to_db: bool = True
+) -> Optional[int]:
+    """
+    Piazza una scommessa e la salva automaticamente nel database.
+
+    Args:
+        match_id: ID partita
+        prediction_id: ID predizione associata (opzionale)
+        market: Tipo mercato ('1X2', 'Over/Under 2.5', 'BTTS', etc.)
+        selection: Selezione ('H', 'D', 'A', 'Over', 'Under', 'Yes', 'No')
+        probability: Probabilità stimata dal modello
+        odds: Quota del bookmaker
+        stake: Importo scommesso
+        kelly_fraction: Frazione Kelly usata
+        bankroll: Bankroll corrente
+        notes: Note opzionali
+        save_to_db: Se True, salva nel database
+
+    Returns:
+        bet_id se salvato, None altrimenti
+    """
+    if not save_to_db:
+        return None
+
+    try:
+        edge = (probability * odds) - 1
+
+        bet_data = {
+            'match_id': match_id,
+            'prediction_id': prediction_id,
+            'market': market,
+            'selection': selection,
+            'probability': probability,
+            'odds': odds,
+            'edge': edge,
+            'stake': stake,
+            'kelly_fraction': kelly_fraction,
+            'bankroll_before': bankroll,
+            'result': 'pending',
+            'notes': notes
+        }
+
+        bet_id = save_bet(bet_data)
+        logger.info(f"Bet piazzata e salvata: bet_id={bet_id}, match={match_id}, market={market}")
+
+        return bet_id
+
+    except Exception as e:
+        logger.error(f"Errore piazzamento bet: {e}")
+        return None
+
+def settle_bets_for_match(match_id: str, home_score: int, away_score: int) -> int:
+    """
+    Calcola automaticamente il risultato di tutte le bet pending per una partita.
+
+    Args:
+        match_id: ID partita
+        home_score: Gol squadra casa
+        away_score: Gol squadra ospite
+
+    Returns:
+        Numero di bets aggiornate
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+
+            # Recupera tutte le bet pending per questa partita
+            cursor.execute("""
+                SELECT bet_id, market, selection, stake, odds
+                FROM bets
+                WHERE match_id = ? AND result = 'pending'
+            """, (match_id,))
+
+            bets = cursor.fetchall()
+            total_goals = home_score + away_score
+            settled_count = 0
+
+            for bet in bets:
+                bet_id = bet['bet_id']
+                market = bet['market']
+                selection = bet['selection']
+                stake = bet['stake']
+                odds = bet['odds']
+
+                result = None
+                profit = 0
+
+                # Determina risultato in base al mercato
+                if market == '1X2':
+                    actual_result = 'H' if home_score > away_score else ('A' if away_score > home_score else 'D')
+                    if selection == actual_result:
+                        result = 'win'
+                        profit = stake * (odds - 1)
+                    else:
+                        result = 'loss'
+                        profit = -stake
+
+                elif 'Over/Under' in market:
+                    threshold = float(market.split()[-1])
+                    if 'Over' in selection:
+                        result = 'win' if total_goals > threshold else 'loss'
+                    else:  # Under
+                        result = 'win' if total_goals < threshold else 'loss'
+
+                    if result == 'win':
+                        profit = stake * (odds - 1)
+                    else:
+                        profit = -stake
+
+                    # Push per exact match su alcuni mercati
+                    if total_goals == threshold:
+                        result = 'push'
+                        profit = 0
+
+                elif market == 'BTTS':
+                    btts_occurred = (home_score > 0 and away_score > 0)
+                    if (selection == 'Yes' and btts_occurred) or (selection == 'No' and not btts_occurred):
+                        result = 'win'
+                        profit = stake * (odds - 1)
+                    else:
+                        result = 'loss'
+                        profit = -stake
+
+                # Aggiorna bet
+                if result:
+                    update_bet_result(bet_id, result, profit)
+                    settled_count += 1
+
+            logger.info(f"Settled {settled_count} bets per match {match_id}")
+            return settled_count
+
+    except Exception as e:
+        logger.error(f"Errore settling bets: {e}")
+        return 0
+
+def auto_update_and_settle(date_str: str = None, save_to_db: bool = True) -> Dict[str, Any]:
+    """
+    Wrapper completo: scarica risultati + aggiorna database + settle bets.
+
+    Combina auto_update_match_results() con settle automatico.
+
+    Args:
+        date_str: Data in formato 'YYYY-MM-DD' (default: ieri)
+        save_to_db: Se True, salva tutto nel database
+
+    Returns:
+        Dict con riepilogo: matches_updated, bets_settled, total_profit
+    """
+    # Scarica risultati
+    results_df = auto_update_match_results(date_str)
+
+    if results_df.empty:
+        logger.info("Nessun risultato da aggiornare")
+        return {'matches_updated': 0, 'bets_settled': 0, 'total_profit': 0}
+
+    matches_updated = 0
+    bets_settled = 0
+    total_profit = 0
+
+    for _, row in results_df.iterrows():
+        match_id = row.get('match_id')
+        home_score = row.get('home_score')
+        away_score = row.get('away_score')
+
+        if match_id and home_score is not None and away_score is not None:
+            # Salva risultato match nel database
+            if save_to_db:
+                match_data = {
+                    'match_id': match_id,
+                    'date': row.get('date'),
+                    'league': row.get('league', 'Unknown'),
+                    'home_team': row.get('home_team'),
+                    'away_team': row.get('away_team'),
+                    'home_score': home_score,
+                    'away_score': away_score,
+                    'result': row.get('result'),
+                    'total_goals': home_score + away_score,
+                    'btts': 1 if (home_score > 0 and away_score > 0) else 0
+                }
+
+                try:
+                    save_match(match_data)
+                    matches_updated += 1
+
+                    # Settle bets per questa partita
+                    settled = settle_bets_for_match(match_id, home_score, away_score)
+                    bets_settled += settled
+
+                except Exception as e:
+                    logger.error(f"Errore aggiornamento match {match_id}: {e}")
+
+    # Calcola profit totale
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT SUM(profit) as total
+                FROM bets
+                WHERE settled_time >= datetime('now', '-1 day')
+            """)
+            row = cursor.fetchone()
+            total_profit = row['total'] if row and row['total'] else 0
+    except Exception as e:
+        logger.error(f"Errore calcolo profit: {e}")
+
+    result = {
+        'matches_updated': matches_updated,
+        'bets_settled': bets_settled,
+        'total_profit': round(total_profit, 2)
+    }
+
+    logger.info(f"Auto-update completato: {result}")
+    return result
+
+# ============================================================
 #  API-FOOTBALL
 # ============================================================
 
