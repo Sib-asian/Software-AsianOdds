@@ -3711,6 +3711,477 @@ def auto_update_and_settle(date_str: str = None, save_to_db: bool = True) -> Dic
     return result
 
 # ============================================================
+#  xG SCRAPING - Expected Goals from FBref/Understat
+# ============================================================
+
+import re
+from bs4 import BeautifulSoup
+
+# Team name mapping per FBref (formato FBref -> nome comune)
+FBREF_TEAM_MAPPING = {
+    'Manchester Utd': 'Manchester United',
+    'Manchester City': 'Manchester City',
+    'Nott\'ham Forest': 'Nottingham Forest',
+    'Newcastle Utd': 'Newcastle United',
+    'Tottenham': 'Tottenham Hotspur',
+    'West Ham': 'West Ham United',
+    'Wolves': 'Wolverhampton Wanderers',
+    'Brighton': 'Brighton & Hove Albion',
+    'Leicester City': 'Leicester City',
+}
+
+def scrape_fbref_team_xg(team_name: str, league: str = 'Premier-League', season: str = '2024-2025') -> Dict[str, Any]:
+    """
+    Scrape dati xG per una squadra da FBref.
+
+    Args:
+        team_name: Nome squadra (es. 'Arsenal', 'Liverpool')
+        league: Codice lega FBref (es. 'Premier-League', 'Serie-A', 'La-Liga')
+        season: Stagione (es. '2024-2025')
+
+    Returns:
+        Dict con:
+        - xg_for_avg: xG medi segnati per partita
+        - xg_against_avg: xG medi subiti per partita
+        - matches_played: Numero partite
+        - xg_total: xG totali stagione
+        - source: 'fbref'
+
+    Note:
+        - FBref ha limiti di rate (max 20 req/min)
+        - Richiede User-Agent valido
+        - Dati disponibili per top 5 leghe europee
+    """
+    try:
+        # Normalizza nome team
+        team_slug = team_name.replace(' ', '-').replace('&', '').replace('\'', '')
+
+        # URL FBref (struttura: /en/squads/{team_id}/{team_slug}-Stats)
+        # Per semplicità, usiamo ricerca statistica generale
+        base_url = f'https://fbref.com/en/comps/{_get_fbref_league_id(league)}/{season}/stats/{season}-{league}-Stats'
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+
+        response = requests.get(base_url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+
+        # Cerca tabella con statistiche squadra
+        table = soup.find('table', {'id': 'stats_squads_standard_for'})
+        if not table:
+            logger.warning(f"Tabella statistiche non trovata per {league}")
+            return {}
+
+        # Cerca riga con nome squadra
+        rows = table.find('tbody').find_all('tr')
+        for row in rows:
+            squad_cell = row.find('th', {'data-stat': 'squad'})
+            if squad_cell and team_name.lower() in squad_cell.text.lower():
+                # Estrai dati xG
+                xg_for = float(row.find('td', {'data-stat': 'xg_for'}).text or 0)
+                xg_against = float(row.find('td', {'data-stat': 'xg_against'}).text or 0)
+                matches = int(row.find('td', {'data-stat': 'games'}).text or 0)
+
+                if matches > 0:
+                    return {
+                        'team': team_name,
+                        'league': league,
+                        'xg_for_avg': round(xg_for / matches, 2),
+                        'xg_against_avg': round(xg_against / matches, 2),
+                        'matches_played': matches,
+                        'xg_total_for': round(xg_for, 2),
+                        'xg_total_against': round(xg_against, 2),
+                        'source': 'fbref',
+                        'scraped_at': datetime.now().isoformat()
+                    }
+
+        logger.warning(f"Team {team_name} non trovato in {league}")
+        return {}
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Errore scraping FBref per {team_name}: {e}")
+        return {}
+    except Exception as e:
+        logger.error(f"Errore parsing FBref: {e}")
+        return {}
+
+def _get_fbref_league_id(league: str) -> str:
+    """Mappa nome lega a ID FBref"""
+    league_ids = {
+        'Premier-League': '9',
+        'Serie-A': '11',
+        'La-Liga': '12',
+        'Bundesliga': '20',
+        'Ligue-1': '13',
+        'Champions-League': '8'
+    }
+    return league_ids.get(league, '9')
+
+def get_xg_for_match(home_team: str, away_team: str, league: str = 'Premier-League') -> Dict[str, Any]:
+    """
+    Recupera dati xG per entrambe le squadre di una partita.
+
+    Returns:
+        Dict con xg_home, xg_away, confidence
+    """
+    home_xg = scrape_fbref_team_xg(home_team, league)
+    away_xg = scrape_fbref_team_xg(away_team, league)
+
+    if not home_xg or not away_xg:
+        logger.warning(f"xG non disponibile per {home_team} vs {away_team}")
+        return {}
+
+    # Calcola xG atteso per il match
+    # xG home = media(xG_for home, xG_against away)
+    # xG away = media(xG_for away, xG_against home)
+    xg_home_pred = (home_xg['xg_for_avg'] + away_xg['xg_against_avg']) / 2
+    xg_away_pred = (away_xg['xg_for_avg'] + home_xg['xg_against_avg']) / 2
+
+    return {
+        'home_team': home_team,
+        'away_team': away_team,
+        'xg_home_predicted': round(xg_home_pred, 2),
+        'xg_away_predicted': round(xg_away_pred, 2),
+        'home_xg_for_avg': home_xg['xg_for_avg'],
+        'home_xg_against_avg': home_xg['xg_against_avg'],
+        'away_xg_for_avg': away_xg['xg_for_avg'],
+        'away_xg_against_avg': away_xg['xg_against_avg'],
+        'confidence': 'high' if home_xg['matches_played'] >= 10 and away_xg['matches_played'] >= 10 else 'medium',
+        'source': 'fbref'
+    }
+
+# ============================================================
+#  LEAGUE CALIBRATOR - Optimize parameters per league
+# ============================================================
+
+def calibrate_league_parameters(
+    league_name: str,
+    historical_matches: pd.DataFrame,
+    optimize_params: List[str] = None
+) -> Dict[str, Any]:
+    """
+    Calibra parametri del modello per una specifica lega.
+
+    Args:
+        league_name: Nome lega (es. 'Premier League', 'Serie A')
+        historical_matches: DataFrame con colonne:
+            - home_team, away_team, home_score, away_score
+            - lambda_h, lambda_a (opzionali)
+        optimize_params: Lista parametri da ottimizzare
+            - 'home_advantage': Vantaggio casa
+            - 'tau_dixon_coles': Correzione low-score
+            - 'rho': Correlazione Poisson
+            - 'shin_margin': Margine Shin medio
+
+    Returns:
+        Dict con parametri ottimizzati e metriche di fit
+    """
+    if optimize_params is None:
+        optimize_params = ['home_advantage', 'tau_dixon_coles']
+
+    if historical_matches.empty:
+        logger.warning(f"Nessun dato storico per {league_name}")
+        return {}
+
+    results = {
+        'league': league_name,
+        'matches_analyzed': len(historical_matches),
+        'optimized_params': {}
+    }
+
+    # 1. HOME ADVANTAGE - Differenza media gol casa vs trasferta
+    if 'home_advantage' in optimize_params:
+        home_goals_avg = historical_matches['home_score'].mean()
+        away_goals_avg = historical_matches['away_score'].mean()
+        home_advantage = home_goals_avg - away_goals_avg
+
+        # Calibra moltiplicatore lambda_home
+        home_multiplier = 1.0 + (home_advantage * 0.15)  # Empirico: ~15% per goal difference
+
+        results['optimized_params']['home_advantage'] = round(home_advantage, 3)
+        results['optimized_params']['home_multiplier'] = round(home_multiplier, 3)
+
+    # 2. TAU DIXON-COLES - Ottimizza per basso punteggio
+    if 'tau_dixon_coles' in optimize_params:
+        # Conta partite 0-0, 1-0, 0-1, 1-1
+        low_score_matches = historical_matches[
+            (historical_matches['home_score'] <= 1) &
+            (historical_matches['away_score'] <= 1)
+        ]
+
+        low_score_ratio = len(low_score_matches) / len(historical_matches)
+
+        # Tau ottimale: più basso per leghe high-scoring, più alto per low-scoring
+        # Range: -0.15 (high) to -0.05 (low)
+        tau_optimal = -0.15 + (low_score_ratio * 0.10)
+
+        results['optimized_params']['tau_dixon_coles'] = round(tau_optimal, 3)
+        results['optimized_params']['low_score_ratio'] = round(low_score_ratio, 3)
+
+    # 3. RHO - Correlazione empirica tra gol casa e trasferta
+    if 'rho' in optimize_params:
+        correlation = historical_matches[['home_score', 'away_score']].corr().iloc[0, 1]
+        # Rho tipico: -0.15 to 0.05
+        rho_optimal = max(-0.20, min(0.10, correlation))
+
+        results['optimized_params']['rho'] = round(rho_optimal, 3)
+        results['optimized_params']['score_correlation'] = round(correlation, 3)
+
+    # 4. OVER/UNDER THRESHOLD - Goal medi per lega
+    total_goals_avg = (historical_matches['home_score'] + historical_matches['away_score']).mean()
+    results['league_stats'] = {
+        'avg_goals_per_match': round(total_goals_avg, 2),
+        'avg_home_goals': round(historical_matches['home_score'].mean(), 2),
+        'avg_away_goals': round(historical_matches['away_score'].mean(), 2),
+        'home_win_pct': round((historical_matches['home_score'] > historical_matches['away_score']).mean() * 100, 1),
+        'draw_pct': round((historical_matches['home_score'] == historical_matches['away_score']).mean() * 100, 1),
+        'away_win_pct': round((historical_matches['home_score'] < historical_matches['away_score']).mean() * 100, 1),
+    }
+
+    # 5. BTTS (Both Teams to Score) rate
+    btts_rate = ((historical_matches['home_score'] > 0) & (historical_matches['away_score'] > 0)).mean()
+    results['league_stats']['btts_rate'] = round(btts_rate * 100, 1)
+
+    logger.info(f"Calibrazione completata per {league_name}: {results['optimized_params']}")
+    return results
+
+def apply_league_calibration(
+    lambda_h: float,
+    lambda_a: float,
+    league_params: Dict[str, Any]
+) -> Tuple[float, float, float, float]:
+    """
+    Applica parametri calibrati per lega a lambdas.
+
+    Args:
+        lambda_h: Lambda casa base
+        lambda_a: Lambda trasferta base
+        league_params: Output di calibrate_league_parameters()
+
+    Returns:
+        (lambda_h_adj, lambda_a_adj, rho_adj, tau_adj)
+    """
+    params = league_params.get('optimized_params', {})
+
+    # Applica home advantage
+    home_mult = params.get('home_multiplier', 1.0)
+    lambda_h_adj = lambda_h * home_mult
+
+    # Usa tau e rho ottimizzati
+    tau_adj = params.get('tau_dixon_coles', -0.13)
+    rho_adj = params.get('rho', -0.10)
+
+    return lambda_h_adj, lambda_a, rho_adj, tau_adj
+
+# ============================================================
+#  HEAD-TO-HEAD DATABASE - Historical matchups
+# ============================================================
+
+def save_h2h_result(
+    home_team: str,
+    away_team: str,
+    date: str,
+    home_score: int,
+    away_score: int,
+    league: str,
+    competition: str = 'League'
+) -> None:
+    """
+    Salva un risultato di scontro diretto nel database.
+
+    Aggiunge alla tabella h2h per tracking storico.
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+
+            # Crea tabella h2h se non esiste
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS h2h (
+                    h2h_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    home_team TEXT NOT NULL,
+                    away_team TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    home_score INTEGER NOT NULL,
+                    away_score INTEGER NOT NULL,
+                    result TEXT NOT NULL,
+                    league TEXT NOT NULL,
+                    competition TEXT DEFAULT 'League',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_h2h_teams ON h2h(home_team, away_team)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_h2h_date ON h2h(date)")
+
+            result = 'H' if home_score > away_score else ('A' if away_score > home_score else 'D')
+
+            cursor.execute("""
+                INSERT INTO h2h (home_team, away_team, date, home_score, away_score, result, league, competition)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (home_team, away_team, date, home_score, away_score, result, league, competition))
+
+            logger.info(f"H2H salvato: {home_team} {home_score}-{away_score} {away_team} ({date})")
+
+    except Exception as e:
+        logger.error(f"Errore salvataggio H2H: {e}")
+
+def get_h2h_stats(home_team: str, away_team: str, last_n: int = 10) -> Dict[str, Any]:
+    """
+    Recupera statistiche scontri diretti tra due squadre.
+
+    Args:
+        home_team: Squadra casa
+        away_team: Squadra trasferta
+        last_n: Ultimi N scontri (default: 10)
+
+    Returns:
+        Dict con:
+        - total_matches: Totale scontri
+        - home_wins: Vittorie squadra casa
+        - draws: Pareggi
+        - away_wins: Vittorie squadra trasferta
+        - avg_goals_home: Media gol casa
+        - avg_goals_away: Media gol trasferta
+        - last_results: Lista ultimi N risultati
+        - home_advantage_h2h: Vantaggio casa negli scontri diretti
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+
+            # Cerca in entrambe le direzioni (casa/trasferta invertita)
+            cursor.execute("""
+                SELECT home_team, away_team, date, home_score, away_score, result
+                FROM h2h
+                WHERE (home_team = ? AND away_team = ?)
+                   OR (home_team = ? AND away_team = ?)
+                ORDER BY date DESC
+                LIMIT ?
+            """, (home_team, away_team, away_team, home_team, last_n))
+
+            matches = cursor.fetchall()
+
+            if not matches:
+                logger.info(f"Nessun H2H trovato tra {home_team} e {away_team}")
+                return {'total_matches': 0}
+
+            total = len(matches)
+            home_wins = 0
+            away_wins = 0
+            draws = 0
+            goals_home = []
+            goals_away = []
+            last_results = []
+
+            for match in matches:
+                h_team = match['home_team']
+                a_team = match['away_team']
+                h_score = match['home_score']
+                a_score = match['away_score']
+
+                # Normalizza in base alla squadra di riferimento (home_team)
+                if h_team == home_team:
+                    goals_home.append(h_score)
+                    goals_away.append(a_score)
+
+                    if match['result'] == 'H':
+                        home_wins += 1
+                    elif match['result'] == 'A':
+                        away_wins += 1
+                    else:
+                        draws += 1
+
+                    last_results.append({
+                        'date': match['date'],
+                        'home': h_team,
+                        'away': a_team,
+                        'score': f"{h_score}-{a_score}",
+                        'result': match['result']
+                    })
+                else:
+                    # Invertito
+                    goals_home.append(a_score)
+                    goals_away.append(h_score)
+
+                    if match['result'] == 'A':
+                        home_wins += 1
+                    elif match['result'] == 'H':
+                        away_wins += 1
+                    else:
+                        draws += 1
+
+                    last_results.append({
+                        'date': match['date'],
+                        'home': a_team,
+                        'away': h_team,
+                        'score': f"{a_score}-{h_score}",
+                        'result': 'H' if match['result'] == 'A' else ('A' if match['result'] == 'H' else 'D')
+                    })
+
+            return {
+                'total_matches': total,
+                'home_wins': home_wins,
+                'draws': draws,
+                'away_wins': away_wins,
+                'home_win_pct': round(home_wins / total * 100, 1) if total > 0 else 0,
+                'draw_pct': round(draws / total * 100, 1) if total > 0 else 0,
+                'away_win_pct': round(away_wins / total * 100, 1) if total > 0 else 0,
+                'avg_goals_home': round(sum(goals_home) / len(goals_home), 2) if goals_home else 0,
+                'avg_goals_away': round(sum(goals_away) / len(goals_away), 2) if goals_away else 0,
+                'avg_total_goals': round((sum(goals_home) + sum(goals_away)) / total, 2) if total > 0 else 0,
+                'last_results': last_results,
+                'home_advantage_h2h': round((home_wins - away_wins) / total, 2) if total > 0 else 0
+            }
+
+    except Exception as e:
+        logger.error(f"Errore recupero H2H: {e}")
+        return {'total_matches': 0}
+
+def adjust_prediction_with_h2h(
+    prob_home: float,
+    prob_draw: float,
+    prob_away: float,
+    h2h_stats: Dict[str, Any],
+    weight: float = 0.15
+) -> Tuple[float, float, float]:
+    """
+    Aggiusta probabilità 1X2 usando statistiche H2H.
+
+    Args:
+        prob_home, prob_draw, prob_away: Probabilità dal modello base
+        h2h_stats: Output di get_h2h_stats()
+        weight: Peso H2H (default: 0.15 = 15%)
+
+    Returns:
+        (prob_home_adj, prob_draw_adj, prob_away_adj) normalizzate
+    """
+    if h2h_stats.get('total_matches', 0) < 3:
+        # Non abbastanza dati H2H, ritorna probabilità originali
+        return prob_home, prob_draw, prob_away
+
+    # Probabilità empiriche da H2H
+    h2h_home_prob = h2h_stats['home_win_pct'] / 100
+    h2h_draw_prob = h2h_stats['draw_pct'] / 100
+    h2h_away_prob = h2h_stats['away_win_pct'] / 100
+
+    # Blend con peso
+    prob_home_adj = (1 - weight) * prob_home + weight * h2h_home_prob
+    prob_draw_adj = (1 - weight) * prob_draw + weight * h2h_draw_prob
+    prob_away_adj = (1 - weight) * prob_away + weight * h2h_away_prob
+
+    # Normalizza
+    total = prob_home_adj + prob_draw_adj + prob_away_adj
+    prob_home_adj /= total
+    prob_draw_adj /= total
+    prob_away_adj /= total
+
+    return prob_home_adj, prob_draw_adj, prob_away_adj
+
+# ============================================================
 #  API-FOOTBALL
 # ============================================================
 
