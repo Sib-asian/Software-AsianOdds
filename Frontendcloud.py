@@ -12109,6 +12109,27 @@ def risultato_completo_improved(
                     logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(DC {dc_key}, Multigol {range_key}) ({max_combo:.4f}), correggo")
                     combo_book[combo_key] = max_combo
     
+    # Alias combinazioni richieste con formato "esito+mercato"
+    alias_sources = {
+        "2+GG": "2 & BTTS",
+        "2+Gg": "2 & BTTS",
+        "2+Over 1.5": "2 & Over 1.5",
+        "2+Over 2.5": "2 & Over 2.5",
+    }
+    for alias_key, original_key in alias_sources.items():
+        if original_key in combo_book:
+            combo_book[alias_key] = combo_book[original_key]
+
+    for gmin, gmax in multigol_combo_ranges:
+        range_label = f"{gmin}-{gmax}"
+        base_esito_key = f"2 & Multigol {range_label}"
+        if base_esito_key in combo_book:
+            combo_book[f"2+Multigol {range_label}"] = combo_book[base_esito_key]
+        for dc_key, alias_prefix in [("1X", "1X+Multigol"), ("X2", "X2+Multigol")]:
+            base_dc_key = f"{dc_key} & Multigol {range_label}"
+            if base_dc_key in combo_book:
+                combo_book[f"{alias_prefix} {range_label}"] = combo_book[base_dc_key]
+    
     # 3. Coerenza Clean Sheet: CS Home + (almeno 1 gol away) = 1.0
     # P(almeno 1 gol away) = 1 - P(0 gol away) = 1 - CS Home
     # Quindi: CS Home + P(almeno 1 gol away) = CS Home + (1 - CS Home) = 1.0
@@ -12258,7 +12279,6 @@ def risultato_completo_improved(
         "clean_sheet_qualcuno": 1 - btts,
         "multigol_home": multigol_home,
         "multigol_away": multigol_away,
-        "multigol_totale": multigol_total,
         "dc": dc,
         "validation_warnings": validation_warnings,  # Warning per probabilità anomale
         "lambda_adjustments_log": lambda_adjustments_log,  # Log modifiche lambda per debugging
