@@ -1,0 +1,278 @@
+{
+  "analysis": {
+    "repository": "Software-AsianOdds",
+    "analysis_date": "2025-11-11",
+    "total_lines_analyzed": 14460,
+    "files_analyzed": ["Frontendcloud.py", "dashboard.py"],
+    "critical_bugs": 2,
+    "high_bugs": 8,
+    "medium_bugs": 4,
+    "low_bugs": 2
+  },
+  "bugs": [
+    {
+      "id": "BUG-001",
+      "title": "SECURITY: API Keys and Tokens Hardcoded",
+      "severity": "CRITICAL",
+      "file": "Frontendcloud.py",
+      "lines": [91, 92, 93, 94, 95, 96, 97, 98, 99, 106, 107, 108, 109, 110, 111, 234, 235, 236, 237, 238, 239, 240, 241],
+      "category": "Security",
+      "type": "Credentials Exposed",
+      "description": "API keys, Telegram bot token, and chat ID are hardcoded in source code",
+      "impact": "High - Anyone with repo access can abuse APIs, leading to costs and service compromise",
+      "fix_effort": "30 minutes",
+      "fix_complexity": "Low",
+      "suggested_fix": "Move all credentials to .env file and use os.getenv() with proper defaults",
+      "code_snippet": {
+        "before": "the_odds_api_key: str = \"06c16ede44d09f9b3498bb63354930c4\"",
+        "after": "the_odds_api_key: str = os.getenv(\"THE_ODDS_API_KEY\", \"\")"
+      }
+    },
+    {
+      "id": "BUG-002",
+      "title": "Array Index Out of Bounds - value_bets[0]",
+      "severity": "HIGH",
+      "file": "Frontendcloud.py",
+      "lines": [2483],
+      "category": "Runtime Error",
+      "type": "IndexError",
+      "description": "Accessing value_bets[0] without checking if list is empty",
+      "impact": "Crashes application when no value bets found",
+      "fix_effort": "5 minutes",
+      "fix_complexity": "Very Low",
+      "suggested_fix": "Add length check before accessing index",
+      "code_snippet": {
+        "before": "if value_bets:\n    logger.info(f\"🔥 Top bet: {value_bets[0]['home_team']}...\")",
+        "after": "if value_bets and len(value_bets) > 0:\n    logger.info(f\"🔥 Top bet: {value_bets[0]['home_team']}...\")\nelse:\n    logger.warning('No value bets found')"
+      }
+    },
+    {
+      "id": "BUG-003",
+      "title": "AttributeError on None - BeautifulSoup find() without null check",
+      "severity": "HIGH",
+      "file": "Frontendcloud.py",
+      "lines": [3812, 3818, 3823, 3824, 3825],
+      "category": "Runtime Error",
+      "type": "AttributeError",
+      "description": "find() returns None when element not found, then .text is accessed causing AttributeError",
+      "impact": "Crashes when scraping certain pages",
+      "fix_effort": "10 minutes",
+      "fix_complexity": "Low",
+      "suggested_fix": "Check if find() returns None before accessing .text",
+      "code_snippet": {
+        "before": "xg_for = float(row.find('td', {'data-stat': 'xg_for'}).text or 0)",
+        "after": "xg_elem = row.find('td', {'data-stat': 'xg_for'})\nxg_for = float(xg_elem.text) if xg_elem else 0.0"
+      }
+    },
+    {
+      "id": "BUG-004",
+      "title": "ValueError - list.index() without try-except",
+      "severity": "HIGH",
+      "file": "Frontendcloud.py",
+      "lines": [13091],
+      "category": "Runtime Error",
+      "type": "ValueError",
+      "description": "list.index() raises ValueError if element not found, not caught",
+      "impact": "Crashes Streamlit interface when match not found",
+      "fix_effort": "5 minutes",
+      "fix_complexity": "Low",
+      "suggested_fix": "Use try-except or check 'in' before calling index()",
+      "code_snippet": {
+        "before": "idx = match_labels.index(match_label)",
+        "after": "try:\n    idx = match_labels.index(match_label)\nexcept ValueError:\n    logger.warning(f'Match {match_label} not found')\n    continue"
+      }
+    },
+    {
+      "id": "BUG-005",
+      "title": "Bare Exception Handler - except: without type",
+      "severity": "HIGH",
+      "file": "Frontendcloud.py",
+      "lines": [8194, 8327, 8334, 8341, 9674, 10497, 10953, 12423, 14081, 14082],
+      "category": "Code Quality",
+      "type": "Bare Exception",
+      "description": "Multiple bare except: handlers catch KeyboardInterrupt, SystemExit, etc.",
+      "impact": "Hides bugs, prevents proper error handling, masks KeyboardInterrupt",
+      "fix_effort": "15 minutes total",
+      "fix_complexity": "Low",
+      "suggested_fix": "Replace with specific exception types",
+      "code_snippet": {
+        "before": "except:\n    pass",
+        "after": "except ValueError as e:\n    logger.warning(f'Validation error: {e}')\nexcept Exception as e:\n    logger.error(f'Unexpected error: {e}')"
+      }
+    },
+    {
+      "id": "BUG-006",
+      "title": "Missing Input Validation - float() conversion without error handling",
+      "severity": "HIGH",
+      "file": "Frontendcloud.py",
+      "lines": [3636, 10315, 10319, 11945, 13106, 13107, 13108, 13109, 13110, 13111, 13112, 13113],
+      "category": "Input Validation",
+      "type": "Type Conversion Error",
+      "description": "float() and int() called without try-except, no validation",
+      "impact": "ValueError when converting invalid strings",
+      "fix_effort": "20 minutes",
+      "fix_complexity": "Low",
+      "suggested_fix": "Create safe conversion function with fallbacks",
+      "code_snippet": {
+        "before": "threshold = float(market.split()[-1])",
+        "after": "def safe_float(val, default=0.0):\n    try:\n        return float(val) if val else default\n    except (ValueError, TypeError):\n        return default\nthreshold = safe_float(market.split()[-1] if market.split() else None)"
+      }
+    },
+    {
+      "id": "BUG-007",
+      "title": "Silent Failures - except with pass, no logging",
+      "severity": "HIGH",
+      "file": "Frontendcloud.py",
+      "lines": [5484, 8328, 8335, 8342, 10341, 10498, 10953, 11635, 11951, 12585, 14082],
+      "category": "Code Quality",
+      "type": "Silent Failure",
+      "description": "Exception caught but nothing logged, error is silently ignored",
+      "impact": "Impossible to debug when something fails",
+      "fix_effort": "10 minutes",
+      "fix_complexity": "Low",
+      "suggested_fix": "Always log when catching exceptions",
+      "code_snippet": {
+        "before": "except Exception as e:\n    pass",
+        "after": "except Exception as e:\n    logger.warning(f'Operation failed: {e}')"
+      }
+    },
+    {
+      "id": "BUG-008",
+      "title": "Race Condition - Global API_CACHE dictionary without thread safety",
+      "severity": "MEDIUM",
+      "file": "Frontendcloud.py",
+      "lines": [257, 8880],
+      "category": "Concurrency",
+      "type": "Race Condition",
+      "description": "Unprotected global dictionary accessed/modified without locks",
+      "impact": "Data corruption if multiple threads access simultaneously",
+      "fix_effort": "120 minutes",
+      "fix_complexity": "Medium",
+      "suggested_fix": "Implement thread-safe cache with threading.RLock",
+      "code_snippet": {
+        "before": "API_CACHE = {}\nif cache_key in API_CACHE:\n    return API_CACHE[cache_key][0]",
+        "after": "class ThreadSafeCache:\n    def __init__(self):\n        self._cache = {}\n        self._lock = threading.RLock()\n    def get(self, key): ...\n    def set(self, key, value): ..."
+      }
+    },
+    {
+      "id": "BUG-009",
+      "title": "Streamlit State Race Condition - List modification during iteration",
+      "severity": "MEDIUM",
+      "file": "Frontendcloud.py",
+      "lines": [13091, 13131, 13134],
+      "category": "Concurrency",
+      "type": "Race Condition",
+      "description": "Iterating over st.session_state while it can be modified",
+      "impact": "IndexError if state changes during iteration",
+      "fix_effort": "30 minutes",
+      "fix_complexity": "Low",
+      "suggested_fix": "Create local copy before iterating",
+      "code_snippet": {
+        "before": "for idx, ml in enumerate(selected_match_labels):\n    event = st.session_state.events_for_league[idx]",
+        "after": "events_copy = list(st.session_state.events_for_league)\nfor idx, ml in enumerate(selected_match_labels):\n    if idx < len(events_copy):\n        event = events_copy[idx]"
+      }
+    },
+    {
+      "id": "BUG-010",
+      "title": "Float Special Values - NaN and Inf in calculations",
+      "severity": "MEDIUM",
+      "file": "Frontendcloud.py",
+      "lines": [959, 961, 971, 975, 980, 989, 998, 2568, 5615, 5743, 5765, 5785, 6011, 6391, 8472],
+      "category": "Numeric Error",
+      "type": "NaN/Inf Handling",
+      "description": "float('inf') and float('nan') used in calculations without validation",
+      "impact": "Silent logic errors, broken comparisons",
+      "fix_effort": "45 minutes",
+      "fix_complexity": "Medium",
+      "suggested_fix": "Check math.isfinite() and use None instead of inf/nan",
+      "code_snippet": {
+        "before": "return float('inf')",
+        "after": "if not math.isfinite(result):\n    logger.warning('Result not finite')\n    return None"
+      }
+    },
+    {
+      "id": "BUG-011",
+      "title": "Incomplete Null Checks - .get() with index on result",
+      "severity": "MEDIUM",
+      "file": "Frontendcloud.py",
+      "lines": [2583, 2584, 2585],
+      "category": "Null Reference",
+      "type": "Incomplete Null Check",
+      "description": ".get() with fallback list/dict, then immediately indexed",
+      "impact": "KeyError or IndexError if element structure differs",
+      "fix_effort": "10 minutes",
+      "fix_complexity": "Low",
+      "suggested_fix": "Validate structure before indexing"
+    },
+    {
+      "id": "BUG-012",
+      "title": "Unused Variable - _FACTORIAL_CACHE",
+      "severity": "LOW",
+      "file": "Frontendcloud.py",
+      "lines": [266],
+      "category": "Code Quality",
+      "type": "Unused Variable",
+      "description": "Factorial cache computed but never used",
+      "impact": "Memory waste, code clutter",
+      "fix_effort": "5 minutes",
+      "fix_complexity": "Very Low",
+      "suggested_fix": "Remove or implement usage"
+    },
+    {
+      "id": "BUG-013",
+      "title": "Incomplete Error Messages",
+      "severity": "LOW",
+      "file": "Frontendcloud.py",
+      "lines": [384],
+      "category": "Logging",
+      "type": "Incomplete Message",
+      "description": "Log messages could be more descriptive",
+      "impact": "Harder debugging",
+      "fix_effort": "5 minutes",
+      "fix_complexity": "Very Low"
+    }
+  ],
+  "statistics": {
+    "by_severity": {
+      "CRITICAL": 1,
+      "HIGH": 6,
+      "MEDIUM": 4,
+      "LOW": 2
+    },
+    "by_category": {
+      "Security": 1,
+      "Runtime Error": 3,
+      "Code Quality": 2,
+      "Input Validation": 1,
+      "Concurrency": 2,
+      "Numeric Error": 1,
+      "Null Reference": 1,
+      "Logging": 1
+    },
+    "total_effort_hours": 4.5,
+    "critical_effort_hours": 0.5,
+    "high_effort_hours": 1.25,
+    "medium_effort_hours": 2.75
+  },
+  "recommendations": {
+    "immediate_actions": [
+      "Regenerate all API keys immediately",
+      "Move credentials to .env file",
+      "Fix hardcoded values in code",
+      "Test application after changes"
+    ],
+    "tools_to_implement": [
+      "Pre-commit hooks with bandit for security",
+      "FlakeB for linting",
+      "Type hints with mypy",
+      "Unit tests with pytest",
+      "GitHub Secret Scanning"
+    ],
+    "process_improvements": [
+      "Code review before merge",
+      "Security scanning in CI/CD",
+      "Automated testing on commits",
+      "Static analysis tools"
+    ]
+  }
+}
