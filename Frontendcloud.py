@@ -13471,6 +13471,31 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 "Tipo": "Combo"
             })
 
+        # DC (Double Chance)
+        if 'dc' in ris:
+            dc_data = ris['dc']
+            if dc_data.get('DC Casa o Pareggio', 0) * 100 >= telegram_prob_threshold:
+                all_markets.append({
+                    "Esito": "1X (DC Casa o Pareggio)",
+                    "Prob %": f"{dc_data['DC Casa o Pareggio']*100:.1f}",
+                    "Quota": "N/A",
+                    "Tipo": "Double Chance"
+                })
+            if dc_data.get('DC Trasferta o Pareggio', 0) * 100 >= telegram_prob_threshold:
+                all_markets.append({
+                    "Esito": "X2 (DC Trasferta o Pareggio)",
+                    "Prob %": f"{dc_data['DC Trasferta o Pareggio']*100:.1f}",
+                    "Quota": "N/A",
+                    "Tipo": "Double Chance"
+                })
+            if dc_data.get('DC Casa o Trasferta', 0) * 100 >= telegram_prob_threshold:
+                all_markets.append({
+                    "Esito": "12 (DC Casa o Trasferta)",
+                    "Prob %": f"{dc_data['DC Casa o Trasferta']*100:.1f}",
+                    "Quota": "N/A",
+                    "Tipo": "Double Chance"
+                })
+
         # COMBO AVANZATE (es: 1X & Over 2.5, BTTS & 1, ecc.)
         if 'combo_book' in ris:
             combo_book = ris['combo_book']
@@ -13495,9 +13520,21 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                         "Tipo": "Multigol"
                     })
 
-        # Top Correct Score
+        # MULTIGOL TOTALI (mercato separato)
+        if 'multigol_totale' in ris:
+            multigol_totali = ris['multigol_totale']
+            for mg_name, mg_prob in multigol_totali.items():
+                if mg_prob * 100 >= telegram_prob_threshold:
+                    all_markets.append({
+                        "Esito": f"Multigol Totale: {mg_name}",
+                        "Prob %": f"{mg_prob*100:.1f}",
+                        "Quota": "N/A",
+                        "Tipo": "Multigol Totali"
+                    })
+
+        # Top 3 Correct Score (risultati esatti con probabilità maggiori)
         if 'top10' in ris:
-            for h, a, prob in ris['top10'][:5]:  # Top 5 risultati
+            for h, a, prob in ris['top10'][:3]:  # Top 3 risultati come richiesto
                 if prob >= telegram_prob_threshold:
                     all_markets.append({
                         "Esito": f"Risultato Esatto {h}-{a}",
