@@ -11639,16 +11639,31 @@ def risultato_completo_improved(
         xg_penalty_a = max(0.0, min(1.0, xg_penalty_a))
         
         # MIGLIORAMENTO: Confidence più accurata basata su:
-        # 1. Dimensione campione (proxy: valore xG - più alto = più dati)
+        # 1. Dimensione campione (partite giocate - se fornite)
         # 2. Coerenza tra xG for e against
         # 3. NUOVO: Validazione con dati reali dalle API (se disponibili)
-        
-        # Base confidence: valore xG normalizzato (più alto = più affidabile)
-        # ⚠️ PRECISIONE: Calcola con protezione overflow
-        xg_h_sum_conf = xg_for_home + xg_against_away
-        xg_a_sum_conf = xg_for_away + xg_against_home
-        xg_h_base_conf = min(1.0, xg_h_sum_conf / 4.0) if math.isfinite(xg_h_sum_conf) else 0.5  # Normalizza a max 4.0 (2.0 per squadra)
-        xg_a_base_conf = min(1.0, xg_a_sum_conf / 4.0) if math.isfinite(xg_a_sum_conf) else 0.5
+
+        # ⚠️ NUOVO: Base confidence calcolata da partite giocate (se fornite)
+        # Più partite giocate = confidence più alta
+        partite_giocate_home = kwargs.get("partite_giocate_home", 0)
+        partite_giocate_away = kwargs.get("partite_giocate_away", 0)
+
+        if partite_giocate_home > 0:
+            # Confidence basata su sample size reale
+            # Max confidence a 20 partite
+            xg_h_base_conf = min(1.0, partite_giocate_home / 20.0)
+        else:
+            # Fallback: usa valore xG come proxy (vecchio metodo)
+            xg_h_sum_conf = xg_for_home + xg_against_away
+            xg_h_base_conf = min(1.0, xg_h_sum_conf / 4.0) if math.isfinite(xg_h_sum_conf) else 0.5
+
+        if partite_giocate_away > 0:
+            # Confidence basata su sample size reale
+            xg_a_base_conf = min(1.0, partite_giocate_away / 20.0)
+        else:
+            # Fallback: usa valore xG come proxy (vecchio metodo)
+            xg_a_sum_conf = xg_for_away + xg_against_home
+            xg_a_base_conf = min(1.0, xg_a_sum_conf / 4.0) if math.isfinite(xg_a_sum_conf) else 0.5
         
         # Coerenza: se xG for e against sono simili, più affidabile
         # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata per protezione divisione per zero
@@ -12787,9 +12802,11 @@ if st.session_state.soccer_leagues:
                         "btts_manual": 0.0,
                         "xg_home": 0.0,
                         "xa_home": 0.0,
+                        "partite_giocate_home": 0,
                         "boost_home": 0.0,
                         "xg_away": 0.0,
                         "xa_away": 0.0,
+                        "partite_giocate_away": 0,
                         "boost_away": 0.0,
                         "league_type": "generic"
                     }
@@ -13281,16 +13298,27 @@ if "selected_matches_data" in st.session_state and st.session_state.selected_mat
                 with col_xg1:
                     st.markdown("**🏠 Casa**")
                     xg_home = st.number_input(
-                        "xG Casa",
+                        "xG Totali Stagione Casa",
                         value=match_data.get("xg_home", 0.0),
                         step=0.1,
-                        key=f"xg_home_{event_id}"
+                        key=f"xg_home_{event_id}",
+                        help="Somma xG di tutta la stagione (es. da Transfermarkt: 33.7). Il sistema calcolerà automaticamente la media per partita."
                     )
                     xa_home = st.number_input(
-                        "xA Casa",
+                        "xA Totali Stagione Casa",
                         value=match_data.get("xa_home", 0.0),
                         step=0.1,
-                        key=f"xa_home_{event_id}"
+                        key=f"xa_home_{event_id}",
+                        help="Somma xA (Expected Assists) di tutta la stagione."
+                    )
+                    partite_giocate_home = st.number_input(
+                        "Partite Giocate Casa",
+                        min_value=0,
+                        max_value=50,
+                        value=match_data.get("partite_giocate_home", 0),
+                        step=1,
+                        key=f"partite_giocate_home_{event_id}",
+                        help="Numero partite giocate in stagione. Necessario per convertire xG totali in media per partita. >= 10 partite = alta affidabilità."
                     )
                     boost_home = st.slider(
                         "Boost Casa (%)",
@@ -13301,21 +13329,33 @@ if "selected_matches_data" in st.session_state and st.session_state.selected_mat
 
                     st.session_state.selected_matches_data[event_id]["xg_home"] = xg_home
                     st.session_state.selected_matches_data[event_id]["xa_home"] = xa_home
+                    st.session_state.selected_matches_data[event_id]["partite_giocate_home"] = partite_giocate_home
                     st.session_state.selected_matches_data[event_id]["boost_home"] = boost_home
 
                 with col_xg2:
                     st.markdown("**✈️ Trasferta**")
                     xg_away = st.number_input(
-                        "xG Trasferta",
+                        "xG Totali Stagione Trasferta",
                         value=match_data.get("xg_away", 0.0),
                         step=0.1,
-                        key=f"xg_away_{event_id}"
+                        key=f"xg_away_{event_id}",
+                        help="Somma xG di tutta la stagione (es. da Transfermarkt: 18.6). Il sistema calcolerà automaticamente la media per partita."
                     )
                     xa_away = st.number_input(
-                        "xA Trasferta",
+                        "xA Totali Stagione Trasferta",
                         value=match_data.get("xa_away", 0.0),
                         step=0.1,
-                        key=f"xa_away_{event_id}"
+                        key=f"xa_away_{event_id}",
+                        help="Somma xA (Expected Assists) di tutta la stagione."
+                    )
+                    partite_giocate_away = st.number_input(
+                        "Partite Giocate Trasferta",
+                        min_value=0,
+                        max_value=50,
+                        value=match_data.get("partite_giocate_away", 0),
+                        step=1,
+                        key=f"partite_giocate_away_{event_id}",
+                        help="Numero partite giocate in stagione. Necessario per convertire xG totali in media per partita. >= 10 partite = alta affidabilità."
                     )
                     boost_away = st.slider(
                         "Boost Trasferta (%)",
@@ -13326,6 +13366,7 @@ if "selected_matches_data" in st.session_state and st.session_state.selected_mat
 
                     st.session_state.selected_matches_data[event_id]["xg_away"] = xg_away
                     st.session_state.selected_matches_data[event_id]["xa_away"] = xa_away
+                    st.session_state.selected_matches_data[event_id]["partite_giocate_away"] = partite_giocate_away
                     st.session_state.selected_matches_data[event_id]["boost_away"] = boost_away
 
 else:
@@ -13380,12 +13421,48 @@ if has_multiple_matches:
             total_apertura = match_data["total_apertura"] if match_data["total_apertura"] != 2.5 else None
             spread_corrente = match_data["spread_corrente"] if match_data["spread_corrente"] != 0.0 else None
 
-            xg_home = match_data["xg_home"]
-            xa_home = match_data["xa_home"]
+            # Estrai xG/xA totali e partite giocate
+            xg_home_totali = match_data["xg_home"]
+            xa_home_totali = match_data["xa_home"]
+            partite_giocate_home = match_data.get("partite_giocate_home", 0)
             boost_home = match_data["boost_home"]
-            xg_away = match_data["xg_away"]
-            xa_away = match_data["xa_away"]
+            xg_away_totali = match_data["xg_away"]
+            xa_away_totali = match_data["xa_away"]
+            partite_giocate_away = match_data.get("partite_giocate_away", 0)
             boost_away = match_data["boost_away"]
+
+            # ⚠️ CONVERSIONE AUTOMATICA: Totali stagionali → Medie per partita
+            # Se partite_giocate > 0, converti i totali in medie
+            # Altrimenti, assume che i valori siano già medie (backward compatibility)
+            if partite_giocate_home > 0:
+                xg_home = xg_home_totali / partite_giocate_home
+                xa_home = xa_home_totali / partite_giocate_home
+            else:
+                xg_home = xg_home_totali
+                xa_home = xa_home_totali
+
+            if partite_giocate_away > 0:
+                xg_away = xg_away_totali / partite_giocate_away
+                xa_away = xa_away_totali / partite_giocate_away
+            else:
+                xg_away = xg_away_totali
+                xa_away = xa_away_totali
+
+            # ⚠️ VALIDAZIONE: Controlla se medie sono ragionevoli
+            validation_warnings_xg = []
+            if xg_home > 0 and (xg_home < 0.3 or xg_home > 4.0):
+                validation_warnings_xg.append(f"⚠️ xG medio Casa {xg_home:.2f} fuori range tipico (0.3-4.0). Verifica dati inseriti.")
+            if xa_home > 0 and (xa_home < 0.2 or xa_home > 4.0):
+                validation_warnings_xg.append(f"⚠️ xA medio Casa {xa_home:.2f} fuori range tipico (0.2-4.0). Verifica dati inseriti.")
+            if xg_away > 0 and (xg_away < 0.3 or xg_away > 4.0):
+                validation_warnings_xg.append(f"⚠️ xG medio Trasferta {xg_away:.2f} fuori range tipico (0.3-4.0). Verifica dati inseriti.")
+            if xa_away > 0 and (xa_away < 0.2 or xa_away > 4.0):
+                validation_warnings_xg.append(f"⚠️ xA medio Trasferta {xa_away:.2f} fuori range tipico (0.2-4.0). Verifica dati inseriti.")
+
+            # Mostra warning se presenti
+            if validation_warnings_xg:
+                for warning in validation_warnings_xg:
+                    logger.warning(f"[{match_name}] {warning}")
 
             league_type = match_data.get("league_type", "generic")
 
@@ -13424,7 +13501,7 @@ if has_multiple_matches:
                 )
 
                 # Analisi modello
-                ris = run_full_analysis(
+                ris = risultato_completo_improved(
                     odds_1=validated["odds_1"],
                     odds_x=validated["odds_x"],
                     odds_2=validated["odds_2"],
@@ -13449,7 +13526,9 @@ if has_multiple_matches:
                     xa_against_away=validated.get("xa_against_away"),
                     boost_home=boost_home,
                     boost_away=boost_away,
-                    league=league_type
+                    league=league_type,
+                    partite_giocate_home=partite_giocate_home,
+                    partite_giocate_away=partite_giocate_away
                 )
 
                 # Value bets
