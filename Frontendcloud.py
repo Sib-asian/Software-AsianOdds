@@ -13471,6 +13471,30 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 "Tipo": "Combo"
             })
 
+        # COMBO AVANZATE (es: 1X & Over 2.5, BTTS & 1, ecc.)
+        if 'combo_book' in ris:
+            combo_book = ris['combo_book']
+            for combo_name, combo_prob in combo_book.items():
+                if combo_prob * 100 >= telegram_prob_threshold:
+                    all_markets.append({
+                        "Esito": combo_name,
+                        "Prob %": f"{combo_prob*100:.1f}",
+                        "Quota": "N/A",
+                        "Tipo": "Combo Avanzate"
+                    })
+
+        # MULTIGOL (es: 1-2 Goal, 2-3 Goal, 3+ Goal)
+        if 'multigol' in ris:
+            multigol = ris['multigol']
+            for mg_name, mg_prob in multigol.items():
+                if mg_prob * 100 >= telegram_prob_threshold:
+                    all_markets.append({
+                        "Esito": f"Multigol: {mg_name}",
+                        "Prob %": f"{mg_prob*100:.1f}",
+                        "Quota": "N/A",
+                        "Tipo": "Multigol"
+                    })
+
         # Top Correct Score
         if 'top10' in ris:
             for h, a, prob in ris['top10'][:5]:  # Top 5 risultati
