@@ -12869,172 +12869,6 @@ with col_hist2:
 st.markdown("---")
 
 # ============================================================
-#        INSERIMENTO MANUALE
-# ============================================================
-
-st.subheader("📝 Inserimento Manuale")
-
-with st.expander("📝 Inserisci tutti i dati della partita manualmente", expanded=False):
-    st.markdown("""
-    **Usa questa modalità per inserire manualmente tutti i dati della partita.**
-
-    Compila il form e clicca "Calcola Subito" per ottenere l'analisi immediata.
-
-    Perfetto quando:
-    - Non hai l'API configurata
-    - Vuoi analizzare rapidamente una partita
-    - Le partite non sono disponibili nell'API
-    """)
-
-    st.markdown("---")
-
-    # === INFO PARTITA ===
-    st.markdown("### 1️⃣ Informazioni Partita")
-    col_v1, col_v2 = st.columns(2)
-    with col_v1:
-        veloce_home = st.text_input("🏠 Squadra Casa", key="veloce_home", placeholder="Es: Inter")
-    with col_v2:
-        veloce_away = st.text_input("✈️ Squadra Trasferta", key="veloce_away", placeholder="Es: Juventus")
-
-    col_v3, col_v4, col_v5 = st.columns(3)
-    with col_v3:
-        veloce_date = st.date_input("📅 Data", key="veloce_date")
-    with col_v4:
-        veloce_time = st.time_input("🕐 Ora", key="veloce_time", value=None)
-    with col_v5:
-        veloce_league = st.selectbox(
-            "🏆 Lega",
-            ["generic", "premier_league", "la_liga", "serie_a", "bundesliga", "ligue_1"],
-            key="veloce_league"
-        )
-
-    st.markdown("---")
-
-    # === QUOTE 1X2 ===
-    st.markdown("### 2️⃣ Quote Principali (1X2) - OBBLIGATORIE")
-    col_vq1, col_vq2, col_vq3 = st.columns(3)
-    with col_vq1:
-        veloce_odds_1 = st.number_input("Quota 1 (Casa)", value=2.00, min_value=1.01, max_value=100.0, step=0.01, key="veloce_odds_1")
-    with col_vq2:
-        veloce_odds_x = st.number_input("Quota X (Pareggio)", value=3.50, min_value=1.01, max_value=100.0, step=0.01, key="veloce_odds_x")
-    with col_vq3:
-        veloce_odds_2 = st.number_input("Quota 2 (Trasferta)", value=3.80, min_value=1.01, max_value=100.0, step=0.01, key="veloce_odds_2")
-
-    st.markdown("---")
-
-    # === SPREAD E TOTAL ===
-    st.markdown("### 3️⃣ Spread e Total")
-    col_vst1, col_vst2, col_vst3, col_vst4 = st.columns(4)
-    with col_vst1:
-        veloce_spread_ap = st.number_input("Spread Apertura", value=0.0, step=0.25, key="veloce_spread_ap")
-    with col_vst2:
-        veloce_total_ap = st.number_input("Total Apertura", value=2.5, step=0.25, key="veloce_total_ap")
-    with col_vst3:
-        veloce_spread_corr = st.number_input("Spread Corrente", value=0.0, step=0.25, key="veloce_spread_corr")
-    with col_vst4:
-        veloce_total_line = st.number_input("Total Corrente", value=2.5, step=0.25, key="veloce_total_line")
-
-    st.markdown("---")
-
-    # === OVER/UNDER E QUOTE SPECIALI ===
-    st.markdown("### 4️⃣ Quote Over/Under e Speciali (Opzionali)")
-    col_vou1, col_vou2 = st.columns(2)
-    with col_vou1:
-        veloce_over25 = st.number_input("Quota Over 2.5", value=0.0, step=0.01, key="veloce_over25", help="Lascia 0 se non disponibile")
-    with col_vou2:
-        veloce_under25 = st.number_input("Quota Under 2.5", value=0.0, step=0.01, key="veloce_under25", help="Lascia 0 se non disponibile")
-
-    col_vsp1, col_vsp2, col_vsp3 = st.columns(3)
-    with col_vsp1:
-        veloce_btts = st.number_input("BTTS Sì", value=0.0, step=0.01, key="veloce_btts", help="Both Teams To Score")
-    with col_vsp2:
-        veloce_dnb_home = st.number_input("DNB Casa", value=0.0, step=0.01, key="veloce_dnb_home", help="Draw No Bet Casa")
-    with col_vsp3:
-        veloce_dnb_away = st.number_input("DNB Trasferta", value=0.0, step=0.01, key="veloce_dnb_away", help="Draw No Bet Trasferta")
-
-    st.markdown("---")
-
-    # === xG/xA (OPZIONALI) ===
-    with st.expander("5️⃣ Dati xG/xA e Boost (Opzionali - Migliora l'accuratezza)", expanded=False):
-        col_vxg1, col_vxg2 = st.columns(2)
-
-        with col_vxg1:
-            st.markdown("**🏠 Casa**")
-            veloce_xg_home = st.number_input("xG Totali Stagione Casa", value=0.0, step=0.1, key="veloce_xg_home")
-            veloce_xa_home = st.number_input("xA Totali Stagione Casa", value=0.0, step=0.1, key="veloce_xa_home")
-            veloce_partite_home = st.number_input("Partite Giocate Casa", min_value=0, max_value=50, value=0, step=1, key="veloce_partite_home")
-            veloce_boost_home = st.slider("Boost Casa (%)", -20, 20, 0, key="veloce_boost_home") / 100.0
-
-        with col_vxg2:
-            st.markdown("**✈️ Trasferta**")
-            veloce_xg_away = st.number_input("xG Totali Stagione Trasferta", value=0.0, step=0.1, key="veloce_xg_away")
-            veloce_xa_away = st.number_input("xA Totali Stagione Trasferta", value=0.0, step=0.1, key="veloce_xa_away")
-            veloce_partite_away = st.number_input("Partite Giocate Trasferta", min_value=0, max_value=50, value=0, step=1, key="veloce_partite_away")
-            veloce_boost_away = st.slider("Boost Trasferta (%)", -20, 20, 0, key="veloce_boost_away") / 100.0
-
-    st.markdown("---")
-
-    # === PULSANTE CALCOLA ===
-    if st.button("🚀 CALCOLA SUBITO L'ANALISI", type="primary", key="veloce_calcola"):
-        if not veloce_home or not veloce_away:
-            st.error("❌ Devi inserire entrambe le squadre!")
-        else:
-            # Crea evento manuale
-            from datetime import datetime
-            if veloce_time:
-                commence_time = datetime.combine(veloce_date, veloce_time).strftime("%Y-%m-%dT%H:%M:%SZ")
-            else:
-                commence_time = datetime.combine(veloce_date, datetime.min.time()).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-            veloce_event = create_manual_event(veloce_home, veloce_away, commence_time)
-            veloce_event_id = veloce_event["id"]
-
-            # Popola direttamente selected_matches_data
-            if "selected_matches_data" not in st.session_state:
-                st.session_state.selected_matches_data = {}
-
-            # Crea struttura dati completa
-            st.session_state.selected_matches_data[veloce_event_id] = {
-                "event": veloce_event,
-                "event_id": veloce_event_id,
-                "match_label": f"{veloce_home} vs {veloce_away}",
-                "api_prices": {},
-                "home_team": veloce_home,
-                "away_team": veloce_away,
-                "odds_1": veloce_odds_1,
-                "odds_x": veloce_odds_x,
-                "odds_2": veloce_odds_2,
-                "odds_over25": veloce_over25,
-                "odds_under25": veloce_under25,
-                "odds_btts": veloce_btts,
-                "odds_dnb_home": veloce_dnb_home,
-                "odds_dnb_away": veloce_dnb_away,
-                "spread_apertura": veloce_spread_ap,
-                "total_apertura": veloce_total_ap,
-                "total_line": veloce_total_line,
-                "spread_corrente": veloce_spread_corr,
-                "xg_home": veloce_xg_home,
-                "xa_home": veloce_xa_home,
-                "partite_giocate_home": veloce_partite_home,
-                "boost_home": veloce_boost_home,
-                "xg_away": veloce_xg_away,
-                "xa_away": veloce_xa_away,
-                "partite_giocate_away": veloce_partite_away,
-                "boost_away": veloce_boost_away,
-                "league_type": veloce_league,
-                "match_name": f"{veloce_home} vs {veloce_away}"
-            }
-
-            # Imposta flag per far scrollare alla sezione risultati
-            st.session_state["veloce_mode_active"] = True
-
-            st.success(f"✅ Partita creata: {veloce_home} vs {veloce_away}")
-            st.info("👇 Scorri in basso e clicca su 'CALCOLA MODELLO AVANZATO' per ottenere l'analisi.")
-            st.rerun()
-
-st.markdown("---")
-
-# ============================================================
 #        CARICAMENTO PARTITA DA API
 # ============================================================
 
@@ -13060,7 +12894,7 @@ if st.session_state.soccer_leagues:
         st.session_state.events_for_league = oddsapi_get_events_for_league(selected_league_key)
         st.session_state.selected_league_key = selected_league_key
         if len(st.session_state.events_for_league) == 0:
-            st.warning(f"⚠️ 0 partite trovate per questa lega. Usa la sezione 'Inserimento Manuale' qui sopra.")
+            st.warning(f"⚠️ 0 partite trovate per questa lega. Puoi comunque compilare il form qui sotto inserendo i dati manualmente.")
         else:
             st.success(f"✅ {len(st.session_state.events_for_league)} partite")
 
@@ -13084,19 +12918,41 @@ if st.session_state.soccer_leagues:
             event = st.session_state.events_for_league[idx]
             prices = oddsapi_extract_prices_improved(event)
 
+            # Helper per convertire in float con fallback
+            def safe_float(val, default=0.0):
+                try:
+                    return float(val) if val is not None else default
+                except (ValueError, TypeError):
+                    return default
+
             # Salva i dati della partita selezionata
-            st.session_state["current_match"] = {
-                "home_team": event.get("home_team"),
-                "away_team": event.get("away_team"),
-                "odds_1": float(prices.get("odds_1", 2.00)),
-                "odds_x": float(prices.get("odds_x", 3.50)),
-                "odds_2": float(prices.get("odds_2", 3.80)),
-                "odds_over25": float(prices.get("odds_over25", 0.0)),
-                "odds_under25": float(prices.get("odds_under25", 0.0)),
-                "odds_btts": float(prices.get("odds_btts", 0.0)),
-                "odds_dnb_home": float(prices.get("odds_dnb_home", 0.0)),
-                "odds_dnb_away": float(prices.get("odds_dnb_away", 0.0))
-            }
+            if prices:
+                st.session_state["current_match"] = {
+                    "home_team": event.get("home_team"),
+                    "away_team": event.get("away_team"),
+                    "odds_1": safe_float(prices.get("odds_1"), 2.00),
+                    "odds_x": safe_float(prices.get("odds_x"), 3.50),
+                    "odds_2": safe_float(prices.get("odds_2"), 3.80),
+                    "odds_over25": safe_float(prices.get("odds_over25"), 0.0),
+                    "odds_under25": safe_float(prices.get("odds_under25"), 0.0),
+                    "odds_btts": safe_float(prices.get("odds_btts"), 0.0),
+                    "odds_dnb_home": safe_float(prices.get("odds_dnb_home"), 0.0),
+                    "odds_dnb_away": safe_float(prices.get("odds_dnb_away"), 0.0)
+                }
+            else:
+                # Se prices è None, usa valori di default
+                st.session_state["current_match"] = {
+                    "home_team": event.get("home_team"),
+                    "away_team": event.get("away_team"),
+                    "odds_1": 2.00,
+                    "odds_x": 3.50,
+                    "odds_2": 3.80,
+                    "odds_over25": 0.0,
+                    "odds_under25": 0.0,
+                    "odds_btts": 0.0,
+                    "odds_dnb_home": 0.0,
+                    "odds_dnb_away": 0.0
+                }
 
 st.markdown("---")
 
