@@ -10434,7 +10434,8 @@ def format_analysis_for_telegram(
     message += f"⚽ <b>Mercati Speciali</b>\n"
     message += f"Over 2.5: {ris['over_25']*100:.1f}%\n"
     message += f"Under 2.5: {ris['under_25']*100:.1f}%\n"
-    message += f"BTTS: {ris['btts']*100:.1f}%\n\n"
+    message += f"BTTS: {ris['btts']*100:.1f}%\n"
+    message += f"GG + Over 2.5: {ris['gg_over25']*100:.1f}%\n\n"
     
     # Value Bets
     if value_bets:
@@ -10524,7 +10525,18 @@ def format_multiple_matches_for_telegram(
         message += f"  2️⃣ Trasferta: <b>{ris['p_away']*100:.1f}%</b> (q. {odds_2:.2f})\n\n"
 
         # Mercati speciali (compatto)
-        message += f"⚽ Over 2.5: {ris['over_25']*100:.1f}% | Under: {ris['under_25']*100:.1f}% | BTTS: {ris['btts']*100:.1f}%\n\n"
+        message += (
+            f"⚽ Over 2.5: {ris['over_25']*100:.1f}% | "
+            f"Under: {ris['under_25']*100:.1f}% | "
+            f"BTTS: {ris['btts']*100:.1f}% | "
+            f"GG+Over 2.5: {ris['gg_over25']*100:.1f}%\n\n"
+        )
+
+        if "top10" in ris and len(ris["top10"]) > 0:
+            message += "🏅 Top 3 Risultati:\n"
+            for idx, (h, a, p) in enumerate(ris["top10"][:3], 1):
+                message += f"  {idx}. {h}-{a}: {p:.1f}%\n"
+            message += "\n"
 
         # Value Bets filtrati per soglia
         filtered_vbs = [vb for vb in value_bets if float(str(vb.get("Prob %", "0")).replace("%", "").replace(",", ".")) >= telegram_prob_threshold]
@@ -11807,17 +11819,29 @@ def risultato_completo_improved(
         "X2 & GG": prob_dc_btts_from_matrix(mat_ft, 'X2'),  # Già calcolato correttamente dalla matrice
         "1X & Under 2.5": prob_dc_over_from_matrix(mat_ft, '1X', 2.5, inverse=True),
         "X2 & Under 2.5": prob_dc_over_from_matrix(mat_ft, 'X2', 2.5, inverse=True),
-        "1X & Multigol 1-3": prob_dc_multigol_from_matrix(mat_ft, '1X', 1, 3),
-        "1X & Multigol 2-4": prob_dc_multigol_from_matrix(mat_ft, '1X', 2, 4),
-        "X2 & Multigol 1-3": prob_dc_multigol_from_matrix(mat_ft, 'X2', 1, 3),
-        "X2 & Multigol 2-4": prob_dc_multigol_from_matrix(mat_ft, 'X2', 2, 4),
-        "12 & Multigol 2-4": prob_dc_multigol_from_matrix(mat_ft, '12', 2, 4),
-        "12 & Multigol 3-5": prob_dc_multigol_from_matrix(mat_ft, '12', 3, 5),
-        "1 & Multigol 2-3": prob_esito_multigol_from_matrix(mat_ft, '1', 2, 3),
-        "1 & Multigol 2-4": prob_esito_multigol_from_matrix(mat_ft, '1', 2, 4),
-        "2 & Multigol 2-3": prob_esito_multigol_from_matrix(mat_ft, '2', 2, 3),
-        "2 & Multigol 2-4": prob_esito_multigol_from_matrix(mat_ft, '2', 2, 4),
     }
+    combo_book["GG & Over 2.5"] = gg_over25
+
+    # Range target per combo Multigol (garantiamo coerenza con i range calcolati sopra)
+    multigol_combo_ranges = [(1, 3), (1, 4), (1, 5), (2, 3), (2, 4), (2, 5), (3, 5)]
+
+    # Esito + Multigol
+    for esito_key in ['1', '2']:
+        for gmin, gmax in multigol_combo_ranges:
+            range_label = f"{gmin}-{gmax}"
+            if range_label in multigol_total:
+                combo_book[f"{esito_key} & Multigol {range_label}"] = prob_esito_multigol_from_matrix(
+                    mat_ft, esito_key, gmin, gmax
+                )
+
+    # Double Chance + Multigol
+    for dc_key in ['1X', 'X2', '12']:
+        for gmin, gmax in multigol_combo_ranges:
+            range_label = f"{gmin}-{gmax}"
+            if range_label in multigol_total:
+                combo_book[f"{dc_key} & Multigol {range_label}"] = prob_dc_multigol_from_matrix(
+                    mat_ft, dc_key, gmin, gmax
+                )
     
     # 14. Top risultati
     top10 = top_results_from_matrix(mat_ft, 10, 0.005)
@@ -13342,10 +13366,12 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
 
         # BTTS
         st.subheader("⚽ Goal/No Goal")
-        col_btts1, col_btts2 = st.columns(2)
+        col_btts1, col_btts2, col_btts3 = st.columns(3)
         with col_btts1:
             st.metric("BTTS (GG)", f"{ris['btts']*100:.1f}%")
         with col_btts2:
+            st.metric("GG + Over 2.5", f"{ris.get('gg_over25', 0)*100:.1f}%")
+        with col_btts3:
             st.metric("No Goal (NG)", f"{ris.get('clean_sheet_qualcuno', 0)*100:.1f}%")
 
         # Double Chance
@@ -13376,7 +13402,7 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
             combo = ris['combo_book']
             combo_principali = {
                 k: v for k, v in combo.items()
-                if any(x in k for x in ['1X &', 'X2 &', '12 &', '1 &', '2 &'])
+                if any(x in k for x in ['1X &', 'X2 &', '12 &', '1 &', '2 &', 'GG &'])
             }
             cols_combo = st.columns(3)
             for idx, (key, val) in enumerate(sorted(combo_principali.items())[:15]):
@@ -13619,6 +13645,11 @@ telegram_prob_threshold: {telegram_prob_threshold}
             f"  🏠 Casa: {ris['p_home']*100:.1f}% (Quota: {validated['odds_1']:.2f})\n"
             f"  ⚖️ Pareggio: {ris['p_draw']*100:.1f}% (Quota: {validated['odds_x']:.2f})\n"
             f"  ✈️ Trasferta: {ris['p_away']*100:.1f}% (Quota: {validated['odds_2']:.2f})\n\n"
+            f"⚽ <b>Mercati Speciali</b>:\n"
+            f"  Over 2.5: {ris['over_25']*100:.1f}%\n"
+            f"  Under 2.5: {ris['under_25']*100:.1f}%\n"
+            f"  BTTS: {ris['btts']*100:.1f}%\n"
+            f"  GG + Over 2.5: {ris['gg_over25']*100:.1f}%\n\n"
             f"🎯 <b>Mercati Alta Probabilità (≥{telegram_prob_threshold:.0f}%)</b>:\n"
         )
 
@@ -13656,6 +13687,11 @@ telegram_prob_threshold: {telegram_prob_threshold}
                         telegram_message += f"  • <b>{m['Esito']}</b>: {m['Prob %']}%{quota_str}\n"
         else:
             telegram_message += "  • Nessun mercato sopra la soglia configurata\n"
+
+        if ris.get('top10'):
+            telegram_message += "\n🏅 <b>Top 3 Risultati Esatti</b>:\n"
+            for h, a, prob in ris['top10'][:3]:
+                telegram_message += f"  • {h}-{a}: {prob:.1f}%\n"
 
         telegram_message += f"\n📈 Totale: {len(all_markets)} mercati\n"
         telegram_message += "🤖 <i>Modello Dixon-Coles Bayesiano</i>"
