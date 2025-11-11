@@ -13183,7 +13183,7 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
     telegram_prob_threshold = float(st.session_state.get("telegram_prob_threshold", TELEGRAM_MIN_PROBABILITY))
 
     # Leggi dati dal form
-    match_name = match_name_input
+    match_name = f"{home_team} vs {away_team}"
     odds_over25_val = odds_over25 if odds_over25 > 0 else None
     odds_under25_val = odds_under25 if odds_under25 > 0 else None
     odds_btts_val = odds_btts if odds_btts > 0 else None
