@@ -13982,9 +13982,10 @@ if has_multiple_matches:
                     st.subheader("🎲 Top 10 Risultati Esatti")
                     top10 = result['ris']['top10']
                     cols_top = st.columns(5)
-                    for idx, (score, prob) in enumerate(top10[:10]):
+                    for idx, (h, a, prob) in enumerate(top10[:10]):
+                        score = f"{h}-{a}"
                         with cols_top[idx % 5]:
-                            st.metric(score, f"{prob*100:.1f}%")
+                            st.metric(score, f"{prob:.1f}%")
 
                 st.markdown("---")
 
