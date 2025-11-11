@@ -88,27 +88,34 @@ except ImportError:
 @dataclass
 class APIConfig:
     """Configurazione API keys e endpoints"""
-    the_odds_api_key: str = "06c16ede44d09f9b3498bb63354930c4"
+    the_odds_api_key: str = ""
     the_odds_base: str = "https://api.the-odds-api.com/v4"
     api_football_key: str = ""
     api_football_base: str = "https://v3.football.api-sports.io"
-    openweather_api_key: str = "01afa2183566fcf16d98b5a33c91eae1"
-    football_data_api_key: str = "ca816dc8504543768e8adfaf128ecffc"
+    openweather_api_key: str = ""
+    football_data_api_key: str = ""
     thesportsdb_api_key: str = "3"  # Pubblica, gratuita
-    telegram_bot_token: str = "8530766126:AAHs1ZoLwrwvT7JuPyn_9ymNVyddPtUXi-g"
-    telegram_chat_id: str = "-1003278011521"
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
     telegram_enabled: bool = True
     telegram_min_probability: float = 50.0
-    
+
     def __post_init__(self):
-        """Carica da variabili d'ambiente (override se presenti)"""
-        # Le variabili d'ambiente hanno priorità se configurate
-        self.the_odds_api_key = os.getenv("THE_ODDS_API_KEY", self.the_odds_api_key)
-        self.api_football_key = os.getenv("API_FOOTBALL_KEY", self.api_football_key)
-        self.openweather_api_key = os.getenv("OPENWEATHER_API_KEY", self.openweather_api_key)
-        self.football_data_api_key = os.getenv("FOOTBALL_DATA_API_KEY", self.football_data_api_key)
-        self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", self.telegram_bot_token)
-        self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", self.telegram_chat_id)
+        """Carica da variabili d'ambiente"""
+        # Carica le API keys dalle variabili d'ambiente
+        self.the_odds_api_key = os.getenv("THE_ODDS_API_KEY", "")
+        self.api_football_key = os.getenv("API_FOOTBALL_KEY", "")
+        self.openweather_api_key = os.getenv("OPENWEATHER_API_KEY", "")
+        self.football_data_api_key = os.getenv("FOOTBALL_DATA_API_KEY", "")
+        self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+
+        # Valida che le chiavi richieste siano configurate
+        if not self.the_odds_api_key:
+            logger.warning("THE_ODDS_API_KEY non configurata - alcune funzionalità potrebbero non funzionare")
+        if not self.football_data_api_key:
+            logger.warning("FOOTBALL_DATA_API_KEY non configurata - alcune funzionalità potrebbero non funzionare")
+
         env_min_prob = os.getenv("TELEGRAM_MIN_PROBABILITY", None)
         if env_min_prob is not None:
             try:
@@ -2478,9 +2485,10 @@ def value_bet_screener(
     # Ordina per edge decrescente
     value_bets.sort(key=lambda x: x['edge'], reverse=True)
 
-    if value_bets:
+    if value_bets and len(value_bets) > 0:
         logger.info(f"✅ Trovati {len(value_bets)} value bets!")
-        logger.info(f"🔥 Top bet: {value_bets[0]['home_team']} vs {value_bets[0]['away_team']} - {value_bets[0]['selection']} @{value_bets[0]['odds']:.2f} (Edge: +{value_bets[0]['edge']*100:.1f}%)")
+        top_bet = value_bets[0]
+        logger.info(f"🔥 Top bet: {top_bet['home_team']} vs {top_bet['away_team']} - {top_bet['selection']} @{top_bet['odds']:.2f} (Edge: +{top_bet['edge']*100:.1f}%)")
     else:
         logger.info("⚠️ Nessun value bet trovato con criteri specificati")
 
@@ -3814,15 +3822,31 @@ def scrape_fbref_team_xg(team_name: str, league: str = 'Premier-League', season:
             logger.warning(f"Tabella statistiche non trovata per {league}")
             return {}
 
+        # Helper per estrarre valori in modo sicuro da BeautifulSoup
+        def safe_get_float(element, default=0.0):
+            """Safely extract float from BeautifulSoup element"""
+            if element is None:
+                return default
+            try:
+                text = element.text.strip()
+                return float(text) if text else default
+            except (ValueError, AttributeError):
+                return default
+
         # Cerca riga con nome squadra
         rows = table.find('tbody').find_all('tr')
         for row in rows:
             squad_cell = row.find('th', {'data-stat': 'squad'})
             if squad_cell and team_name.lower() in squad_cell.text.lower():
-                # Estrai dati xG
-                xg_for = float(row.find('td', {'data-stat': 'xg_for'}).text or 0)
-                xg_against = float(row.find('td', {'data-stat': 'xg_against'}).text or 0)
-                matches = int(row.find('td', {'data-stat': 'games'}).text or 0)
+                # Estrai dati xG in modo sicuro
+                xg_for_elem = row.find('td', {'data-stat': 'xg_for'})
+                xg_for = safe_get_float(xg_for_elem, 0.0)
+
+                xg_against_elem = row.find('td', {'data-stat': 'xg_against'})
+                xg_against = safe_get_float(xg_against_elem, 0.0)
+
+                matches_elem = row.find('td', {'data-stat': 'games'})
+                matches = int(safe_get_float(matches_elem, 0))
 
                 if matches > 0:
                     return {
@@ -5949,6 +5973,8 @@ def estimate_lambda_from_market_optimized(
     
     # 4. Ottimizzazione numerica: minimizza errore tra probabilità osservate e attese
     def error_function(params):
+        if len(params) < 2:
+            raise ValueError(f"params must have 2+ elements, got {len(params)}")
         lh, la = params[0], params[1]
         lh = max(model_config.LAMBDA_OPTIMIZATION_MIN, min(model_config.LAMBDA_OPTIMIZATION_MAX, lh))
         la = max(model_config.LAMBDA_OPTIMIZATION_MIN, min(model_config.LAMBDA_OPTIMIZATION_MAX, la))
@@ -8189,10 +8215,13 @@ def platt_scaling_calibration(
         # Calcola score di calibrazione (Brier score migliorato)
         calibrated_preds = [calibrate(p) for p in predictions]
         calibration_score = brier_score(calibrated_preds, outcomes)
-        
+
         return calibrate, calibration_score
-    except:
-        # Fallback: funzione identità
+    except ValueError as e:
+        logger.warning(f"Platt scaling validation error: {e}, using identity function")
+        return lambda p: p, 1.0
+    except Exception as e:
+        logger.error(f"Unexpected error in platt scaling: {type(e).__name__}: {e}")
         return lambda p: p, 1.0
 
 def isotonic_calibration(
@@ -8324,22 +8353,28 @@ def best_calibration_method(
     try:
         calibrate_iso, score_iso = isotonic_calibration(predictions, outcomes, test_predictions)
         methods.append(("isotonic", calibrate_iso, score_iso))
-    except:
-        pass
-    
+    except ValueError as e:
+        logger.debug(f"Isotonic calibration validation error: {e}")
+    except Exception as e:
+        logger.warning(f"Isotonic calibration failed: {type(e).__name__}: {e}")
+
     # Prova Temperature Scaling
     try:
         calibrate_temp, T, score_temp = temperature_scaling_calibration(predictions, outcomes, test_predictions)
         methods.append(("temperature", calibrate_temp, score_temp))
-    except:
-        pass
-    
+    except ValueError as e:
+        logger.debug(f"Temperature scaling validation error: {e}")
+    except Exception as e:
+        logger.warning(f"Temperature scaling failed: {type(e).__name__}: {e}")
+
     # Prova Platt Scaling
     try:
         calibrate_platt, score_platt = platt_scaling_calibration(predictions, outcomes, test_predictions)
         methods.append(("platt", calibrate_platt, score_platt))
-    except:
-        pass
+    except ValueError as e:
+        logger.debug(f"Platt scaling validation error: {e}")
+    except Exception as e:
+        logger.warning(f"Platt scaling failed: {type(e).__name__}: {e}")
     
     if not methods:
         # Fallback: funzione identità
@@ -9671,7 +9706,11 @@ def get_time_based_adjustments(
     
     try:
         dt = datetime.fromisoformat(match_datetime.replace("Z", "+00:00"))
-    except:
+    except (ValueError, AttributeError) as e:
+        logger.warning(f"Invalid match_datetime format '{match_datetime}': {e}, using current time")
+        dt = datetime.now()
+    except Exception as e:
+        logger.error(f"Unexpected error parsing match_datetime: {type(e).__name__}: {e}")
         dt = datetime.now()
     
     adjustments = {
@@ -10494,8 +10533,10 @@ def send_telegram_message(
                         "error_message": error_msg_detailed,
                         "error_type": "invalid_chat_id"
                     }
-            except:
-                pass
+            except (ValueError, KeyError) as e:
+                logger.debug(f"Error parsing Telegram error response: {e}")
+            except Exception as e:
+                logger.warning(f"Unexpected error processing Telegram error: {type(e).__name__}: {e}")
             return {
                 "success": False,
                 "error_message": "Chat ID non valido o formato errato. Verifica che il Chat ID sia corretto.",
@@ -10950,7 +10991,11 @@ def get_unread_alerts() -> List[Dict[str, Any]]:
         with open(ALERTS_FILE, 'r') as f:
             alerts = json.load(f)
         return [a for a in alerts if not a.get("read", False)]
-    except:
+    except (json.JSONDecodeError, FileNotFoundError) as e:
+        logger.warning(f"Error reading alerts file: {e}")
+        return []
+    except Exception as e:
+        logger.error(f"Unexpected error reading alerts: {type(e).__name__}: {e}")
         return []
 
 # ============================================================
@@ -12420,8 +12465,10 @@ def risultato_completo_improved(
             if FOOTBALL_DATA_API_KEY:
                 additional_api_data["football_data_org"] = football_data_get_team_info(home_team)
             additional_api_data["thesportsdb"] = stadium_data if stadium_data and stadium_data.get("available") else thesportsdb_get_team_info(home_team)
-        except:
-            pass  # Non bloccare se fallisce
+        except (KeyError, ValueError, TypeError) as e:
+            logger.debug(f"Error fetching additional API data: {e}")
+        except Exception as e:
+            logger.warning(f"Unexpected error fetching additional API data: {type(e).__name__}: {e}")
     
     return {
         "lambda_home": lh,
@@ -13088,8 +13135,16 @@ if st.session_state.soccer_leagues:
 
             # Per ogni partita selezionata, estrai i dati e crea interfaccia di input
             for match_label in selected_match_labels:
-                idx = match_labels.index(match_label)
-                event = st.session_state.events_for_league[idx]
+                try:
+                    idx = match_labels.index(match_label)
+                    if idx < len(st.session_state.events_for_league):
+                        event = st.session_state.events_for_league[idx]
+                    else:
+                        st.warning(f"Event at index {idx} not found")
+                        continue
+                except ValueError:
+                    st.warning(f"Match '{match_label}' not found in list")
+                    continue
                 event_id = event.get("id") or event.get("event_id") or event.get("key")
 
                 # Inizializza dati per questa partita se non esistono
@@ -13128,7 +13183,17 @@ if st.session_state.soccer_leagues:
                     }
 
             # Rimuovi partite deselezionate
-            all_event_ids = [st.session_state.events_for_league[match_labels.index(ml)].get("id") for ml in selected_match_labels]
+            all_event_ids = []
+            for ml in selected_match_labels:
+                try:
+                    idx = match_labels.index(ml)
+                    if idx < len(st.session_state.events_for_league):
+                        event_id = st.session_state.events_for_league[idx].get("id")
+                        if event_id:
+                            all_event_ids.append(event_id)
+                except ValueError:
+                    logger.warning(f"Match label '{ml}' not found in match_labels")
+                    continue
             keys_to_remove = [k for k in st.session_state.selected_matches_data.keys() if k not in all_event_ids]
             for k in keys_to_remove:
                 del st.session_state.selected_matches_data[k]
@@ -14078,8 +14143,10 @@ if os.path.exists(ARCHIVE_FILE):
                             ax.grid(True, alpha=0.3)
                             st.pyplot(fig)
                             plt.close(fig)
-                        except:
-                            pass
+                        except ImportError as e:
+                            logger.warning(f"Matplotlib not available for plotting: {e}")
+                        except Exception as e:
+                            logger.error(f"Error creating backtest plot: {type(e).__name__}: {e}")
 else:
     st.info("Nessuno storico disponibile per backtest")
 
