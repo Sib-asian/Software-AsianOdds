@@ -15005,14 +15005,39 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
         # COMBO AVANZATE (es: 1X & Over 2.5, BTTS & 1, ecc.)
         if 'combo_book' in ris:
             combo_book = ris['combo_book']
+
+            # DEDUPLICA combo prima di aggiungerli (stesso problema dei duplicati)
+            from collections import defaultdict
+            value_groups_threshold = defaultdict(list)
             for combo_name, combo_prob in combo_book.items():
                 if combo_prob * 100 >= telegram_prob_threshold:
-                    all_markets.append({
-                        "Esito": combo_name,
-                        "Prob %": f"{combo_prob*100:.1f}",
-                        "Quota": "N/A",
-                        "Tipo": "Combo Avanzate"
-                    })
+                    rounded_prob = round(combo_prob, 6)
+                    value_groups_threshold[rounded_prob].append((combo_name, combo_prob))
+
+            # Per ogni gruppo, scegli la versione più leggibile
+            for prob_val, name_prob_pairs in value_groups_threshold.items():
+                if len(name_prob_pairs) == 1:
+                    # Solo una versione
+                    combo_name, combo_prob = name_prob_pairs[0]
+                else:
+                    # Duplicati: preferisci versione con + e più leggibile
+                    names = [name for name, _ in name_prob_pairs]
+                    names_with_plus = [n for n in names if '+' in n]
+                    if names_with_plus:
+                        # Preferisci versione con + più corta
+                        best_name = min(names_with_plus, key=len)
+                    else:
+                        # Nessuna con +, usa la più corta
+                        best_name = min(names, key=len)
+                    combo_name = best_name
+                    combo_prob = prob_val
+
+                all_markets.append({
+                    "Esito": combo_name,
+                    "Prob %": f"{combo_prob*100:.1f}",
+                    "Quota": "N/A",
+                    "Tipo": "Combo Avanzate"
+                })
 
         # MULTIGOL (es: 1-2 Goal, 2-3 Goal, 3+ Goal)
         if 'multigol' in ris:
