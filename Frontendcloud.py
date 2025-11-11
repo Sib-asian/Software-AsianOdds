@@ -13627,9 +13627,23 @@ telegram_prob_threshold: {telegram_prob_threshold}
                                     by_type[tipo] = []
                                 by_type[tipo].append(market)
 
-                            # Invia per categoria
-                            for tipo in ['1X2', 'Over/Under', 'BTTS', 'Combo', 'DNB', 'Correct Score']:
+                            # Invia per categoria - TUTTI i tipi presenti
+                            # Ordina tipi per importanza
+                            tipo_order = ['1X2', 'Over/Under', 'BTTS', 'Combo', 'Double Chance',
+                                         'Combo Avanzate', 'Multigol', 'Multigol Totali',
+                                         'Correct Score', 'DNB']
+
+                            # Aggiungi prima i tipi nell'ordine preferito
+                            for tipo in tipo_order:
                                 if tipo in by_type:
+                                    telegram_message += f"\n<b>{tipo}</b>:\n"
+                                    for m in by_type[tipo]:
+                                        quota_str = f" (Quota: {m['Quota']:.2f})" if isinstance(m['Quota'], (int, float)) else ""
+                                        telegram_message += f"  • <b>{m['Esito']}</b>: {m['Prob %']}%{quota_str}\n"
+
+                            # Aggiungi eventuali altri tipi non previsti
+                            for tipo in by_type:
+                                if tipo not in tipo_order:
                                     telegram_message += f"\n<b>{tipo}</b>:\n"
                                     for m in by_type[tipo]:
                                         quota_str = f" (Quota: {m['Quota']:.2f})" if isinstance(m['Quota'], (int, float)) else ""
