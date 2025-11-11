@@ -12479,6 +12479,114 @@ def risultato_completo_improved(
     }
 
 # ============================================================
+#   VALUE BETS PREPARATION
+# ============================================================
+
+def prepare_value_bets(
+    ris: Dict[str, Any],
+    odds_1: float,
+    odds_x: float,
+    odds_2: float,
+    odds_over: float = None,
+    odds_under: float = None,
+    odds_btts: float = None,
+    odds_dnb_home: float = None,
+    odds_dnb_away: float = None,
+) -> List[Dict[str, Any]]:
+    """
+    Prepara lista di value bets calcolando edge e EV per tutti i mercati disponibili.
+
+    Args:
+        ris: Risultati dell'analisi completa da risultato_completo_improved()
+        odds_1, odds_x, odds_2: Quote 1X2
+        odds_over, odds_under: Quote Over/Under 2.5
+        odds_btts: Quote BTTS
+        odds_dnb_home, odds_dnb_away: Quote Draw No Bet
+
+    Returns:
+        Lista di dizionari con value bets. Ogni dizionario contiene:
+        - Esito: Nome dell'esito (es. "Casa", "Over 2.5", "BTTS")
+        - Prob Modello %: Probabilità del modello formattata
+        - Edge %: Edge percentuale formattato
+        - EV %: Expected Value percentuale formattato
+        - Rec: Raccomandazione basata su edge
+    """
+    value_bets = []
+
+    def add_bet(esito: str, prob_model: float, odds: float):
+        """Helper per aggiungere una bet alla lista."""
+        if odds is None or odds <= 1.0:
+            return
+
+        # Calcola probabilità implicita della quota
+        prob_book = 1.0 / odds
+
+        # Calcola edge ed EV
+        edge = (prob_model - prob_book) * 100
+        ev = (prob_model * odds - 1) * 100
+
+        # Determina raccomandazione
+        if edge >= 5.0:
+            rec = "🔥 FORTE"
+        elif edge >= 3.0:
+            rec = "✅ BUONA"
+        elif edge >= 1.0:
+            rec = "⚠️ MEDIA"
+        else:
+            rec = "❌ NO"
+
+        value_bets.append({
+            "Esito": esito,
+            "Prob Modello %": f"{prob_model * 100:.2f}",
+            "Edge %": f"{edge:+.2f}",
+            "EV %": f"{ev:+.2f}",
+            "Rec": rec
+        })
+
+    # 1X2
+    add_bet("Casa (1)", ris.get("p_home", 0), odds_1)
+    add_bet("Pareggio (X)", ris.get("p_draw", 0), odds_x)
+    add_bet("Trasferta (2)", ris.get("p_away", 0), odds_2)
+
+    # Over/Under 2.5
+    if odds_over is not None:
+        add_bet("Over 2.5", ris.get("over_25", 0), odds_over)
+    if odds_under is not None:
+        add_bet("Under 2.5", ris.get("under_25", 0), odds_under)
+
+    # BTTS
+    if odds_btts is not None and odds_btts > 0:
+        add_bet("BTTS Yes", ris.get("btts", 0), odds_btts)
+
+    # Draw No Bet
+    if odds_dnb_home is not None and odds_dnb_home > 0:
+        # DNB Home = P(Home) / (P(Home) + P(Away))
+        p_home = ris.get("p_home", 0)
+        p_away = ris.get("p_away", 0)
+        total = p_home + p_away
+        if total > 0:
+            prob_dnb_home = p_home / total
+            add_bet("DNB Casa", prob_dnb_home, odds_dnb_home)
+
+    if odds_dnb_away is not None and odds_dnb_away > 0:
+        # DNB Away = P(Away) / (P(Home) + P(Away))
+        p_home = ris.get("p_home", 0)
+        p_away = ris.get("p_away", 0)
+        total = p_home + p_away
+        if total > 0:
+            prob_dnb_away = p_away / total
+            add_bet("DNB Trasferta", prob_dnb_away, odds_dnb_away)
+
+    # Doppia Chance (se disponibile nel risultato)
+    dc = ris.get("dc", {})
+    if dc:
+        # Le quote DC non sono passate come parametro, quindi non le includiamo
+        # per ora. Potrebbero essere aggiunte in futuro se necessario.
+        pass
+
+    return value_bets
+
+# ============================================================
 #   CONTROLLI QUALITÀ MIGLIORATI
 # ============================================================
 
