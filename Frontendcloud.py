@@ -2026,6 +2026,45 @@ def oddsapi_refresh_event(league_key: str, event_id: str) -> dict:
         logger.error(f"Errore refresh evento {event_id} in {league_key}: {e}")
         return {}
 
+def create_manual_event(home_team: str, away_team: str, commence_time: str = None) -> dict:
+    """
+    Crea un evento manuale con struttura compatibile con The Odds API.
+    Questo permette di inserire partite manualmente quando l'API non restituisce risultati.
+
+    Args:
+        home_team: Nome squadra casa
+        away_team: Nome squadra trasferta
+        commence_time: Data/ora in formato ISO o None per generare un ID timestamp
+
+    Returns:
+        dict: Evento con struttura compatibile con oddsapi_extract_prices_improved
+    """
+    import uuid
+    from datetime import datetime
+
+    # Genera un ID univoco per l'evento manuale
+    if commence_time:
+        event_id = f"manual_{commence_time.replace(':', '').replace('-', '').replace('T', '_').replace('Z', '')}"
+    else:
+        event_id = f"manual_{uuid.uuid4().hex[:12]}"
+
+    # Se non specificato, usa una data/ora di default (oggi)
+    if not commence_time:
+        commence_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Crea struttura evento compatibile
+    manual_event = {
+        "id": event_id,
+        "sport_key": "manual_entry",
+        "sport_title": "Inserimento Manuale",
+        "commence_time": commence_time,
+        "home_team": home_team.strip(),
+        "away_team": away_team.strip(),
+        "bookmakers": []  # Nessun bookmaker, l'utente inserirà le quote manualmente
+    }
+
+    return manual_event
+
 # ============================================================
 #  NUOVE FUNZIONI: AUTO-FETCH & AUTO-UPDATE (FASE 1)
 # ============================================================
@@ -12727,6 +12766,51 @@ st.markdown("---")
 
 st.subheader("🔍 Carica Partita da The Odds API")
 
+# ===== OPZIONE INSERIMENTO COMPLETAMENTE MANUALE =====
+with st.expander("➕ INSERIMENTO PARTITA COMPLETAMENTE MANUALE (senza API)", expanded=False):
+    st.markdown("""
+    **Usa questa modalità se:**
+    - Non hai configurato l'API key
+    - L'API non è disponibile
+    - Vuoi inserire rapidamente una partita senza passare per le leghe
+
+    Inserisci i dati della partita e poi potrai inserire tutte le quote manualmente.
+    """)
+
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        quick_home = st.text_input("🏠 Squadra Casa", key="quick_manual_home", placeholder="Es: Inter")
+    with col_m2:
+        quick_away = st.text_input("✈️ Squadra Trasferta", key="quick_manual_away", placeholder="Es: Juventus")
+
+    col_m3, col_m4 = st.columns(2)
+    with col_m3:
+        quick_date = st.date_input("📅 Data", key="quick_manual_date")
+    with col_m4:
+        quick_time = st.time_input("🕐 Ora", key="quick_manual_time", value=None)
+
+    if st.button("➕ Crea Partita Manuale", type="primary", key="quick_manual_button"):
+        if not quick_home or not quick_away:
+            st.error("⚠️ Inserisci entrambe le squadre!")
+        else:
+            from datetime import datetime
+            if quick_time:
+                commence_time = datetime.combine(quick_date, quick_time).strftime("%Y-%m-%dT%H:%M:%SZ")
+            else:
+                commence_time = datetime.combine(quick_date, datetime.min.time()).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            manual_event = create_manual_event(quick_home, quick_away, commence_time)
+
+            if not isinstance(st.session_state.events_for_league, list):
+                st.session_state.events_for_league = []
+            st.session_state.events_for_league.append(manual_event)
+
+            st.success(f"✅ Partita creata: {quick_home} vs {quick_away}")
+            st.info("👇 Scorri in basso per selezionare la partita e inserire le quote.")
+            st.rerun()
+
+st.markdown("---")
+
 col_load1, col_load2 = st.columns([1, 2])
 
 with col_load1:
@@ -12746,7 +12830,55 @@ if st.session_state.soccer_leagues:
     if st.button("3️⃣ Carica Partite"):
         st.session_state.events_for_league = oddsapi_get_events_for_league(selected_league_key)
         st.session_state.selected_league_key = selected_league_key
-        st.success(f"✅ {len(st.session_state.events_for_league)} partite")
+        if len(st.session_state.events_for_league) == 0:
+            st.warning(f"⚠️ 0 partite trovate per questa lega. Puoi inserire una partita manualmente qui sotto.")
+        else:
+            st.success(f"✅ {len(st.session_state.events_for_league)} partite")
+
+    # ===== INSERIMENTO MANUALE PARTITA =====
+    st.markdown("---")
+    with st.expander("➕ Inserisci Partita Manualmente", expanded=(len(st.session_state.events_for_league) == 0)):
+        st.markdown("""
+        **Usa questa sezione per inserire manualmente una partita quando:**
+        - L'API non trova partite nella lega selezionata
+        - Vuoi analizzare una partita non disponibile nell'API
+        - L'API non è disponibile o non configurata
+        """)
+
+        col_manual1, col_manual2 = st.columns(2)
+        with col_manual1:
+            manual_home = st.text_input("🏠 Squadra Casa", key="manual_home_input", placeholder="Es: Manchester United")
+        with col_manual2:
+            manual_away = st.text_input("✈️ Squadra Trasferta", key="manual_away_input", placeholder="Es: Manchester City")
+
+        col_date1, col_date2 = st.columns(2)
+        with col_date1:
+            manual_date = st.date_input("📅 Data Partita", key="manual_date_input")
+        with col_date2:
+            manual_time = st.time_input("🕐 Ora Partita", key="manual_time_input", value=None)
+
+        if st.button("➕ Aggiungi Partita Manuale", type="primary"):
+            if not manual_home or not manual_away:
+                st.error("⚠️ Devi inserire entrambe le squadre!")
+            else:
+                # Costruisci datetime in formato ISO
+                from datetime import datetime
+                if manual_time:
+                    commence_time = datetime.combine(manual_date, manual_time).strftime("%Y-%m-%dT%H:%M:%SZ")
+                else:
+                    commence_time = datetime.combine(manual_date, datetime.min.time()).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                # Crea evento manuale
+                manual_event = create_manual_event(manual_home, manual_away, commence_time)
+
+                # Aggiungi alla lista eventi
+                if not isinstance(st.session_state.events_for_league, list):
+                    st.session_state.events_for_league = []
+                st.session_state.events_for_league.append(manual_event)
+
+                st.success(f"✅ Partita aggiunta: {manual_home} vs {manual_away}")
+                st.info("👇 Ora seleziona la partita dalla lista qui sotto e inserisci le quote manualmente.")
+                st.rerun()
 
     if st.session_state.events_for_league:
         match_labels = []
