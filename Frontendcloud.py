@@ -12817,21 +12817,26 @@ with st.expander("🤖 Configurazione Telegram Bot (Opzionale)", expanded=False)
         3. **Verifica formato**: Controlla che il formato corrisponda al tipo di chat (vedi tabella sopra)
         4. **Bot attivo**: Assicurati che il bot creato con @BotFather sia ancora attivo
         """)
-    
+
     telegram_enabled = st.checkbox("📤 Invia analisi automaticamente su Telegram", value=False,
                                    help="Se abilitato, ogni analisi verrà inviata automaticamente al tuo bot Telegram")
-    
+
     col_tg1, col_tg2 = st.columns(2)
-    
+
     with col_tg1:
         telegram_token = st.text_input("Bot Token", value=TELEGRAM_BOT_TOKEN, type="password",
                                        help="Token del bot (da @BotFather)",
                                        placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz")
-    
+
     with col_tg2:
         telegram_chat_id = st.text_input("Chat ID", value=TELEGRAM_CHAT_ID,
                                         help="ID della chat dove inviare (da @userinfobot)",
                                         placeholder="123456789")
+
+    # Salva in session_state per persistenza
+    st.session_state["telegram_enabled"] = telegram_enabled
+    st.session_state["telegram_bot_token"] = telegram_token
+    st.session_state["telegram_chat_id"] = telegram_chat_id
     
 telegram_prob_threshold = st.slider(
     "🎯 Soglia minima probabilità per notifiche Telegram (%)",
@@ -13507,13 +13512,26 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
         # DEBUG TELEGRAM CONFIG
         st.write("---")
         st.markdown("### 🔍 Debug Telegram")
+
+        # Mostra valori RAW per debug
+        with st.expander("🔧 Valori RAW (Debug avanzato)", expanded=False):
+            st.code(f"""
+telegram_enabled (type={type(telegram_enabled).__name__}): {telegram_enabled}
+telegram_token (len={len(telegram_token) if telegram_token else 0}): {"***" + telegram_token[-10:] if telegram_token and len(telegram_token) > 10 else "VUOTO"}
+telegram_chat_id (type={type(telegram_chat_id).__name__}): {telegram_chat_id}
+telegram_prob_threshold: {telegram_prob_threshold}
+            """)
+
         col_d1, col_d2, col_d3 = st.columns(3)
         with col_d1:
-            st.metric("Checkbox abilitata", "✅ Sì" if telegram_enabled else "❌ No")
+            status_enabled = "✅ Sì" if telegram_enabled else "❌ No"
+            st.metric("Checkbox abilitata", status_enabled)
         with col_d2:
-            st.metric("Bot Token", "✅ OK" if telegram_token else "❌ Mancante")
+            status_token = "✅ OK" if telegram_token and len(telegram_token) > 10 else "❌ Mancante"
+            st.metric("Bot Token", status_token)
         with col_d3:
-            st.metric("Chat ID", "✅ OK" if telegram_chat_id else "❌ Mancante")
+            status_chat = "✅ OK" if telegram_chat_id and len(telegram_chat_id) > 3 else "❌ Mancante"
+            st.metric("Chat ID", status_chat)
 
         st.metric("Mercati da inviare", len(all_markets))
 
