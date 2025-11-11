@@ -8006,7 +8006,70 @@ def prob_esito_btts_from_matrix(mat: List[List[float]], esito: str) -> float:
     if not (0.0 <= s <= 1.0):
         logger.warning(f"Probabilità esito+BTTS fuori range: {s}, correggo a 0.5")
         s = 0.5
-    
+
+    return s
+
+def prob_esito_ng_from_matrix(mat: List[List[float]], esito: str) -> float:
+    """
+    Calcola probabilità Esito & No Goal (BTTS No) dalla matrice.
+
+    ⚠️ VERIFICA MATEMATICA:
+    - P(Esito & NG) = sum(mat[h][a] per stati coerenti con l'esito e con almeno una squadra a 0 gol)
+    - Esito può essere '1' (Home), 'X' (Draw), '2' (Away)
+    - NG = almeno una delle due squadre non segna (BTTS No)
+    """
+    # ⚠️ CRITICO: Validazione input robusta
+    if esito not in ['1', 'X', '2']:
+        logger.error(f"esito non valido: {esito}, uso default '1'")
+        esito = '1'
+
+    if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
+        logger.warning("Matrice vuota o non valida, uso probabilità default")
+        return 0.5
+
+    mg = len(mat) - 1
+
+    if mg < 0:
+        logger.warning("mg < 0, uso probabilità default")
+        return 0.5
+
+    # Verifica che tutte le righe abbiano stessa lunghezza
+    for i, row in enumerate(mat):
+        if len(row) != mg + 1:
+            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
+            return 0.5
+
+    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
+    s = 0.0
+    c = 0.0  # Compensazione Kahan
+
+    for h in range(mg + 1):
+        for a in range(mg + 1):
+            p = mat[h][a]
+            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
+            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
+                continue
+
+            include = False
+            if esito == '1':
+                include = (a == 0 and h > a)
+            elif esito == 'X':
+                include = (h == 0 and a == 0)
+            elif esito == '2':
+                include = (h == 0 and a > h)
+
+            if include:
+                y = p - c
+                t = s + y
+                c = (t - s) - y
+                s = t
+
+    s = max(0.0, min(1.0, s))
+
+    if not (0.0 <= s <= 1.0):
+        logger.warning(f"Probabilità esito+NG fuori range: {s}, correggo a 0.5")
+        s = 0.5
+
     return s
 
 def prob_dc_btts_from_matrix(mat: List[List[float]], dc: str) -> float:
@@ -12845,6 +12908,8 @@ def risultato_completo_improved(
         "X2 & BTTS": prob_dc_btts_from_matrix(mat_ft, 'X2'),
         "1 & BTTS": prob_esito_btts_from_matrix(mat_ft, '1'),
         "2 & BTTS": prob_esito_btts_from_matrix(mat_ft, '2'),
+        "1 & NG": prob_esito_ng_from_matrix(mat_ft, '1'),
+        "2 & NG": prob_esito_ng_from_matrix(mat_ft, '2'),
         "1X & Under 3.5": prob_dc_over_from_matrix(mat_ft, '1X', 3.5, inverse=True),  # Under 3.5 = NOT Over 3.5
         "X2 & Under 3.5": prob_dc_over_from_matrix(mat_ft, 'X2', 3.5, inverse=True),
         "1X & GG": prob_dc_btts_from_matrix(mat_ft, '1X'),  # Già calcolato correttamente dalla matrice
@@ -13142,25 +13207,41 @@ def risultato_completo_improved(
                     combo_book[combo_key] = max_combo
     
     # Alias combinazioni richieste con formato "esito+mercato"
+    def _register_alias(alias_key: str, value: float) -> None:
+        variants = {
+            alias_key,
+            alias_key.lower(),
+            alias_key.replace(" ", ""),
+            alias_key.replace(" ", "").lower(),
+        }
+        for variant in variants:
+            combo_book[variant] = value
+
     alias_sources = {
         "2+GG": "2 & BTTS",
-        "2+Gg": "2 & BTTS",
         "2+Over 1.5": "2 & Over 1.5",
         "2+Over 2.5": "2 & Over 2.5",
+        "2+NG": "2 & NG",
+        "1X+GG": "1X & GG",
+        "X2+GG": "X2 & GG",
+        "1X+Over 1.5": "1X & Over 1.5",
+        "1X+Over 2.5": "1X & Over 2.5",
+        "X2+Over 1.5": "X2 & Over 1.5",
+        "X2+Over 2.5": "X2 & Over 2.5",
     }
     for alias_key, original_key in alias_sources.items():
         if original_key in combo_book:
-            combo_book[alias_key] = combo_book[original_key]
+            _register_alias(alias_key, combo_book[original_key])
 
     for gmin, gmax in multigol_combo_ranges:
         range_label = f"{gmin}-{gmax}"
         base_esito_key = f"2 & Multigol {range_label}"
         if base_esito_key in combo_book:
-            combo_book[f"2+Multigol {range_label}"] = combo_book[base_esito_key]
+            _register_alias(f"2+Multigol {range_label}", combo_book[base_esito_key])
         for dc_key, alias_prefix in [("1X", "1X+Multigol"), ("X2", "X2+Multigol")]:
             base_dc_key = f"{dc_key} & Multigol {range_label}"
             if base_dc_key in combo_book:
-                combo_book[f"{alias_prefix} {range_label}"] = combo_book[base_dc_key]
+                _register_alias(f"{alias_prefix} {range_label}", combo_book[base_dc_key])
     
     # 3. Coerenza Clean Sheet: CS Home + (almeno 1 gol away) = 1.0
     # P(almeno 1 gol away) = 1 - P(0 gol away) = 1 - CS Home
