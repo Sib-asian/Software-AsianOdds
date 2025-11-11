@@ -88,8 +88,6 @@ except ImportError:
 @dataclass
 class APIConfig:
     """Configurazione API keys e endpoints"""
-    the_odds_api_key: str = "06c16ede44d09f9b3498bb63354930c4"
-    the_odds_base: str = "https://api.the-odds-api.com/v4"
     api_football_key: str = ""
     api_football_base: str = "https://v3.football.api-sports.io"
     openweather_api_key: str = "01afa2183566fcf16d98b5a33c91eae1"
@@ -99,11 +97,10 @@ class APIConfig:
     telegram_chat_id: str = "-1003278011521"
     telegram_enabled: bool = True
     telegram_min_probability: float = 50.0
-    
+
     def __post_init__(self):
         """Carica da variabili d'ambiente (override se presenti)"""
         # Le variabili d'ambiente hanno priorità se configurate
-        self.the_odds_api_key = os.getenv("THE_ODDS_API_KEY", self.the_odds_api_key)
         self.api_football_key = os.getenv("API_FOOTBALL_KEY", self.api_football_key)
         self.openweather_api_key = os.getenv("OPENWEATHER_API_KEY", self.openweather_api_key)
         self.football_data_api_key = os.getenv("FOOTBALL_DATA_API_KEY", self.football_data_api_key)
@@ -231,8 +228,6 @@ if model_config.ENABLE_HIGH_PRECISION and not MPMATH_AVAILABLE:
     logger.warning("High precision attivata ma mpmath non disponibile - fallback a precisione standard")
 
 # Backward compatibility (mantiene variabili esistenti)
-THE_ODDS_API_KEY = api_config.the_odds_api_key
-THE_ODDS_BASE = api_config.the_odds_base
 API_FOOTBALL_KEY = api_config.api_football_key
 API_FOOTBALL_BASE = api_config.api_football_base
 OPENWEATHER_API_KEY = api_config.openweather_api_key
@@ -1715,545 +1710,6 @@ def detect_outliers_iqr(values: List[float], k: float = 1.5) -> List[bool]:
     upper_bound = q3 + k * iqr
     
     return [v < lower_bound or v > upper_bound for v in values]
-
-def oddsapi_extract_prices_improved(event: dict) -> dict:
-    """Versione migliorata con IQR outlier detection e Shin normalization."""
-    
-    WEIGHTS = {
-        "pinnacle": 2.0,      # Sharp book
-        "bet365": 1.6,
-        "unibet_eu": 1.3,
-        "marathonbet": 1.3,
-        "williamhill": 1.2,
-        "bwin": 1.0,
-        "betonlineag": 1.0,
-        "10bet": 1.0,
-        "bovada": 0.9,
-    }
-
-    home_team = (event.get("home_team") or "home").strip()
-    away_team = (event.get("away_team") or "away").strip()
-    home_l = home_team.lower()
-    away_l = away_team.lower()
-
-    out = {
-        "home": home_team,
-        "away": away_team,
-        "odds_1": None,
-        "odds_x": None,
-        "odds_2": None,
-        "odds_over25": None,
-        "odds_under25": None,
-        "odds_dnb_home": None,
-        "odds_dnb_away": None,
-        "odds_btts": None,
-    }
-
-    bookmakers = event.get("bookmakers", [])
-    if not bookmakers:
-        return out
-
-    h2h_home, h2h_draw, h2h_away = [], [], []
-    over25_list, under25_list = [], []
-    dnb_home_list, dnb_away_list = [], []
-    btts_list = []
-
-    for bk in bookmakers:
-        bk_key = bk.get("key")
-        if bk_key not in WEIGHTS:
-            continue
-        w = WEIGHTS[bk_key]
-
-        for mk in bk.get("markets", []):
-            mk_key_raw = mk.get("key")
-            # Assicurati che mk_key sia sempre una stringa (gestisce None)
-            mk_key = str(mk_key_raw).lower() if mk_key_raw is not None else ""
-
-            # ⚠️ OTTIMIZZAZIONE: Condizione semplificata (mk_key == "h2h" già coperto da "h2h" in mk_key)
-            if "h2h" in mk_key or "match_winner" in mk_key:
-                for o in mk.get("outcomes", []):
-                    name_l = (o.get("name") or "").strip().lower()
-                    price = o.get("price")
-                    if not price:
-                        continue
-                    if name_l == home_l or home_l in name_l:
-                        h2h_home.append((price, w))
-                    elif name_l == away_l or away_l in name_l:
-                        h2h_away.append((price, w))
-                    elif name_l in ["draw", "tie", "x", "pareggio"]:
-                        h2h_draw.append((price, w))
-
-            elif "totals" in mk_key or "total" in mk_key:
-                for o in mk.get("outcomes", []):
-                    point = o.get("point")
-                    price = o.get("price")
-                    name_l = (o.get("name") or "").lower()
-                    if price is None:
-                        continue
-                    if point == 2.5:
-                        if "over" in name_l:
-                            over25_list.append((price, w))
-                        elif "under" in name_l:
-                            under25_list.append((price, w))
-
-            elif "draw_no_bet" in mk_key or mk_key == "dnb":
-                for o in mk.get("outcomes", []):
-                    name_l = (o.get("name") or "").lower()
-                    price = o.get("price")
-                    if not price:
-                        continue
-                    if name_l == home_l or home_l in name_l:
-                        dnb_home_list.append((price, w))
-                    elif name_l == away_l or away_l in name_l:
-                        dnb_away_list.append((price, w))
-
-            elif mk_key == "spreads":
-                for o in mk.get("outcomes", []):
-                    point = o.get("point")
-                    price = o.get("price")
-                    name_l = (o.get("name") or "").lower()
-                    if price is None:
-                        continue
-                    if point == 0 or point == 0.0:
-                        if name_l == home_l or home_l in name_l:
-                            dnb_home_list.append((price, w))
-                        elif name_l == away_l or away_l in name_l:
-                            dnb_away_list.append((price, w))
-
-            elif "btts" in mk_key or "both_teams_to_score" in mk_key:
-                for o in mk.get("outcomes", []):
-                    name_l = (o.get("name") or "").lower()
-                    price = o.get("price")
-                    if not price:
-                        continue
-                    if "yes" in name_l or "sì" in name_l or "si" in name_l:
-                        btts_list.append((price, w))
-
-    # Rimozione outlier con IQR
-    def _remove_outliers(values: List[Tuple[float, float]]):
-        if len(values) <= 2:
-            return values
-        odds_only = [v for v, _ in values]
-        is_outlier = detect_outliers_iqr(odds_only, k=1.5)
-        return [item for item, outlier in zip(values, is_outlier) if not outlier]
-
-    h2h_home = _remove_outliers(h2h_home)
-    h2h_draw = _remove_outliers(h2h_draw)
-    h2h_away = _remove_outliers(h2h_away)
-    over25_list = _remove_outliers(over25_list)
-    under25_list = _remove_outliers(under25_list)
-    dnb_home_list = _remove_outliers(dnb_home_list)
-    dnb_away_list = _remove_outliers(dnb_away_list)
-    btts_list = _remove_outliers(btts_list)
-
-    def weighted_avg(values: List[Tuple[float, float]]):
-        """
-        ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, protezione divisione per zero
-        """
-        if not values:
-            return None
-        
-        # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
-        num = 0.0
-        den = 0.0
-        c_num = 0.0  # Compensazione Kahan
-        c_den = 0.0
-        
-        for v, w in values:
-            # ⚠️ PROTEZIONE: Ignora valori non validi
-            if not isinstance(v, (int, float)) or not isinstance(w, (int, float)):
-                continue
-            if not math.isfinite(v) or not math.isfinite(w) or w < 0:
-                continue
-            
-            # Kahan summation per numeratore
-            term = v * w
-            y = term - c_num
-            t = num + y
-            c_num = (t - num) - y
-            num = t
-            
-            # Kahan summation per denominatore
-            y = w - c_den
-            t = den + y
-            c_den = (t - den) - y
-            den = t
-        
-        # ⚠️ PROTEZIONE: Protezione divisione per zero
-        if den > model_config.TOL_DIVISION_ZERO:
-            result = num / den
-            if math.isfinite(result):
-                return round(result, 3)
-        
-        logger.warning(f"weighted_avg: den troppo piccolo ({den}), ritorno None")
-        return None
-
-    out["odds_1"] = weighted_avg(h2h_home)
-    out["odds_x"] = weighted_avg(h2h_draw)
-    out["odds_2"] = weighted_avg(h2h_away)
-    out["odds_over25"] = weighted_avg(over25_list)
-    out["odds_under25"] = weighted_avg(under25_list)
-    out["odds_dnb_home"] = weighted_avg(dnb_home_list)
-    out["odds_dnb_away"] = weighted_avg(dnb_away_list)
-    out["odds_btts"] = weighted_avg(btts_list)
-
-    # Normalizzazione Shin
-    if out["odds_1"] and out["odds_x"] and out["odds_2"]:
-        n1, nx, n2 = normalize_three_way_shin(out["odds_1"], out["odds_x"], out["odds_2"])
-        out["odds_1"], out["odds_x"], out["odds_2"] = n1, nx, n2
-
-    if out["odds_over25"] and out["odds_under25"]:
-        no, nu = normalize_two_way_shin(out["odds_over25"], out["odds_under25"])
-        out["odds_over25"], out["odds_under25"] = no, nu
-
-    return out
-
-# ============================================================
-#        FUNZIONI ODDS API (invariate)
-# ============================================================
-
-def oddsapi_get_soccer_leagues() -> List[dict]:
-    if not THE_ODDS_API_KEY:
-        logger.warning("THE_ODDS_API_KEY non configurata.")
-        if st:
-            st.error("⚠️ THE_ODDS_API_KEY non configurata.")
-        return []
-    try:
-        timeout_val = app_config.api_timeout if hasattr(app_config, 'api_timeout') else 10.0
-        r = requests.get(
-            f"{THE_ODDS_BASE}/sports",
-            params={"apiKey": THE_ODDS_API_KEY, "all": "true"},
-            timeout=timeout_val,
-        )
-        r.raise_for_status()
-        data = r.json()
-        leagues = [s for s in data if s.get("key", "").startswith("soccer")]
-        if not leagues:
-            logger.warning("Nessuna lega di calcio trovata nella risposta API")
-        return leagues
-    except requests.exceptions.Timeout:
-        error_msg = "Timeout richiesta The Odds API (sports)"
-        logger.error(error_msg)
-        if st:
-            st.error(f"⏱️ {error_msg}")
-        return []
-    except requests.exceptions.HTTPError as e:
-        error_msg = f"Errore HTTP The Odds API (sports): {e.response.status_code}"
-        logger.error(error_msg)
-        if st:
-            if e.response.status_code == 401:
-                st.error("🔑 API key non valida o scaduta. Controlla THE_ODDS_API_KEY.")
-            else:
-                st.error(f"❌ {error_msg}")
-        return []
-    except requests.exceptions.RequestException as e:
-        error_msg = f"Errore richiesta The Odds API (sports): {e}"
-        logger.error(error_msg)
-        if st:
-            st.error(f"❌ {error_msg}")
-        return []
-    except (ValueError, KeyError, json.JSONDecodeError) as e:
-        error_msg = f"Errore parsing risposta The Odds API (sports): {e}"
-        logger.error(error_msg)
-        if st:
-            st.error(f"❌ {error_msg}")
-        return []
-
-def oddsapi_get_events_for_league(league_key: str) -> List[dict]:
-    if not THE_ODDS_API_KEY:
-        logger.warning("THE_ODDS_API_KEY non configurata.")
-        if st:
-            st.error("⚠️ THE_ODDS_API_KEY non configurata.")
-        return []
-    base_url = f"{THE_ODDS_BASE}/sports/{league_key}/odds"
-    params_common = {
-        "apiKey": THE_ODDS_API_KEY,
-        "regions": "eu,uk",
-        "oddsFormat": "decimal",
-        "dateFormat": "iso",
-    }
-
-    try:
-        r = requests.get(
-            base_url,
-            params={**params_common, "markets": "h2h,totals,spreads,btts"},
-            timeout=app_config.api_timeout,
-        )
-        r.raise_for_status()
-        data = r.json()
-        if data:
-            return data
-    except requests.exceptions.RequestException as e:
-        logger.debug(f"Errore events con BTTS per {league_key}: {e}, provo senza BTTS")
-
-    try:
-        r2 = requests.get(
-            base_url,
-            params={**params_common, "markets": "h2h,totals,spreads"},
-            timeout=app_config.api_timeout,
-        )
-        r2.raise_for_status()
-        return r2.json()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Errore events per {league_key}: {e}")
-        return []
-
-def oddsapi_refresh_event(league_key: str, event_id: str) -> dict:
-    if not THE_ODDS_API_KEY:
-        logger.warning("THE_ODDS_API_KEY non configurata.")
-        if st:
-            st.error("⚠️ THE_ODDS_API_KEY non configurata.")
-        return {}
-    if not league_key or not event_id:
-        logger.warning(f"Parametri mancanti: league_key={league_key}, event_id={event_id}")
-        return {}
-    url = f"{THE_ODDS_BASE}/sports/{league_key}/events/{event_id}/odds"
-    params = {
-        "apiKey": THE_ODDS_API_KEY,
-        "regions": "eu,uk",
-        "oddsFormat": "decimal",
-        "dateFormat": "iso",
-        "markets": "h2h,totals,spreads,btts",
-    }
-    try:
-        r = requests.get(url, params=params, timeout=app_config.api_timeout)
-        r.raise_for_status()
-        data = r.json()
-        if isinstance(data, list) and data:
-            return data[0]
-        return data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Errore refresh evento {event_id} in {league_key}: {e}")
-        return {}
-
-def create_manual_event(home_team: str, away_team: str, commence_time: str = None) -> dict:
-    """
-    Crea un evento manuale con struttura compatibile con The Odds API.
-    Questo permette di inserire partite manualmente quando l'API non restituisce risultati.
-
-    Args:
-        home_team: Nome squadra casa
-        away_team: Nome squadra trasferta
-        commence_time: Data/ora in formato ISO o None per generare un ID timestamp
-
-    Returns:
-        dict: Evento con struttura compatibile con oddsapi_extract_prices_improved
-    """
-    import uuid
-    from datetime import datetime
-
-    # Genera un ID univoco per l'evento manuale
-    if commence_time:
-        event_id = f"manual_{commence_time.replace(':', '').replace('-', '').replace('T', '_').replace('Z', '')}"
-    else:
-        event_id = f"manual_{uuid.uuid4().hex[:12]}"
-
-    # Se non specificato, usa una data/ora di default (oggi)
-    if not commence_time:
-        commence_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    # Crea struttura evento compatibile
-    manual_event = {
-        "id": event_id,
-        "sport_key": "manual_entry",
-        "sport_title": "Inserimento Manuale",
-        "commence_time": commence_time,
-        "home_team": home_team.strip(),
-        "away_team": away_team.strip(),
-        "bookmakers": []  # Nessun bookmaker, l'utente inserirà le quote manualmente
-    }
-
-    return manual_event
-
-# ============================================================
-#  NUOVE FUNZIONI: AUTO-FETCH & AUTO-UPDATE (FASE 1)
-# ============================================================
-
-def auto_fetch_upcoming_fixtures(days_ahead: int = 7, leagues: List[str] = None) -> pd.DataFrame:
-    """
-    Scarica automaticamente fixture delle prossime N giorni da The Odds API.
-
-    FASE 1 - FEATURE #1: Auto-Fetch Fixture
-    Risparmio: 30-60 min/giorno di data entry manuale
-
-    Args:
-        days_ahead: Numero giorni da scaricare (default: 7)
-        leagues: Lista league keys (default: tutte le soccer leagues)
-
-    Returns:
-        DataFrame con: match_id, date, time, league, home_team, away_team, venue
-    """
-    logger.info(f"🔄 Auto-fetch fixture prossimi {days_ahead} giorni...")
-
-    if not THE_ODDS_API_KEY:
-        logger.error("THE_ODDS_API_KEY non configurata")
-        return pd.DataFrame()
-
-    # Se non specificate, prendi tutte le leghe soccer
-    if leagues is None:
-        all_leagues = oddsapi_get_soccer_leagues()
-        leagues = [lg.get('key') for lg in all_leagues if lg.get('key')]
-
-    fixtures_list = []
-
-    for league_key in leagues:
-        try:
-            logger.info(f"  Fetch {league_key}...")
-            events = oddsapi_get_events_for_league(league_key)
-
-            if not events:
-                continue
-
-            for event in events:
-                try:
-                    # Parse event data
-                    match_id = event.get('id', '')
-                    commence_time = event.get('commence_time', '')
-                    home_team = event.get('home_team', '')
-                    away_team = event.get('away_team', '')
-
-                    # Parse datetime
-                    if commence_time:
-                        dt = datetime.fromisoformat(commence_time.replace('Z', '+00:00'))
-
-                        # Filtra solo prossimi N giorni
-                        days_diff = (dt.date() - datetime.now().date()).days
-                        if 0 <= days_diff <= days_ahead:
-                            fixtures_list.append({
-                                'match_id': match_id,
-                                'league': league_key,
-                                'home_team': home_team,
-                                'away_team': away_team,
-                                'date': dt.date().isoformat(),
-                                'time': dt.time().strftime('%H:%M'),
-                                'datetime': dt,
-                                'venue': 'N/A',  # The Odds API non fornisce venue
-                                'status': 'upcoming'
-                            })
-                except (ValueError, KeyError, AttributeError) as e:
-                    logger.warning(f"Errore parsing evento {event.get('id')}: {e}")
-                    continue
-
-        except Exception as e:
-            logger.error(f"Errore fetch league {league_key}: {e}")
-            continue
-
-    if not fixtures_list:
-        logger.warning("Nessuna fixture trovata")
-        return pd.DataFrame()
-
-    df = pd.DataFrame(fixtures_list)
-    df = df.sort_values('datetime').reset_index(drop=True)
-
-    logger.info(f"✅ Trovate {len(df)} partite nei prossimi {days_ahead} giorni")
-    return df
-
-
-def auto_update_match_results(date_str: str = None) -> pd.DataFrame:
-    """
-    Scarica risultati finali delle partite per data specificata.
-
-    FASE 1 - FEATURE #2: Auto-Update Risultati
-    Beneficio: Tracking automatico performance + calibrazione
-
-    Args:
-        date_str: Data in formato 'YYYY-MM-DD' (default: oggi)
-
-    Returns:
-        DataFrame con: match_id, home_team, away_team, home_score, away_score, result
-    """
-    if date_str is None:
-        date_str = datetime.now().date().isoformat()
-
-    logger.info(f"🔄 Auto-update risultati per {date_str}...")
-
-    if not THE_ODDS_API_KEY:
-        logger.error("THE_ODDS_API_KEY non configurata")
-        return pd.DataFrame()
-
-    # The Odds API non ha endpoint dedicato per scores, usiamo gli eventi e filtriamo completed
-    # Nota: Potrebbe richiedere API-Football o altri servizi per risultati storici precisi
-
-    results_list = []
-
-    try:
-        # Prendi tutte le leghe
-        all_leagues = oddsapi_get_soccer_leagues()
-
-        for league in all_leagues:
-            league_key = league.get('key')
-            if not league_key:
-                continue
-
-            try:
-                # Fetch eventi (alcuni potrebbero avere scores se finiti)
-                base_url = f"{THE_ODDS_BASE}/sports/{league_key}/scores"
-                params = {
-                    "apiKey": THE_ODDS_API_KEY,
-                    "daysFrom": 1,  # Ultimi 1 giorno
-                    "dateFormat": "iso"
-                }
-
-                r = requests.get(base_url, params=params, timeout=app_config.api_timeout)
-
-                if r.status_code == 200:
-                    data = r.json()
-
-                    for event in data:
-                        try:
-                            # Verifica che partita sia completata
-                            if not event.get('completed', False):
-                                continue
-
-                            match_id = event.get('id', '')
-                            home_team = event.get('home_team', '')
-                            away_team = event.get('away_team', '')
-
-                            # Scores
-                            scores = event.get('scores')
-                            if scores and len(scores) >= 2:
-                                home_score = scores[0].get('score', 0)
-                                away_score = scores[1].get('score', 0)
-
-                                # Determina risultato
-                                if home_score > away_score:
-                                    result = '1'
-                                elif home_score < away_score:
-                                    result = '2'
-                                else:
-                                    result = 'X'
-
-                                results_list.append({
-                                    'match_id': match_id,
-                                    'league': league_key,
-                                    'home_team': home_team,
-                                    'away_team': away_team,
-                                    'home_score': home_score,
-                                    'away_score': away_score,
-                                    'total_goals': home_score + away_score,
-                                    'result': result,
-                                    'date': date_str
-                                })
-                        except (KeyError, IndexError, TypeError) as e:
-                            logger.debug(f"Errore parsing score evento: {e}")
-                            continue
-
-            except requests.exceptions.RequestException as e:
-                logger.debug(f"Errore fetch scores per {league_key}: {e}")
-                continue
-
-    except Exception as e:
-        logger.error(f"Errore generale auto_update_results: {e}")
-
-    if not results_list:
-        logger.warning(f"Nessun risultato trovato per {date_str}")
-        logger.info("💡 TIP: The Odds API ha limiti su scores. Considera API-Football per risultati completi.")
-        return pd.DataFrame()
-
-    df = pd.DataFrame(results_list)
-    logger.info(f"✅ Trovati {len(df)} risultati per {date_str}")
-    return df
-
 
 def calculate_performance_metrics(predictions_df: pd.DataFrame, results_df: pd.DataFrame) -> Dict[str, Any]:
     """
@@ -12869,94 +12325,6 @@ with col_hist2:
 st.markdown("---")
 
 # ============================================================
-#        CARICAMENTO PARTITA DA API
-# ============================================================
-
-st.subheader("🔍 Carica Partita da The Odds API")
-
-col_load1, col_load2 = st.columns([1, 2])
-
-with col_load1:
-    if st.button("1️⃣ Carica Leghe"):
-        with st.spinner("Caricamento leghe in corso..."):
-            st.session_state.soccer_leagues = oddsapi_get_soccer_leagues()
-        if st.session_state.soccer_leagues:
-            st.success(f"✅ {len(st.session_state.soccer_leagues)} leghe caricate")
-        else:
-            st.warning("⚠️ Nessuna lega caricata. Controlla i messaggi di errore sopra o verifica la configurazione dell'API key.")
-
-if st.session_state.soccer_leagues:
-    league_names = [f"{l['title']} ({l['key']})" for l in st.session_state.soccer_leagues]
-    selected_league_label = st.selectbox("2️⃣ Seleziona Lega", league_names)
-    selected_league_key = selected_league_label.split("(")[-1].replace(")", "").strip()
-
-    if st.button("3️⃣ Carica Partite"):
-        st.session_state.events_for_league = oddsapi_get_events_for_league(selected_league_key)
-        st.session_state.selected_league_key = selected_league_key
-        if len(st.session_state.events_for_league) == 0:
-            st.warning(f"⚠️ 0 partite trovate per questa lega. Puoi comunque compilare il form qui sotto inserendo i dati manualmente.")
-        else:
-            st.success(f"✅ {len(st.session_state.events_for_league)} partite")
-
-    if st.session_state.events_for_league:
-        match_labels = []
-        for ev in st.session_state.events_for_league:
-            home = ev.get("home_team")
-            away = ev.get("away_team")
-            start = ev.get("commence_time", "")[:16].replace("T", " ")
-            match_labels.append(f"{home} vs {away} – {start}")
-
-        # ===== SELEZIONE SINGOLA =====
-        selected_match_label = st.selectbox(
-            "4️⃣ Seleziona Partita",
-            match_labels,
-            help="Seleziona una partita da analizzare. Potrai modificare le quote manualmente."
-        )
-
-        if selected_match_label:
-            idx = match_labels.index(selected_match_label)
-            event = st.session_state.events_for_league[idx]
-            prices = oddsapi_extract_prices_improved(event)
-
-            # Helper per convertire in float con fallback
-            def safe_float(val, default=0.0):
-                try:
-                    return float(val) if val is not None else default
-                except (ValueError, TypeError):
-                    return default
-
-            # Salva i dati della partita selezionata
-            if prices:
-                st.session_state["current_match"] = {
-                    "home_team": event.get("home_team"),
-                    "away_team": event.get("away_team"),
-                    "odds_1": safe_float(prices.get("odds_1"), 2.00),
-                    "odds_x": safe_float(prices.get("odds_x"), 3.50),
-                    "odds_2": safe_float(prices.get("odds_2"), 3.80),
-                    "odds_over25": safe_float(prices.get("odds_over25"), 0.0),
-                    "odds_under25": safe_float(prices.get("odds_under25"), 0.0),
-                    "odds_btts": safe_float(prices.get("odds_btts"), 0.0),
-                    "odds_dnb_home": safe_float(prices.get("odds_dnb_home"), 0.0),
-                    "odds_dnb_away": safe_float(prices.get("odds_dnb_away"), 0.0)
-                }
-            else:
-                # Se prices è None, usa valori di default
-                st.session_state["current_match"] = {
-                    "home_team": event.get("home_team"),
-                    "away_team": event.get("away_team"),
-                    "odds_1": 2.00,
-                    "odds_x": 3.50,
-                    "odds_2": 3.80,
-                    "odds_over25": 0.0,
-                    "odds_under25": 0.0,
-                    "odds_btts": 0.0,
-                    "odds_dnb_home": 0.0,
-                    "odds_dnb_away": 0.0
-                }
-
-st.markdown("---")
-
-# ============================================================
 #        CONFIGURAZIONE TELEGRAM (OPZIONALE)
 # ============================================================
 
@@ -13244,31 +12612,48 @@ if "current_match" not in st.session_state:
     }
 
 # === SEZIONE INPUT DATI PARTITA ===
-st.info("📊 Inserisci o modifica le quote manualmente. Le API forniscono solo un riferimento iniziale.")
+st.info("⚽ Inserisci manualmente i dati della partita che vuoi analizzare")
 
 # Recupera dati correnti dalla partita selezionata
 match_data = st.session_state["current_match"]
-home_team = match_data["home_team"]
-away_team = match_data["away_team"]
 
-# Espansore per la partita
-with st.expander(f"⚽ {home_team} vs {away_team}", expanded=True):
+# === SQUADRE E LEGA ===
+st.markdown("### 🏟️ Informazioni Partita")
 
-    # === NOME E LEGA ===
-    col_m1, col_m2 = st.columns(2)
-    with col_m1:
-        match_name_input = st.text_input(
-            "Nome Partita",
-            value=f"{home_team} vs {away_team}",
-            key="match_name"
-        )
+col_team1, col_team2, col_league = st.columns([2, 2, 2])
 
-    with col_m2:
-        league_type = st.selectbox(
-            "Lega",
-            ["generic", "premier_league", "la_liga", "serie_a", "bundesliga", "ligue_1"],
-            key="league"
-        )
+with col_team1:
+    home_team = st.text_input(
+        "🏠 Squadra Casa",
+        value=match_data.get("home_team", "Casa"),
+        key="home_team_input",
+        placeholder="Es: Inter"
+    )
+
+with col_team2:
+    away_team = st.text_input(
+        "✈️ Squadra Trasferta",
+        value=match_data.get("away_team", "Trasferta"),
+        key="away_team_input",
+        placeholder="Es: Milan"
+    )
+
+with col_league:
+    league_type = st.selectbox(
+        "📊 Campionato",
+        ["Serie A", "Premier League", "La Liga", "Bundesliga", "Ligue 1", "Altro"],
+        key="league",
+        help="Seleziona il campionato per applicare parametri specifici"
+    )
+
+# Aggiorna session state
+st.session_state["current_match"]["home_team"] = home_team
+st.session_state["current_match"]["away_team"] = away_team
+
+st.markdown("---")
+
+# Espansore per le quote
+with st.expander(f"💰 Quote e Parametri: {home_team} vs {away_team}", expanded=True):
 
     # === LINEE DI APERTURA ===
     st.markdown("**📊 Linee di Apertura**")
