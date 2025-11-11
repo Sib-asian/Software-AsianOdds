@@ -262,6 +262,95 @@ API_CACHE = {}
 # I fattoriali fino a 20 coprono il 99.9% dei casi nel calcio (gol da 0 a 20)
 # Velocizza ~15-25% i calcoli Poisson senza perdita di precisione
 _FACTORIAL_CACHE = [math.factorial(i) for i in range(21)]  # 0! = 1, 1! = 1, 2! = 2, ..., 20! = 2432902008176640000
+_LOG2_CONST = math.log(2.0)
+
+if NUMBA_AVAILABLE:
+    _FACTORIAL_CACHE_ARRAY = np.array(_FACTORIAL_CACHE, dtype=np.float64)
+
+    @jit(nopython=True, fastmath=True, cache=True)
+    def _poisson_pmf_core(k: int, lam: float) -> float:
+        if k < 0:
+            return 0.0
+        if lam <= 0.0:
+            return 1.0 if k == 0 else 0.0
+        if lam > 50.0:
+            lam = 50.0
+
+        if k < _FACTORIAL_CACHE_ARRAY.shape[0]:
+            # Calcolo diretto con fattoriale precalcolato
+            res = (lam ** k) * math.exp(-lam) / _FACTORIAL_CACHE_ARRAY[k]
+        else:
+            # Usa forma log per evitare overflow con k grandi
+            res = math.exp((k * math.log(lam)) - lam - math.lgamma(k + 1.0))
+
+        if res < 0.0:
+            return 0.0
+        if res > 1.0:
+            return 1.0
+        return res
+
+    @jit(nopython=True, fastmath=True, cache=True)
+    def _entropia_poisson_core(lam: float, max_k: int, tol: float, log2_const: float) -> float:
+        if lam <= 0.0:
+            return 0.0
+
+        e = 0.0
+        c = 0.0
+        for k in range(max_k + 1):
+            p = _poisson_pmf_core(k, lam)
+            if p > tol:
+                log_p = math.log(p) / log2_const
+                term = -p * log_p
+                y = term - c
+                t = e + y
+                c = (t - e) - y
+                e = t
+
+        if e < 0.0 or math.isnan(e) or math.isinf(e):
+            return 0.0
+        return e
+else:
+    def _poisson_pmf_core(k: int, lam: float) -> float:
+        if k < 0:
+            return 0.0
+        if lam <= 0.0:
+            return 1.0 if k == 0 else 0.0
+        if lam > 50.0:
+            lam = 50.0
+
+        try:
+            if k < len(_FACTORIAL_CACHE):
+                res = (lam ** k) * math.exp(-lam) / _FACTORIAL_CACHE[k]
+            else:
+                res = math.exp((k * math.log(lam)) - lam - math.lgamma(k + 1.0))
+        except (OverflowError, ValueError):
+            res = 0.0
+
+        if not math.isfinite(res) or res < 0.0:
+            res = 0.0
+        elif res > 1.0:
+            res = 1.0
+        return res
+
+    def _entropia_poisson_core(lam: float, max_k: int, tol: float, log2_const: float) -> float:
+        if lam <= 0.0:
+            return 0.0
+
+        e = 0.0
+        c = 0.0
+        for k in range(max_k + 1):
+            p = _poisson_pmf_core(k, lam)
+            if p > tol:
+                log_p = math.log(p) / log2_const
+                term = -p * log_p
+                y = term - c
+                t = e + y
+                c = (t - e) - y
+                e = t
+
+        if e < 0.0 or not math.isfinite(e):
+            return 0.0
+        return e
 
 # ============================================================
 #   GESTIONE ERRORI API ROBUSTA (URGENTE)
@@ -4548,6 +4637,64 @@ def apifootball_get_fixture_info(fixture_id: int) -> Dict[str, Any]:
         logger.error(f"Errore fixture info {fixture_id}: {e}")
         return {}
 
+
+def fetch_weather_snapshot(
+    city: Optional[str] = None,
+    country: Optional[str] = None,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Recupera un'istantanea meteo utilizzando OpenWeather.
+
+    Args:
+        city: Nome città (fallback se lat/lon non disponibili)
+        country: Codice paese per migliorare la ricerca
+        lat, lon: Coordinate per query diretta
+    """
+    if not OPENWEATHER_API_KEY:
+        logger.debug("OPENWEATHER_API_KEY non configurata, salto fetch meteo esterno")
+        return None
+
+    if (lat is None or lon is None) and not city:
+        return None
+
+    params = {
+        "appid": OPENWEATHER_API_KEY,
+        "units": "metric"
+    }
+    if lat is not None and lon is not None:
+        params.update({"lat": lat, "lon": lon})
+    else:
+        query_city = city.strip() if city else ""
+        if country:
+            query_city = f"{query_city},{country}".strip(",")
+        if not query_city:
+            return None
+        params["q"] = query_city
+
+    def _request_weather(endpoint: str, request_params: Dict[str, Any]) -> Dict[str, Any]:
+        response = requests.get(endpoint, params=request_params, timeout=app_config.api_timeout)
+        response.raise_for_status()
+        return response.json()
+
+    cache_key = f"openweather::{params.get('q', '')}::{params.get('lat', '')}::{params.get('lon', '')}"
+
+    try:
+        weather_data = api_call_with_retry(
+            _request_weather,
+            "https://api.openweathermap.org/data/2.5/weather",
+            params,
+            max_attempts=2,
+            delay=API_RETRY_DELAY * 1.5,
+            cache_key=cache_key
+        )
+        return weather_data
+    except Exception as e:
+        logger.debug(f"OpenWeather non disponibile per {params}: {e}")
+        return None
+
+
 def get_weather_impact(fixture_data: Dict[str, Any]) -> Dict[str, float]:
     """
     ALTA PRIORITÀ: Calcola impatto condizioni meteo su lambda.
@@ -4563,39 +4710,145 @@ def get_weather_impact(fixture_data: Dict[str, Any]) -> Dict[str, float]:
     fixture_info = fixture_data.get("fixture", {})
     venue = fixture_info.get("venue", {})
     
-    # API-Football non fornisce sempre weather, ma possiamo inferire da altri dati
-    # Per ora ritorna neutro, ma struttura pronta per integrazione futura
-    weather_data = fixture_data.get("weather", {})
-    
+    # API-Football non fornisce sempre weather, tenta fetch da OpenWeather come fallback
+    weather_data = fixture_data.get("weather") or {}
+    weather_source = "api-football"
+
+    if not weather_data:
+        def _safe_float(value: Any) -> Optional[float]:
+            try:
+                if value is None:
+                    return None
+                if isinstance(value, str):
+                    trimmed = value.strip()
+                    if not trimmed:
+                        return None
+                    value = trimmed
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        city = venue.get("city") or venue.get("name") or ""
+        league_info = fixture_data.get("league", {})
+        country = league_info.get("country")
+        lat = venue.get("lat") or venue.get("latitude")
+        lon = venue.get("lon") or venue.get("longitude")
+
+        # Converti stringhe vuote a None
+        lat = _safe_float(lat)
+        lon = _safe_float(lon)
+
+        fetched_weather = fetch_weather_snapshot(
+            city=city,
+            country=country,
+            lat=lat,
+            lon=lon
+        )
+        if fetched_weather:
+            weather_data = fetched_weather
+            weather_source = "openweather"
+
     total_factor = 1.0
     confidence = 0.0
-    
-    if weather_data:
-        temp = weather_data.get("temp", None)
-        condition_raw = weather_data.get("condition")
-        # Assicurati che condition sia sempre una stringa (gestisce None)
-        condition = str(condition_raw).lower() if condition_raw is not None else ""
-        
-        # Pioggia forte → meno gol
-        if condition and ("rain" in condition or "storm" in condition):
-            total_factor *= 0.92  # -8% gol
-            confidence = 0.7
-        
-        # Vento forte → più incertezza (aumenta varianza)
-        if "wind" in condition:
-            total_factor *= 0.96  # -4% gol
-            confidence = 0.5
-        
-        # Temperatura estrema (< 5°C o > 30°C) → fatica
-        if temp:
-            if temp < 5 or temp > 30:
-                total_factor *= 0.95  # -5% gol
-                confidence = 0.6
-    
+    condition_label = None
+    temperature = None
+    wind_speed = None
+    humidity = None
+    precipitation_mm = None
+
+    try:
+        if weather_data:
+            if weather_source == "openweather":
+                main_data = weather_data.get("main", {})
+                wind = weather_data.get("wind", {})
+                weather_list = weather_data.get("weather", [{}])
+                rain_block = weather_data.get("rain", {})
+
+                temperature = main_data.get("temp")
+                humidity = main_data.get("humidity")
+                wind_speed = wind.get("speed")
+                condition_label = (weather_list[0] or {}).get("description", "").lower()
+                precipitation_mm = rain_block.get("1h") or rain_block.get("3h")
+                confidence = 0.7
+            else:
+                temperature = weather_data.get("temp") or weather_data.get("temperature")
+                humidity = weather_data.get("humidity")
+                wind_speed = weather_data.get("wind_speed") or weather_data.get("wind")
+                condition_raw = weather_data.get("condition") or weather_data.get("description")
+                condition_label = str(condition_raw).lower() if condition_raw else None
+                precipitation_mm = weather_data.get("rain") or weather_data.get("precipitation")
+                confidence = 0.5
+
+            # Pioggia forte → meno gol
+            if condition_label and any(token in condition_label for token in ["rain", "storm", "snow", "sleet"]):
+                total_factor *= 0.92
+                confidence = max(confidence, 0.7)
+
+            # Temperatura estrema
+            if temperature is not None:
+                try:
+                    temp_val = float(temperature)
+                    if temp_val < 2:
+                        total_factor *= 0.93
+                        confidence = max(confidence, 0.65)
+                    elif temp_val < 5:
+                        total_factor *= 0.96
+                    elif temp_val > 32:
+                        total_factor *= 0.94
+                        confidence = max(confidence, 0.65)
+                    elif temp_val > 28:
+                        total_factor *= 0.97
+                except (TypeError, ValueError):
+                    pass
+
+            # Vento forte
+            if wind_speed is not None:
+                try:
+                    wind_val = float(wind_speed)
+                    if wind_val >= 12:  # ~43 km/h
+                        total_factor *= 0.94
+                        confidence = max(confidence, 0.6)
+                    elif wind_val >= 8:  # ~29 km/h
+                        total_factor *= 0.97
+                except (TypeError, ValueError):
+                    pass
+
+            # Umidità molto alta riduce intensità
+            if humidity is not None:
+                try:
+                    humidity_val = float(humidity)
+                    if humidity_val >= 85:
+                        total_factor *= 0.97
+                        confidence = max(confidence, 0.55)
+                except (TypeError, ValueError):
+                    pass
+
+            # Precipitazioni misurate
+            if precipitation_mm is not None:
+                try:
+                    rain_val = float(precipitation_mm)
+                    if rain_val >= 5.0:
+                        total_factor *= 0.90
+                        confidence = max(confidence, 0.75)
+                    elif rain_val >= 2.0:
+                        total_factor *= 0.94
+                except (TypeError, ValueError):
+                    pass
+
+    except Exception as e:
+        logger.debug(f"Impossibile calcolare impatto meteo: {e}")
+        total_factor = 1.0
+        confidence = 0.0
+
     return {
         "total_factor": round(total_factor, 3),
         "confidence": round(confidence, 2),
-        "weather_condition": weather_data.get("condition", "unknown") if weather_data else None,
+        "weather_condition": condition_label,
+        "temperature": temperature,
+        "wind_speed": wind_speed,
+        "humidity": humidity,
+        "precipitation_mm": precipitation_mm,
+        "source": weather_source if weather_data else None,
     }
 
 def get_referee_statistics(referee_name: str, league: str = None) -> Dict[str, float]:
@@ -4638,12 +4891,12 @@ def analyze_market_depth(
     
     bookmakers = event.get("bookmakers", [])
     num_bookmakers = len(bookmakers)
-    
+
     # Raccogli tutte le quote per ogni mercato
     all_odds_1 = []
     all_odds_x = []
     all_odds_2 = []
-    
+
     for bk in bookmakers:
         for mk in bk.get("markets", []):
             mk_key_raw = mk.get("key")
@@ -4654,63 +4907,185 @@ def analyze_market_depth(
                     price = o.get("price")
                     if not price:
                         continue
-                    
-                    if "home" in name_l or "1" == name_l:
-                        all_odds_1.append(price)
-                    elif "draw" in name_l or "x" == name_l or "tie" in name_l:
-                        all_odds_x.append(price)
-                    elif "away" in name_l or "2" == name_l:
-                        all_odds_2.append(price)
-    
-    # Calcola metriche liquidità
+                    try:
+                        price_val = float(price)
+                    except (TypeError, ValueError):
+                        continue
+                    if not math.isfinite(price_val) or price_val <= 1.0:
+                        continue
+
+                    if "home" in name_l or name_l == "1":
+                        all_odds_1.append(price_val)
+                    elif "draw" in name_l or name_l in {"x", "tie"}:
+                        all_odds_x.append(price_val)
+                    elif "away" in name_l or name_l == "2":
+                        all_odds_2.append(price_val)
+
+    # Include le quote di input nel calcolo del consenso
+    for target_list, provided in ((all_odds_1, odds_1), (all_odds_x, odds_x), (all_odds_2, odds_2)):
+        try:
+            if provided and math.isfinite(provided) and provided > 1.0:
+                target_list.append(float(provided))
+        except (TypeError, ValueError):
+            continue
+
+    def _compute_stats(values: List[float]) -> Optional[Dict[str, float]]:
+        if not values:
+            return None
+        arr = np.array(values, dtype=np.float64)
+        if arr.size == 0:
+            return None
+        min_val = float(np.min(arr))
+        max_val = float(np.max(arr))
+        mean_val = float(np.mean(arr))
+        median_val = float(np.median(arr))
+        std_val = float(np.std(arr))
+        spread_pct = float(((max_val - min_val) / min_val) * 100.0) if min_val > 0 else None
+        coeff_var_pct = float((std_val / mean_val) * 100.0) if mean_val > 0 else None
+        implied = 1.0 / arr
+        return {
+            "min": round(min_val, 3),
+            "max": round(max_val, 3),
+            "mean": round(mean_val, 3),
+            "median": round(median_val, 3),
+            "std": round(std_val, 3),
+            "spread_pct": round(spread_pct, 2) if spread_pct is not None else None,
+            "coefficient_variation_pct": round(coeff_var_pct, 2) if coeff_var_pct is not None else None,
+            "mean_prob": float(np.mean(implied)),
+            "median_prob": float(np.median(implied)),
+        }
+
+    odds_summary = {
+        "home": _compute_stats(all_odds_1),
+        "draw": _compute_stats(all_odds_x),
+        "away": _compute_stats(all_odds_2),
+    }
+
     depth_score = 0.0
-    liquidity_indicators = {}
-    
+    liquidity_indicators: Dict[str, Any] = {}
+
     # 1. Numero bookmakers (più = più liquidità)
-    if num_bookmakers >= 10:
-        depth_score += 30
+    if num_bookmakers >= 12:
+        depth_score += 35
+        liquidity_indicators["bookmakers"] = "very_high"
+    elif num_bookmakers >= 8:
+        depth_score += 25
         liquidity_indicators["bookmakers"] = "high"
-    elif num_bookmakers >= 7:
-        depth_score += 20
-        liquidity_indicators["bookmakers"] = "medium"
     elif num_bookmakers >= 5:
-        depth_score += 10
+        depth_score += 15
+        liquidity_indicators["bookmakers"] = "medium"
+    elif num_bookmakers >= 3:
+        depth_score += 8
         liquidity_indicators["bookmakers"] = "low"
     else:
+        depth_score += 4
         liquidity_indicators["bookmakers"] = "very_low"
-    
-    # 2. Spread quote (minore = più liquidità)
-    if all_odds_1 and all_odds_2:
-        min_1 = min(all_odds_1)
-        max_1 = max(all_odds_1)
-        spread_1 = (max_1 - min_1) / min_1 * 100  # Spread percentuale
-        
-        if spread_1 < 2.0:
-            depth_score += 25
+
+    spread_values = [
+        stats["spread_pct"] for stats in odds_summary.values()
+        if stats and stats.get("spread_pct") is not None
+    ]
+    avg_spread = float(np.mean(spread_values)) if spread_values else None
+    if avg_spread is not None:
+        if avg_spread <= 2.5:
+            depth_score += 30
             liquidity_indicators["spread"] = "tight"
-        elif spread_1 < 5.0:
-            depth_score += 15
-            liquidity_indicators["spread"] = "moderate"
-        else:
+        elif avg_spread <= 5.0:
+            depth_score += 22
+            liquidity_indicators["spread"] = "balanced"
+        elif avg_spread <= 8.0:
+            depth_score += 12
             liquidity_indicators["spread"] = "wide"
-    
-    # 3. Sharp money detection (se quote convergono rapidamente)
-    # Approssimato: se spread è stretto e molti bookmakers → sharp money presente
-    if liquidity_indicators.get("spread") == "tight" and num_bookmakers >= 8:
+        else:
+            liquidity_indicators["spread"] = "very_wide"
+
+    cov_values = [
+        stats["coefficient_variation_pct"] for stats in odds_summary.values()
+        if stats and stats.get("coefficient_variation_pct") is not None
+    ]
+    avg_cov = float(np.mean(cov_values)) if cov_values else None
+    if avg_cov is not None:
+        if avg_cov <= 1.5:
+            depth_score += 20
+            liquidity_indicators["volatility"] = "very_low"
+        elif avg_cov <= 3.0:
+            depth_score += 14
+            liquidity_indicators["volatility"] = "low"
+        elif avg_cov <= 5.0:
+            depth_score += 8
+            liquidity_indicators["volatility"] = "medium"
+        else:
+            liquidity_indicators["volatility"] = "high"
+
+    consensus_probs = {}
+    for label, stats in odds_summary.items():
+        if stats and stats.get("mean_prob") is not None:
+            consensus_probs[label] = round(stats["mean_prob"], 4)
+
+    overround = None
+    if consensus_probs and len(consensus_probs) == 3:
+        prob_sum = sum(consensus_probs.values())
+        overround = prob_sum - 1.0
+        if overround <= 0.02:
+            depth_score += 15
+            liquidity_indicators["overround"] = "sharp"
+        elif overround <= 0.05:
+            depth_score += 10
+            liquidity_indicators["overround"] = "efficient"
+        elif overround <= 0.08:
+            depth_score += 6
+            liquidity_indicators["overround"] = "average"
+        else:
+            liquidity_indicators["overround"] = "inflated"
+
+    # Flag di possibile valore rispetto al consenso
+    value_flags = {}
+    for label, provided in [("home", odds_1), ("draw", odds_x), ("away", odds_2)]:
+        stats = odds_summary.get(label)
+        if not stats or provided is None:
+            continue
+        try:
+            provided_val = float(provided)
+            if not math.isfinite(provided_val) or provided_val <= 1.0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        mean_odds = stats.get("mean")
+        if mean_odds:
+            delta_pct = ((provided_val - mean_odds) / mean_odds) * 100.0
+            if delta_pct >= 1.5:
+                value_flags[label] = {"type": "above_consensus", "delta_pct": round(delta_pct, 2)}
+            elif delta_pct <= -1.5:
+                value_flags[label] = {"type": "below_consensus", "delta_pct": round(delta_pct, 2)}
+
+    # Sharp money detection: spread stretto + bassa volatilità + overround ridotto
+    if (
+        liquidity_indicators.get("spread") in {"tight", "balanced"} and
+        liquidity_indicators.get("volatility") in {"very_low", "low"} and
+        liquidity_indicators.get("overround") in {"sharp", "efficient"} and
+        num_bookmakers >= 8
+    ):
         liquidity_indicators["sharp_money"] = "likely"
-        depth_score += 20
+        depth_score += 12
     else:
-        liquidity_indicators["sharp_money"] = "unlikely"
-    
-    # 4. Market efficiency score (0-100)
-    efficiency_score = min(100, depth_score)
-    
+        liquidity_indicators["sharp_money"] = "unclear" if num_bookmakers >= 5 else "unlikely"
+
+    efficiency_score = min(100.0, depth_score)
+
     return {
         "depth_score": round(efficiency_score, 1),
         "num_bookmakers": num_bookmakers,
         "liquidity_indicators": liquidity_indicators,
-        "spread_1": round(spread_1, 2) if all_odds_1 else None,
-        "market_efficiency": "high" if efficiency_score >= 70 else ("medium" if efficiency_score >= 50 else "low"),
+        "avg_spread_pct": round(avg_spread, 2) if avg_spread is not None else None,
+        "average_volatility_pct": round(avg_cov, 2) if avg_cov is not None else None,
+        "overround_pct": round(overround * 100, 2) if overround is not None else None,
+        "consensus_probabilities": consensus_probs,
+        "odds_summary": odds_summary,
+        "value_flags": value_flags,
+        "market_efficiency": (
+            "high" if efficiency_score >= 70 else
+            ("medium" if efficiency_score >= 50 else "low")
+        ),
     }
 
 def calculate_team_form_from_statistics(team_stats: Dict[str, Any], last_n: int = 5) -> Dict[str, float]:
@@ -5238,45 +5613,16 @@ def poisson_pmf(k: int, lam: float) -> float:
         logger.warning(f"lam troppo grande: {lam}, limito a 50.0")
         lam = 50.0
 
-    try:
-        # ⚠️ OTTIMIZZAZIONE: Per k piccoli (0-20), usa cache fattoriale per calcolo diretto
-        # P(k) = (lambda^k * exp(-lambda)) / k!
-        # Questo è ~20% più veloce di scipy.stats.poisson.pmf per k <= 20
-        if k < len(_FACTORIAL_CACHE):
-            # Calcolo diretto con fattoriale dalla cache
-            factorial_k = _FACTORIAL_CACHE[k]
-            try:
-                exp_term = math.exp(-lam)
-                if not math.isfinite(exp_term):
-                    # Lambda troppo grande per exp, usa scipy come fallback
-                    raise OverflowError("exp(-lam) overflow")
-                pow_term = lam ** k
-                if not math.isfinite(pow_term):
-                    # k troppo grande per pow, usa scipy come fallback
-                    raise OverflowError("lam^k overflow")
-                p = (pow_term * exp_term) / factorial_k
-                if math.isfinite(p) and p >= 0:
-                    return max(0.0, min(1.0, p))  # Limita a [0, 1]
-            except (ValueError, OverflowError):
-                # Fallback a scipy se calcolo diretto fallisce
-                pass
+    p = _poisson_pmf_core(k, float(lam))
 
-        # Fallback: usa scipy.stats.poisson.pmf (più robusto per k grandi o lambda estreme)
-        p = poisson.pmf(k, lam)
-        # ⚠️ VERIFICA: Assicura che risultato sia finito e non negativo
-        if not math.isfinite(p) or p < 0:
-            # Fallback: approssimazione per k=0
-            if k == 0:
-                p = math.exp(-lam) if lam > 0 else 1.0
-            else:
-                p = 0.0
-        return max(0.0, min(1.0, p))  # Limita a [0, 1]
-    except (ValueError, OverflowError) as e:
-        logger.warning(f"Errore calcolo Poisson PMF: k={k}, lam={lam}, errore: {e}")
-        # Fallback: approssimazione per k=0
-        if k == 0:
-            return math.exp(-lam) if lam > 0 else 1.0
-        return 0.0
+    if not math.isfinite(p) or p < 0.0 or p > 1.0:
+        try:
+            p = poisson.pmf(k, lam)
+        except Exception as e:
+            logger.warning(f"Errore calcolo Poisson PMF (fallback scipy): k={k}, lam={lam}, errore: {e}")
+            p = 0.0 if k > 0 else math.exp(-lam)
+
+    return max(0.0, min(1.0, p))
 
 def entropia_poisson(lam: float, max_k: int = 15) -> float:
     """
@@ -5293,33 +5639,13 @@ def entropia_poisson(lam: float, max_k: int = 15) -> float:
         logger.warning(f"max_k non valido: {max_k}, uso default 15")
         max_k = 15
     
-    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
-    e = 0.0
-    c = 0.0  # Compensazione Kahan
+    entropy = _entropia_poisson_core(float(lam), max_k, model_config.TOL_DIVISION_ZERO, _LOG2_CONST)
     
-    for k in range(max_k + 1):
-        p = poisson_pmf(k, lam)
-        if p > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
-            # ⚠️ PROTEZIONE: Protezione log(0) e log(negativo)
-            try:
-                log_p = math.log2(p)
-                if math.isfinite(log_p):
-                    term = -p * log_p
-                    # Kahan summation
-                    y = term - c
-                    t = e + y
-                    c = (t - e) - y
-                    e = t
-            except (ValueError, OverflowError) as e_err:
-                logger.warning(f"Errore calcolo log2 per k={k}, p={p}: {e_err}")
-                continue
+    if not math.isfinite(entropy) or entropy < 0.0:
+        logger.warning(f"Entropia non valida: {entropy}, correggo a 0.0")
+        entropy = 0.0
     
-    # ⚠️ VERIFICA: Assicura che entropia sia finita e non negativa
-    if not math.isfinite(e) or e < 0:
-        logger.warning(f"Entropia non valida: {e}, correggo a 0.0")
-        e = 0.0
-    
-    return e
+    return entropy
 
 def home_advantage_factor(league: str = "generic") -> float:
     """
