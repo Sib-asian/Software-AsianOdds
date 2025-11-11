@@ -12818,20 +12818,33 @@ with st.expander("🤖 Configurazione Telegram Bot (Opzionale)", expanded=False)
         4. **Bot attivo**: Assicurati che il bot creato con @BotFather sia ancora attivo
         """)
 
-    telegram_enabled = st.checkbox("📤 Invia analisi automaticamente su Telegram", value=False,
-                                   help="Se abilitato, ogni analisi verrà inviata automaticamente al tuo bot Telegram")
+    default_telegram_enabled = st.session_state.get("telegram_enabled", TELEGRAM_ENABLED)
+    telegram_enabled = st.checkbox(
+        "📤 Invia analisi automaticamente su Telegram",
+        value=default_telegram_enabled,
+        help="Se abilitato, ogni analisi verrà inviata automaticamente al tuo bot Telegram"
+    )
 
     col_tg1, col_tg2 = st.columns(2)
 
     with col_tg1:
-        telegram_token = st.text_input("Bot Token", value=TELEGRAM_BOT_TOKEN, type="password",
-                                       help="Token del bot (da @BotFather)",
-                                       placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz")
+        default_token = st.session_state.get("telegram_bot_token", TELEGRAM_BOT_TOKEN)
+        telegram_token = st.text_input(
+            "Bot Token",
+            value=default_token,
+            type="password",
+            help="Token del bot (da @BotFather)",
+            placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+        )
 
     with col_tg2:
-        telegram_chat_id = st.text_input("Chat ID", value=TELEGRAM_CHAT_ID,
-                                        help="ID della chat dove inviare (da @userinfobot)",
-                                        placeholder="123456789")
+        default_chat_id = st.session_state.get("telegram_chat_id", TELEGRAM_CHAT_ID)
+        telegram_chat_id = st.text_input(
+            "Chat ID",
+            value=default_chat_id,
+            help="ID della chat dove inviare (da @userinfobot)",
+            placeholder="123456789"
+        )
 
     # Salva in session_state per persistenza
     st.session_state["telegram_enabled"] = telegram_enabled
@@ -13596,78 +13609,97 @@ telegram_prob_threshold: {telegram_prob_threshold}
 
         st.metric("Mercati da inviare", len(all_markets))
 
+        # Prepara messaggio Telegram aggregato
+        telegram_message = (
+            f"⚽ <b>{match_name}</b>\n\n"
+            f"🔢 <b>Parametri</b>:\n"
+            f"  λ Casa: {ris['lambda_home']:.2f} | λ Trasferta: {ris['lambda_away']:.2f}\n"
+            f"  ρ: {ris['rho']:.3f}\n\n"
+            f"📊 <b>Probabilità Base</b>:\n"
+            f"  🏠 Casa: {ris['p_home']*100:.1f}% (Quota: {validated['odds_1']:.2f})\n"
+            f"  ⚖️ Pareggio: {ris['p_draw']*100:.1f}% (Quota: {validated['odds_x']:.2f})\n"
+            f"  ✈️ Trasferta: {ris['p_away']*100:.1f}% (Quota: {validated['odds_2']:.2f})\n\n"
+            f"🎯 <b>Mercati Alta Probabilità (≥{telegram_prob_threshold:.0f}%)</b>:\n"
+        )
+
+        by_type = {}
+        for market in all_markets:
+            tipo = market["Tipo"]
+            by_type.setdefault(tipo, []).append(market)
+
+        tipo_order = [
+            "1X2",
+            "Over/Under",
+            "BTTS",
+            "Combo",
+            "Double Chance",
+            "Combo Avanzate",
+            "Multigol",
+            "Multigol Totali",
+            "Correct Score",
+            "DNB",
+        ]
+
+        if all_markets:
+            for tipo in tipo_order:
+                if tipo in by_type:
+                    telegram_message += f"\n<b>{tipo}</b>:\n"
+                    for m in by_type[tipo]:
+                        quota_str = f" (Quota: {m['Quota']:.2f})" if isinstance(m["Quota"], (int, float)) else ""
+                        telegram_message += f"  • <b>{m['Esito']}</b>: {m['Prob %']}%{quota_str}\n"
+
+            for tipo in by_type:
+                if tipo not in tipo_order:
+                    telegram_message += f"\n<b>{tipo}</b>:\n"
+                    for m in by_type[tipo]:
+                        quota_str = f" (Quota: {m['Quota']:.2f})" if isinstance(m["Quota"], (int, float)) else ""
+                        telegram_message += f"  • <b>{m['Esito']}</b>: {m['Prob %']}%{quota_str}\n"
+        else:
+            telegram_message += "  • Nessun mercato sopra la soglia configurata\n"
+
+        telegram_message += f"\n📈 Totale: {len(all_markets)} mercati\n"
+        telegram_message += "🤖 <i>Modello Dixon-Coles Bayesiano</i>"
+
+        def _dispatch_telegram(message: str):
+            chunks = split_telegram_message(message)
+            sent_chunks = 0
+            for idx, chunk in enumerate(chunks, 1):
+                result = send_telegram_message(
+                    message=chunk,
+                    bot_token=(telegram_token or "").strip(),
+                    chat_id=(telegram_chat_id or "").strip(),
+                    parse_mode="HTML"
+                )
+                if not result.get("success"):
+                    return False, result, sent_chunks, len(chunks)
+                sent_chunks = idx
+            return True, None, sent_chunks, len(chunks)
+
         # INVIO TELEGRAM
         if telegram_enabled and telegram_token and telegram_chat_id:
             if all_markets:
-                if st.button("📤 Invia su Telegram", type="primary", use_container_width=True):
-                    with st.spinner("Invio su Telegram..."):
-                        try:
-                            # Formatta messaggio
-                            telegram_message = f"⚽ <b>{match_name}</b>\n\n"
+                with st.spinner("Invio automatico su Telegram..."):
+                    auto_success, auto_error, auto_sent, auto_total = _dispatch_telegram(telegram_message)
 
-                            # Parametri modello
-                            telegram_message += f"🔢 <b>Parametri</b>:\n"
-                            telegram_message += f"  λ Casa: {ris['lambda_home']:.2f} | λ Trasferta: {ris['lambda_away']:.2f}\n"
-                            telegram_message += f"  ρ: {ris['rho']:.3f}\n\n"
+                if auto_success:
+                    chunk_label = "messaggio" if auto_sent == 1 else "messaggi"
+                    st.success(f"✅ Notifica Telegram inviata automaticamente ({auto_sent} {chunk_label}).")
+                else:
+                    st.error("❌ Errore invio Telegram automatico")
+                    st.code(auto_error.get("error_message", "Errore sconosciuto"))
+                    st.warning("💡 Controlla che il bot sia amministratore del canale e abbia permessi di scrittura")
 
-                            # Probabilità base
-                            telegram_message += f"📊 <b>Probabilità Base</b>:\n"
-                            telegram_message += f"  🏠 Casa: {ris['p_home']*100:.1f}% (Quota: {validated['odds_1']:.2f})\n"
-                            telegram_message += f"  ⚖️ Pareggio: {ris['p_draw']*100:.1f}% (Quota: {validated['odds_x']:.2f})\n"
-                            telegram_message += f"  ✈️ Trasferta: {ris['p_away']*100:.1f}% (Quota: {validated['odds_2']:.2f})\n\n"
+                if st.button("📤 Reinvia su Telegram", use_container_width=True):
+                    with st.spinner("Reinvio su Telegram..."):
+                        resend_success, resend_error, resend_sent, resend_total = _dispatch_telegram(telegram_message)
 
-                            # Mercati sopra soglia
-                            telegram_message += f"🎯 <b>Mercati Alta Probabilità (≥{telegram_prob_threshold:.0f}%)</b>:\n"
-
-                            # Raggruppa per tipo
-                            by_type = {}
-                            for market in all_markets:
-                                tipo = market['Tipo']
-                                if tipo not in by_type:
-                                    by_type[tipo] = []
-                                by_type[tipo].append(market)
-
-                            # Invia per categoria - TUTTI i tipi presenti
-                            # Ordina tipi per importanza
-                            tipo_order = ['1X2', 'Over/Under', 'BTTS', 'Combo', 'Double Chance',
-                                         'Combo Avanzate', 'Multigol', 'Multigol Totali',
-                                         'Correct Score', 'DNB']
-
-                            # Aggiungi prima i tipi nell'ordine preferito
-                            for tipo in tipo_order:
-                                if tipo in by_type:
-                                    telegram_message += f"\n<b>{tipo}</b>:\n"
-                                    for m in by_type[tipo]:
-                                        quota_str = f" (Quota: {m['Quota']:.2f})" if isinstance(m['Quota'], (int, float)) else ""
-                                        telegram_message += f"  • <b>{m['Esito']}</b>: {m['Prob %']}%{quota_str}\n"
-
-                            # Aggiungi eventuali altri tipi non previsti
-                            for tipo in by_type:
-                                if tipo not in tipo_order:
-                                    telegram_message += f"\n<b>{tipo}</b>:\n"
-                                    for m in by_type[tipo]:
-                                        quota_str = f" (Quota: {m['Quota']:.2f})" if isinstance(m['Quota'], (int, float)) else ""
-                                        telegram_message += f"  • <b>{m['Esito']}</b>: {m['Prob %']}%{quota_str}\n"
-
-                            telegram_message += f"\n📈 Totale: {len(all_markets)} mercati\n"
-                            telegram_message += f"🤖 <i>Modello Dixon-Coles Bayesiano</i>"
-
-                            result = send_telegram_message(
-                                message=telegram_message,
-                                bot_token=telegram_token,
-                                chat_id=telegram_chat_id,
-                                parse_mode="HTML"
-                            )
-
-                            if result.get("success"):
-                                st.success("✅ Messaggio inviato su Telegram!")
-                            else:
-                                st.error(f"❌ Errore invio Telegram:")
-                                st.code(result.get('error_message', 'Errore sconosciuto'))
-                                st.warning("💡 Controlla che il bot sia amministratore del canale e abbia permessi di scrittura")
-                        except Exception as e:
-                            st.error(f"❌ Errore durante invio: {str(e)}")
-                            logger.error(f"Errore telegram: {e}", exc_info=True)
+                    if resend_success:
+                        chunk_label = "messaggio" if resend_sent == 1 else "messaggi"
+                        st.success(f"✅ Messaggio reinviato su Telegram ({resend_sent} {chunk_label}).")
+                    else:
+                        st.error("❌ Errore reinvio Telegram")
+                        st.code(resend_error.get("error_message", "Errore sconosciuto"))
+                        st.warning("💡 Controlla che il bot sia amministratore del canale e abbia permessi di scrittura")
             else:
                 st.warning(f"⚠️ Nessun mercato con probabilità ≥ {telegram_prob_threshold:.0f}% da inviare")
                 st.caption("💡 Abbassa la soglia (es: 45-50%) per vedere più mercati")
