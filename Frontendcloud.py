@@ -14546,12 +14546,26 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
         if 'combo_book' in ris:
             st.subheader("🔀 Combo Avanzate")
             combo = ris['combo_book']
+
+            # Filtra e organizza i combo per categoria
+            combo_patterns = [
+                '1X &', 'X2 &', '12 &', '1 &', '2 &', 'GG &',  # Pattern originali
+                '1X+', 'X2+', '1+', '2+',  # Pattern con + (alias)
+                '+GG', '+gg', '+Over', '+over', '+Under', '+under',  # Pattern finali
+                '+Multigol', '+multigol', '& Multigol'  # Multigol
+            ]
+
             combo_principali = {
                 k: v for k, v in combo.items()
-                if any(x in k for x in ['1X &', 'X2 &', '12 &', '1 &', '2 &', 'GG &'])
+                if any(x in k for x in combo_patterns)
             }
+
+            # Ordina per probabilità decrescente
+            combo_sorted = sorted(combo_principali.items(), key=lambda x: x[1], reverse=True)
+
+            # Mostra TUTTI i combo rilevanti (non solo 15)
             cols_combo = st.columns(3)
-            for idx, (key, val) in enumerate(sorted(combo_principali.items())[:15]):
+            for idx, (key, val) in enumerate(combo_sorted):
                 with cols_combo[idx % 3]:
                     st.metric(key, f"{val*100:.1f}%")
 
