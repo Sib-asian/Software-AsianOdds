@@ -13072,66 +13072,31 @@ if st.session_state.soccer_leagues:
             start = ev.get("commence_time", "")[:16].replace("T", " ")
             match_labels.append(f"{home} vs {away} – {start}")
 
-        # ===== SELEZIONE MULTIPLA =====
-        selected_match_labels = st.multiselect(
-            "4️⃣ Seleziona Partite (anche multiple)",
+        # ===== SELEZIONE SINGOLA =====
+        selected_match_label = st.selectbox(
+            "4️⃣ Seleziona Partita",
             match_labels,
-            help="Seleziona una o più partite da analizzare. Potrai modificare le quote manualmente per ognuna."
+            help="Seleziona una partita da analizzare. Potrai modificare le quote manualmente."
         )
 
-        # Inizializza session_state per dati multipli
-        if "selected_matches_data" not in st.session_state:
-            st.session_state.selected_matches_data = {}
+        if selected_match_label:
+            idx = match_labels.index(selected_match_label)
+            event = st.session_state.events_for_league[idx]
+            prices = oddsapi_extract_prices_improved(event)
 
-        if selected_match_labels:
-            st.success(f"✅ {len(selected_match_labels)} partita/e selezionata/e")
-
-            # Per ogni partita selezionata, estrai i dati e crea interfaccia di input
-            for match_label in selected_match_labels:
-                idx = match_labels.index(match_label)
-                event = st.session_state.events_for_league[idx]
-                event_id = event.get("id") or event.get("event_id") or event.get("key")
-
-                # Inizializza dati per questa partita se non esistono
-                if event_id not in st.session_state.selected_matches_data:
-                    prices = oddsapi_extract_prices_improved(event)
-                    st.session_state.selected_matches_data[event_id] = {
-                        "event": event,
-                        "event_id": event_id,
-                        "match_label": match_label,
-                        "api_prices": prices,
-                        "home_team": event.get("home_team"),
-                        "away_team": event.get("away_team"),
-                        # Valori default per input utente
-                        "odds_1": float(prices.get("odds_1", 2.00)),
-                        "odds_x": float(prices.get("odds_x", 3.50)),
-                        "odds_2": float(prices.get("odds_2", 3.80)),
-                        "odds_over25": float(prices.get("odds_over25", 0.0)),
-                        "odds_under25": float(prices.get("odds_under25", 0.0)),
-                        "odds_btts": float(prices.get("odds_btts", 0.0)),
-                        "odds_dnb_home": float(prices.get("odds_dnb_home", 0.0)),
-                        "odds_dnb_away": float(prices.get("odds_dnb_away", 0.0)),
-                        "spread_apertura": 0.0,
-                        "total_apertura": 2.5,
-                        "total_line": 2.5,
-                        "spread_corrente": 0.0,
-                        "btts_manual": 0.0,
-                        "xg_home": 0.0,
-                        "xa_home": 0.0,
-                        "partite_giocate_home": 0,
-                        "boost_home": 0.0,
-                        "xg_away": 0.0,
-                        "xa_away": 0.0,
-                        "partite_giocate_away": 0,
-                        "boost_away": 0.0,
-                        "league_type": "generic"
-                    }
-
-            # Rimuovi partite deselezionate
-            all_event_ids = [st.session_state.events_for_league[match_labels.index(ml)].get("id") for ml in selected_match_labels]
-            keys_to_remove = [k for k in st.session_state.selected_matches_data.keys() if k not in all_event_ids]
-            for k in keys_to_remove:
-                del st.session_state.selected_matches_data[k]
+            # Salva i dati della partita selezionata
+            st.session_state["current_match"] = {
+                "home_team": event.get("home_team"),
+                "away_team": event.get("away_team"),
+                "odds_1": float(prices.get("odds_1", 2.00)),
+                "odds_x": float(prices.get("odds_x", 3.50)),
+                "odds_2": float(prices.get("odds_2", 3.80)),
+                "odds_over25": float(prices.get("odds_over25", 0.0)),
+                "odds_under25": float(prices.get("odds_under25", 0.0)),
+                "odds_btts": float(prices.get("odds_btts", 0.0)),
+                "odds_dnb_home": float(prices.get("odds_dnb_home", 0.0)),
+                "odds_dnb_away": float(prices.get("odds_dnb_away", 0.0))
+            }
 
 st.markdown("---")
 
@@ -13402,291 +13367,245 @@ if telegram_token and telegram_chat_id:
 st.markdown("---")
 
 # ============================================================
-#        INPUT DATI PARTITA (MULTIPLA)
+#        INPUT DATI PARTITA
 # ============================================================
 
-st.subheader("📝 Dati Partite Selezionate")
+st.subheader("📝 Dati Partita")
 
-if "selected_matches_data" in st.session_state and st.session_state.selected_matches_data:
-    st.info(f"📊 Modifica le quote manualmente per ogni partita. Le API forniscono solo un riferimento iniziale.")
+# Inizializza valori default
+if "current_match" not in st.session_state:
+    st.session_state["current_match"] = {
+        "home_team": "Casa",
+        "away_team": "Trasferta",
+        "odds_1": 2.00,
+        "odds_x": 3.50,
+        "odds_2": 3.80,
+        "odds_over25": 0.0,
+        "odds_under25": 0.0,
+        "odds_btts": 0.0,
+        "odds_dnb_home": 0.0,
+        "odds_dnb_away": 0.0
+    }
 
-    # Itera su ogni partita selezionata e crea interfaccia
-    for event_id, match_data in st.session_state.selected_matches_data.items():
-        match_label = match_data["match_label"]
-        home_team = match_data["home_team"]
-        away_team = match_data["away_team"]
-        api_prices = match_data["api_prices"]
+# === SEZIONE INPUT DATI PARTITA ===
+st.info("📊 Inserisci o modifica le quote manualmente. Le API forniscono solo un riferimento iniziale.")
 
-        with st.expander(f"⚽ {match_label}", expanded=True):
-            # === PULSANTI HELPER ===
-            col_btn1, col_btn2, col_btn3 = st.columns(3)
+# Recupera dati correnti dalla partita selezionata
+match_data = st.session_state["current_match"]
+home_team = match_data["home_team"]
+away_team = match_data["away_team"]
 
-            with col_btn1:
-                if st.button(f"📥 Carica da API", key=f"load_api_{event_id}"):
-                    # Ricarica quote dall'API
-                    st.session_state.selected_matches_data[event_id]["odds_1"] = float(api_prices.get("odds_1", 2.00))
-                    st.session_state.selected_matches_data[event_id]["odds_x"] = float(api_prices.get("odds_x", 3.50))
-                    st.session_state.selected_matches_data[event_id]["odds_2"] = float(api_prices.get("odds_2", 3.80))
-                    st.session_state.selected_matches_data[event_id]["odds_over25"] = float(api_prices.get("odds_over25", 0.0))
-                    st.session_state.selected_matches_data[event_id]["odds_under25"] = float(api_prices.get("odds_under25", 0.0))
-                    st.session_state.selected_matches_data[event_id]["odds_btts"] = float(api_prices.get("odds_btts", 0.0))
-                    st.session_state.selected_matches_data[event_id]["odds_dnb_home"] = float(api_prices.get("odds_dnb_home", 0.0))
-                    st.session_state.selected_matches_data[event_id]["odds_dnb_away"] = float(api_prices.get("odds_dnb_away", 0.0))
-                    st.rerun()
+# Espansore per la partita
+with st.expander(f"⚽ {home_team} vs {away_team}", expanded=True):
 
-            with col_btn2:
-                if st.button(f"🔄 Reset Default", key=f"reset_{event_id}"):
-                    # Reset a valori default
-                    st.session_state.selected_matches_data[event_id]["odds_1"] = 2.00
-                    st.session_state.selected_matches_data[event_id]["odds_x"] = 3.50
-                    st.session_state.selected_matches_data[event_id]["odds_2"] = 3.80
-                    st.session_state.selected_matches_data[event_id]["odds_over25"] = 0.0
-                    st.session_state.selected_matches_data[event_id]["odds_under25"] = 0.0
-                    st.session_state.selected_matches_data[event_id]["odds_btts"] = 0.0
-                    st.session_state.selected_matches_data[event_id]["odds_dnb_home"] = 0.0
-                    st.session_state.selected_matches_data[event_id]["odds_dnb_away"] = 0.0
-                    st.rerun()
+    # === NOME E LEGA ===
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        match_name_input = st.text_input(
+            "Nome Partita",
+            value=f"{home_team} vs {away_team}",
+            key="match_name"
+        )
 
-            with col_btn3:
-                st.caption(f"📚 Quote API: 1:{api_prices.get('odds_1', 'N/A')} X:{api_prices.get('odds_x', 'N/A')} 2:{api_prices.get('odds_2', 'N/A')}")
+    with col_m2:
+        league_type = st.selectbox(
+            "Lega",
+            ["generic", "premier_league", "la_liga", "serie_a", "bundesliga", "ligue_1"],
+            key="league"
+        )
 
-            st.markdown("---")
+    # === LINEE DI APERTURA ===
+    st.markdown("**📊 Linee di Apertura**")
+    col_a1, col_a2 = st.columns(2)
 
-            # === NOME E LEGA ===
-            col_m1, col_m2 = st.columns(2)
-            with col_m1:
-                match_name_input = st.text_input(
-                    "Nome Partita",
-                    value=f"{home_team} vs {away_team}",
-                    key=f"match_name_{event_id}"
-                )
-                st.session_state.selected_matches_data[event_id]["match_name"] = match_name_input
+    with col_a1:
+        spread_apertura = st.number_input(
+            "Spread Apertura",
+            value=0.0,
+            step=0.25,
+            key="spread_apertura"
+        )
 
-            with col_m2:
-                league_type = st.selectbox(
-                    "Lega",
-                    ["generic", "premier_league", "la_liga", "serie_a", "bundesliga", "ligue_1"],
-                    key=f"league_{event_id}"
-                )
-                st.session_state.selected_matches_data[event_id]["league_type"] = league_type
+    with col_a2:
+        total_apertura = st.number_input(
+            "Total Apertura",
+            value=2.5,
+            step=0.25,
+            key="total_apertura"
+        )
 
-            # === LINEE DI APERTURA ===
-            st.markdown("**📊 Linee di Apertura**")
-            col_a1, col_a2 = st.columns(2)
+    # === QUOTE PRINCIPALI 1X2 ===
+    st.markdown("**💰 Quote Principali (1X2)**")
+    col_q1, col_q2, col_q3 = st.columns(3)
 
-            with col_a1:
-                spread_apertura = st.number_input(
-                    "Spread Apertura",
-                    value=match_data.get("spread_apertura", 0.0),
-                    step=0.25,
-                    key=f"spread_ap_{event_id}"
-                )
-                st.session_state.selected_matches_data[event_id]["spread_apertura"] = spread_apertura
+    with col_q1:
+        odds_1 = st.number_input(
+            "Quota 1 (Casa)",
+            value=match_data.get("odds_1", 2.00),
+            min_value=1.01,
+            max_value=100.0,
+            step=0.01,
+            key="odds_1"
+        )
 
-            with col_a2:
-                total_apertura = st.number_input(
-                    "Total Apertura",
-                    value=match_data.get("total_apertura", 2.5),
-                    step=0.25,
-                    key=f"total_ap_{event_id}"
-                )
-                st.session_state.selected_matches_data[event_id]["total_apertura"] = total_apertura
+    with col_q2:
+        odds_x = st.number_input(
+            "Quota X (Pareggio)",
+            value=match_data.get("odds_x", 3.50),
+            min_value=1.01,
+            max_value=100.0,
+            step=0.01,
+            key="odds_x"
+        )
 
-            # === QUOTE PRINCIPALI 1X2 ===
-            st.markdown("**💰 Quote Principali (1X2)**")
-            col_q1, col_q2, col_q3 = st.columns(3)
+    with col_q3:
+        odds_2 = st.number_input(
+            "Quota 2 (Trasferta)",
+            value=match_data.get("odds_2", 3.80),
+            min_value=1.01,
+            max_value=100.0,
+            step=0.01,
+            key="odds_2"
+        )
 
-            with col_q1:
-                odds_1 = st.number_input(
-                    "Quota 1 (Casa)",
-                    value=match_data.get("odds_1", 2.00),
-                    min_value=1.01,
-                    max_value=100.0,
-                    step=0.01,
-                    key=f"odds_1_{event_id}"
-                )
-                st.session_state.selected_matches_data[event_id]["odds_1"] = odds_1
+    # === VALIDAZIONE QUOTE 1X2 ===
+    validation = validate_odds_input(odds_1, odds_x, odds_2)
+    if validation["valid"]:
+        st.success(validation["message"])
+    else:
+        st.warning(validation["message"])
 
-            with col_q2:
-                odds_x = st.number_input(
-                    "Quota X (Pareggio)",
-                    value=match_data.get("odds_x", 3.50),
-                    min_value=1.01,
-                    max_value=100.0,
-                    step=0.01,
-                    key=f"odds_x_{event_id}"
-                )
-                st.session_state.selected_matches_data[event_id]["odds_x"] = odds_x
+    # === OVER/UNDER E TOTALI ===
+    st.markdown("**⚽ Over/Under & Totali**")
+    col_ou1, col_ou2, col_ou3 = st.columns(3)
 
-            with col_q3:
-                odds_2 = st.number_input(
-                    "Quota 2 (Trasferta)",
-                    value=match_data.get("odds_2", 3.80),
-                    min_value=1.01,
-                    max_value=100.0,
-                    step=0.01,
-                    key=f"odds_2_{event_id}"
-                )
-                st.session_state.selected_matches_data[event_id]["odds_2"] = odds_2
+    with col_ou1:
+        odds_over25 = st.number_input(
+            "Quota Over 2.5",
+            value=match_data.get("odds_over25", 0.0),
+            step=0.01,
+            key="odds_over25"
+        )
 
-            # === VALIDAZIONE QUOTE 1X2 ===
-            validation = validate_odds_input(odds_1, odds_x, odds_2)
-            if validation["valid"]:
-                st.success(validation["message"])
-            else:
-                st.warning(validation["message"])
+    with col_ou2:
+        odds_under25 = st.number_input(
+            "Quota Under 2.5",
+            value=match_data.get("odds_under25", 0.0),
+            step=0.01,
+            key="odds_under25"
+        )
 
-            # === OVER/UNDER E TOTALI ===
-            st.markdown("**⚽ Over/Under & Totali**")
-            col_ou1, col_ou2, col_ou3 = st.columns(3)
+    with col_ou3:
+        total_line = st.number_input(
+            "Total Corrente",
+            value=2.5,
+            step=0.25,
+            key="total_line"
+        )
 
-            with col_ou1:
-                odds_over25 = st.number_input(
-                    "Quota Over 2.5",
-                    value=match_data.get("odds_over25", 0.0),
-                    step=0.01,
-                    key=f"over_{event_id}"
-                )
-                st.session_state.selected_matches_data[event_id]["odds_over25"] = odds_over25
+    # === QUOTE SPECIALI ===
+    st.markdown("**🎲 Quote Speciali**")
+    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
 
-            with col_ou2:
-                odds_under25 = st.number_input(
-                    "Quota Under 2.5",
-                    value=match_data.get("odds_under25", 0.0),
-                    step=0.01,
-                    key=f"under_{event_id}"
-                )
-                st.session_state.selected_matches_data[event_id]["odds_under25"] = odds_under25
+    with col_s1:
+        odds_dnb_home = st.number_input(
+            "DNB Casa",
+            value=match_data.get("odds_dnb_home", 0.0),
+            step=0.01,
+            key="odds_dnb_home"
+        )
 
-            with col_ou3:
-                total_line = st.number_input(
-                    "Total Corrente",
-                    value=match_data.get("total_line", 2.5),
-                    step=0.25,
-                    key=f"total_line_{event_id}"
-                )
-                st.session_state.selected_matches_data[event_id]["total_line"] = total_line
+    with col_s2:
+        odds_dnb_away = st.number_input(
+            "DNB Trasferta",
+            value=match_data.get("odds_dnb_away", 0.0),
+            step=0.01,
+            key="odds_dnb_away"
+        )
 
-            # === QUOTE SPECIALI ===
-            st.markdown("**🎲 Quote Speciali**")
-            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    with col_s3:
+        odds_btts = st.number_input(
+            "BTTS Sì",
+            value=match_data.get("odds_btts", 0.0),
+            step=0.01,
+            key="odds_btts"
+        )
 
-            with col_s1:
-                odds_dnb_home = st.number_input(
-                    "DNB Casa",
-                    value=match_data.get("odds_dnb_home", 0.0),
-                    step=0.01,
-                    key=f"dnb_home_{event_id}"
-                )
-                st.session_state.selected_matches_data[event_id]["odds_dnb_home"] = odds_dnb_home
+    with col_s4:
+        spread_corrente = st.number_input(
+            "Spread Corrente",
+            value=0.0,
+            step=0.25,
+            key="spread_corrente"
+        )
 
-            with col_s2:
-                odds_dnb_away = st.number_input(
-                    "DNB Trasferta",
-                    value=match_data.get("odds_dnb_away", 0.0),
-                    step=0.01,
-                    key=f"dnb_away_{event_id}"
-                )
-                st.session_state.selected_matches_data[event_id]["odds_dnb_away"] = odds_dnb_away
+    # === xG/xA E BOOST (OPZIONALI) ===
+    with st.expander("📊 xG/xA e Boost (Opzionali)", expanded=False):
+        col_xg1, col_xg2 = st.columns(2)
 
-            with col_s3:
-                odds_btts = st.number_input(
-                    "BTTS Sì",
-                    value=match_data.get("odds_btts", 0.0),
-                    step=0.01,
-                    key=f"btts_{event_id}"
-                )
-                st.session_state.selected_matches_data[event_id]["odds_btts"] = odds_btts
+        with col_xg1:
+            st.markdown("**🏠 Casa**")
+            xg_home = st.number_input(
+                "xG Totali Stagione Casa",
+                value=0.0,
+                step=0.1,
+                key="xg_home",
+                help="Somma xG di tutta la stagione (es. da Transfermarkt: 33.7). Il sistema calcolerà automaticamente la media per partita."
+            )
+            xa_home = st.number_input(
+                "xA Totali Stagione Casa",
+                value=0.0,
+                step=0.1,
+                key="xa_home",
+                help="Somma xA (Expected Assists) di tutta la stagione."
+            )
+            partite_giocate_home = st.number_input(
+                "Partite Giocate Casa",
+                min_value=0,
+                max_value=50,
+                value=0,
+                step=1,
+                key="partite_giocate_home",
+                help="Numero partite giocate in stagione. Necessario per convertire xG totali in media per partita. >= 10 partite = alta affidabilità."
+            )
+            boost_home = st.slider(
+                "Boost Casa (%)",
+                -20, 20,
+                0,
+                key="boost_home"
+            ) / 100.0
 
-            with col_s4:
-                spread_corrente = st.number_input(
-                    "Spread Corrente",
-                    value=match_data.get("spread_corrente", 0.0),
-                    step=0.25,
-                    key=f"spread_corr_{event_id}"
-                )
-                st.session_state.selected_matches_data[event_id]["spread_corrente"] = spread_corrente
-
-            # === xG/xA E BOOST (OPZIONALI) ===
-            with st.expander("📊 xG/xA e Boost (Opzionali)", expanded=False):
-                col_xg1, col_xg2 = st.columns(2)
-
-                with col_xg1:
-                    st.markdown("**🏠 Casa**")
-                    xg_home = st.number_input(
-                        "xG Totali Stagione Casa",
-                        value=match_data.get("xg_home", 0.0),
-                        step=0.1,
-                        key=f"xg_home_{event_id}",
-                        help="Somma xG di tutta la stagione (es. da Transfermarkt: 33.7). Il sistema calcolerà automaticamente la media per partita."
-                    )
-                    xa_home = st.number_input(
-                        "xA Totali Stagione Casa",
-                        value=match_data.get("xa_home", 0.0),
-                        step=0.1,
-                        key=f"xa_home_{event_id}",
-                        help="Somma xA (Expected Assists) di tutta la stagione."
-                    )
-                    partite_giocate_home = st.number_input(
-                        "Partite Giocate Casa",
-                        min_value=0,
-                        max_value=50,
-                        value=match_data.get("partite_giocate_home", 0),
-                        step=1,
-                        key=f"partite_giocate_home_{event_id}",
-                        help="Numero partite giocate in stagione. Necessario per convertire xG totali in media per partita. >= 10 partite = alta affidabilità."
-                    )
-                    boost_home = st.slider(
-                        "Boost Casa (%)",
-                        -20, 20,
-                        int(match_data.get("boost_home", 0.0) * 100),
-                        key=f"boost_home_{event_id}"
-                    ) / 100.0
-
-                    st.session_state.selected_matches_data[event_id]["xg_home"] = xg_home
-                    st.session_state.selected_matches_data[event_id]["xa_home"] = xa_home
-                    st.session_state.selected_matches_data[event_id]["partite_giocate_home"] = partite_giocate_home
-                    st.session_state.selected_matches_data[event_id]["boost_home"] = boost_home
-
-                with col_xg2:
-                    st.markdown("**✈️ Trasferta**")
-                    xg_away = st.number_input(
-                        "xG Totali Stagione Trasferta",
-                        value=match_data.get("xg_away", 0.0),
-                        step=0.1,
-                        key=f"xg_away_{event_id}",
-                        help="Somma xG di tutta la stagione (es. da Transfermarkt: 18.6). Il sistema calcolerà automaticamente la media per partita."
-                    )
-                    xa_away = st.number_input(
-                        "xA Totali Stagione Trasferta",
-                        value=match_data.get("xa_away", 0.0),
-                        step=0.1,
-                        key=f"xa_away_{event_id}",
-                        help="Somma xA (Expected Assists) di tutta la stagione."
-                    )
-                    partite_giocate_away = st.number_input(
-                        "Partite Giocate Trasferta",
-                        min_value=0,
-                        max_value=50,
-                        value=match_data.get("partite_giocate_away", 0),
-                        step=1,
-                        key=f"partite_giocate_away_{event_id}",
-                        help="Numero partite giocate in stagione. Necessario per convertire xG totali in media per partita. >= 10 partite = alta affidabilità."
-                    )
-                    boost_away = st.slider(
-                        "Boost Trasferta (%)",
-                        -20, 20,
-                        int(match_data.get("boost_away", 0.0) * 100),
-                        key=f"boost_away_{event_id}"
-                    ) / 100.0
-
-                    st.session_state.selected_matches_data[event_id]["xg_away"] = xg_away
-                    st.session_state.selected_matches_data[event_id]["xa_away"] = xa_away
-                    st.session_state.selected_matches_data[event_id]["partite_giocate_away"] = partite_giocate_away
-                    st.session_state.selected_matches_data[event_id]["boost_away"] = boost_away
-
-else:
-    st.warning("⚠️ Seleziona almeno una partita sopra per iniziare.")
+        with col_xg2:
+            st.markdown("**✈️ Trasferta**")
+            xg_away = st.number_input(
+                "xG Totali Stagione Trasferta",
+                value=0.0,
+                step=0.1,
+                key="xg_away",
+                help="Somma xG di tutta la stagione (es. da Transfermarkt: 18.6). Il sistema calcolerà automaticamente la media per partita."
+            )
+            xa_away = st.number_input(
+                "xA Totali Stagione Trasferta",
+                value=0.0,
+                step=0.1,
+                key="xa_away",
+                help="Somma xA (Expected Assists) di tutta la stagione."
+            )
+            partite_giocate_away = st.number_input(
+                "Partite Giocate Trasferta",
+                min_value=0,
+                max_value=50,
+                value=0,
+                step=1,
+                key="partite_giocate_away",
+                help="Numero partite giocate in stagione. Necessario per convertire xG totali in media per partita. >= 10 partite = alta affidabilità."
+            )
+            boost_away = st.slider(
+                "Boost Trasferta (%)",
+                -20, 20,
+                0,
+                key="boost_away"
+            ) / 100.0
 
 st.markdown("---")
 
@@ -13694,340 +13613,276 @@ st.markdown("---")
 #              CALCOLO MODELLO
 # ============================================================
 
-# Verifica se ci sono partite selezionate in modalità multipla
-has_multiple_matches = "selected_matches_data" in st.session_state and st.session_state.selected_matches_data
+# ===== ANALISI SINGOLA PARTITA =====
+if st.button("🎯 ANALIZZA PARTITA", type="primary"):
 
-if has_multiple_matches:
-    # ===== ANALISI MULTIPLA =====
-    num_matches = len(st.session_state.selected_matches_data)
+    # Recupera configurazione Telegram
+    telegram_enabled = st.session_state.get("telegram_enabled", False)
+    telegram_token = st.session_state.get("telegram_bot_token", "")
+    telegram_chat_id = st.session_state.get("telegram_chat_id", "")
+    telegram_prob_threshold = float(st.session_state.get("telegram_prob_threshold", TELEGRAM_MIN_PROBABILITY))
 
-    if st.button(f"🎯 ANALIZZA {num_matches} PARTIT{'A' if num_matches == 1 else 'E'}", type="primary"):
-        # Inizializza lista risultati
-        if "analysis_results" not in st.session_state:
-            st.session_state.analysis_results = []
+    # Leggi dati dal form
+    match_name = match_name_input
+    odds_over25_val = odds_over25 if odds_over25 > 0 else None
+    odds_under25_val = odds_under25 if odds_under25 > 0 else None
+    odds_btts_val = odds_btts if odds_btts > 0 else None
+    odds_dnb_home_val = odds_dnb_home if odds_dnb_home > 0 else None
+    odds_dnb_away_val = odds_dnb_away if odds_dnb_away > 0 else None
+    spread_apertura_val = spread_apertura if spread_apertura != 0.0 else None
+    total_apertura_val = total_apertura if total_apertura != 2.5 else None
+    spread_corrente_val = spread_corrente if spread_corrente != 0.0 else None
 
-        st.session_state.analysis_results = []
+    # Conversione xG/xA totali → medie per partita
+    if partite_giocate_home > 0:
+        xg_home_media = xg_home / partite_giocate_home
+        xa_home_media = xa_home / partite_giocate_home
+    else:
+        xg_home_media = xg_home
+        xa_home_media = xa_home
 
-        # Progress bar
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+    if partite_giocate_away > 0:
+        xg_away_media = xg_away / partite_giocate_away
+        xa_away_media = xa_away / partite_giocate_away
+    else:
+        xg_away_media = xg_away
+        xa_away_media = xa_away
 
-        telegram_enabled = st.session_state.get("telegram_enabled", False)
-        telegram_token = st.session_state.get("telegram_bot_token", "")
-        telegram_chat_id = st.session_state.get("telegram_chat_id", "")
-        telegram_prob_threshold = float(st.session_state.get("telegram_prob_threshold", TELEGRAM_MIN_PROBABILITY))
+    # Validazione xG/xA
+    validation_warnings_xg = []
+    if xg_home_media > 0 and (xg_home_media < 0.3 or xg_home_media > 4.0):
+        validation_warnings_xg.append(f"⚠️ xG medio Casa {xg_home_media:.2f} fuori range tipico (0.3-4.0). Verifica dati inseriti.")
+    if xa_home_media > 0 and (xa_home_media < 0.2 or xa_home_media > 4.0):
+        validation_warnings_xg.append(f"⚠️ xA medio Casa {xa_home_media:.2f} fuori range tipico (0.2-4.0). Verifica dati inseriti.")
+    if xg_away_media > 0 and (xg_away_media < 0.3 or xg_away_media > 4.0):
+        validation_warnings_xg.append(f"⚠️ xG medio Trasferta {xg_away_media:.2f} fuori range tipico (0.3-4.0). Verifica dati inseriti.")
+    if xa_away_media > 0 and (xa_away_media < 0.2 or xa_away_media > 4.0):
+        validation_warnings_xg.append(f"⚠️ xA medio Trasferta {xa_away_media:.2f} fuori range tipico (0.2-4.0). Verifica dati inseriti.")
 
-        # Itera su ogni partita
-        for idx, (event_id, match_data) in enumerate(st.session_state.selected_matches_data.items(), 1):
-            status_text.text(f"Analizzando {idx}/{num_matches}: {match_data.get('match_name', 'Partita')}...")
-            progress_bar.progress(idx / num_matches)
+    # Mostra warning se presenti
+    for warning in validation_warnings_xg:
+        st.warning(warning)
 
-            # Estrai dati partita
-            match_name = match_data.get("match_name", f"{match_data['home_team']} vs {match_data['away_team']}")
-            odds_1 = match_data["odds_1"]
-            odds_x = match_data["odds_x"]
-            odds_2 = match_data["odds_2"]
-            odds_over25 = match_data["odds_over25"] if match_data["odds_over25"] > 0 else None
-            odds_under25 = match_data["odds_under25"] if match_data["odds_under25"] > 0 else None
-            odds_btts = match_data["odds_btts"] if match_data["odds_btts"] > 0 else None
-            odds_dnb_home = match_data["odds_dnb_home"] if match_data["odds_dnb_home"] > 0 else None
-            odds_dnb_away = match_data["odds_dnb_away"] if match_data["odds_dnb_away"] > 0 else None
-            total_line = match_data["total_line"]
-            spread_apertura = match_data["spread_apertura"] if match_data["spread_apertura"] != 0.0 else None
-            total_apertura = match_data["total_apertura"] if match_data["total_apertura"] != 2.5 else None
-            spread_corrente = match_data["spread_corrente"] if match_data["spread_corrente"] != 0.0 else None
+    try:
+        # Validazione input
+        validation_result = validate_all_inputs(
+            odds_1=odds_1, odds_x=odds_x, odds_2=odds_2, total=total_line,
+            odds_over25=odds_over25_val, odds_under25=odds_under25_val, odds_btts=odds_btts_val,
+            odds_dnb_home=odds_dnb_home_val, odds_dnb_away=odds_dnb_away_val,
+            spread_apertura=spread_apertura_val, total_apertura=total_apertura_val,
+            spread_corrente=spread_corrente_val,
+            xg_for_home=xg_home_media if xg_home_media > 0 else None,
+            xg_against_home=xg_away_media if xg_away_media > 0 else None,
+            xg_for_away=xg_away_media if xg_away_media > 0 else None,
+            xg_against_away=xg_home_media if xg_home_media > 0 else None,
+            xa_for_home=xa_home_media if xa_home_media > 0 else None,
+            xa_against_home=xa_away_media if xa_away_media > 0 else None,
+            xa_for_away=xa_away_media if xa_away_media > 0 else None,
+            xa_against_away=xa_home_media if xa_home_media > 0 else None,
+        )
 
-            # Estrai xG/xA totali e partite giocate
-            xg_home_totali = match_data["xg_home"]
-            xa_home_totali = match_data["xa_home"]
-            partite_giocate_home = match_data.get("partite_giocate_home", 0)
-            boost_home = match_data["boost_home"]
-            xg_away_totali = match_data["xg_away"]
-            xa_away_totali = match_data["xa_away"]
-            partite_giocate_away = match_data.get("partite_giocate_away", 0)
-            boost_away = match_data["boost_away"]
+        validated = validation_result["validated"]
 
-            # ⚠️ CONVERSIONE AUTOMATICA: Totali stagionali → Medie per partita
-            # Se partite_giocate > 0, converti i totali in medie
-            # Altrimenti, assume che i valori siano già medie (backward compatibility)
-            if partite_giocate_home > 0:
-                xg_home = xg_home_totali / partite_giocate_home
-                xa_home = xa_home_totali / partite_giocate_home
-            else:
-                xg_home = xg_home_totali
-                xa_home = xa_home_totali
+        # Quality e market confidence
+        warnings, quality_score = check_coerenza_quote_improved(
+            validated["odds_1"], validated["odds_x"], validated["odds_2"],
+            validated.get("odds_over25"), validated.get("odds_under25"),
+            validated.get("odds_btts")
+        )
 
-            if partite_giocate_away > 0:
-                xg_away = xg_away_totali / partite_giocate_away
-                xa_away = xa_away_totali / partite_giocate_away
-            else:
-                xg_away = xg_away_totali
-                xa_away = xa_away_totali
+        market_conf = compute_market_confidence_score(
+            validated["odds_1"], validated["odds_x"], validated["odds_2"],
+            validated.get("odds_over25"), validated.get("odds_under25"),
+            validated.get("odds_dnb_home"), validated.get("odds_dnb_away"),
+            validated.get("odds_btts"), 1
+        )
 
-            # ⚠️ VALIDAZIONE: Controlla se medie sono ragionevoli
-            validation_warnings_xg = []
-            if xg_home > 0 and (xg_home < 0.3 or xg_home > 4.0):
-                validation_warnings_xg.append(f"⚠️ xG medio Casa {xg_home:.2f} fuori range tipico (0.3-4.0). Verifica dati inseriti.")
-            if xa_home > 0 and (xa_home < 0.2 or xa_home > 4.0):
-                validation_warnings_xg.append(f"⚠️ xA medio Casa {xa_home:.2f} fuori range tipico (0.2-4.0). Verifica dati inseriti.")
-            if xg_away > 0 and (xg_away < 0.3 or xg_away > 4.0):
-                validation_warnings_xg.append(f"⚠️ xG medio Trasferta {xg_away:.2f} fuori range tipico (0.3-4.0). Verifica dati inseriti.")
-            if xa_away > 0 and (xa_away < 0.2 or xa_away > 4.0):
-                validation_warnings_xg.append(f"⚠️ xA medio Trasferta {xa_away:.2f} fuori range tipico (0.2-4.0). Verifica dati inseriti.")
+        # Analisi modello
+        with st.spinner(f"Analizzando {match_name}..."):
+            ris = risultato_completo_improved(
+                odds_1=validated["odds_1"],
+                odds_x=validated["odds_x"],
+                odds_2=validated["odds_2"],
+                total=validated["total"],
+                home_team=home_team,
+                away_team=away_team,
+                odds_over25=validated.get("odds_over25"),
+                odds_under25=validated.get("odds_under25"),
+                odds_btts=validated.get("odds_btts"),
+                odds_dnb_home=validated.get("odds_dnb_home"),
+                odds_dnb_away=validated.get("odds_dnb_away"),
+                spread_apertura=validated.get("spread_apertura"),
+                total_apertura=validated.get("total_apertura"),
+                spread_corrente=validated.get("spread_corrente"),
+                xg_for_home=validated.get("xg_for_home"),
+                xg_against_home=validated.get("xg_against_home"),
+                xg_for_away=validated.get("xg_for_away"),
+                xg_against_away=validated.get("xg_against_away"),
+                xa_for_home=validated.get("xa_for_home"),
+                xa_against_home=validated.get("xa_against_home"),
+                xa_for_away=validated.get("xa_for_away"),
+                xa_against_away=validated.get("xa_against_away"),
+                boost_home=boost_home,
+                boost_away=boost_away,
+                league=league_type,
+                partite_giocate_home=partite_giocate_home,
+                partite_giocate_away=partite_giocate_away
+            )
 
-            # Mostra warning se presenti
-            if validation_warnings_xg:
-                for warning in validation_warnings_xg:
-                    logger.warning(f"[{match_name}] {warning}")
+        st.success(f"✅ Analisi completata per {match_name}")
 
-            league_type = match_data.get("league_type", "generic")
+        # === VISUALIZZAZIONE RISULTATI ===
+        st.markdown("---")
+        st.subheader(f"📊 Risultati Analisi: {match_name}")
 
+        # Probabilità 1X2
+        col_r1, col_r2, col_r3 = st.columns(3)
+        with col_r1:
+            st.metric("Prob Casa", f"{ris['p_home']*100:.1f}%")
+            st.metric("Quota Casa", f"{validated['odds_1']:.2f}")
+        with col_r2:
+            st.metric("Prob Pareggio", f"{ris['p_draw']*100:.1f}%")
+            st.metric("Quota Pareggio", f"{validated['odds_x']:.2f}")
+        with col_r3:
+            st.metric("Prob Trasferta", f"{ris['p_away']*100:.1f}%")
+            st.metric("Quota Trasferta", f"{validated['odds_2']:.2f}")
+
+        st.markdown("---")
+
+        # Over/Under
+        st.subheader("📊 Over/Under")
+        col_ou1, col_ou2, col_ou3 = st.columns(3)
+        with col_ou1:
+            st.metric("Over 1.5", f"{ris.get('over_15', 0)*100:.1f}%")
+            st.metric("Under 1.5", f"{ris.get('under_15', 0)*100:.1f}%")
+        with col_ou2:
+            st.metric("Over 2.5", f"{ris['over_25']*100:.1f}%")
+            st.metric("Under 2.5", f"{ris['under_25']*100:.1f}%")
+        with col_ou3:
+            st.metric("Over 3.5", f"{ris.get('over_35', 0)*100:.1f}%")
+            st.metric("Under 3.5", f"{ris.get('under_35', 0)*100:.1f}%")
+
+        # BTTS
+        st.subheader("⚽ Goal/No Goal")
+        col_btts1, col_btts2 = st.columns(2)
+        with col_btts1:
+            st.metric("BTTS (GG)", f"{ris['btts']*100:.1f}%")
+        with col_btts2:
+            st.metric("No Goal (NG)", f"{ris.get('clean_sheet_qualcuno', 0)*100:.1f}%")
+
+        # Double Chance
+        if 'dc' in ris:
+            st.subheader("🔄 Double Chance")
+            dc_data = ris['dc']
+            col_dc1, col_dc2, col_dc3 = st.columns(3)
+            with col_dc1:
+                st.metric("1X", f"{dc_data.get('DC Casa o Pareggio', 0)*100:.1f}%")
+            with col_dc2:
+                st.metric("X2", f"{dc_data.get('DC Trasferta o Pareggio', 0)*100:.1f}%")
+            with col_dc3:
+                st.metric("12", f"{dc_data.get('DC Casa o Trasferta', 0)*100:.1f}%")
+
+        # Multigol
+        if 'multigol_totale' in ris:
+            st.subheader("🎯 Multigol Totale")
+            multigol = ris['multigol_totale']
+            cols_mg = st.columns(4)
+            mg_items = list(multigol.items())
+            for idx, (key, val) in enumerate(mg_items[:8]):
+                with cols_mg[idx % 4]:
+                    st.metric(key, f"{val*100:.1f}%")
+
+        # Combo avanzate
+        if 'combo_book' in ris:
+            st.subheader("🔀 Combo Avanzate")
+            combo = ris['combo_book']
+            combo_principali = {
+                k: v for k, v in combo.items()
+                if any(x in k for x in ['1X &', 'X2 &', '12 &', '1 &', '2 &'])
+            }
+            cols_combo = st.columns(3)
+            for idx, (key, val) in enumerate(sorted(combo_principali.items())[:15]):
+                with cols_combo[idx % 3]:
+                    st.metric(key, f"{val*100:.1f}%")
+
+        # Top Risultati Esatti
+        if 'top10' in ris:
+            st.subheader("🎲 Top 10 Risultati Esatti")
+            top10 = ris['top10']
+            cols_top = st.columns(5)
+            for idx, (h, a, prob) in enumerate(top10[:10]):
+                score = f"{h}-{a}"
+                with cols_top[idx % 5]:
+                    st.metric(score, f"{prob:.1f}%")
+
+        st.markdown("---")
+
+        # Value bets
+        final_btts_odds = validated.get("odds_btts") or ris.get("btts_final_odds") or 0.0
+        value_rows = prepare_value_bets(
+            ris=ris,
+            odds_1=validated["odds_1"],
+            odds_x=validated["odds_x"],
+            odds_2=validated["odds_2"],
+            odds_over=validated.get("odds_over25"),
+            odds_under=validated.get("odds_under25"),
+            odds_btts=final_btts_odds,
+            odds_dnb_home=validated.get("odds_dnb_home"),
+            odds_dnb_away=validated.get("odds_dnb_away"),
+        )
+
+        # Filtra value bets per soglia
+        value_bets_list = []
+        for bet in value_rows:
+            prob_str_raw = str(bet.get("Prob Modello %", "0")).replace(",", ".")
             try:
-                # Validazione input
-                validation_result = validate_all_inputs(
-                    odds_1=odds_1, odds_x=odds_x, odds_2=odds_2, total=total_line,
-                    odds_over25=odds_over25, odds_under25=odds_under25, odds_btts=odds_btts,
-                    odds_dnb_home=odds_dnb_home, odds_dnb_away=odds_dnb_away,
-                    spread_apertura=spread_apertura, total_apertura=total_apertura,
-                    spread_corrente=spread_corrente,
-                    xg_for_home=xg_home if xg_home > 0 else None,
-                    xg_against_home=xg_away if xg_away > 0 else None,
-                    xg_for_away=xg_away if xg_away > 0 else None,
-                    xg_against_away=xg_home if xg_home > 0 else None,
-                    xa_for_home=xa_home if xa_home > 0 else None,
-                    xa_against_home=xa_away if xa_away > 0 else None,
-                    xa_for_away=xa_away if xa_away > 0 else None,
-                    xa_against_away=xa_home if xa_home > 0 else None,
-                )
-
-                validated = validation_result["validated"]
-
-                # Quality e market confidence
-                warnings, quality_score = check_coerenza_quote_improved(
-                    validated["odds_1"], validated["odds_x"], validated["odds_2"],
-                    validated.get("odds_over25"), validated.get("odds_under25"),
-                    validated.get("odds_btts")
-                )
-
-                market_conf = compute_market_confidence_score(
-                    validated["odds_1"], validated["odds_x"], validated["odds_2"],
-                    validated.get("odds_over25"), validated.get("odds_under25"),
-                    validated.get("odds_dnb_home"), validated.get("odds_dnb_away"),
-                    validated.get("odds_btts"), 1
-                )
-
-                # Analisi modello
-                ris = risultato_completo_improved(
-                    odds_1=validated["odds_1"],
-                    odds_x=validated["odds_x"],
-                    odds_2=validated["odds_2"],
-                    total=validated["total"],
-                    home_team=match_data["home_team"],
-                    away_team=match_data["away_team"],
-                    odds_over25=validated.get("odds_over25"),
-                    odds_under25=validated.get("odds_under25"),
-                    odds_btts=validated.get("odds_btts"),
-                    odds_dnb_home=validated.get("odds_dnb_home"),
-                    odds_dnb_away=validated.get("odds_dnb_away"),
-                    spread_apertura=validated.get("spread_apertura"),
-                    total_apertura=validated.get("total_apertura"),
-                    spread_corrente=validated.get("spread_corrente"),
-                    xg_for_home=validated.get("xg_for_home"),
-                    xg_against_home=validated.get("xg_against_home"),
-                    xg_for_away=validated.get("xg_for_away"),
-                    xg_against_away=validated.get("xg_against_away"),
-                    xa_for_home=validated.get("xa_for_home"),
-                    xa_against_home=validated.get("xa_against_home"),
-                    xa_for_away=validated.get("xa_for_away"),
-                    xa_against_away=validated.get("xa_against_away"),
-                    boost_home=boost_home,
-                    boost_away=boost_away,
-                    league=league_type,
-                    partite_giocate_home=partite_giocate_home,
-                    partite_giocate_away=partite_giocate_away
-                )
-
-                # Value bets
-                final_btts_odds = validated.get("odds_btts") or ris.get("btts_final_odds") or 0.0
-                value_rows = prepare_value_bets(
-                    ris=ris,
-                    odds_1=validated["odds_1"],
-                    odds_x=validated["odds_x"],
-                    odds_2=validated["odds_2"],
-                    odds_over=validated.get("odds_over25"),
-                    odds_under=validated.get("odds_under25"),
-                    odds_btts=final_btts_odds,
-                    odds_dnb_home=validated.get("odds_dnb_home"),
-                    odds_dnb_away=validated.get("odds_dnb_away"),
-                )
-
-                # Filtra value bets per soglia Telegram
-                value_bets_list = []
-                for bet in value_rows:
-                    prob_str_raw = str(bet.get("Prob Modello %", "0")).replace(",", ".")
-                    try:
-                        prob_value = float(prob_str_raw)
-                    except ValueError:
-                        prob_value = 0.0
-                    if prob_value >= telegram_prob_threshold:
-                        value_bets_list.append({
-                            "Esito": bet.get("Esito", ""),
-                            "Prob %": bet.get("Prob Modello %", ""),
-                            "Edge %": bet.get("Edge %", ""),
-                            "EV %": bet.get("EV %", ""),
-                            "Rec": bet.get("Rec", "")
-                        })
-
-                # Salva risultati
-                st.session_state.analysis_results.append({
-                    "match_name": match_name,
-                    "ris": ris,
-                    "odds_1": validated["odds_1"],
-                    "odds_x": validated["odds_x"],
-                    "odds_2": validated["odds_2"],
-                    "quality_score": quality_score,
-                    "market_conf": market_conf,
-                    "value_bets": value_bets_list
+                prob_value = float(prob_str_raw)
+            except ValueError:
+                prob_value = 0.0
+            if prob_value >= telegram_prob_threshold:
+                value_bets_list.append({
+                    "Esito": bet.get("Esito", ""),
+                    "Prob %": bet.get("Prob Modello %", ""),
+                    "Edge %": bet.get("Edge %", ""),
+                    "EV %": bet.get("EV %", ""),
+                    "Rec": bet.get("Rec", "")
                 })
 
-            except Exception as e:
-                st.error(f"❌ Errore analizzando {match_name}: {str(e)}")
-                logger.error(f"Errore analisi {match_name}: {e}", exc_info=True)
+        # Mostra value bets
+        if value_bets_list:
+            st.success(f"💎 {len(value_bets_list)} value bet trovati")
+            st.table(value_bets_list)
+        else:
+            st.info("ℹ️ Nessun value bet sopra soglia")
 
-        progress_bar.progress(1.0)
-        status_text.text("✅ Analisi completata!")
-
-        # Mostra risultati
-        st.success(f"✅ Analizzate {len(st.session_state.analysis_results)} partite")
-
-        for result in st.session_state.analysis_results:
-            with st.expander(f"📊 {result['match_name']}", expanded=False):
-                col_r1, col_r2, col_r3 = st.columns(3)
-
-                with col_r1:
-                    st.metric("Prob Casa", f"{result['ris']['p_home']*100:.1f}%")
-                    st.metric("Quota Casa", f"{result['odds_1']:.2f}")
-
-                with col_r2:
-                    st.metric("Prob Pareggio", f"{result['ris']['p_draw']*100:.1f}%")
-                    st.metric("Quota Pareggio", f"{result['odds_x']:.2f}")
-
-                with col_r3:
-                    st.metric("Prob Trasferta", f"{result['ris']['p_away']*100:.1f}%")
-                    st.metric("Quota Trasferta", f"{result['odds_2']:.2f}")
-
-                st.markdown("---")
-
-                # Over/Under
-                st.subheader("📊 Over/Under")
-                col_ou1, col_ou2, col_ou3 = st.columns(3)
-                with col_ou1:
-                    st.metric("Over 1.5", f"{result['ris'].get('over_15', 0)*100:.1f}%")
-                    st.metric("Under 1.5", f"{result['ris'].get('under_15', 0)*100:.1f}%")
-                with col_ou2:
-                    st.metric("Over 2.5", f"{result['ris']['over_25']*100:.1f}%")
-                    st.metric("Under 2.5", f"{result['ris']['under_25']*100:.1f}%")
-                with col_ou3:
-                    st.metric("Over 3.5", f"{result['ris'].get('over_35', 0)*100:.1f}%")
-                    st.metric("Under 3.5", f"{result['ris'].get('under_35', 0)*100:.1f}%")
-
-                # BTTS
-                st.subheader("⚽ Goal/No Goal")
-                col_btts1, col_btts2 = st.columns(2)
-                with col_btts1:
-                    st.metric("BTTS (GG)", f"{result['ris']['btts']*100:.1f}%")
-                with col_btts2:
-                    st.metric("No Goal (NG)", f"{result['ris'].get('clean_sheet_qualcuno', 0)*100:.1f}%")
-
-                # Double Chance
-                if 'dc' in result['ris']:
-                    st.subheader("🔄 Double Chance")
-                    dc_data = result['ris']['dc']
-                    col_dc1, col_dc2, col_dc3 = st.columns(3)
-                    with col_dc1:
-                        st.metric("1X", f"{dc_data.get('DC Casa o Pareggio', 0)*100:.1f}%")
-                    with col_dc2:
-                        st.metric("X2", f"{dc_data.get('DC Trasferta o Pareggio', 0)*100:.1f}%")
-                    with col_dc3:
-                        st.metric("12", f"{dc_data.get('DC Casa o Trasferta', 0)*100:.1f}%")
-
-                # Multigol
-                if 'multigol_totale' in result['ris']:
-                    st.subheader("🎯 Multigol Totale")
-                    multigol = result['ris']['multigol_totale']
-                    cols_mg = st.columns(4)
-                    mg_items = list(multigol.items())
-                    for idx, (key, val) in enumerate(mg_items[:8]):
-                        with cols_mg[idx % 4]:
-                            st.metric(key, f"{val*100:.1f}%")
-
-                # Combo avanzate
-                if 'combo_book' in result['ris']:
-                    st.subheader("🔀 Combo Avanzate")
-                    combo = result['ris']['combo_book']
-
-                    # Filtra solo combo principali per non sovraccaricare
-                    combo_principali = {
-                        k: v for k, v in combo.items()
-                        if any(x in k for x in ['1X &', 'X2 &', '12 &', '1 &', '2 &'])
-                    }
-
-                    cols_combo = st.columns(3)
-                    for idx, (key, val) in enumerate(sorted(combo_principali.items())[:15]):
-                        with cols_combo[idx % 3]:
-                            st.metric(key, f"{val*100:.1f}%")
-
-                # Top Risultati Esatti
-                if 'top10' in result['ris']:
-                    st.subheader("🎲 Top 10 Risultati Esatti")
-                    top10 = result['ris']['top10']
-                    cols_top = st.columns(5)
-                    for idx, (h, a, prob) in enumerate(top10[:10]):
-                        score = f"{h}-{a}"
-                        with cols_top[idx % 5]:
-                            st.metric(score, f"{prob:.1f}%")
-
-                st.markdown("---")
-
-                # Value Bets
-                if result['value_bets']:
-                    st.success(f"💎 {len(result['value_bets'])} value bet trovati")
-                    st.table(result['value_bets'])
-                else:
-                    st.info("ℹ️ Nessun value bet sopra soglia")
-
-        # INVIO TELEGRAM MULTIPLO
-        if telegram_enabled and telegram_token and telegram_chat_id:
+        # INVIO TELEGRAM
+        if telegram_enabled and telegram_token and telegram_chat_id and value_bets_list:
             if st.button("📤 Invia su Telegram", type="secondary"):
-                if not st.session_state.analysis_results:
-                    st.warning("⚠️ Nessun risultato da inviare. Esegui prima l'analisi.")
-                else:
-                    with st.spinner("Invio su Telegram..."):
-                        # Formatta messaggio multiplo
-                        telegram_message = format_multiple_matches_for_telegram(
-                            st.session_state.analysis_results,
-                            telegram_prob_threshold
-                        )
+                with st.spinner("Invio su Telegram..."):
+                    # Formatta messaggio
+                    telegram_message = f"⚽ {match_name}\n\n"
+                    telegram_message += f"📊 Probabilità:\n"
+                    telegram_message += f"  Casa: {ris['p_home']*100:.1f}% (Quota: {validated['odds_1']:.2f})\n"
+                    telegram_message += f"  Pareggio: {ris['p_draw']*100:.1f}% (Quota: {validated['odds_x']:.2f})\n"
+                    telegram_message += f"  Trasferta: {ris['p_away']*100:.1f}% (Quota: {validated['odds_2']:.2f})\n\n"
+                    telegram_message += f"💎 Value Bets:\n"
+                    for vb in value_bets_list:
+                        telegram_message += f"  {vb['Esito']}: Prob {vb['Prob %']}% | Edge {vb['Edge %']}% | EV {vb['EV %']}% | {vb['Rec']}\n"
 
-                        # Dividi se troppo lungo
-                        messages = split_telegram_message(telegram_message, max_length=4096)
+                    result = send_telegram_message(
+                        message=telegram_message,
+                        bot_token=telegram_token,
+                        chat_id=telegram_chat_id
+                    )
 
-                        # Invia messaggi
-                        all_success = True
-                        for i, msg in enumerate(messages, 1):
-                            result = send_telegram_message(
-                                message=msg,
-                                bot_token=telegram_token,
-                                chat_id=telegram_chat_id
-                            )
+                    if result.get("success"):
+                        st.success("📤 Messaggio inviato su Telegram!")
+                    else:
+                        st.error(f"❌ Errore invio: {result.get('error_message')}")
 
-                            if not result.get("success"):
-                                all_success = False
-                                st.error(f"❌ Errore invio messaggio {i}/{len(messages)}: {result.get('error_message')}")
-                                break
-
-                        if all_success:
-                            st.success(f"📤 {len(messages)} messaggi{'o' if len(messages)==1 else ''} inviati su Telegram!")
+    except Exception as e:
+        st.error(f"❌ Errore durante l'analisi: {str(e)}")
+        logger.error(f"Errore analisi: {e}", exc_info=True)
 
 st.markdown("---")
 
