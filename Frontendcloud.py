@@ -14841,8 +14841,34 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 if any(x in k for x in combo_patterns)
             }
 
+            # DEDUPLICA: Rimuovi duplicati (stesso valore = stesso mercato con alias)
+            # Raggruppa per valore (probabilità)
+            from collections import defaultdict
+            value_groups = defaultdict(list)
+            for key, val in combo_principali.items():
+                # Raggruppa per valore arrotondato (per gestire micro-differenze floating point)
+                rounded_val = round(val, 6)
+                value_groups[rounded_val].append(key)
+
+            # Per ogni gruppo, scegli la versione più leggibile (con + se disponibile)
+            combo_deduplicati = {}
+            for val, keys in value_groups.items():
+                if len(keys) == 1:
+                    # Solo una versione, usa quella
+                    combo_deduplicati[keys[0]] = val
+                else:
+                    # Duplicati: preferisci versione con + (più leggibile)
+                    keys_with_plus = [k for k in keys if '+' in k]
+                    if keys_with_plus:
+                        # Usa la versione con + più corta
+                        best_key = min(keys_with_plus, key=len)
+                    else:
+                        # Nessuna con +, usa la più corta
+                        best_key = min(keys, key=len)
+                    combo_deduplicati[best_key] = val
+
             # Ordina per probabilità decrescente
-            combo_sorted = sorted(combo_principali.items(), key=lambda x: x[1], reverse=True)
+            combo_sorted = sorted(combo_deduplicati.items(), key=lambda x: x[1], reverse=True)
 
             # Mostra TUTTI i combo rilevanti (non solo 15)
             cols_combo = st.columns(3)
