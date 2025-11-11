@@ -13982,8 +13982,78 @@ if has_multiple_matches:
                     st.metric("Quota Trasferta", f"{result['odds_2']:.2f}")
 
                 st.markdown("---")
-                st.caption(f"Over 2.5: {result['ris']['over_25']*100:.1f}% | Under 2.5: {result['ris']['under_25']*100:.1f}% | BTTS: {result['ris']['btts']*100:.1f}%")
 
+                # Over/Under
+                st.subheader("📊 Over/Under")
+                col_ou1, col_ou2, col_ou3 = st.columns(3)
+                with col_ou1:
+                    st.metric("Over 1.5", f"{result['ris'].get('over_15', 0)*100:.1f}%")
+                    st.metric("Under 1.5", f"{result['ris'].get('under_15', 0)*100:.1f}%")
+                with col_ou2:
+                    st.metric("Over 2.5", f"{result['ris']['over_25']*100:.1f}%")
+                    st.metric("Under 2.5", f"{result['ris']['under_25']*100:.1f}%")
+                with col_ou3:
+                    st.metric("Over 3.5", f"{result['ris'].get('over_35', 0)*100:.1f}%")
+                    st.metric("Under 3.5", f"{result['ris'].get('under_35', 0)*100:.1f}%")
+
+                # BTTS
+                st.subheader("⚽ Goal/No Goal")
+                col_btts1, col_btts2 = st.columns(2)
+                with col_btts1:
+                    st.metric("BTTS (GG)", f"{result['ris']['btts']*100:.1f}%")
+                with col_btts2:
+                    st.metric("No Goal (NG)", f"{result['ris'].get('clean_sheet_qualcuno', 0)*100:.1f}%")
+
+                # Double Chance
+                if 'dc' in result['ris']:
+                    st.subheader("🔄 Double Chance")
+                    dc_data = result['ris']['dc']
+                    col_dc1, col_dc2, col_dc3 = st.columns(3)
+                    with col_dc1:
+                        st.metric("1X", f"{dc_data.get('DC Casa o Pareggio', 0)*100:.1f}%")
+                    with col_dc2:
+                        st.metric("X2", f"{dc_data.get('DC Trasferta o Pareggio', 0)*100:.1f}%")
+                    with col_dc3:
+                        st.metric("12", f"{dc_data.get('DC Casa o Trasferta', 0)*100:.1f}%")
+
+                # Multigol
+                if 'multigol_totale' in result['ris']:
+                    st.subheader("🎯 Multigol Totale")
+                    multigol = result['ris']['multigol_totale']
+                    cols_mg = st.columns(4)
+                    mg_items = list(multigol.items())
+                    for idx, (key, val) in enumerate(mg_items[:8]):
+                        with cols_mg[idx % 4]:
+                            st.metric(key, f"{val*100:.1f}%")
+
+                # Combo avanzate
+                if 'combo_book' in result['ris']:
+                    st.subheader("🔀 Combo Avanzate")
+                    combo = result['ris']['combo_book']
+
+                    # Filtra solo combo principali per non sovraccaricare
+                    combo_principali = {
+                        k: v for k, v in combo.items()
+                        if any(x in k for x in ['1X &', 'X2 &', '12 &', '1 &', '2 &'])
+                    }
+
+                    cols_combo = st.columns(3)
+                    for idx, (key, val) in enumerate(sorted(combo_principali.items())[:15]):
+                        with cols_combo[idx % 3]:
+                            st.metric(key, f"{val*100:.1f}%")
+
+                # Top Risultati Esatti
+                if 'top10' in result['ris']:
+                    st.subheader("🎲 Top 10 Risultati Esatti")
+                    top10 = result['ris']['top10']
+                    cols_top = st.columns(5)
+                    for idx, (score, prob) in enumerate(top10[:10]):
+                        with cols_top[idx % 5]:
+                            st.metric(score, f"{prob*100:.1f}%")
+
+                st.markdown("---")
+
+                # Value Bets
                 if result['value_bets']:
                     st.success(f"💎 {len(result['value_bets'])} value bet trovati")
                     st.table(result['value_bets'])
