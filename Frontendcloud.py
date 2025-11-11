@@ -13391,30 +13391,118 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
             odds_dnb_away=validated.get("odds_dnb_away"),
         )
 
-        # Filtra value bets per soglia
-        value_bets_list = []
-        for bet in value_rows:
-            prob_str_raw = str(bet.get("Prob Modello %", "0")).replace(",", ".")
-            try:
-                prob_value = float(prob_str_raw)
-            except ValueError:
-                prob_value = 0.0
-            if prob_value >= telegram_prob_threshold:
-                value_bets_list.append({
-                    "Esito": bet.get("Esito", ""),
-                    "Prob %": bet.get("Prob Modello %", ""),
-                    "Edge %": bet.get("Edge %", ""),
-                    "EV %": bet.get("EV %", ""),
-                    "Rec": bet.get("Rec", "")
-                })
+        # RACCOGLI TUTTI I MERCATI SOPRA SOGLIA (non solo value bets)
+        all_markets = []
 
-        # Mostra value bets
-        if value_bets_list:
-            st.success(f"💎 {len(value_bets_list)} value bet trovati (soglia: {telegram_prob_threshold:.0f}%)")
-            st.table(value_bets_list)
+        # 1X2 Principale
+        if ris['p_home'] * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "1 (Casa)",
+                "Prob %": f"{ris['p_home']*100:.1f}",
+                "Quota": validated["odds_1"],
+                "Tipo": "1X2"
+            })
+        if ris['p_draw'] * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "X (Pareggio)",
+                "Prob %": f"{ris['p_draw']*100:.1f}",
+                "Quota": validated["odds_x"],
+                "Tipo": "1X2"
+            })
+        if ris['p_away'] * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "2 (Trasferta)",
+                "Prob %": f"{ris['p_away']*100:.1f}",
+                "Quota": validated["odds_2"],
+                "Tipo": "1X2"
+            })
+
+        # Over/Under
+        if ris['over_25'] * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Over 2.5",
+                "Prob %": f"{ris['over_25']*100:.1f}",
+                "Quota": validated.get("odds_over25", "N/A"),
+                "Tipo": "Over/Under"
+            })
+        if ris['under_25'] * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Under 2.5",
+                "Prob %": f"{ris['under_25']*100:.1f}",
+                "Quota": validated.get("odds_under25", "N/A"),
+                "Tipo": "Over/Under"
+            })
+
+        # BTTS
+        if ris.get('btts', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "BTTS Sì",
+                "Prob %": f"{ris['btts']*100:.1f}",
+                "Quota": validated.get("odds_btts", "N/A"),
+                "Tipo": "BTTS"
+            })
+
+        # Combo (1X, X2, 12)
+        combo = ris.get('combo', {})
+        if combo.get('1X', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "1X (Casa o Pareggio)",
+                "Prob %": f"{combo['1X']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": "Combo"
+            })
+        if combo.get('X2', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "X2 (Pareggio o Trasferta)",
+                "Prob %": f"{combo['X2']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": "Combo"
+            })
+        if combo.get('12', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "12 (Casa o Trasferta)",
+                "Prob %": f"{combo['12']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": "Combo"
+            })
+
+        # Top Correct Score
+        if 'top10' in ris:
+            for h, a, prob in ris['top10'][:5]:  # Top 5 risultati
+                if prob >= telegram_prob_threshold:
+                    all_markets.append({
+                        "Esito": f"Risultato Esatto {h}-{a}",
+                        "Prob %": f"{prob:.1f}",
+                        "Quota": "N/A",
+                        "Tipo": "Correct Score"
+                    })
+
+        # DNB (Draw No Bet)
+        if ris.get('dnb_home', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "DNB Casa",
+                "Prob %": f"{ris['dnb_home']*100:.1f}",
+                "Quota": validated.get("odds_dnb_home", "N/A"),
+                "Tipo": "DNB"
+            })
+        if ris.get('dnb_away', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "DNB Trasferta",
+                "Prob %": f"{ris['dnb_away']*100:.1f}",
+                "Quota": validated.get("odds_dnb_away", "N/A"),
+                "Tipo": "DNB"
+            })
+
+        # Ordina per probabilità decrescente
+        all_markets.sort(key=lambda x: float(x['Prob %']), reverse=True)
+
+        # Mostra mercati trovati
+        if all_markets:
+            st.success(f"🎯 {len(all_markets)} mercati trovati con probabilità ≥ {telegram_prob_threshold:.0f}%")
+            st.table(all_markets)
         else:
-            st.info(f"ℹ️ Nessun value bet sopra soglia {telegram_prob_threshold:.0f}%")
-            st.caption(f"💡 Suggerimento: Abbassa la soglia o analizza altre partite")
+            st.info(f"ℹ️ Nessun mercato con probabilità ≥ {telegram_prob_threshold:.0f}%")
+            st.caption(f"💡 Suggerimento: Abbassa la soglia (es: 45-50%) per vedere più mercati")
 
         # DEBUG TELEGRAM CONFIG
         st.write("---")
@@ -13427,25 +13515,49 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
         with col_d3:
             st.metric("Chat ID", "✅ OK" if telegram_chat_id else "❌ Mancante")
 
-        st.metric("Value Bets trovati", len(value_bets_list))
+        st.metric("Mercati da inviare", len(all_markets))
 
         # INVIO TELEGRAM
         if telegram_enabled and telegram_token and telegram_chat_id:
-            if value_bets_list:
+            if all_markets:
                 if st.button("📤 Invia su Telegram", type="primary", use_container_width=True):
                     with st.spinner("Invio su Telegram..."):
                         try:
                             # Formatta messaggio
                             telegram_message = f"⚽ <b>{match_name}</b>\n\n"
-                            telegram_message += f"📊 <b>Probabilità</b>:\n"
+
+                            # Parametri modello
+                            telegram_message += f"🔢 <b>Parametri</b>:\n"
+                            telegram_message += f"  λ Casa: {ris['lambda_home']:.2f} | λ Trasferta: {ris['lambda_away']:.2f}\n"
+                            telegram_message += f"  ρ: {ris['rho']:.3f}\n\n"
+
+                            # Probabilità base
+                            telegram_message += f"📊 <b>Probabilità Base</b>:\n"
                             telegram_message += f"  🏠 Casa: {ris['p_home']*100:.1f}% (Quota: {validated['odds_1']:.2f})\n"
                             telegram_message += f"  ⚖️ Pareggio: {ris['p_draw']*100:.1f}% (Quota: {validated['odds_x']:.2f})\n"
                             telegram_message += f"  ✈️ Trasferta: {ris['p_away']*100:.1f}% (Quota: {validated['odds_2']:.2f})\n\n"
-                            telegram_message += f"💎 <b>Value Bets (Soglia {telegram_prob_threshold:.0f}%)</b>:\n"
-                            for vb in value_bets_list:
-                                telegram_message += f"  • <b>{vb['Esito']}</b>: Prob {vb['Prob %']}% | Edge {vb['Edge %']}% | EV {vb['EV %']}% | {vb['Rec']}\n"
 
-                            telegram_message += f"\n🤖 <i>Modello Dixon-Coles Bayesiano</i>"
+                            # Mercati sopra soglia
+                            telegram_message += f"🎯 <b>Mercati Alta Probabilità (≥{telegram_prob_threshold:.0f}%)</b>:\n"
+
+                            # Raggruppa per tipo
+                            by_type = {}
+                            for market in all_markets:
+                                tipo = market['Tipo']
+                                if tipo not in by_type:
+                                    by_type[tipo] = []
+                                by_type[tipo].append(market)
+
+                            # Invia per categoria
+                            for tipo in ['1X2', 'Over/Under', 'BTTS', 'Combo', 'DNB', 'Correct Score']:
+                                if tipo in by_type:
+                                    telegram_message += f"\n<b>{tipo}</b>:\n"
+                                    for m in by_type[tipo]:
+                                        quota_str = f" (Quota: {m['Quota']:.2f})" if isinstance(m['Quota'], (int, float)) else ""
+                                        telegram_message += f"  • <b>{m['Esito']}</b>: {m['Prob %']}%{quota_str}\n"
+
+                            telegram_message += f"\n📈 Totale: {len(all_markets)} mercati\n"
+                            telegram_message += f"🤖 <i>Modello Dixon-Coles Bayesiano</i>"
 
                             result = send_telegram_message(
                                 message=telegram_message,
@@ -13464,8 +13576,8 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                             st.error(f"❌ Errore durante invio: {str(e)}")
                             logger.error(f"Errore telegram: {e}", exc_info=True)
             else:
-                st.warning(f"⚠️ Nessun value bet sopra {telegram_prob_threshold:.0f}% da inviare")
-                st.caption("💡 Abbassa la soglia per vedere più value bets")
+                st.warning(f"⚠️ Nessun mercato con probabilità ≥ {telegram_prob_threshold:.0f}% da inviare")
+                st.caption("💡 Abbassa la soglia (es: 45-50%) per vedere più mercati")
         else:
             st.warning("⚠️ Configura Telegram per abilitare l'invio:")
             if not telegram_enabled:
