@@ -10,6 +10,7 @@ import os
 import re
 import requests
 import json
+from copy import deepcopy
 import streamlit as st
 from scipy import optimize
 from scipy.stats import poisson
@@ -265,6 +266,8 @@ API_TIMEOUT = app_config.api_timeout
 
 # Cache per API calls (evita rate limiting)
 API_CACHE = {}
+FOOTBALL_DATA_BASE_URL = "https://api.football-data.org/v4"
+_FOOTBALL_DATA_MATCH_CACHE: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
 
 # ============================================================
 #   OTTIMIZZAZIONE: PRE-CALCOLO FATTORIALI (MIGLIORAMENTO)
@@ -5100,12 +5103,165 @@ def analyze_market_depth(
         ),
     }
 
-def calculate_team_form_from_statistics(team_stats: Dict[str, Any], last_n: int = 5) -> Dict[str, float]:
+def _apply_advanced_metric_overlays(
+    form_attack: float,
+    form_defense: float,
+    form_points_factor: float,
+    confidence: float,
+    advanced_metrics: Optional[Dict[str, Any]],
+) -> Tuple[float, float, float, float]:
+    """Applica aggiustamenti da fonti avanzate (StatsBomb, Football-Data)."""
+    if not advanced_metrics:
+        return form_attack, form_defense, form_points_factor, confidence
+    
+    metrics = advanced_metrics or {}
+    
+    # StatsBomb
+    sb_metrics = metrics.get("statsbomb")
+    if sb_metrics and sb_metrics.get("available"):
+        baseline_xg = 1.35
+        
+        try:
+            xg_for_avg = float(sb_metrics.get("xg_for_avg", 0))
+            if xg_for_avg > 0:
+                xg_factor = 1.0 + ((xg_for_avg - baseline_xg) / baseline_xg) * 0.25
+                xg_factor = max(0.85, min(1.15, xg_factor))
+                form_attack = (form_attack * 2.0 + xg_factor) / 3.0
+                form_attack = max(0.85, min(1.15, form_attack))
+        except (TypeError, ValueError):
+            pass
+        
+        try:
+            xg_against_avg = float(sb_metrics.get("xg_against_avg", 0))
+            if xg_against_avg > 0:
+                defense_factor_sb = 1.0 + ((baseline_xg - xg_against_avg) / baseline_xg) * 0.25
+                defense_factor_sb = max(0.85, min(1.15, defense_factor_sb))
+                form_defense = (form_defense * 2.0 + defense_factor_sb) / 3.0
+                form_defense = max(0.85, min(1.15, form_defense))
+        except (TypeError, ValueError):
+            pass
+        
+        shots_baseline = 12.0
+        try:
+            shots_for_avg = float(sb_metrics.get("shots_for_avg", 0))
+            if shots_for_avg > 0:
+                shots_factor = 1.0 + ((shots_for_avg - shots_baseline) / shots_baseline) * 0.10
+                shots_factor = max(0.9, min(1.1, shots_factor))
+                form_attack = (form_attack * 3.0 + shots_factor) / 4.0
+                form_attack = max(0.85, min(1.15, form_attack))
+        except (TypeError, ValueError):
+            pass
+        
+        try:
+            shots_against_avg = float(sb_metrics.get("shots_against_avg", 0))
+            if shots_against_avg > 0:
+                shots_def_factor = 1.0 - ((shots_against_avg - shots_baseline) / shots_baseline) * 0.10
+                shots_def_factor = max(0.9, min(1.1, shots_def_factor))
+                form_defense = (form_defense * 3.0 + shots_def_factor) / 4.0
+                form_defense = max(0.85, min(1.15, form_defense))
+        except (TypeError, ValueError):
+            pass
+        
+        matches_used = sb_metrics.get("matches_used")
+        if isinstance(matches_used, (int, float)):
+            confidence = min(1.0, confidence + min(0.25, matches_used / 40.0))
+    
+    # Football-Data.org fallback metrics
+    fd_metrics = metrics.get("football_data")
+    if fd_metrics and fd_metrics.get("available"):
+        baseline_goals = 1.3
+        try:
+            fd_goals_for = float(fd_metrics.get("avg_goals_for", 0))
+            fd_attack_factor = 1.0 + ((fd_goals_for - baseline_goals) / baseline_goals) * 0.20
+            fd_attack_factor = max(0.85, min(1.15, fd_attack_factor))
+            form_attack = (form_attack * 3.0 + fd_attack_factor) / 4.0
+            form_attack = max(0.85, min(1.15, form_attack))
+        except (TypeError, ValueError):
+            pass
+        
+        try:
+            fd_goals_against = float(fd_metrics.get("avg_goals_against", 0))
+            fd_def_factor = 1.0 + ((baseline_goals - fd_goals_against) / baseline_goals) * 0.20
+            fd_def_factor = max(0.85, min(1.15, fd_def_factor))
+            form_defense = (form_defense * 3.0 + fd_def_factor) / 4.0
+            form_defense = max(0.85, min(1.15, form_defense))
+        except (TypeError, ValueError):
+            pass
+        
+        try:
+            clean_sheet_rate = float(fd_metrics.get("clean_sheet_rate", 0))
+            cs_factor = 1.0 + (clean_sheet_rate - 0.3) * 0.25
+            cs_factor = max(0.85, min(1.15, cs_factor))
+            form_defense = (form_defense * 3.0 + cs_factor) / 4.0
+            form_defense = max(0.85, min(1.15, form_defense))
+        except (TypeError, ValueError):
+            pass
+        
+        try:
+            points_per_game = float(fd_metrics.get("points_per_game", 0))
+            fd_points_factor = 0.8 + (points_per_game / 3.0) * 0.8
+            fd_points_factor = max(0.7, min(1.6, fd_points_factor))
+            form_points_factor = (form_points_factor * 2.0 + fd_points_factor) / 3.0
+        except (TypeError, ValueError):
+            pass
+        
+        matches_fd = fd_metrics.get("matches")
+        if isinstance(matches_fd, (int, float)):
+            confidence = min(1.0, max(confidence, 0.2) + min(0.2, matches_fd / 15.0))
+        else:
+            confidence = max(confidence, 0.2)
+    
+    return form_attack, form_defense, form_points_factor, confidence
+
+
+def _form_from_advanced_metrics_only(advanced_metrics: Optional[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+    """Calcola forma usando solo metriche avanzate (assenza API-Football)."""
+    if not advanced_metrics:
+        return None
+    
+    form_attack = 1.0
+    form_defense = 1.0
+    form_points_factor = 1.0
+    confidence = 0.0
+    
+    form_attack, form_defense, form_points_factor, confidence = _apply_advanced_metric_overlays(
+        form_attack,
+        form_defense,
+        form_points_factor,
+        confidence,
+        advanced_metrics,
+    )
+    
+    if confidence <= 0.0 and abs(form_attack - 1.0) < 1e-3 and abs(form_defense - 1.0) < 1e-3:
+        return None
+    
+    confidence = max(confidence, 0.2 if advanced_metrics else 0.0)
+    
+    return {
+        "form_attack": round(form_attack, 3),
+        "form_defense": round(form_defense, 3),
+        "form_points": round(form_points_factor, 3),
+        "confidence": round(min(1.0, confidence), 2),
+        "goals_for_avg": None,
+        "goals_against_avg": None,
+        "shots_for_avg": None,
+        "shots_against_avg": None,
+    }
+
+
+def calculate_team_form_from_statistics(
+    team_stats: Dict[str, Any],
+    last_n: int = 5,
+    advanced_metrics: Optional[Dict[str, Any]] = None,
+) -> Dict[str, float]:
     """
     Calcola fattore forma da statistiche squadra usando dati aggiornati dalle API.
     Integra dati da API-Football per calcoli matematici più accurati.
     """
     if not team_stats:
+        fallback = _form_from_advanced_metrics_only(advanced_metrics)
+        if fallback:
+            return fallback
         return {"form_attack": 1.0, "form_defense": 1.0, "form_points": 1.0, "confidence": 0.0}
     
     try:
@@ -5115,6 +5271,9 @@ def calculate_team_form_from_statistics(team_stats: Dict[str, Any], last_n: int 
         played = played_data.get("total", 0) if isinstance(played_data, dict) else 0
         
         if played < 3:
+            fallback = _form_from_advanced_metrics_only(advanced_metrics)
+            if fallback:
+                return fallback
             return {"form_attack": 1.0, "form_defense": 1.0, "form_points": 1.0, "confidence": 0.0}
         
         # Statistiche attacco (da API aggiornate)
@@ -5221,6 +5380,14 @@ def calculate_team_form_from_statistics(team_stats: Dict[str, Any], last_n: int 
         # Boost confidence se abbiamo statistiche avanzate (shots, xG, etc.)
         if shots_for > 0 or shots_against > 0:
             confidence = min(1.0, confidence * 1.1)  # +10% confidence
+        
+        form_attack, form_defense, form_points_factor, confidence = _apply_advanced_metric_overlays(
+            form_attack,
+            form_defense,
+            form_points_factor,
+            confidence,
+            advanced_metrics,
+        )
         
         return {
             "form_attack": round(form_attack, 3),
@@ -5490,10 +5657,17 @@ def get_advanced_team_data(
         "away_injuries": None,
         "football_data_home": None,
         "football_data_away": None,
+        "football_data_home_metrics": None,
+        "football_data_away_metrics": None,
         "thesportsdb_home": None,
         "thesportsdb_away": None,
+        "statsbomb_home": None,
+        "statsbomb_away": None,
         "data_available": False,
     }
+    
+    home_stats_raw: Optional[Dict[str, Any]] = None
+    away_stats_raw: Optional[Dict[str, Any]] = None
     
     try:
         league_id = get_league_id_from_name(league)
@@ -5516,9 +5690,9 @@ def get_advanced_team_data(
                 away_stats = apifootball_get_team_statistics(away_team_id, league_id, season)
                 
                 if home_stats:
-                    result["home_team_stats"] = calculate_team_form_from_statistics(home_stats)
+                    home_stats_raw = home_stats
                 if away_stats:
-                    result["away_team_stats"] = calculate_team_form_from_statistics(away_stats)
+                    away_stats_raw = away_stats
                 
                 # H2H
                 h2h_matches = apifootball_get_head_to_head(home_team_id, away_team_id, last=10)
@@ -5539,13 +5713,19 @@ def get_advanced_team_data(
                 result["football_data_home"] = football_data_get_team_info(home_team_name, league)
                 result["football_data_away"] = football_data_get_team_info(away_team_name, league)
                 
-                # Se Football-Data.org ha dati, usa per migliorare statistiche
-                if result["football_data_home"].get("available") and not result["home_team_stats"]:
-                    # Fallback: usa dati Football-Data.org se API-Football non disponibile
-                    logger.info(f"Dati Football-Data.org disponibili per {home_team_name}")
+                if result["football_data_home"].get("available"):
+                    home_team_id_fd = result["football_data_home"].get("team_id")
+                    recent_home_matches = football_data_get_recent_matches(home_team_id_fd, limit=6)
+                    result["football_data_home_metrics"] = football_data_calculate_form_metrics(home_team_id_fd, recent_home_matches)
+                    if not home_stats_raw and result["football_data_home_metrics"].get("available"):
+                        logger.info(f"Uso Football-Data.org come fallback per forma {home_team_name}")
                 
-                if result["football_data_away"].get("available") and not result["away_team_stats"]:
-                    logger.info(f"Dati Football-Data.org disponibili per {away_team_name}")
+                if result["football_data_away"].get("available"):
+                    away_team_id_fd = result["football_data_away"].get("team_id")
+                    recent_away_matches = football_data_get_recent_matches(away_team_id_fd, limit=6)
+                    result["football_data_away_metrics"] = football_data_calculate_form_metrics(away_team_id_fd, recent_away_matches)
+                    if not away_stats_raw and result["football_data_away_metrics"].get("available"):
+                        logger.info(f"Uso Football-Data.org come fallback per forma {away_team_name}")
             except Exception as e:
                 logger.debug(f"Football-Data.org non disponibile: {e}")
         
@@ -5563,7 +5743,63 @@ def get_advanced_team_data(
             logger.debug(f"TheSportsDB non disponibile: {e}")
         
         # ============================================================
-        # 4. CALCOLA STATISTICHE AGGREGATE DA TUTTE LE API
+        # 4. STATSBOMB OPEN DATA: xG e metriche avanzate
+        # ============================================================
+        try:
+            result["statsbomb_home"] = statsbomb_get_team_metrics(home_team_name)
+        except Exception as e:
+            logger.debug(f"StatsBomb home non disponibile: {e}")
+            result["statsbomb_home"] = {"available": False, "error": str(e)}
+        
+        try:
+            result["statsbomb_away"] = statsbomb_get_team_metrics(away_team_name)
+        except Exception as e:
+            logger.debug(f"StatsBomb away non disponibile: {e}")
+            result["statsbomb_away"] = {"available": False, "error": str(e)}
+        
+        # Calcola forma finale con tutti i dati raccolti
+        if home_stats_raw:
+            advanced_home_inputs: Dict[str, Any] = {}
+            if result["statsbomb_home"]:
+                advanced_home_inputs["statsbomb"] = result["statsbomb_home"]
+            if result["football_data_home_metrics"]:
+                advanced_home_inputs["football_data"] = result["football_data_home_metrics"]
+            result["home_team_stats"] = calculate_team_form_from_statistics(
+                home_stats_raw,
+                advanced_metrics=advanced_home_inputs if advanced_home_inputs else None,
+            )
+        elif result["football_data_home_metrics"]:
+            advanced_home_inputs = {
+                "football_data": result["football_data_home_metrics"],
+            }
+            if result["statsbomb_home"]:
+                advanced_home_inputs["statsbomb"] = result["statsbomb_home"]
+            fallback_stats = _form_from_advanced_metrics_only(advanced_home_inputs)
+            if fallback_stats:
+                result["home_team_stats"] = fallback_stats
+        
+        if away_stats_raw:
+            advanced_away_inputs: Dict[str, Any] = {}
+            if result["statsbomb_away"]:
+                advanced_away_inputs["statsbomb"] = result["statsbomb_away"]
+            if result["football_data_away_metrics"]:
+                advanced_away_inputs["football_data"] = result["football_data_away_metrics"]
+            result["away_team_stats"] = calculate_team_form_from_statistics(
+                away_stats_raw,
+                advanced_metrics=advanced_away_inputs if advanced_away_inputs else None,
+            )
+        elif result["football_data_away_metrics"]:
+            advanced_away_inputs = {
+                "football_data": result["football_data_away_metrics"],
+            }
+            if result["statsbomb_away"]:
+                advanced_away_inputs["statsbomb"] = result["statsbomb_away"]
+            fallback_stats = _form_from_advanced_metrics_only(advanced_away_inputs)
+            if fallback_stats:
+                result["away_team_stats"] = fallback_stats
+        
+        # ============================================================
+        # 5. CALCOLA STATISTICHE AGGREGATE DA TUTTE LE API
         # ============================================================
         # Se abbiamo dati da più fonti, combinali per statistiche più accurate
         if result["home_team_stats"] or result["football_data_home"]:
@@ -5588,8 +5824,12 @@ def get_advanced_team_data(
             result["away_injuries"] is not None or
             result["football_data_home"] is not None or
             result["football_data_away"] is not None or
+            result["football_data_home_metrics"] is not None or
+            result["football_data_away_metrics"] is not None or
             result["thesportsdb_home"] is not None or
-            result["thesportsdb_away"] is not None
+            result["thesportsdb_away"] is not None or
+            result["statsbomb_home"] is not None or
+            result["statsbomb_away"] is not None
         )
         
         return result
@@ -10343,6 +10583,112 @@ def football_data_get_team_info(team_name: str, league_code: str = None) -> Dict
         logger.error(f"Errore Football-Data.org: {e}")
         return {"available": False, "error": str(e)}
 
+def football_data_get_recent_matches(team_id: int, limit: int = 5) -> List[Dict[str, Any]]:
+    """Recupera ultime partite (FINISHED) per una squadra da Football-Data.org."""
+    if not FOOTBALL_DATA_API_KEY or not team_id:
+        return []
+    
+    cache_key = (int(team_id), int(limit))
+    if cache_key in _FOOTBALL_DATA_MATCH_CACHE:
+        return _FOOTBALL_DATA_MATCH_CACHE[cache_key]
+    
+    headers = {"X-Auth-Token": FOOTBALL_DATA_API_KEY}
+    params = {"status": "FINISHED", "limit": limit}
+    
+    try:
+        response = requests.get(
+            f"{FOOTBALL_DATA_BASE_URL}/teams/{team_id}/matches",
+            headers=headers,
+            params=params,
+            timeout=6,
+        )
+        response.raise_for_status()
+        matches = response.json().get("matches", [])
+        if not isinstance(matches, list):
+            matches = []
+        _FOOTBALL_DATA_MATCH_CACHE[cache_key] = matches
+        return matches
+    except requests.exceptions.RequestException as e:
+        logger.debug(f"Errore Football-Data.org recent matches: {e}")
+        return _FOOTBALL_DATA_MATCH_CACHE.get(cache_key, [])
+
+
+def football_data_calculate_form_metrics(team_id: int, matches: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Calcola metriche forma da partite Football-Data.org (fallback statistico).
+    """
+    if not team_id or not matches:
+        return {"available": False}
+    
+    total_goals_for = 0
+    total_goals_against = 0
+    total_points = 0
+    recent_form = []
+    clean_sheets = 0
+    matches_used = 0
+    
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        
+        home_team = match.get("homeTeam", {}) or {}
+        away_team = match.get("awayTeam", {}) or {}
+        score = match.get("score", {}) or {}
+        full_time = score.get("fullTime", {}) or {}
+        winner = score.get("winner")
+        
+        home_id = home_team.get("id")
+        away_id = away_team.get("id")
+        
+        goals_home = full_time.get("home")
+        goals_away = full_time.get("away")
+        if goals_home is None or goals_away is None:
+            continue
+        
+        goals_home = int(goals_home)
+        goals_away = int(goals_away)
+        
+        is_home = home_id == team_id
+        is_away = away_id == team_id
+        
+        if not (is_home or is_away):
+            continue
+        
+        goals_for = goals_home if is_home else goals_away
+        goals_against = goals_away if is_home else goals_home
+        total_goals_for += goals_for
+        total_goals_against += goals_against
+        
+        if goals_against == 0:
+            clean_sheets += 1
+        
+        if winner == "DRAW":
+            total_points += 1
+            recent_form.append("D")
+        elif (winner == "HOME_TEAM" and is_home) or (winner == "AWAY_TEAM" and is_away):
+            total_points += 3
+            recent_form.append("W")
+        else:
+            recent_form.append("L")
+        
+        matches_used += 1
+    
+    if matches_used == 0:
+        return {"available": False}
+    
+    safe_matches = max(1, matches_used)
+    points_per_game = total_points / safe_matches
+    
+    return {
+        "available": True,
+        "matches": matches_used,
+        "avg_goals_for": round(total_goals_for / safe_matches, 3),
+        "avg_goals_against": round(total_goals_against / safe_matches, 3),
+        "points_per_game": round(points_per_game, 3),
+        "recent_form": "".join(recent_form),
+        "clean_sheet_rate": round(clean_sheets / safe_matches, 3),
+    }
+
 def football_data_get_competitions() -> List[Dict[str, Any]]:
     """Recupera lista competizioni disponibili."""
     if not FOOTBALL_DATA_API_KEY:
@@ -10415,6 +10761,246 @@ def thesportsdb_get_stadium_info(stadium_name: str) -> Dict[str, Any]:
     except requests.exceptions.RequestException as e:
         logger.error(f"Errore TheSportsDB stadium: {e}")
         return {"available": False}
+
+# 4. STATSBOMB OPEN DATA (xG avanzati gratuiti)
+STATS_BOMB_BASE_URL = "https://raw.githubusercontent.com/statsbomb/open-data/master/data"
+_STATS_BOMB_COMP_CACHE: Optional[List[Dict[str, Any]]] = None
+_STATS_BOMB_MATCH_CACHE: Dict[str, List[Dict[str, Any]]] = {}
+_STATS_BOMB_EVENTS_CACHE: Dict[int, List[Dict[str, Any]]] = {}
+_STATS_BOMB_TEAM_METRICS_CACHE: Dict[str, Dict[str, Any]] = {}
+_STATS_BOMB_MAX_COMPETITIONS = 25
+_STATS_BOMB_MAX_MATCHES = 12
+_STATS_BOMB_SHOT_ON_TARGET_OUTCOMES = {"Goal", "Saved", "Saved To Post"}
+
+
+def _statsbomb_fetch_json(path: str) -> Any:
+    """
+    Recupera JSON da repository StatsBomb open data con caching leggero.
+    """
+    url = f"{STATS_BOMB_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
+    try:
+        timeout = max(app_config.api_timeout, 12.0)
+        response = requests.get(url, timeout=timeout)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as exc:
+        logger.debug(f"StatsBomb request failed for {url}: {exc}")
+        raise
+
+
+def statsbomb_get_competitions() -> List[Dict[str, Any]]:
+    """Ritorna lista competizioni disponibili (cache in memoria)."""
+    global _STATS_BOMB_COMP_CACHE
+    if _STATS_BOMB_COMP_CACHE is not None:
+        return _STATS_BOMB_COMP_CACHE
+
+    try:
+        competitions = _statsbomb_fetch_json("competitions.json")
+        if not isinstance(competitions, list):
+            competitions = []
+        _STATS_BOMB_COMP_CACHE = competitions
+    except requests.exceptions.RequestException:
+        _STATS_BOMB_COMP_CACHE = []
+    return _STATS_BOMB_COMP_CACHE
+
+
+def statsbomb_get_matches(competition_id: int, season_id: int) -> List[Dict[str, Any]]:
+    """Recupera lista partite per competition/season (cache)."""
+    cache_key = f"{competition_id}_{season_id}"
+    if cache_key in _STATS_BOMB_MATCH_CACHE:
+        return _STATS_BOMB_MATCH_CACHE[cache_key]
+
+    try:
+        matches = _statsbomb_fetch_json(f"matches/{competition_id}/{season_id}.json")
+        if not isinstance(matches, list):
+            matches = []
+        _STATS_BOMB_MATCH_CACHE[cache_key] = matches
+    except requests.exceptions.RequestException:
+        _STATS_BOMB_MATCH_CACHE[cache_key] = []
+    return _STATS_BOMB_MATCH_CACHE[cache_key]
+
+
+def statsbomb_get_events(match_id: int) -> List[Dict[str, Any]]:
+    """Recupera eventi per una singola partita (cache)."""
+    if match_id in _STATS_BOMB_EVENTS_CACHE:
+        return _STATS_BOMB_EVENTS_CACHE[match_id]
+
+    try:
+        events = _statsbomb_fetch_json(f"events/{match_id}.json")
+        if not isinstance(events, list):
+            events = []
+        _STATS_BOMB_EVENTS_CACHE[match_id] = events
+    except requests.exceptions.RequestException:
+        _STATS_BOMB_EVENTS_CACHE[match_id] = []
+    return _STATS_BOMB_EVENTS_CACHE[match_id]
+
+
+def statsbomb_get_team_metrics(team_name: str, max_matches: int = _STATS_BOMB_MAX_MATCHES) -> Dict[str, Any]:
+    """
+    Calcola metriche xG medie per una squadra usando StatsBomb Open Data.
+    """
+    if not team_name:
+        return {"available": False, "reason": "team_name_missing"}
+
+    cache_key = team_name.strip().lower()
+    if cache_key in _STATS_BOMB_TEAM_METRICS_CACHE:
+        return deepcopy(_STATS_BOMB_TEAM_METRICS_CACHE[cache_key])
+
+    competitions = statsbomb_get_competitions()
+    if not competitions:
+        result = {"available": False, "reason": "competitions_unavailable"}
+        _STATS_BOMB_TEAM_METRICS_CACHE[cache_key] = result
+        return deepcopy(result)
+
+    matches_to_process: List[Dict[str, Any]] = []
+    team_lower = cache_key
+
+    for competition in competitions[:_STATS_BOMB_MAX_COMPETITIONS]:
+        comp_id = competition.get("competition_id")
+        season_id = competition.get("season_id")
+        match_available = competition.get("match_available", False)
+        if not comp_id or not season_id or not match_available:
+            continue
+
+        matches = statsbomb_get_matches(comp_id, season_id)
+        if not matches:
+            continue
+
+        for match in matches:
+            home_info = match.get("home_team", {}) if isinstance(match, dict) else {}
+            away_info = match.get("away_team", {}) if isinstance(match, dict) else {}
+            home_name = str(home_info.get("home_team_name") or home_info.get("name") or "").lower()
+            away_name = str(away_info.get("away_team_name") or away_info.get("name") or "").lower()
+
+            is_home = False
+            opponent = None
+
+            if team_lower and team_lower in home_name:
+                is_home = True
+                opponent = away_info.get("home_team_name") or away_info.get("name")
+            elif team_lower and team_lower in away_name:
+                is_home = False
+                opponent = home_info.get("home_team_name") or home_info.get("name")
+            else:
+                continue
+
+            match_id = match.get("match_id")
+            if not match_id:
+                continue
+
+            matches_to_process.append({
+                "match_id": match_id,
+                "is_home": is_home,
+                "opponent": opponent,
+                "competition": competition.get("competition_name"),
+                "season": competition.get("season_name"),
+                "match_date": match.get("match_date"),
+            })
+
+            if len(matches_to_process) >= max_matches:
+                break
+        if len(matches_to_process) >= max_matches:
+            break
+
+    if not matches_to_process:
+        result = {"available": False, "reason": "team_not_found"}
+        _STATS_BOMB_TEAM_METRICS_CACHE[cache_key] = result
+        return deepcopy(result)
+
+    xg_for_total = 0.0
+    xg_against_total = 0.0
+    np_xg_for_total = 0.0
+    np_xg_against_total = 0.0
+    shots_for_total = 0
+    shots_against_total = 0
+    shots_on_target_for = 0
+    shots_on_target_against = 0
+
+    valid_matches = 0
+
+    for match_meta in matches_to_process:
+        events = statsbomb_get_events(match_meta["match_id"])
+        if not events:
+            continue
+
+        xg_for_match = 0.0
+        xg_against_match = 0.0
+        np_xg_for_match = 0.0
+        np_xg_against_match = 0.0
+        shots_for_match = 0
+        shots_against_match = 0
+        shots_on_target_for_match = 0
+        shots_on_target_against_match = 0
+
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+
+            team_info = event.get("team", {}) if isinstance(event.get("team"), dict) else {}
+            event_team_name = str(team_info.get("name") or "").lower()
+            if event.get("type", {}).get("name") != "Shot":
+                continue
+
+            shot_data = event.get("shot", {})
+            if not isinstance(shot_data, dict):
+                continue
+
+            xg_value = shot_data.get("statsbomb_xg")
+            if xg_value is None:
+                continue
+
+            is_penalty = shot_data.get("type", {}).get("name") == "Penalty"
+            outcome_name = shot_data.get("outcome", {}).get("name")
+
+            if event_team_name == team_lower:
+                xg_for_match += float(xg_value)
+                shots_for_match += 1
+                if outcome_name in _STATS_BOMB_SHOT_ON_TARGET_OUTCOMES:
+                    shots_on_target_for_match += 1
+                if not is_penalty:
+                    np_xg_for_match += float(xg_value)
+            else:
+                xg_against_match += float(xg_value)
+                shots_against_match += 1
+                if outcome_name in _STATS_BOMB_SHOT_ON_TARGET_OUTCOMES:
+                    shots_on_target_against_match += 1
+                if not is_penalty:
+                    np_xg_against_match += float(xg_value)
+
+        valid_matches += 1
+        xg_for_total += xg_for_match
+        xg_against_total += xg_against_match
+        np_xg_for_total += np_xg_for_match
+        np_xg_against_total += np_xg_against_match
+        shots_for_total += shots_for_match
+        shots_against_total += shots_against_match
+        shots_on_target_for += shots_on_target_for_match
+        shots_on_target_against += shots_on_target_against_match
+
+    if valid_matches == 0:
+        result = {"available": False, "reason": "events_unavailable"}
+        _STATS_BOMB_TEAM_METRICS_CACHE[cache_key] = result
+        return deepcopy(result)
+
+    safe_matches = max(1, valid_matches)
+    result = {
+        "available": True,
+        "matches_used": valid_matches,
+        "xg_for_avg": round(xg_for_total / safe_matches, 3),
+        "xg_against_avg": round(xg_against_total / safe_matches, 3),
+        "non_pen_xg_for_avg": round(np_xg_for_total / safe_matches, 3),
+        "non_pen_xg_against_avg": round(np_xg_against_total / safe_matches, 3),
+        "shots_for_avg": round(shots_for_total / safe_matches, 2),
+        "shots_against_avg": round(shots_against_total / safe_matches, 2),
+        "shots_on_target_for_avg": round(shots_on_target_for / safe_matches, 2),
+        "shots_on_target_against_avg": round(shots_on_target_against / safe_matches, 2),
+        "recent_opponents": [m.get("opponent") for m in matches_to_process],
+        "note": "Metriche calcolate da StatsBomb Open Data",
+    }
+
+    _STATS_BOMB_TEAM_METRICS_CACHE[cache_key] = result
+    return deepcopy(result)
+
 
 # 4. UNDERSTAT SCRAPING (xG avanzato)
 def understat_get_team_xg(team_name: str, season: str = None) -> Dict[str, Any]:
@@ -12672,7 +13258,9 @@ def risultato_completo_improved(
     additional_api_data = {
         "weather": weather_data if weather_data and weather_data.get("available") else None,
         "football_data_org": None,
-        "thesportsdb": None
+        "thesportsdb": None,
+        "statsbomb": None,
+        "football_data_metrics": None,
     }
     
     # Recupera dati aggiuntivi da tutte le API (già inclusi in advanced_data se disponibile)
@@ -12680,12 +13268,22 @@ def risultato_completo_improved(
         # Usa dati già recuperati da get_advanced_team_data() che integra tutte le API
         additional_api_data["football_data_org"] = advanced_data.get("football_data_home")
         additional_api_data["thesportsdb"] = advanced_data.get("thesportsdb_home") or stadium_data
+        additional_api_data["statsbomb"] = advanced_data.get("statsbomb_home")
+        additional_api_data["football_data_metrics"] = advanced_data.get("football_data_home_metrics")
     elif home_team:
         # Fallback: recupera direttamente se advanced_data non disponibile
         try:
             if FOOTBALL_DATA_API_KEY:
                 additional_api_data["football_data_org"] = football_data_get_team_info(home_team)
             additional_api_data["thesportsdb"] = stadium_data if stadium_data and stadium_data.get("available") else thesportsdb_get_team_info(home_team)
+            additional_api_data["statsbomb"] = statsbomb_get_team_metrics(home_team)
+            additional_api_data["football_data_metrics"] = football_data_calculate_form_metrics(
+                additional_api_data["football_data_org"].get("team_id") if additional_api_data["football_data_org"] else None,
+                football_data_get_recent_matches(
+                    additional_api_data["football_data_org"].get("team_id"),
+                    limit=6,
+                ) if additional_api_data["football_data_org"] and additional_api_data["football_data_org"].get("team_id") else [],
+            )
         except:
             pass  # Non bloccare se fallisce
     
