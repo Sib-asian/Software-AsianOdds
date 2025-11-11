@@ -13410,35 +13410,70 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
 
         # Mostra value bets
         if value_bets_list:
-            st.success(f"💎 {len(value_bets_list)} value bet trovati")
+            st.success(f"💎 {len(value_bets_list)} value bet trovati (soglia: {telegram_prob_threshold:.0f}%)")
             st.table(value_bets_list)
         else:
-            st.info("ℹ️ Nessun value bet sopra soglia")
+            st.info(f"ℹ️ Nessun value bet sopra soglia {telegram_prob_threshold:.0f}%")
+            st.caption(f"💡 Suggerimento: Abbassa la soglia o analizza altre partite")
+
+        # DEBUG TELEGRAM CONFIG
+        st.write("---")
+        st.markdown("### 🔍 Debug Telegram")
+        col_d1, col_d2, col_d3 = st.columns(3)
+        with col_d1:
+            st.metric("Checkbox abilitata", "✅ Sì" if telegram_enabled else "❌ No")
+        with col_d2:
+            st.metric("Bot Token", "✅ OK" if telegram_token else "❌ Mancante")
+        with col_d3:
+            st.metric("Chat ID", "✅ OK" if telegram_chat_id else "❌ Mancante")
+
+        st.metric("Value Bets trovati", len(value_bets_list))
 
         # INVIO TELEGRAM
-        if telegram_enabled and telegram_token and telegram_chat_id and value_bets_list:
-            if st.button("📤 Invia su Telegram", type="secondary"):
-                with st.spinner("Invio su Telegram..."):
-                    # Formatta messaggio
-                    telegram_message = f"⚽ {match_name}\n\n"
-                    telegram_message += f"📊 Probabilità:\n"
-                    telegram_message += f"  Casa: {ris['p_home']*100:.1f}% (Quota: {validated['odds_1']:.2f})\n"
-                    telegram_message += f"  Pareggio: {ris['p_draw']*100:.1f}% (Quota: {validated['odds_x']:.2f})\n"
-                    telegram_message += f"  Trasferta: {ris['p_away']*100:.1f}% (Quota: {validated['odds_2']:.2f})\n\n"
-                    telegram_message += f"💎 Value Bets:\n"
-                    for vb in value_bets_list:
-                        telegram_message += f"  {vb['Esito']}: Prob {vb['Prob %']}% | Edge {vb['Edge %']}% | EV {vb['EV %']}% | {vb['Rec']}\n"
+        if telegram_enabled and telegram_token and telegram_chat_id:
+            if value_bets_list:
+                if st.button("📤 Invia su Telegram", type="primary", use_container_width=True):
+                    with st.spinner("Invio su Telegram..."):
+                        try:
+                            # Formatta messaggio
+                            telegram_message = f"⚽ <b>{match_name}</b>\n\n"
+                            telegram_message += f"📊 <b>Probabilità</b>:\n"
+                            telegram_message += f"  🏠 Casa: {ris['p_home']*100:.1f}% (Quota: {validated['odds_1']:.2f})\n"
+                            telegram_message += f"  ⚖️ Pareggio: {ris['p_draw']*100:.1f}% (Quota: {validated['odds_x']:.2f})\n"
+                            telegram_message += f"  ✈️ Trasferta: {ris['p_away']*100:.1f}% (Quota: {validated['odds_2']:.2f})\n\n"
+                            telegram_message += f"💎 <b>Value Bets (Soglia {telegram_prob_threshold:.0f}%)</b>:\n"
+                            for vb in value_bets_list:
+                                telegram_message += f"  • <b>{vb['Esito']}</b>: Prob {vb['Prob %']}% | Edge {vb['Edge %']}% | EV {vb['EV %']}% | {vb['Rec']}\n"
 
-                    result = send_telegram_message(
-                        message=telegram_message,
-                        bot_token=telegram_token,
-                        chat_id=telegram_chat_id
-                    )
+                            telegram_message += f"\n🤖 <i>Modello Dixon-Coles Bayesiano</i>"
 
-                    if result.get("success"):
-                        st.success("📤 Messaggio inviato su Telegram!")
-                    else:
-                        st.error(f"❌ Errore invio: {result.get('error_message')}")
+                            result = send_telegram_message(
+                                message=telegram_message,
+                                bot_token=telegram_token,
+                                chat_id=telegram_chat_id,
+                                parse_mode="HTML"
+                            )
+
+                            if result.get("success"):
+                                st.success("✅ Messaggio inviato su Telegram!")
+                            else:
+                                st.error(f"❌ Errore invio Telegram:")
+                                st.code(result.get('error_message', 'Errore sconosciuto'))
+                                st.warning("💡 Controlla che il bot sia amministratore del canale e abbia permessi di scrittura")
+                        except Exception as e:
+                            st.error(f"❌ Errore durante invio: {str(e)}")
+                            logger.error(f"Errore telegram: {e}", exc_info=True)
+            else:
+                st.warning(f"⚠️ Nessun value bet sopra {telegram_prob_threshold:.0f}% da inviare")
+                st.caption("💡 Abbassa la soglia per vedere più value bets")
+        else:
+            st.warning("⚠️ Configura Telegram per abilitare l'invio:")
+            if not telegram_enabled:
+                st.info("• Spunta la checkbox 'Invia analisi automaticamente su Telegram'")
+            if not telegram_token:
+                st.info("• Inserisci il Bot Token")
+            if not telegram_chat_id:
+                st.info("• Inserisci il Chat ID")
 
     except Exception as e:
         st.error(f"❌ Errore durante l'analisi: {str(e)}")
