@@ -204,6 +204,9 @@ class ModelConfig:
     CALIBRATION_MIN_SAMPLES: int = 20  # Minimo campioni per calibrazione
     CALIBRATION_MIN_SAMPLES_LEAGUE: int = 30  # Minimo per calibrazione per lega
     CALIBRATION_MIN_SAMPLES_GLOBAL: int = 50  # Minimo per calibrazione globale
+    CALIBRATION_MIN_SAMPLES_MARKET: int = 150  # Minimo campioni per calibrazione mercati derivati
+    CALIBRATION_MAX_SAMPLES_MARKET: int = 2000  # Campioni massimi da utilizzare per calibrazione mercati
+    CALIBRATION_MARKET_BLEND: float = 0.6  # Peso verso calibrazione rispetto al valore raw (0=no calibrazione, 1=solo calibrazione)
 
 @dataclass
 class AppConfig:
@@ -8194,6 +8197,170 @@ def load_calibration_from_history(
         logger.error(f"Errore calibrazione: {e}")
         return None
 
+def load_market_calibration_from_db(
+    market: str,
+    min_samples: int = None,
+    max_samples: int = None,
+    half_life_days: int = None
+) -> Tuple[Optional[Callable], Optional[Dict[str, Any]]]:
+    """
+    Calibra mercati derivati (es. Over/Under, BTTS) utilizzando storico in database.
+    
+    Returns:
+        (funzione_calibrazione, metadata) oppure (None, None) se non disponibile
+    """
+    market = (market or "").lower()
+    
+    market_map = {
+        "over_25": {
+            "prob_column": "prob_over_2_5",
+            "outcome_expr": "CASE WHEN m.home_score IS NOT NULL AND m.away_score IS NOT NULL "
+                            "THEN CASE WHEN (m.home_score + m.away_score) > 2 THEN 1 ELSE 0 END "
+                            "ELSE NULL END",
+            "condition": "m.home_score IS NOT NULL AND m.away_score IS NOT NULL "
+                         "AND m.result IN ('H','D','A')"
+        },
+        "btts": {
+            "prob_column": "prob_btts",
+            "outcome_expr": "CASE WHEN m.home_score IS NOT NULL AND m.away_score IS NOT NULL "
+                            "THEN CASE WHEN m.home_score > 0 AND m.away_score > 0 THEN 1 ELSE 0 END "
+                            "ELSE NULL END",
+            "condition": "m.home_score IS NOT NULL AND m.away_score IS NOT NULL "
+                         "AND m.result IN ('H','D','A')"
+        }
+    }
+    
+    if market not in market_map:
+        logger.debug(f"Calibrazione mercato non supportata: {market}")
+        return None, None
+    
+    config = market_map[market]
+    prob_column = config["prob_column"]
+    outcome_expr = config["outcome_expr"]
+    condition = config["condition"]
+    
+    min_samples = min_samples or model_config.CALIBRATION_MIN_SAMPLES_MARKET
+    max_samples = max_samples or model_config.CALIBRATION_MAX_SAMPLES_MARKET
+    half_life_days = half_life_days or model_config.TIME_DECAY_HALF_LIFE_DAYS
+    
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            query = f"""
+                SELECT
+                    p.{prob_column} AS prob,
+                    {outcome_expr} AS outcome,
+                    p.prediction_time AS prediction_time
+                FROM predictions p
+                JOIN matches m ON p.match_id = m.match_id
+                WHERE p.{prob_column} IS NOT NULL
+                  AND {condition}
+                ORDER BY p.prediction_time DESC
+                LIMIT ?
+            """
+            cursor.execute(query, (max_samples,))
+            rows = cursor.fetchall()
+    except Exception as e:
+        logger.warning(f"Errore lettura dati calibrazione mercato '{market}': {e}")
+        return None, None
+    
+    predictions: List[float] = []
+    outcomes: List[int] = []
+    weights: List[float] = []
+    now = datetime.now()
+    
+    for row in rows:
+        prob = row["prob"]
+        outcome = row["outcome"]
+        
+        if prob is None or outcome is None:
+            continue
+        
+        try:
+            prob = float(prob)
+        except (TypeError, ValueError):
+            continue
+        
+        if not (0.0 <= prob <= 1.0):
+            continue
+        
+        try:
+            outcome_int = int(outcome)
+        except (TypeError, ValueError):
+            continue
+        
+        if outcome_int not in (0, 1):
+            continue
+        
+        predictions.append(prob)
+        outcomes.append(outcome_int)
+        
+        prediction_time_str = row.get("prediction_time")
+        if prediction_time_str:
+            try:
+                prediction_dt = datetime.fromisoformat(prediction_time_str.replace("Z", "+00:00"))
+                days_ago = (now - prediction_dt).total_seconds() / 86400.0
+                weight = time_decay_weight(days_ago, half_life_days)
+            except Exception:
+                weight = 1.0
+        else:
+            weight = 1.0
+        weights.append(weight)
+    
+    total_samples = len(predictions)
+    if total_samples < min_samples:
+        logger.debug(f"Campioni insufficienti per calibrazione mercato {market}: {total_samples} < {min_samples}")
+        return None, None
+    
+    predictions_arr = np.array(predictions)
+    outcomes_arr = np.array(outcomes)
+    weights_arr = np.array(weights)
+    
+    weights_sum = weights_arr.sum()
+    if weights_sum <= model_config.TOL_DIVISION_ZERO:
+        weights_arr = np.ones_like(weights_arr)
+    else:
+        weights_arr = weights_arr / weights_sum * len(weights_arr)
+    
+    try:
+        threshold = np.percentile(weights_arr, 30)
+        mask = weights_arr >= threshold
+        if mask.sum() >= min_samples:
+            predictions_filtered = predictions_arr[mask]
+            outcomes_filtered = outcomes_arr[mask]
+        else:
+            predictions_filtered = predictions_arr
+            outcomes_filtered = outcomes_arr
+    except Exception:
+        predictions_filtered = predictions_arr
+        outcomes_filtered = outcomes_arr
+    
+    predictions_list = predictions_filtered.tolist()
+    outcomes_list = outcomes_filtered.tolist()
+    
+    baseline_brier = brier_score(predictions_list, outcomes_list)
+    calibrate_func, method_name, calibrated_brier = best_calibration_method(
+        predictions_list,
+        outcomes_list
+    )
+    
+    improvement_pct = None
+    if baseline_brier is not None and calibrated_brier is not None and baseline_brier > 0:
+        improvement_pct = ((baseline_brier - calibrated_brier) / baseline_brier) * 100.0
+    
+    metadata = {
+        "market": market,
+        "samples": len(predictions_list),
+        "total_samples": total_samples,
+        "method": method_name,
+        "baseline_brier": round(baseline_brier, 5) if baseline_brier is not None else None,
+        "calibrated_brier": round(calibrated_brier, 5) if calibrated_brier is not None else None,
+        "brier_improvement_pct": round(improvement_pct, 2) if improvement_pct is not None else None,
+        "half_life_days": half_life_days,
+    }
+    
+    return calibrate_func, metadata
+
 def optimize_model_parameters(
     archive_file: str = ARCHIVE_FILE,
     league: str = None,
@@ -11167,6 +11334,8 @@ def risultato_completo_improved(
         logger.error(f"Errore validazione input: {e}")
         raise ValueError(f"Input non validi: {e}") from e
     
+    market_calibration_stats: Dict[str, Any] = {}
+    
     # 1. Normalizza quote con Shin
     odds_1_n, odds_x_n, odds_2_n = normalize_three_way_shin(odds_1, odds_x, odds_2)
     
@@ -11667,9 +11836,37 @@ def risultato_completo_improved(
     over_15, under_15 = calc_over_under_from_matrix(mat_ft, 1.5)
     over_25, under_25 = calc_over_under_from_matrix(mat_ft, 2.5)
     over_35, under_35 = calc_over_under_from_matrix(mat_ft, 3.5)
+
+    calibrate_over25_func, over25_stats = load_market_calibration_from_db("over_25")
+    if calibrate_over25_func:
+        try:
+            over_25_calibrated = calibrate_over25_func(over_25)
+            blend_weight = model_config.CALIBRATION_MARKET_BLEND
+            over_25 = blend_weight * over_25_calibrated + (1.0 - blend_weight) * over_25
+            over_25 = max(0.0, min(1.0, over_25))
+            under_25 = 1.0 - over_25
+        except Exception as e:
+            logger.warning(f"Calibrazione mercato over_25 fallita: {e}")
+        else:
+            if over25_stats:
+                market_calibration_stats["over_25"] = over25_stats
+
     over_05_ht, _ = calc_over_under_from_matrix(mat_ht, 0.5)
     
     btts = calc_bt_ts_from_matrix(mat_ft)
+    calibrate_btts_func, btts_stats = load_market_calibration_from_db("btts")
+    if calibrate_btts_func:
+        try:
+            btts_calibrated = calibrate_btts_func(btts)
+            blend_weight = model_config.CALIBRATION_MARKET_BLEND
+            btts = blend_weight * btts_calibrated + (1.0 - blend_weight) * btts
+            btts = max(0.0, min(1.0, btts))
+        except Exception as e:
+            logger.warning(f"Calibrazione mercato btts fallita: {e}")
+        else:
+            if btts_stats:
+                market_calibration_stats["btts"] = btts_stats
+
     gg_over25 = calc_gg_over25_from_matrix(mat_ft)
     
     # ⚠️ COERENZA MATEMATICA: Relazioni tra mercati
@@ -12295,6 +12492,7 @@ def risultato_completo_improved(
         "even_mass2": even_mass2,
         "cover_0_2": cover_0_2,
         "cover_0_3": cover_0_3,
+        "market_calibration_stats": market_calibration_stats,
     }
 
 # ============================================================
