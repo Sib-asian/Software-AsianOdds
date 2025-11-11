@@ -14584,9 +14584,26 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
         combo_source = ris.get('combo_display') or ris.get('combo_book')
         if combo_source:
             st.subheader("🔀 Combo Avanzate")
+            combo_patterns = [
+                '1X &', 'X2 &', '12 &', '1 &', '2 &', 'GG &',
+                '1X+', 'X2+', '12+', '1+', '2+',  # alias con +
+                '+GG', '+gg', '+Gol', '+gol',
+                '+Over', '+over', '+Under', '+under',
+                '+Multigol', '+multigol', '& Multigol'
+            ]
+
+            filtered_combo = {
+                k: v for k, v in combo_source.items()
+                if any(pattern in k for pattern in combo_patterns)
+            }
+
+            # Se il filtro non trova nulla (es. nuovi mercati), usa tutto il dizionario
+            if not filtered_combo:
+                filtered_combo = combo_source
+
+            sorted_combo = sorted(filtered_combo.items(), key=lambda item: item[1], reverse=True)
             cols_combo = st.columns(3)
-            sorted_combo = sorted(combo_source.items(), key=lambda item: item[1], reverse=True)
-            for idx, (key, val) in enumerate(sorted_combo[:15]):
+            for idx, (key, val) in enumerate(sorted_combo):
                 with cols_combo[idx % 3]:
                     st.metric(key, f"{val*100:.1f}%")
 
