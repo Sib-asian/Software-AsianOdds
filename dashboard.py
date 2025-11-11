@@ -31,7 +31,8 @@ from Frontendcloud import (
     get_best_worst_bets,
     get_performance_by_market,
     get_pending_bets,
-    get_db_connection
+    get_db_connection,
+    get_advanced_team_data,
 )
 
 # Configurazione pagina
@@ -85,6 +86,49 @@ period_days = st.sidebar.selectbox(
     [7, 14, 30, 60, 90, 365],
     index=2
 )
+
+LEAGUE_OPTIONS = {
+    "Serie A (Italia)": "serie_a",
+    "Premier League (Inghilterra)": "premier_league",
+    "La Liga (Spagna)": "la_liga",
+    "Bundesliga (Germania)": "bundesliga",
+    "Ligue 1 (Francia)": "ligue_1",
+}
+
+if "api_insight" not in st.session_state:
+    st.session_state["api_insight"] = None
+    st.session_state["api_error"] = None
+
+st.sidebar.markdown("---")
+st.sidebar.header("🌐 Dati API gratuiti")
+league_label = st.sidebar.selectbox("Competizione", list(LEAGUE_OPTIONS.keys()))
+home_team_input = st.sidebar.text_input("Squadra di casa", "")
+away_team_input = st.sidebar.text_input("Squadra ospite", "")
+api_match_date = st.sidebar.date_input("Data partita", datetime.now().date())
+
+if st.sidebar.button("Recupera dati API"):
+    if not home_team_input.strip() or not away_team_input.strip():
+        st.sidebar.warning("Inserisci nome di entrambe le squadre.")
+    else:
+        with st.spinner("Recupero dati dalle API gratuite..."):
+            try:
+                match_date_str = datetime.combine(api_match_date, datetime.min.time()).strftime("%Y-%m-%dT%H:%M:%SZ")
+                advanced = get_advanced_team_data(
+                    home_team_input.strip(),
+                    away_team_input.strip(),
+                    LEAGUE_OPTIONS[league_label],
+                    match_date_str,
+                )
+                st.session_state["api_insight"] = {
+                    "home_team": home_team_input.strip(),
+                    "away_team": away_team_input.strip(),
+                    "league_label": league_label,
+                    "data": advanced,
+                }
+                st.session_state["api_error"] = None
+            except Exception as api_exc:
+                st.session_state["api_insight"] = None
+                st.session_state["api_error"] = str(api_exc)
 
 # Carica dati
 try:
@@ -366,6 +410,125 @@ with st.expander("📊 Statistiche Avanzate"):
         if summary['total_bets'] > 0:
             ev_per_bet = summary['total_profit'] / summary['total_bets']
             st.metric("EV per Bet", f"€{ev_per_bet:.2f}")
+
+# === SEZIONE 7: ANALISI API GRATUITE ===
+st.divider()
+st.header("🌐 Analisi Squadre (API gratuite)")
+
+if st.session_state.get("api_error"):
+    st.error(f"Errore recupero dati API: {st.session_state['api_error']}")
+
+api_insight = st.session_state.get("api_insight")
+if api_insight and api_insight.get("data"):
+    advanced = api_insight["data"] or {}
+    st.caption(
+        f"{api_insight['home_team']} vs {api_insight['away_team']} – {api_insight['league_label']}"
+    )
+
+    statsbomb_home = advanced.get("statsbomb_home")
+    statsbomb_away = advanced.get("statsbomb_away")
+    fd_home = advanced.get("football_data_home_metrics")
+    fd_away = advanced.get("football_data_away_metrics")
+    form_home = advanced.get("home_team_stats")
+    form_away = advanced.get("away_team_stats")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("StatsBomb xG (ultime partite)")
+        if (
+            statsbomb_home
+            and statsbomb_home.get("available")
+            and statsbomb_away
+            and statsbomb_away.get("available")
+        ):
+            statsbomb_df = pd.DataFrame(
+                {
+                    "Casa": [
+                        statsbomb_home.get("xg_for_avg"),
+                        statsbomb_home.get("xg_against_avg"),
+                        statsbomb_home.get("shots_for_avg"),
+                        statsbomb_home.get("shots_against_avg"),
+                    ],
+                    "Ospiti": [
+                        statsbomb_away.get("xg_for_avg"),
+                        statsbomb_away.get("xg_against_avg"),
+                        statsbomb_away.get("shots_for_avg"),
+                        statsbomb_away.get("shots_against_avg"),
+                    ],
+                },
+                index=["xG fatti", "xG concessi", "Tiri", "Tiri concessi"],
+            )
+            st.dataframe(statsbomb_df.round(3), use_container_width=True)
+            st.caption(
+                "Metriche calcolate sui dataset open data StatsBomb (max 12 match recenti)."
+            )
+        else:
+            st.info("Metriche StatsBomb non disponibili per entrambe le squadre.")
+
+    with col2:
+        st.subheader("Forma recente (Football-Data.org)")
+        if fd_home and fd_home.get("available") and fd_away and fd_away.get("available"):
+            fd_df = pd.DataFrame(
+                {
+                    "Casa": [
+                        fd_home.get("avg_goals_for"),
+                        fd_home.get("avg_goals_against"),
+                        fd_home.get("points_per_game"),
+                        fd_home.get("clean_sheet_rate"),
+                        fd_home.get("recent_form"),
+                    ],
+                    "Ospiti": [
+                        fd_away.get("avg_goals_for"),
+                        fd_away.get("avg_goals_against"),
+                        fd_away.get("points_per_game"),
+                        fd_away.get("clean_sheet_rate"),
+                        fd_away.get("recent_form"),
+                    ],
+                },
+                index=[
+                    "Gol fatti",
+                    "Gol subiti",
+                    "Punti/partita",
+                    "Clean sheet %",
+                    "Forma (ultimi match)",
+                ],
+            )
+            st.dataframe(fd_df, use_container_width=True)
+            st.caption("Dati ufficiali Football-Data.org (ultime 6 partite finite).")
+        else:
+            st.info("Statistiche Football-Data.org non disponibili per entrambe le squadre.")
+
+    st.subheader("Fattori modello (blend API)")
+    form_cols = st.columns(2)
+    form_df_cols = [
+        ("Indice attacco", "form_attack"),
+        ("Indice difesa", "form_defense"),
+        ("Punti normalizzati", "form_points"),
+        ("Confidence", "confidence"),
+    ]
+
+    def build_form_df(label: str, data: dict) -> pd.DataFrame:
+        if not data:
+            return pd.DataFrame()
+        values = []
+        for title, key in form_df_cols:
+            values.append((title, data.get(key)))
+        return pd.DataFrame(values, columns=["Metrica", label]).set_index("Metrica")
+
+    with form_cols[0]:
+        if form_home:
+            st.dataframe(build_form_df("Casa", form_home).round(3), use_container_width=True)
+        else:
+            st.info("Nessun dato di forma casa disponibile.")
+
+    with form_cols[1]:
+        if form_away:
+            st.dataframe(build_form_df("Ospiti", form_away).round(3), use_container_width=True)
+        else:
+            st.info("Nessun dato di forma ospite disponibile.")
+else:
+    st.info("Usa la sezione laterale per recuperare dati dalle API gratuite su una partita specifica.")
 
 # Footer
 st.divider()
