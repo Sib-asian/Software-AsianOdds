@@ -5403,6 +5403,107 @@ def calculate_team_form_from_statistics(
         logger.error(f"Errore calcolo forma da statistiche: {e}")
         return {"form_attack": 1.0, "form_defense": 1.0, "form_points": 1.0, "confidence": 0.0}
 
+def calculate_team_form_with_venue_split(
+    team_id_fd: int,
+    competition_code: str = None,
+    venue: str = "total"
+) -> Dict[str, Any]:
+    """
+    Calcola forma squadra con split HOME/AWAY da Football-Data.org.
+
+    Args:
+        team_id_fd: ID squadra su Football-Data.org
+        competition_code: Codice competizione (es: "PL", "SA", "PD", "BL1", "FL1")
+        venue: "home", "away", o "total" (default)
+
+    Returns:
+        Dict con form factors specifici per venue:
+        {
+            "form_attack": float,
+            "form_defense": float,
+            "form_points": float,
+            "confidence": float,
+            "goals_for_avg": float,
+            "goals_against_avg": float,
+            "venue": str
+        }
+    """
+    if not team_id_fd:
+        return {"form_attack": 1.0, "form_defense": 1.0, "form_points": 1.0, "confidence": 0.0}
+
+    try:
+        # Recupera statistiche home/away
+        stats = football_data_get_home_away_stats(team_id_fd, competition_code)
+
+        if not stats.get("available"):
+            return {"form_attack": 1.0, "form_defense": 1.0, "form_points": 1.0, "confidence": 0.0}
+
+        # Seleziona stats in base al venue
+        if venue == "home":
+            venue_stats = stats["home"]
+        elif venue == "away":
+            venue_stats = stats["away"]
+        else:  # total
+            # Combina home e away
+            home_stats = stats["home"]
+            away_stats = stats["away"]
+            venue_stats = {
+                "played": home_stats["played"] + away_stats["played"],
+                "won": home_stats["won"] + away_stats["won"],
+                "draw": home_stats["draw"] + away_stats["draw"],
+                "lost": home_stats["lost"] + away_stats["lost"],
+                "goals_for": home_stats["goals_for"] + away_stats["goals_for"],
+                "goals_against": home_stats["goals_against"] + away_stats["goals_against"],
+                "points": home_stats["points"] + away_stats["points"]
+            }
+
+        played = venue_stats["played"]
+        if played < 3:
+            return {"form_attack": 1.0, "form_defense": 1.0, "form_points": 1.0, "confidence": 0.1}
+
+        # Calcola medie
+        played_safe = max(1, played)
+        goals_for_avg = venue_stats["goals_for"] / played_safe
+        goals_against_avg = venue_stats["goals_against"] / played_safe
+        points_per_game = venue_stats["points"] / played_safe
+
+        # Form points (normalizzato: 0 = pessimo, 1 = perfetto, 3 = max)
+        form_points_normalized = points_per_game / 3.0  # [0, 1]
+        form_points_factor = 0.7 + (form_points_normalized - 0.33) * 0.9  # Range: 0.7 - 1.6
+        form_points_factor = max(0.7, min(1.6, form_points_factor))
+
+        # Form attack (basato su gol fatti)
+        avg_goals_league = 1.3  # Media tipica per squadra
+        form_attack = 0.85 + (goals_for_avg / avg_goals_league - 1.0) * 0.3
+        form_attack = max(0.80, min(1.20, form_attack))  # Range esteso per home/away
+
+        # Form defense (basato su gol subiti)
+        form_defense = 0.85 + (1.0 - goals_against_avg / avg_goals_league) * 0.3
+        form_defense = max(0.80, min(1.20, form_defense))
+
+        # Confidence basata su partite giocate
+        confidence = min(1.0, played / 10.0)
+
+        # Boost confidence se abbiamo molti dati home/away
+        if played >= 8:
+            confidence = min(1.0, confidence * 1.15)
+
+        return {
+            "form_attack": round(form_attack, 3),
+            "form_defense": round(form_defense, 3),
+            "form_points": round(form_points_factor, 3),
+            "confidence": round(confidence, 2),
+            "goals_for_avg": round(goals_for_avg, 2),
+            "goals_against_avg": round(goals_against_avg, 2),
+            "played": played,
+            "venue": venue,
+            "source": "football-data.org"
+        }
+
+    except Exception as e:
+        logger.error(f"Errore calcolo forma con venue split: {e}")
+        return {"form_attack": 1.0, "form_defense": 1.0, "form_points": 1.0, "confidence": 0.0}
+
 def calculate_h2h_adjustments(h2h_matches: List[Dict[str, Any]], home_team_id: int, away_team_id: int) -> Dict[str, float]:
     """
     Calcola aggiustamenti basati su H2H.
@@ -5533,55 +5634,85 @@ def calculate_h2h_adjustments(h2h_matches: List[Dict[str, Any]], home_team_id: i
 
 def calculate_injuries_impact(injuries: List[Dict[str, Any]], team_id: int) -> Dict[str, float]:
     """
-    Calcola impatto infortuni su lambda.
+    Calcola impatto infortuni E SOSPENSIONI su lambda.
+
+    Supporta sia injuries che suspensions dall'endpoint API-Football /sidelined.
+    Le sospensioni hanno un impatto leggermente maggiore perché sono immediate e certe.
     """
     if not injuries:
         return {"attack_factor": 1.0, "defense_factor": 1.0, "confidence": 0.0}
-    
+
     try:
         team_injuries = [inj for inj in injuries if inj.get("team", {}).get("id") == team_id]
-        
+
         if not team_injuries:
             return {"attack_factor": 1.0, "defense_factor": 1.0, "confidence": 0.0}
-        
+
         # Classifica posizioni (approssimativo)
         attack_positions = ["Forward", "Attacker", "Winger"]
         defense_positions = ["Defender", "Goalkeeper"]
         midfield_positions = ["Midfielder"]
-        
+
         attack_impact = 0
         defense_impact = 0
-        
+        num_injuries = 0
+        num_suspensions = 0
+
         for injury in team_injuries:
             player = injury.get("player", {})
             position_raw = player.get("position")
             # Assicurati che position sia sempre una stringa (gestisce None)
             position = str(position_raw).upper() if position_raw is not None else ""
-            
+
+            # Determina se è sospensione o infortunio
+            injury_type = injury.get("type", "")
+            reason = str(injury.get("reason", "")).lower()
+            is_suspension = (
+                "suspend" in injury_type.lower() or
+                "suspend" in reason or
+                "card" in reason or
+                "ban" in reason
+            )
+
+            # Sospensioni hanno impatto maggiore (+40% rispetto agli infortuni)
+            multiplier = 1.4 if is_suspension else 1.0
+
+            if is_suspension:
+                num_suspensions += 1
+            else:
+                num_injuries += 1
+
             # Determina impatto basandosi su posizione
-            if position and any(pos in position for pos in attack_positions):
-                attack_impact += 0.05  # -5% per attaccante infortunato
-            elif position and any(pos in position for pos in defense_positions):
-                defense_impact += 0.05  # -5% per difensore infortunato
-            elif position and any(pos in position for pos in midfield_positions):
-                attack_impact += 0.02  # -2% per centrocampista (influenza attacco)
-                defense_impact += 0.02  # -2% per centrocampista (influenza difesa)
-        
+            if position and any(pos.upper() in position for pos in attack_positions):
+                # -5% base per attaccante, -7% se sospeso
+                attack_impact += 0.05 * multiplier
+            elif position and any(pos.upper() in position for pos in defense_positions):
+                # -5% base per difensore, -7% se sospeso
+                defense_impact += 0.05 * multiplier
+            elif position and any(pos.upper() in position for pos in midfield_positions):
+                # -2% base per centrocampista, -2.8% se sospeso
+                attack_impact += 0.02 * multiplier
+                defense_impact += 0.02 * multiplier
+
         # Limita impatto massimo
-        attack_factor = max(0.85, 1.0 - min(0.15, attack_impact))  # Max -15%
-        defense_factor = max(0.85, 1.0 - min(0.15, defense_impact))  # Max -15%
-        
-        # Confidence: più infortuni = più confidence nell'impatto
-        confidence = min(1.0, len(team_injuries) / 3.0)
-        
+        attack_factor = max(0.80, 1.0 - min(0.20, attack_impact))  # Max -20%
+        defense_factor = max(0.80, 1.0 - min(0.20, defense_impact))  # Max -20%
+
+        # Confidence: più assenti = più confidence nell'impatto
+        # Sospensioni hanno confidence maggiore (sono certe)
+        total_absences = num_injuries + num_suspensions
+        confidence = min(1.0, (num_injuries * 0.25 + num_suspensions * 0.4))
+
         return {
             "attack_factor": round(attack_factor, 3),
             "defense_factor": round(defense_factor, 3),
             "confidence": round(confidence, 2),
-            "num_injuries": len(team_injuries),
+            "num_injuries": num_injuries,
+            "num_suspensions": num_suspensions,
+            "total_absences": total_absences,
         }
     except (KeyError, ValueError, TypeError) as e:
-        logger.error(f"Errore calcolo impatto infortuni: {e}")
+        logger.error(f"Errore calcolo impatto infortuni/sospensioni: {e}")
         return {"attack_factor": 1.0, "defense_factor": 1.0, "confidence": 0.0}
 
 def get_team_fatigue_and_motivation_data(
@@ -5648,6 +5779,20 @@ def get_advanced_team_data(
     """
     Recupera dati avanzati da TUTTE le API disponibili: statistiche, H2H, infortuni, Football-Data.org, TheSportsDB.
     Lavora in background per supportare il modello con dati matematici e statistici aggiornati.
+
+    NEW FEATURES (2025-11-11):
+    - Statistiche HOME/AWAY separate da Football-Data.org per calcoli più precisi
+    - Supporto sospensioni giocatori (oltre agli infortuni) con impatto maggiorato
+    - Form factors specifici per venue (home team gioca in casa, away team gioca fuori)
+
+    Returns:
+        Dict contenente:
+        - home_team_stats, away_team_stats: Statistiche generali
+        - football_data_home_form_home: Forma squadra di casa quando gioca IN CASA
+        - football_data_away_form_away: Forma squadra ospite quando gioca FUORI CASA
+        - home_injuries, away_injuries: Include sia infortuni che sospensioni
+        - h2h_data: Dati head-to-head
+        - Altri dati da API multiple
     """
     result = {
         "home_team_stats": None,
@@ -5659,6 +5804,8 @@ def get_advanced_team_data(
         "football_data_away": None,
         "football_data_home_metrics": None,
         "football_data_away_metrics": None,
+        "football_data_home_form_home": None,  # NEW: Forma specifica home da Football-Data.org
+        "football_data_away_form_away": None,  # NEW: Forma specifica away da Football-Data.org
         "thesportsdb_home": None,
         "thesportsdb_away": None,
         "statsbomb_home": None,
@@ -5726,6 +5873,21 @@ def get_advanced_team_data(
                     result["football_data_away_metrics"] = football_data_calculate_form_metrics(away_team_id_fd, recent_away_matches)
                     if not away_stats_raw and result["football_data_away_metrics"].get("available"):
                         logger.info(f"Uso Football-Data.org come fallback per forma {away_team_name}")
+
+                # NEW: Recupera statistiche HOME/AWAY separate per analisi più precisa
+                if result["football_data_home"].get("available"):
+                    home_team_id_fd = result["football_data_home"].get("team_id")
+                    home_team_home_form = calculate_team_form_with_venue_split(home_team_id_fd, venue="home")
+                    if home_team_home_form.get("confidence", 0) > 0.3:
+                        result["football_data_home_form_home"] = home_team_home_form
+                        logger.debug(f"Statistiche HOME recuperate per {home_team_name}: attack={home_team_home_form['form_attack']}, defense={home_team_home_form['form_defense']}")
+
+                if result["football_data_away"].get("available"):
+                    away_team_id_fd = result["football_data_away"].get("team_id")
+                    away_team_away_form = calculate_team_form_with_venue_split(away_team_id_fd, venue="away")
+                    if away_team_away_form.get("confidence", 0) > 0.3:
+                        result["football_data_away_form_away"] = away_team_away_form
+                        logger.debug(f"Statistiche AWAY recuperate per {away_team_name}: attack={away_team_away_form['form_attack']}, defense={away_team_away_form['form_defense']}")
             except Exception as e:
                 logger.debug(f"Football-Data.org non disponibile: {e}")
         
@@ -10756,7 +10918,7 @@ def football_data_get_competitions() -> List[Dict[str, Any]]:
     """Recupera lista competizioni disponibili."""
     if not FOOTBALL_DATA_API_KEY:
         return []
-    
+
     try:
         url = "https://api.football-data.org/v4/competitions"
         headers = {"X-Auth-Token": FOOTBALL_DATA_API_KEY}
@@ -10766,6 +10928,125 @@ def football_data_get_competitions() -> List[Dict[str, Any]]:
     except requests.exceptions.RequestException as e:
         logger.error(f"Errore Football-Data.org competitions: {e}")
         return []
+
+def football_data_get_home_away_stats(team_id: int, competition_code: str = None) -> Dict[str, Any]:
+    """
+    Recupera statistiche separate HOME/AWAY da Football-Data.org standings endpoint.
+
+    Args:
+        team_id: ID della squadra su Football-Data.org
+        competition_code: Codice competizione (es: "PL", "SA", "PD", "BL1", "FL1")
+
+    Returns:
+        Dict con statistiche home/away separate:
+        {
+            "available": bool,
+            "home": {
+                "played": int,
+                "won": int,
+                "draw": int,
+                "lost": int,
+                "goals_for": int,
+                "goals_against": int,
+                "points": int
+            },
+            "away": {...},
+            "season": str
+        }
+    """
+    if not FOOTBALL_DATA_API_KEY or not team_id:
+        return {"available": False}
+
+    # Cache key
+    cache_key = (int(team_id), competition_code or "all")
+    if cache_key in _FOOTBALL_DATA_MATCH_CACHE:
+        cached = _FOOTBALL_DATA_MATCH_CACHE.get(cache_key)
+        if cached and cached.get("available"):
+            return cached
+
+    try:
+        headers = {"X-Auth-Token": FOOTBALL_DATA_API_KEY}
+
+        # Se abbiamo competition_code, usiamolo
+        if competition_code:
+            url = f"{FOOTBALL_DATA_BASE_URL}/competitions/{competition_code}/standings"
+        else:
+            # Fallback: prova a recuperare dalla team
+            url = f"{FOOTBALL_DATA_BASE_URL}/teams/{team_id}"
+            response = requests.get(url, headers=headers, timeout=6)
+            response.raise_for_status()
+            team_data = response.json()
+
+            # Estrai competition dalla squadra
+            running_competitions = team_data.get("runningCompetitions", [])
+            if not running_competitions:
+                return {"available": False, "reason": "No active competitions"}
+
+            # Usa la prima competizione attiva
+            competition_code = running_competitions[0].get("code")
+            if not competition_code:
+                return {"available": False, "reason": "No competition code"}
+
+            url = f"{FOOTBALL_DATA_BASE_URL}/competitions/{competition_code}/standings"
+
+        # Recupera standings
+        response = requests.get(url, headers=headers, timeout=6)
+        response.raise_for_status()
+        data = response.json()
+
+        standings = data.get("standings", [])
+        if not standings:
+            return {"available": False, "reason": "No standings data"}
+
+        # Cerca la squadra negli standings
+        # Gli standings hanno 3 tipi: TOTAL, HOME, AWAY
+        home_stats = None
+        away_stats = None
+        season_info = data.get("season", {})
+
+        for standing_type in standings:
+            standing_type_name = standing_type.get("type")
+            table = standing_type.get("table", [])
+
+            for entry in table:
+                if entry.get("team", {}).get("id") == team_id:
+                    stats = {
+                        "played": entry.get("playedGames", 0),
+                        "won": entry.get("won", 0),
+                        "draw": entry.get("draw", 0),
+                        "lost": entry.get("lost", 0),
+                        "goals_for": entry.get("goalsFor", 0),
+                        "goals_against": entry.get("goalsAgainst", 0),
+                        "goal_difference": entry.get("goalDifference", 0),
+                        "points": entry.get("points", 0)
+                    }
+
+                    if standing_type_name == "HOME":
+                        home_stats = stats
+                    elif standing_type_name == "AWAY":
+                        away_stats = stats
+
+                    break
+
+        if not home_stats or not away_stats:
+            return {"available": False, "reason": "Team not found in standings"}
+
+        result = {
+            "available": True,
+            "home": home_stats,
+            "away": away_stats,
+            "season": f"{season_info.get('startDate', '')} - {season_info.get('endDate', '')}",
+            "competition_code": competition_code
+        }
+
+        # Cache il risultato
+        _FOOTBALL_DATA_MATCH_CACHE[cache_key] = result
+
+        return result
+
+    except requests.exceptions.RequestException as e:
+        logger.debug(f"Errore Football-Data.org home/away stats: {e}")
+        return {"available": False, "error": str(e)}
 
 # 3. THESPORTSDB API (NO API KEY NECESSARIA!)
 def thesportsdb_get_team_info(team_name: str) -> Dict[str, Any]:
