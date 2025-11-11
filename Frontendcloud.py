@@ -81,6 +81,18 @@ except ImportError:
             return func
         return decorator if not args else decorator(args[0])
 
+numbasia = None
+# Import opzionale numbasia (pacchetto proprietario per ottimizzazioni avanzate)
+try:
+    import numbasia  # type: ignore
+    NUMBASIA_AVAILABLE = True
+    logger.info("numbasia disponibile - ottimizzazioni proprietarie pronte all'uso")
+except ImportError:
+    NUMBASIA_AVAILABLE = False
+    logger.warning(
+        "numbasia non disponibile - assicurarsi di aver installato il pacchetto privato per abilitare tutte le ottimizzazioni"
+    )
+
 # ============================================================
 #   CONFIGURAZIONE CENTRALIZZATA (MIGLIORAMENTO)
 # ============================================================
@@ -5624,6 +5636,56 @@ def poisson_pmf(k: int, lam: float) -> float:
 
     return max(0.0, min(1.0, p))
 
+
+def poisson_probabilities(lam: float, max_k: int) -> np.ndarray:
+    """
+    Restituisce vettore di probabilità Poisson da 0 a max_k con ricorrenza stabile.
+
+    Usa calcolo incrementale per ridurre le esponenziali ripetute e normalizza in modo robusto.
+    """
+    if max_k < 0:
+        return np.zeros(0, dtype=np.float64)
+
+    try:
+        lam_float = float(lam)
+    except (TypeError, ValueError):
+        logger.warning(f"lam non valido: {lam}, uso default 1.0")
+        lam_float = 1.0
+
+    if not math.isfinite(lam_float) or lam_float < 0:
+        logger.warning(f"lam non finito o negativo: {lam}, uso default 1.0")
+        lam_float = 1.0
+
+    lam_float = min(lam_float, 50.0)
+
+    probs = np.zeros(max_k + 1, dtype=np.float64)
+    if lam_float == 0.0:
+        probs[0] = 1.0
+        return probs
+
+    try:
+        probs[0] = math.exp(-lam_float)
+    except OverflowError:
+        logger.warning(f"Overflow exp(-lam) per lam={lam_float}, uso fallback 0.0")
+        probs[0] = 0.0
+
+    for k in range(1, max_k + 1):
+        probs[k] = probs[k - 1] * lam_float / k
+
+    total = probs.sum()
+    if not math.isfinite(total) or total <= 0.0:
+        logger.warning("Normalizzazione Poisson fallita, uso fallback scipy")
+        probs = np.array([poisson_pmf(k, lam_float) for k in range(max_k + 1)], dtype=np.float64)
+        total = probs.sum()
+
+    if total > 0.0:
+        probs /= total
+    else:
+        probs.fill(0.0)
+        probs[0] = 1.0
+
+    return probs
+
 def entropia_poisson(lam: float, max_k: int = 15) -> float:
     """
     Shannon entropy della distribuzione Poisson.
@@ -6917,7 +6979,18 @@ def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
     - Doppia verifica normalizzazione
     - Protezione contro errori di arrotondamento
     """
-    # ⚠️ CRITICO: Validazione input
+    if NUMBASIA_AVAILABLE:
+        fast_builder = getattr(numbasia, "build_score_matrix", None)
+        if callable(fast_builder):
+            try:
+                result = fast_builder(lh, la, rho)
+                if isinstance(result, np.ndarray):
+                    return result.tolist()
+                if isinstance(result, list):
+                    return result
+            except Exception as exc:  # pragma: no cover - dipendenza esterna opzionale
+                logger.warning(f"build_score_matrix numbasia fallita, uso fallback locale: {exc}")
+    
     if not isinstance(lh, (int, float)) or not isinstance(la, (int, float)) or not isinstance(rho, (int, float)):
         logger.error(f"Input non validi: lh={lh}, la={la}, rho={rho}")
         raise ValueError("Input devono essere numeri")
@@ -6928,80 +7001,43 @@ def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
         la = max(0.1, la)
     
     mg = max_goals_adattivo(lh, la)
-    
-    # ⚠️ CRITICO: Verifica che mg sia valido
     if mg < 0:
         logger.warning(f"mg < 0: {mg}, uso valore default")
         mg = 10
     
-    mat: List[List[float]] = []
+    home_probs = poisson_probabilities(lh, mg)
+    away_probs = poisson_probabilities(la, mg)
+    matrix = np.outer(home_probs, away_probs)
     
-    # ⚠️ PRECISIONE: Kahan summation per accumulo preciso (evita errori di arrotondamento)
-    total_prob = 0.0
-    c = 0.0  # Compensazione per Kahan
+    tau_matrix = np.ones_like(matrix)
+    tau_matrix[0, 0] = tau_dixon_coles(0, 0, lh, la, rho)
+    if mg >= 1:
+        tau_matrix[0, 1] = tau_dixon_coles(0, 1, lh, la, rho)
+        tau_matrix[1, 0] = tau_dixon_coles(1, 0, lh, la, rho)
+        tau_matrix[1, 1] = tau_dixon_coles(1, 1, lh, la, rho)
     
-    for h in range(mg + 1):
-        row = []
-        for a in range(mg + 1):
-            # Probabilità base Poisson (indipendenti)
-            p_base = poisson_pmf(h, lh) * poisson_pmf(a, la)
-            
-            # Applica correzione Dixon-Coles tau
-            tau = tau_dixon_coles(h, a, lh, la, rho)
-            p = p_base * tau
-            
-            # Assicura non-negatività
-            p = max(0.0, p)
-            row.append(p)
-            
-            # ⚠️ PRECISIONE: Kahan summation per accumulo preciso
-            y = p - c
-            t = total_prob + y
-            c = (t - total_prob) - y
-            total_prob = t
-        
-        mat.append(row)
+    matrix *= tau_matrix
+    np.nan_to_num(matrix, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    matrix = np.clip(matrix, 0.0, None, out=matrix)
     
     dirichlet_eps = getattr(model_config, "DIRICHLET_EPS", 0.0)
     if dirichlet_eps and dirichlet_eps > 0.0:
-        smoothing_total = dirichlet_eps * ((mg + 1) * (mg + 1))
-        total_prob += smoothing_total
-        for h in range(mg + 1):
-            row = mat[h]
-            for a in range(mg + 1):
-                row[a] += dirichlet_eps
+        matrix += dirichlet_eps
     
-    # ⚠️ PRECISIONE: Verifica normalizzazione con tolleranza standardizzata
-    if total_prob > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
-        # Normalizza ogni elemento con precisione
-        for h in range(mg + 1):
-            for a in range(mg + 1):
-                mat[h][a] = mat[h][a] / total_prob
+    total_prob = float(matrix.sum())
+    if not math.isfinite(total_prob) or total_prob <= model_config.TOL_DIVISION_ZERO:
+        matrix.fill(1.0 / matrix.size)
     else:
-        # Fallback: distribuzione uniforme (caso estremo)
-        uniform_prob = 1.0 / ((mg + 1) * (mg + 1))
-        for h in range(mg + 1):
-            for a in range(mg + 1):
-                mat[h][a] = uniform_prob
+        matrix /= total_prob
     
-    # ⚠️ PRECISIONE: Verifica normalizzazione con Kahan summation
-    final_sum = 0.0
-    c_final = 0.0
-    for h in range(mg + 1):
-        for a in range(mg + 1):
-            y = mat[h][a] - c_final
-            t = final_sum + y
-            c_final = (t - final_sum) - y
-            final_sum = t
+    final_sum = float(matrix.sum())
+    if not math.isfinite(final_sum) or abs(final_sum - 1.0) > model_config.TOL_NORMALIZATION:
+        if final_sum > model_config.TOL_DIVISION_ZERO:
+            matrix /= final_sum
+        else:
+            matrix.fill(1.0 / matrix.size)
     
-    # ⚠️ PRECISIONE: Tolleranza più stretta
-    if abs(final_sum - 1.0) > model_config.TOL_NORMALIZATION:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
-        # Rinomaliizza se necessario
-        for h in range(mg + 1):
-            for a in range(mg + 1):
-                mat[h][a] = mat[h][a] / final_sum
-    
-    return mat
+    return matrix.tolist()
 
 # ============================================================
 #      CALCOLO PROBABILITÀ DA MATRICE (unchanged)
@@ -7017,71 +7053,45 @@ def calc_match_result_from_matrix(mat: List[List[float]]) -> Tuple[float, float,
     - P(Away) = sum(mat[h][a] for h < a)
     - Normalizza per sicurezza (anche se matrice dovrebbe già essere normalizzata)
     """
-    # ⚠️ CRITICO: Validazione input
     if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
         logger.warning("Matrice vuota o non valida, uso distribuzione uniforme")
-        return 0.333333, 0.333333, 0.333334  # Somma esattamente 1.0
-    
-    # ⚠️ PRECISIONE: Kahan summation per accumulo preciso
-    p_home = 0.0
-    p_draw = 0.0
-    p_away = 0.0
-    c_home = 0.0  # Compensazione Kahan
-    c_draw = 0.0
-    c_away = 0.0
-    mg = len(mat) - 1
-    
-    # ⚠️ CRITICO: Verifica che mg sia valido
-    if mg < 0:
-        logger.warning("mg < 0, uso distribuzione uniforme")
         return 0.333333, 0.333333, 0.333334
     
-    # ⚠️ PRECISIONE: Kahan summation per accumulo preciso
-    for h in range(mg + 1):
-        for a in range(mg + 1):
-            p = mat[h][a]
-            # ⚠️ PROTEZIONE: Ignora valori negativi o NaN
-            if p < 0 or not (p == p):  # p == p verifica NaN
-                continue
-            
-            # ⚠️ PRECISIONE: Kahan summation per ogni categoria
-            if h > a:
-                y = p - c_home
-                t = p_home + y
-                c_home = (t - p_home) - y
-                p_home = t
-            elif h < a:
-                y = p - c_away
-                t = p_away + y
-                c_away = (t - p_away) - y
-                p_away = t
-            else:
-                y = p - c_draw
-                t = p_draw + y
-                c_draw = (t - p_draw) - y
-                p_draw = t
+    mat_np = np.array(mat, dtype=np.float64, copy=True)
+    if mat_np.ndim != 2 or mat_np.shape[0] != mat_np.shape[1]:
+        logger.warning("Matrice non quadrata, uso distribuzione uniforme")
+        return 0.333333, 0.333333, 0.333334
     
-    # ⚠️ PRECISIONE: Somma totale con Kahan
-    tot = p_home + p_draw + p_away
+    np.nan_to_num(mat_np, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    np.clip(mat_np, 0.0, None, out=mat_np)
     
-    # ⚠️ PROTEZIONE: Se totale è zero o molto piccolo, usa distribuzione uniforme
-    if tot <= model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
-        return 0.333333, 0.333333, 0.333334  # Somma esattamente 1.0
+    total = float(mat_np.sum())
+    if total <= model_config.TOL_DIVISION_ZERO or not math.isfinite(total):
+        return 0.333333, 0.333333, 0.333334
     
-    # ⚠️ PRECISIONE: Normalizza per garantire che somma sia esattamente 1.0
-    p_home_norm = p_home / tot
-    p_draw_norm = p_draw / tot
-    p_away_norm = p_away / tot
+    lower = float(np.tril(mat_np, k=-1).sum())
+    upper = float(np.triu(mat_np, k=1).sum())
+    diag = float(np.trace(mat_np))
     
-    # ⚠️ VERIFICA FINALE: Assicura che somma sia 1.0 (con tolleranza)
-    sum_check = p_home_norm + p_draw_norm + p_away_norm
-    if abs(sum_check - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
-        # Rinomaliizza se necessario
-        p_home_norm /= sum_check
-        p_draw_norm /= sum_check
-        p_away_norm /= sum_check
+    tot = lower + upper + diag
+    if tot <= model_config.TOL_DIVISION_ZERO or not math.isfinite(tot):
+        return 0.333333, 0.333333, 0.333334
     
-    return p_home_norm, p_draw_norm, p_away_norm
+    p_home = lower / tot
+    p_draw = diag / tot
+    p_away = upper / tot
+    
+    sum_check = p_home + p_draw + p_away
+    if abs(sum_check - 1.0) > model_config.TOL_PROBABILITY_CHECK:
+        if sum_check > model_config.TOL_DIVISION_ZERO:
+            scale = 1.0 / sum_check
+            p_home *= scale
+            p_draw *= scale
+            p_away *= scale
+        else:
+            return 0.333333, 0.333333, 0.333334
+    
+    return p_home, p_draw, p_away
 
 def calc_over_under_from_matrix(mat: List[List[float]], soglia: float) -> Tuple[float, float]:
     """
@@ -7093,7 +7103,6 @@ def calc_over_under_from_matrix(mat: List[List[float]], soglia: float) -> Tuple[
     
     ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
     """
-    # ⚠️ CRITICO: Validazione input robusta
     if not isinstance(soglia, (int, float)) or soglia < 0:
         logger.error(f"soglia non valida: {soglia}, uso default 2.5")
         soglia = 2.5
@@ -7102,57 +7111,36 @@ def calc_over_under_from_matrix(mat: List[List[float]], soglia: float) -> Tuple[
         logger.warning("Matrice vuota o non valida, uso probabilità default")
         return 0.5, 0.5
     
-    # ⚠️ CRITICO: Verifica coerenza dimensioni matrice
-    mg = len(mat) - 1
-    if mg < 0:
-        logger.warning("mg < 0, uso probabilità default")
+    mat_np = np.array(mat, dtype=np.float64, copy=True)
+    if mat_np.ndim != 2 or mat_np.shape[0] != mat_np.shape[1]:
+        logger.error("Matrice inconsistente, uso probabilità default")
         return 0.5, 0.5
     
-    # Verifica che tutte le righe abbiano stessa lunghezza
-    for i, row in enumerate(mat):
-        if len(row) != mg + 1:
-            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
-            return 0.5, 0.5
+    np.nan_to_num(mat_np, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    np.clip(mat_np, 0.0, None, out=mat_np)
     
-    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
-    over = 0.0
-    c_over = 0.0  # Compensazione Kahan
+    size = mat_np.shape[0]
+    indices = np.add.outer(np.arange(size), np.arange(size))
+    mask_over = indices > soglia
+    over_prob = float(mat_np[mask_over].sum())
     
-    for h in range(mg + 1):
-        for a in range(mg + 1):
-            p = mat[h][a]
-            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
-            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
-                continue
-            if h + a > soglia:
-                # Kahan summation
-                y = p - c_over
-                t = over + y
-                c_over = (t - over) - y
-                over = t
+    over_prob = max(0.0, min(1.0, over_prob))
+    under_prob = 1.0 - over_prob
     
-    # ⚠️ PROTEZIONE: Limita over a range [0, 1] con precisione
-    over = max(0.0, min(1.0, over))
-    under = 1.0 - over
-    
-    # ⚠️ VERIFICA COERENZA: Assicura che over + under = 1.0 con tolleranza stretta
-    sum_check = over + under
-    if abs(sum_check - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
-        # Ricalibra se necessario con precisione
+    sum_check = over_prob + under_prob
+    if abs(sum_check - 1.0) > model_config.TOL_PROBABILITY_CHECK:
         if sum_check > model_config.TOL_DIVISION_ZERO:
-            over = over / sum_check
-            under = 1.0 - over
+            scale = 1.0 / sum_check
+            over_prob *= scale
+            under_prob = 1.0 - over_prob
         else:
-            # Fallback: distribuzione uniforme se somma è zero
-            logger.warning(f"Somma over+under = {sum_check}, uso distribuzione uniforme")
-            over = 0.5
-            under = 0.5
+            over_prob = 0.5
+            under_prob = 0.5
     
-    # ⚠️ VERIFICA FINALE: Double-check che siano in range [0, 1]
-    over = max(0.0, min(1.0, over))
-    under = max(0.0, min(1.0, under))
+    over_prob = max(0.0, min(1.0, over_prob))
+    under_prob = max(0.0, min(1.0, under_prob))
     
-    return over, under
+    return over_prob, under_prob
 
 def calc_bt_ts_from_matrix(mat: List[List[float]]) -> float:
     """
@@ -7164,47 +7152,28 @@ def calc_bt_ts_from_matrix(mat: List[List[float]]) -> float:
     
     ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
     """
-    # ⚠️ CRITICO: Validazione input robusta
     if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
         logger.warning("Matrice vuota o non valida, uso probabilità default")
         return 0.5
     
-    mg = len(mat) - 1
-    
-    # ⚠️ CRITICO: Verifica che mg sia valido
-    if mg < 0:
-        logger.warning("mg < 0, uso probabilità default")
+    mat_np = np.array(mat, dtype=np.float64, copy=True)
+    if mat_np.ndim != 2 or mat_np.shape[0] != mat_np.shape[1]:
+        logger.error("Matrice inconsistente: riga/colonne non allineate, uso probabilità default")
         return 0.5
     
-    # Verifica che tutte le righe abbiano stessa lunghezza
-    for i, row in enumerate(mat):
-        if len(row) != mg + 1:
-            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
-            return 0.5
+    np.nan_to_num(mat_np, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    np.clip(mat_np, 0.0, None, out=mat_np)
     
-    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
-    btts = 0.0
-    c_btts = 0.0  # Compensazione Kahan
+    size = mat_np.shape[0]
+    if size <= 1:
+        base_val = float(np.clip(mat_np.sum(), 0.0, 1.0))
+        return base_val if size else 0.5
     
-    for h in range(1, mg + 1):
-        for a in range(1, mg + 1):
-            p = mat[h][a]
-            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
-            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
-                continue
-            # Kahan summation
-            y = p - c_btts
-            t = btts + y
-            c_btts = (t - btts) - y
-            btts = t
-    
-    # ⚠️ PROTEZIONE: Limita BTTS a range [0, 1] con precisione
+    mask = np.ones_like(mat_np, dtype=bool)
+    mask[0, :] = False
+    mask[:, 0] = False
+    btts = float(mat_np[mask].sum())
     btts = max(0.0, min(1.0, btts))
-    
-    # ⚠️ VERIFICA FINALE: Double-check che sia in range [0, 1]
-    if not (0.0 <= btts <= 1.0):
-        logger.warning(f"BTTS fuori range: {btts}, correggo a 0.5")
-        btts = 0.5
     
     return btts
 
@@ -7218,50 +7187,28 @@ def calc_gg_over25_from_matrix(mat: List[List[float]]) -> float:
     
     ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
     """
-    # ⚠️ CRITICO: Validazione input robusta
     if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
         logger.warning("Matrice vuota o non valida, uso probabilità default")
         return 0.5
     
-    mg = len(mat) - 1
-    
-    # ⚠️ CRITICO: Verifica che mg sia valido
-    if mg < 0:
-        logger.warning("mg < 0, uso probabilità default")
+    mat_np = np.array(mat, dtype=np.float64, copy=True)
+    if mat_np.ndim != 2 or mat_np.shape[0] != mat_np.shape[1]:
+        logger.error("Matrice inconsistente: riga/colonne non allineate, uso probabilità default")
         return 0.5
     
-    # Verifica che tutte le righe abbiano stessa lunghezza
-    for i, row in enumerate(mat):
-        if len(row) != mg + 1:
-            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
-            return 0.5
+    np.nan_to_num(mat_np, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    np.clip(mat_np, 0.0, None, out=mat_np)
     
-    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
-    s = 0.0
-    c_s = 0.0  # Compensazione Kahan
+    size = mat_np.shape[0]
+    if size <= 1:
+        return 0.0 if size == 0 else float(np.clip(mat_np.sum(), 0.0, 1.0))
     
-    for h in range(1, mg + 1):
-        for a in range(1, mg + 1):
-            p = mat[h][a]
-            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
-            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
-                continue
-            if h + a >= 3:
-                # Kahan summation
-                y = p - c_s
-                t = s + y
-                c_s = (t - s) - y
-                s = t
+    idx = np.arange(size)
+    mask = np.outer(idx >= 1, idx >= 1) & (np.add.outer(idx, idx) >= 3)
+    prob = float(mat_np[mask].sum())
+    prob = max(0.0, min(1.0, prob))
     
-    # ⚠️ PROTEZIONE: Limita a range [0, 1] con precisione
-    s = max(0.0, min(1.0, s))
-    
-    # ⚠️ VERIFICA FINALE: Double-check che sia in range [0, 1]
-    if not (0.0 <= s <= 1.0):
-        logger.warning(f"GG+Over2.5 fuori range: {s}, correggo a 0.5")
-        s = 0.5
-    
-    return s
+    return prob
 
 def prob_pari_dispari_from_matrix(mat: List[List[float]]) -> Tuple[float, float]:
     """
@@ -7273,61 +7220,37 @@ def prob_pari_dispari_from_matrix(mat: List[List[float]]) -> Tuple[float, float]
     
     ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso, validazione completa
     """
-    # ⚠️ CRITICO: Validazione input robusta
     if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
         logger.warning("Matrice vuota o non valida, uso probabilità default")
         return 0.5, 0.5
     
-    mg = len(mat) - 1
-    
-    # ⚠️ CRITICO: Verifica che mg sia valido
-    if mg < 0:
-        logger.warning("mg < 0, uso probabilità default")
+    mat_np = np.array(mat, dtype=np.float64, copy=True)
+    if mat_np.ndim != 2 or mat_np.shape[0] != mat_np.shape[1]:
+        logger.error("Matrice inconsistente: riga/colonne non allineate, uso probabilità default")
         return 0.5, 0.5
     
-    # Verifica che tutte le righe abbiano stessa lunghezza
-    for i, row in enumerate(mat):
-        if len(row) != mg + 1:
-            logger.error(f"Matrice inconsistente: riga {i} ha {len(row)} colonne invece di {mg + 1}")
-            return 0.5, 0.5
+    np.nan_to_num(mat_np, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    np.clip(mat_np, 0.0, None, out=mat_np)
     
-    # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
-    even = 0.0
-    c_even = 0.0  # Compensazione Kahan
+    total = float(mat_np.sum())
+    if total <= model_config.TOL_DIVISION_ZERO or not math.isfinite(total):
+        return 0.5, 0.5
     
-    for h in range(mg + 1):
-        for a in range(mg + 1):
-            p = mat[h][a]
-            # ⚠️ PROTEZIONE: Ignora valori negativi, NaN, o infiniti
-            if not isinstance(p, (int, float)) or p < 0 or not (p == p) or not math.isfinite(p):
-                continue
-            if (h + a) % 2 == 0:
-                # Kahan summation
-                y = p - c_even
-                t = even + y
-                c_even = (t - even) - y
-                even = t
+    indices = np.add.outer(np.arange(mat_np.shape[0]), np.arange(mat_np.shape[1]))
+    even_prob = float(mat_np[(indices % 2) == 0].sum())
+    odd_prob = total - even_prob
     
-    # ⚠️ PROTEZIONE: Limita even a range [0, 1] con precisione
-    even = max(0.0, min(1.0, even))
-    odd = 1.0 - even
+    if even_prob < 0.0:
+        even_prob = 0.0
+    if odd_prob < 0.0:
+        odd_prob = 0.0
     
-    # ⚠️ VERIFICA COERENZA: Assicura che even + odd = 1.0 con tolleranza stretta
-    sum_check = even + odd
-    if abs(sum_check - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
-        # Ricalibra se necessario con precisione
-        if sum_check > model_config.TOL_DIVISION_ZERO:
-            even = even / sum_check
-            odd = 1.0 - even
-        else:
-            # Fallback: distribuzione uniforme se somma è zero
-            logger.warning(f"Somma even+odd = {sum_check}, uso distribuzione uniforme")
-            even = 0.5
-            odd = 0.5
+    sum_check = even_prob + odd_prob
+    if sum_check <= model_config.TOL_DIVISION_ZERO or not math.isfinite(sum_check):
+        return 0.5, 0.5
     
-    # ⚠️ VERIFICA FINALE: Double-check che siano in range [0, 1]
-    even = max(0.0, min(1.0, even))
-    odd = max(0.0, min(1.0, odd))
+    even = even_prob / sum_check
+    odd = odd_prob / sum_check
     
     return even, odd
 
