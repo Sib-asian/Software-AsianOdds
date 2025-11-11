@@ -2026,6 +2026,45 @@ def oddsapi_refresh_event(league_key: str, event_id: str) -> dict:
         logger.error(f"Errore refresh evento {event_id} in {league_key}: {e}")
         return {}
 
+def create_manual_event(home_team: str, away_team: str, commence_time: str = None) -> dict:
+    """
+    Crea un evento manuale con struttura compatibile con The Odds API.
+    Questo permette di inserire partite manualmente quando l'API non restituisce risultati.
+
+    Args:
+        home_team: Nome squadra casa
+        away_team: Nome squadra trasferta
+        commence_time: Data/ora in formato ISO o None per generare un ID timestamp
+
+    Returns:
+        dict: Evento con struttura compatibile con oddsapi_extract_prices_improved
+    """
+    import uuid
+    from datetime import datetime
+
+    # Genera un ID univoco per l'evento manuale
+    if commence_time:
+        event_id = f"manual_{commence_time.replace(':', '').replace('-', '').replace('T', '_').replace('Z', '')}"
+    else:
+        event_id = f"manual_{uuid.uuid4().hex[:12]}"
+
+    # Se non specificato, usa una data/ora di default (oggi)
+    if not commence_time:
+        commence_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Crea struttura evento compatibile
+    manual_event = {
+        "id": event_id,
+        "sport_key": "manual_entry",
+        "sport_title": "Inserimento Manuale",
+        "commence_time": commence_time,
+        "home_team": home_team.strip(),
+        "away_team": away_team.strip(),
+        "bookmakers": []  # Nessun bookmaker, l'utente inserirà le quote manualmente
+    }
+
+    return manual_event
+
 # ============================================================
 #  NUOVE FUNZIONI: AUTO-FETCH & AUTO-UPDATE (FASE 1)
 # ============================================================
@@ -12722,10 +12761,220 @@ with col_hist2:
 st.markdown("---")
 
 # ============================================================
+#        MODALITÀ INSERIMENTO VELOCE (TUTTO MANUALE)
+# ============================================================
+
+st.subheader("⚡ Modalità Inserimento Veloce - Tutto Manuale")
+
+with st.expander("⚡ INSERIMENTO VELOCE: Compila tutto e calcola subito!", expanded=False):
+    st.markdown("""
+    **Modalità rapida per bypassare completamente l'API!**
+
+    Inserisci tutti i dati in questa pagina e clicca "Calcola Subito" per ottenere l'analisi immediata.
+    Perfetto quando:
+    - Non hai l'API configurata
+    - Vuoi analizzare rapidamente una partita
+    - Le partite non sono disponibili nell'API
+    """)
+
+    st.markdown("---")
+
+    # === INFO PARTITA ===
+    st.markdown("### 1️⃣ Informazioni Partita")
+    col_v1, col_v2 = st.columns(2)
+    with col_v1:
+        veloce_home = st.text_input("🏠 Squadra Casa", key="veloce_home", placeholder="Es: Inter")
+    with col_v2:
+        veloce_away = st.text_input("✈️ Squadra Trasferta", key="veloce_away", placeholder="Es: Juventus")
+
+    col_v3, col_v4, col_v5 = st.columns(3)
+    with col_v3:
+        veloce_date = st.date_input("📅 Data", key="veloce_date")
+    with col_v4:
+        veloce_time = st.time_input("🕐 Ora", key="veloce_time", value=None)
+    with col_v5:
+        veloce_league = st.selectbox(
+            "🏆 Lega",
+            ["generic", "premier_league", "la_liga", "serie_a", "bundesliga", "ligue_1"],
+            key="veloce_league"
+        )
+
+    st.markdown("---")
+
+    # === QUOTE 1X2 ===
+    st.markdown("### 2️⃣ Quote Principali (1X2) - OBBLIGATORIE")
+    col_vq1, col_vq2, col_vq3 = st.columns(3)
+    with col_vq1:
+        veloce_odds_1 = st.number_input("Quota 1 (Casa)", value=2.00, min_value=1.01, max_value=100.0, step=0.01, key="veloce_odds_1")
+    with col_vq2:
+        veloce_odds_x = st.number_input("Quota X (Pareggio)", value=3.50, min_value=1.01, max_value=100.0, step=0.01, key="veloce_odds_x")
+    with col_vq3:
+        veloce_odds_2 = st.number_input("Quota 2 (Trasferta)", value=3.80, min_value=1.01, max_value=100.0, step=0.01, key="veloce_odds_2")
+
+    st.markdown("---")
+
+    # === SPREAD E TOTAL ===
+    st.markdown("### 3️⃣ Spread e Total")
+    col_vst1, col_vst2, col_vst3, col_vst4 = st.columns(4)
+    with col_vst1:
+        veloce_spread_ap = st.number_input("Spread Apertura", value=0.0, step=0.25, key="veloce_spread_ap")
+    with col_vst2:
+        veloce_total_ap = st.number_input("Total Apertura", value=2.5, step=0.25, key="veloce_total_ap")
+    with col_vst3:
+        veloce_spread_corr = st.number_input("Spread Corrente", value=0.0, step=0.25, key="veloce_spread_corr")
+    with col_vst4:
+        veloce_total_line = st.number_input("Total Corrente", value=2.5, step=0.25, key="veloce_total_line")
+
+    st.markdown("---")
+
+    # === OVER/UNDER E QUOTE SPECIALI ===
+    st.markdown("### 4️⃣ Quote Over/Under e Speciali (Opzionali)")
+    col_vou1, col_vou2 = st.columns(2)
+    with col_vou1:
+        veloce_over25 = st.number_input("Quota Over 2.5", value=0.0, step=0.01, key="veloce_over25", help="Lascia 0 se non disponibile")
+    with col_vou2:
+        veloce_under25 = st.number_input("Quota Under 2.5", value=0.0, step=0.01, key="veloce_under25", help="Lascia 0 se non disponibile")
+
+    col_vsp1, col_vsp2, col_vsp3 = st.columns(3)
+    with col_vsp1:
+        veloce_btts = st.number_input("BTTS Sì", value=0.0, step=0.01, key="veloce_btts", help="Both Teams To Score")
+    with col_vsp2:
+        veloce_dnb_home = st.number_input("DNB Casa", value=0.0, step=0.01, key="veloce_dnb_home", help="Draw No Bet Casa")
+    with col_vsp3:
+        veloce_dnb_away = st.number_input("DNB Trasferta", value=0.0, step=0.01, key="veloce_dnb_away", help="Draw No Bet Trasferta")
+
+    st.markdown("---")
+
+    # === xG/xA (OPZIONALI) ===
+    with st.expander("5️⃣ Dati xG/xA e Boost (Opzionali - Migliora l'accuratezza)", expanded=False):
+        col_vxg1, col_vxg2 = st.columns(2)
+
+        with col_vxg1:
+            st.markdown("**🏠 Casa**")
+            veloce_xg_home = st.number_input("xG Totali Stagione Casa", value=0.0, step=0.1, key="veloce_xg_home")
+            veloce_xa_home = st.number_input("xA Totali Stagione Casa", value=0.0, step=0.1, key="veloce_xa_home")
+            veloce_partite_home = st.number_input("Partite Giocate Casa", min_value=0, max_value=50, value=0, step=1, key="veloce_partite_home")
+            veloce_boost_home = st.slider("Boost Casa (%)", -20, 20, 0, key="veloce_boost_home") / 100.0
+
+        with col_vxg2:
+            st.markdown("**✈️ Trasferta**")
+            veloce_xg_away = st.number_input("xG Totali Stagione Trasferta", value=0.0, step=0.1, key="veloce_xg_away")
+            veloce_xa_away = st.number_input("xA Totali Stagione Trasferta", value=0.0, step=0.1, key="veloce_xa_away")
+            veloce_partite_away = st.number_input("Partite Giocate Trasferta", min_value=0, max_value=50, value=0, step=1, key="veloce_partite_away")
+            veloce_boost_away = st.slider("Boost Trasferta (%)", -20, 20, 0, key="veloce_boost_away") / 100.0
+
+    st.markdown("---")
+
+    # === PULSANTE CALCOLA ===
+    if st.button("🚀 CALCOLA SUBITO L'ANALISI", type="primary", key="veloce_calcola"):
+        if not veloce_home or not veloce_away:
+            st.error("❌ Devi inserire entrambe le squadre!")
+        else:
+            # Crea evento manuale
+            from datetime import datetime
+            if veloce_time:
+                commence_time = datetime.combine(veloce_date, veloce_time).strftime("%Y-%m-%dT%H:%M:%SZ")
+            else:
+                commence_time = datetime.combine(veloce_date, datetime.min.time()).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            veloce_event = create_manual_event(veloce_home, veloce_away, commence_time)
+            veloce_event_id = veloce_event["id"]
+
+            # Popola direttamente selected_matches_data
+            if "selected_matches_data" not in st.session_state:
+                st.session_state.selected_matches_data = {}
+
+            # Crea struttura dati completa
+            st.session_state.selected_matches_data[veloce_event_id] = {
+                "event": veloce_event,
+                "event_id": veloce_event_id,
+                "match_label": f"{veloce_home} vs {veloce_away}",
+                "api_prices": {},
+                "home_team": veloce_home,
+                "away_team": veloce_away,
+                "odds_1": veloce_odds_1,
+                "odds_x": veloce_odds_x,
+                "odds_2": veloce_odds_2,
+                "odds_over25": veloce_over25,
+                "odds_under25": veloce_under25,
+                "odds_btts": veloce_btts,
+                "odds_dnb_home": veloce_dnb_home,
+                "odds_dnb_away": veloce_dnb_away,
+                "spread_apertura": veloce_spread_ap,
+                "total_apertura": veloce_total_ap,
+                "total_line": veloce_total_line,
+                "spread_corrente": veloce_spread_corr,
+                "xg_home": veloce_xg_home,
+                "xa_home": veloce_xa_home,
+                "partite_giocate_home": veloce_partite_home,
+                "boost_home": veloce_boost_home,
+                "xg_away": veloce_xg_away,
+                "xa_away": veloce_xa_away,
+                "partite_giocate_away": veloce_partite_away,
+                "boost_away": veloce_boost_away,
+                "league_type": veloce_league,
+                "match_name": f"{veloce_home} vs {veloce_away}"
+            }
+
+            # Imposta flag per far scrollare alla sezione risultati
+            st.session_state["veloce_mode_active"] = True
+
+            st.success(f"✅ Partita creata: {veloce_home} vs {veloce_away}")
+            st.info("👇 Scorri in basso alla sezione 'CALCOLA MODELLO' e clicca su 'CALCOLA MODELLO AVANZATO'")
+            st.rerun()
+
+st.markdown("---")
+
+# ============================================================
 #        CARICAMENTO PARTITA DA API
 # ============================================================
 
 st.subheader("🔍 Carica Partita da The Odds API")
+
+# ===== OPZIONE INSERIMENTO COMPLETAMENTE MANUALE =====
+with st.expander("➕ INSERIMENTO PARTITA COMPLETAMENTE MANUALE (senza API)", expanded=False):
+    st.markdown("""
+    **Usa questa modalità se:**
+    - Non hai configurato l'API key
+    - L'API non è disponibile
+    - Vuoi inserire rapidamente una partita senza passare per le leghe
+
+    Inserisci i dati della partita e poi potrai inserire tutte le quote manualmente.
+    """)
+
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        quick_home = st.text_input("🏠 Squadra Casa", key="quick_manual_home", placeholder="Es: Inter")
+    with col_m2:
+        quick_away = st.text_input("✈️ Squadra Trasferta", key="quick_manual_away", placeholder="Es: Juventus")
+
+    col_m3, col_m4 = st.columns(2)
+    with col_m3:
+        quick_date = st.date_input("📅 Data", key="quick_manual_date")
+    with col_m4:
+        quick_time = st.time_input("🕐 Ora", key="quick_manual_time", value=None)
+
+    if st.button("➕ Crea Partita Manuale", type="primary", key="quick_manual_button"):
+        if not quick_home or not quick_away:
+            st.error("⚠️ Inserisci entrambe le squadre!")
+        else:
+            from datetime import datetime
+            if quick_time:
+                commence_time = datetime.combine(quick_date, quick_time).strftime("%Y-%m-%dT%H:%M:%SZ")
+            else:
+                commence_time = datetime.combine(quick_date, datetime.min.time()).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            manual_event = create_manual_event(quick_home, quick_away, commence_time)
+
+            if not isinstance(st.session_state.events_for_league, list):
+                st.session_state.events_for_league = []
+            st.session_state.events_for_league.append(manual_event)
+
+            st.success(f"✅ Partita creata: {quick_home} vs {quick_away}")
+            st.info("👇 Scorri in basso per selezionare la partita e inserire le quote.")
+            st.rerun()
+
+st.markdown("---")
 
 col_load1, col_load2 = st.columns([1, 2])
 
@@ -12746,7 +12995,55 @@ if st.session_state.soccer_leagues:
     if st.button("3️⃣ Carica Partite"):
         st.session_state.events_for_league = oddsapi_get_events_for_league(selected_league_key)
         st.session_state.selected_league_key = selected_league_key
-        st.success(f"✅ {len(st.session_state.events_for_league)} partite")
+        if len(st.session_state.events_for_league) == 0:
+            st.warning(f"⚠️ 0 partite trovate per questa lega. Puoi inserire una partita manualmente qui sotto.")
+        else:
+            st.success(f"✅ {len(st.session_state.events_for_league)} partite")
+
+    # ===== INSERIMENTO MANUALE PARTITA =====
+    st.markdown("---")
+    with st.expander("➕ Inserisci Partita Manualmente", expanded=(len(st.session_state.events_for_league) == 0)):
+        st.markdown("""
+        **Usa questa sezione per inserire manualmente una partita quando:**
+        - L'API non trova partite nella lega selezionata
+        - Vuoi analizzare una partita non disponibile nell'API
+        - L'API non è disponibile o non configurata
+        """)
+
+        col_manual1, col_manual2 = st.columns(2)
+        with col_manual1:
+            manual_home = st.text_input("🏠 Squadra Casa", key="manual_home_input", placeholder="Es: Manchester United")
+        with col_manual2:
+            manual_away = st.text_input("✈️ Squadra Trasferta", key="manual_away_input", placeholder="Es: Manchester City")
+
+        col_date1, col_date2 = st.columns(2)
+        with col_date1:
+            manual_date = st.date_input("📅 Data Partita", key="manual_date_input")
+        with col_date2:
+            manual_time = st.time_input("🕐 Ora Partita", key="manual_time_input", value=None)
+
+        if st.button("➕ Aggiungi Partita Manuale", type="primary"):
+            if not manual_home or not manual_away:
+                st.error("⚠️ Devi inserire entrambe le squadre!")
+            else:
+                # Costruisci datetime in formato ISO
+                from datetime import datetime
+                if manual_time:
+                    commence_time = datetime.combine(manual_date, manual_time).strftime("%Y-%m-%dT%H:%M:%SZ")
+                else:
+                    commence_time = datetime.combine(manual_date, datetime.min.time()).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                # Crea evento manuale
+                manual_event = create_manual_event(manual_home, manual_away, commence_time)
+
+                # Aggiungi alla lista eventi
+                if not isinstance(st.session_state.events_for_league, list):
+                    st.session_state.events_for_league = []
+                st.session_state.events_for_league.append(manual_event)
+
+                st.success(f"✅ Partita aggiunta: {manual_home} vs {manual_away}")
+                st.info("👇 Ora seleziona la partita dalla lista qui sotto e inserisci le quote manualmente.")
+                st.rerun()
 
     if st.session_state.events_for_league:
         match_labels = []
