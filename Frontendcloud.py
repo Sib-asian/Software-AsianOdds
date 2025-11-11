@@ -13206,8 +13206,10 @@ def risultato_completo_improved(
                     logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(DC {dc_key}, Multigol {range_key}) ({max_combo:.4f}), correggo")
                     combo_book[combo_key] = max_combo
     
+    combo_alias_map: Dict[str, str] = {}
+
     # Alias combinazioni richieste con formato "esito+mercato"
-    def _register_alias(alias_key: str, value: float) -> None:
+    def _register_alias(alias_key: str, original_key: str) -> None:
         variants = {
             alias_key,
             alias_key.lower(),
@@ -13215,7 +13217,7 @@ def risultato_completo_improved(
             alias_key.replace(" ", "").lower(),
         }
         for variant in variants:
-            combo_book[variant] = value
+            combo_alias_map[variant] = original_key
 
     alias_sources = {
         "2+GG": "2 & BTTS",
@@ -13231,17 +13233,50 @@ def risultato_completo_improved(
     }
     for alias_key, original_key in alias_sources.items():
         if original_key in combo_book:
-            _register_alias(alias_key, combo_book[original_key])
+            _register_alias(alias_key, original_key)
 
     for gmin, gmax in multigol_combo_ranges:
         range_label = f"{gmin}-{gmax}"
         base_esito_key = f"2 & Multigol {range_label}"
         if base_esito_key in combo_book:
-            _register_alias(f"2+Multigol {range_label}", combo_book[base_esito_key])
+            _register_alias(f"2+Multigol {range_label}", base_esito_key)
         for dc_key, alias_prefix in [("1X", "1X+Multigol"), ("X2", "X2+Multigol")]:
             base_dc_key = f"{dc_key} & Multigol {range_label}"
             if base_dc_key in combo_book:
-                _register_alias(f"{alias_prefix} {range_label}", combo_book[base_dc_key])
+                _register_alias(f"{alias_prefix} {range_label}", base_dc_key)
+
+    # Lookup completo (anche tramite alias) e label per visualizzazione
+    combo_lookup = dict(combo_book)
+    for alias_key, original_key in combo_alias_map.items():
+        if original_key in combo_book:
+            combo_lookup[alias_key] = combo_book[original_key]
+
+    def format_combo_label(key: str) -> str:
+        label = key.replace(" & ", " + ")
+        replacements = {
+            "BTTS": "Gol",
+            "GG": "Gol",
+            "Goal": "Gol",
+            "goal": "Gol",
+            "NG": "No Gol",
+        }
+        for token, replacement in replacements.items():
+            label = label.replace(token, replacement)
+        # Normalizza spazi attorno a '+'
+        label = label.replace(" + ", "+")
+        label = re.sub(r"\s+", " ", label).strip()
+        return label
+
+    combo_display: Dict[str, float] = {}
+    for original_key, prob in combo_book.items():
+        display_key = format_combo_label(original_key)
+        combo_display.setdefault(display_key, prob)
+        _register_alias(display_key, original_key)
+        combo_lookup[display_key] = prob
+
+    for alias_key, original_key in combo_alias_map.items():
+        if original_key in combo_book:
+            combo_lookup[alias_key] = combo_book[original_key]
     
     # 3. Coerenza Clean Sheet: CS Home + (almeno 1 gol away) = 1.0
     # P(almeno 1 gol away) = 1 - P(0 gol away) = 1 - CS Home
@@ -13411,6 +13446,9 @@ def risultato_completo_improved(
         "marg2": marg2,
         "marg3": marg3,
         "combo_book": combo_book,
+        "combo_display": combo_display,
+        "combo_alias_map": combo_alias_map,
+        "combo_lookup": combo_lookup,
         "top10": top10,
         "ent_home": ent_home,
         "ent_away": ent_away,
@@ -14543,15 +14581,12 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                     st.metric(key, f"{val*100:.1f}%")
 
         # Combo avanzate
-        if 'combo_book' in ris:
+        combo_source = ris.get('combo_display') or ris.get('combo_book')
+        if combo_source:
             st.subheader("🔀 Combo Avanzate")
-            combo = ris['combo_book']
-            combo_principali = {
-                k: v for k, v in combo.items()
-                if any(x in k for x in ['1X &', 'X2 &', '12 &', '1 &', '2 &', 'GG &'])
-            }
             cols_combo = st.columns(3)
-            for idx, (key, val) in enumerate(sorted(combo_principali.items())[:15]):
+            sorted_combo = sorted(combo_source.items(), key=lambda item: item[1], reverse=True)
+            for idx, (key, val) in enumerate(sorted_combo[:15]):
                 with cols_combo[idx % 3]:
                     st.metric(key, f"{val*100:.1f}%")
 
@@ -14681,9 +14716,9 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                     "Tipo": "Double Chance"
                 })
 
-        # COMBO AVANZATE (es: 1X & Over 2.5, BTTS & 1, ecc.)
-        if 'combo_book' in ris:
-            combo_book = ris['combo_book']
+        # COMBO AVANZATE (es: 1X+Multigol, 2+Gol, ecc.)
+        combo_book = ris.get('combo_display') or ris.get('combo_book', {})
+        if combo_book:
             for combo_name, combo_prob in combo_book.items():
                 if combo_prob * 100 >= telegram_prob_threshold:
                     all_markets.append({
