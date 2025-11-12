@@ -14139,12 +14139,7 @@ def risultato_completo_improved(
         "multigol_away": multigol_away,
         "multigol": multigol_home,  # FIX BUG #2: Aggiunto per visualizzazione mercati multigol
         "multigol_totale": multigol_total,  # FIX BUG #3: Aggiunto per visualizzazione mercati multigol totale
-        "dc": dc,
-        "combo": {  # FIX BUG #1: Aggiunto per visualizzazione mercati combo (1X, X2, 12)
-            "1X": p_home_final + p_draw_final,
-            "X2": p_draw_final + p_away_final,
-            "12": p_home_final + p_away_final
-        },
+        "dc": dc,  # DC (Double Chance) contiene già 1X, X2, 12 - non serve "combo" duplicato
         "validation_warnings": validation_warnings,  # Warning per probabilità anomale
         "lambda_adjustments_log": lambda_adjustments_log,  # Log modifiche lambda per debugging
         "matrix_sum": matrix_sum,  # Somma matrice per debug
@@ -16240,31 +16235,8 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 "Tipo": "BTTS"
             })
 
-        # Combo (1X, X2, 12)
-        combo = ris.get('combo', {})
-        if combo.get('1X', 0) * 100 >= telegram_prob_threshold:
-            all_markets.append({
-                "Esito": "1X (Casa o Pareggio)",
-                "Prob %": f"{combo['1X']*100:.1f}",
-                "Quota": "N/A",
-                "Tipo": "Combo"
-            })
-        if combo.get('X2', 0) * 100 >= telegram_prob_threshold:
-            all_markets.append({
-                "Esito": "X2 (Pareggio o Trasferta)",
-                "Prob %": f"{combo['X2']*100:.1f}",
-                "Quota": "N/A",
-                "Tipo": "Combo"
-            })
-        if combo.get('12', 0) * 100 >= telegram_prob_threshold:
-            all_markets.append({
-                "Esito": "12 (Casa o Trasferta)",
-                "Prob %": f"{combo['12']*100:.1f}",
-                "Quota": "N/A",
-                "Tipo": "Combo"
-            })
-
-        # DC (Double Chance)
+        # DC (Double Chance) - Nota: I mercati 1X, X2, 12 sono già gestiti qui sotto
+        # (La sezione "Combo" era duplicata e rimossa per evitare mercati doppi)
         if 'dc' in ris:
             dc_data = ris['dc']
             if dc_data.get('DC Casa o Pareggio', 0) * 100 >= telegram_prob_threshold:
