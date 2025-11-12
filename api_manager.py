@@ -68,7 +68,7 @@ class CacheManager:
     def _init_db(self):
         """Initialize SQLite database with tables"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=10.0)
             cursor = conn.cursor()
 
             # Team context cache
@@ -117,7 +117,7 @@ class CacheManager:
         """Verify that all required tables exist"""
         required_tables = ['team_cache', 'api_usage', 'cache_stats']
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=10.0)
             cursor = conn.cursor()
 
             cursor.execute("""
@@ -224,7 +224,7 @@ class CacheManager:
                 cursor.execute("""
                     INSERT INTO cache_stats (date, hits, misses)
                     VALUES (?, 0, 1)
-                    ON CONFLICT(date) DO UPDATE SET hits = hits, misses = misses + 1
+                    ON CONFLICT(date) DO UPDATE SET misses = misses + 1
                 """, (today,))
 
         except Exception as e:
@@ -233,30 +233,29 @@ class CacheManager:
     def get_stats(self) -> Dict:
         """Get cache statistics for today"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            today = datetime.now().strftime("%Y-%m-%d")
+            with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+                cursor = conn.cursor()
+                today = datetime.now().strftime("%Y-%m-%d")
 
-            cursor.execute("""
-                SELECT hits, misses FROM cache_stats WHERE date = ?
-            """, (today,))
+                cursor.execute("""
+                    SELECT hits, misses FROM cache_stats WHERE date = ?
+                """, (today,))
 
-            result = cursor.fetchone()
-            conn.close()
+                result = cursor.fetchone()
 
-            if not result:
-                return {"hits": 0, "misses": 0, "total": 0, "hit_rate": 0.0}
+                if not result:
+                    return {"hits": 0, "misses": 0, "total": 0, "hit_rate": 0.0}
 
-            hits, misses = result
-            total = hits + misses
-            hit_rate = (hits / total * 100) if total > 0 else 0.0
+                hits, misses = result
+                total = hits + misses
+                hit_rate = (hits / total * 100) if total > 0 else 0.0
 
-            return {
-                "hits": hits,
-                "misses": misses,
-                "total": total,
-                "hit_rate": hit_rate
-            }
+                return {
+                    "hits": hits,
+                    "misses": misses,
+                    "total": total,
+                    "hit_rate": hit_rate
+                }
 
         except Exception as e:
             logger.error(f"❌ Error getting cache stats: {e}")
@@ -265,17 +264,16 @@ class CacheManager:
     def cleanup_old(self, days: int = 7):
         """Remove cache entries older than N days"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+                cursor = conn.cursor()
 
-            cutoff = int(time.time()) - (days * 86400)
-            cursor.execute("DELETE FROM team_cache WHERE timestamp < ?", (cutoff,))
+                cutoff = int(time.time()) - (days * 86400)
+                cursor.execute("DELETE FROM team_cache WHERE timestamp < ?", (cutoff,))
 
-            deleted = cursor.rowcount
-            conn.commit()
-            conn.close()
+                deleted = cursor.rowcount
+                conn.commit()
 
-            logger.info(f"🧹 Cleaned {deleted} old cache entries")
+                logger.info(f"🧹 Cleaned {deleted} old cache entries")
 
         except Exception as e:
             logger.error(f"❌ Cache cleanup error: {e}")
@@ -306,18 +304,17 @@ class QuotaManager:
     def log_usage(self, provider: str, calls: int = 1):
         """Log API calls"""
         try:
-            conn = sqlite3.connect(self.cache_db)
-            cursor = conn.cursor()
-            today = datetime.now().strftime("%Y-%m-%d")
+            with sqlite3.connect(self.cache_db, timeout=10.0) as conn:
+                cursor = conn.cursor()
+                today = datetime.now().strftime("%Y-%m-%d")
 
-            cursor.execute("""
-                INSERT INTO api_usage (date, provider, calls)
-                VALUES (?, ?, ?)
-                ON CONFLICT(date, provider) DO UPDATE SET calls = calls + ?
-            """, (today, provider, calls, calls))
+                cursor.execute("""
+                    INSERT INTO api_usage (date, provider, calls)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(date, provider) DO UPDATE SET calls = calls + ?
+                """, (today, provider, calls, calls))
 
-            conn.commit()
-            conn.close()
+                conn.commit()
 
         except Exception as e:
             logger.error(f"❌ Error logging API usage: {e}")
@@ -325,18 +322,17 @@ class QuotaManager:
     def get_usage(self, provider: str) -> int:
         """Get today's usage for provider"""
         try:
-            conn = sqlite3.connect(self.cache_db)
-            cursor = conn.cursor()
-            today = datetime.now().strftime("%Y-%m-%d")
+            with sqlite3.connect(self.cache_db, timeout=10.0) as conn:
+                cursor = conn.cursor()
+                today = datetime.now().strftime("%Y-%m-%d")
 
-            cursor.execute("""
-                SELECT calls FROM api_usage WHERE date = ? AND provider = ?
-            """, (today, provider))
+                cursor.execute("""
+                    SELECT calls FROM api_usage WHERE date = ? AND provider = ?
+                """, (today, provider))
 
-            result = cursor.fetchone()
-            conn.close()
+                result = cursor.fetchone()
 
-            return result[0] if result else 0
+                return result[0] if result else 0
 
         except Exception as e:
             logger.error(f"❌ Error getting API usage: {e}")

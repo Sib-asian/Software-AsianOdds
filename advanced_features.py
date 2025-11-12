@@ -61,7 +61,8 @@ def apply_physical_constraints_to_lambda(
         logger.warning(f"Total troppo basso ({total_current:.2f}), scalato a 0.5")
     elif total_current > 6.0:
         # Scala per portare a 6.0
-        scale = 6.0 / total_current
+        # ⚠️ FIX BUG #4: Protezione division by zero
+        scale = 6.0 / max(total_current, 0.01)
         lambda_h *= scale
         lambda_a *= scale
         logger.warning(f"Total troppo alto ({total_current:.2f}), scalato a 6.0")
@@ -98,7 +99,8 @@ def apply_physical_constraints_to_lambda(
             lambda_a *= scale_fix
             logger.warning(f"Post-target adjust: total troppo basso, re-scalato a 0.5")
         elif total_after_scale > 6.0:
-            scale_fix = 6.0 / total_after_scale
+            # ⚠️ FIX BUG #5: Protezione division by zero
+            scale_fix = 6.0 / max(total_after_scale, 0.01)
             lambda_h *= scale_fix
             lambda_a *= scale_fix
             logger.warning(f"Post-target adjust: total troppo alto, re-scalato a 6.0")
@@ -284,6 +286,9 @@ def precise_probability_sum(probs: np.ndarray, expected_total: float = 1.0) -> n
 
     if abs(total) < 1e-12:
         logger.warning("Somma probabilità troppo piccola, ritorno uniforme")
+        # ⚠️ FIX BUG #6: Protezione division by zero con array vuoto
+        if len(probs) == 0:
+            return np.array([])
         return np.ones_like(probs) / len(probs) * expected_total
 
     # Normalizza
