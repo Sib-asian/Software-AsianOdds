@@ -1,0 +1,415 @@
+{
+  "comment": "Database squadre con stili tattici e info per auto-detection. Aggiorna/espandi con le squadre che segui.",
+
+  "_LEAGUES": {
+    "Serie A": "ITA_A",
+    "Premier League": "ENG_1",
+    "La Liga": "ESP_1",
+    "Bundesliga": "GER_1",
+    "Ligue 1": "FRA_1"
+  },
+
+  "teams": {
+    "ITA_A": {
+      "Inter": {
+        "style": "Possesso",
+        "aliases": ["Inter Milan", "FC Internazionale", "Internazionale"],
+        "typical_position": "top4"
+      },
+      "Milan": {
+        "style": "Possesso",
+        "aliases": ["AC Milan", "Milano"],
+        "typical_position": "top4"
+      },
+      "Napoli": {
+        "style": "Pressing Alto",
+        "aliases": ["SSC Napoli"],
+        "typical_position": "top4"
+      },
+      "Juventus": {
+        "style": "Possesso",
+        "aliases": ["Juve"],
+        "typical_position": "top4"
+      },
+      "Atalanta": {
+        "style": "Pressing Alto",
+        "aliases": ["Atalanta BC"],
+        "typical_position": "top6"
+      },
+      "Roma": {
+        "style": "Contropiede",
+        "aliases": ["AS Roma"],
+        "typical_position": "top6"
+      },
+      "Lazio": {
+        "style": "Possesso",
+        "aliases": ["SS Lazio"],
+        "typical_position": "top6"
+      },
+      "Fiorentina": {
+        "style": "Possesso",
+        "aliases": ["ACF Fiorentina"],
+        "typical_position": "mid"
+      },
+      "Bologna": {
+        "style": "Pressing Alto",
+        "aliases": ["Bologna FC"],
+        "typical_position": "mid"
+      },
+      "Torino": {
+        "style": "Difensiva",
+        "aliases": ["Torino FC"],
+        "typical_position": "mid"
+      },
+      "Udinese": {
+        "style": "Contropiede",
+        "aliases": ["Udinese Calcio"],
+        "typical_position": "mid_low"
+      },
+      "Monza": {
+        "style": "Possesso",
+        "aliases": ["AC Monza"],
+        "typical_position": "mid_low"
+      },
+      "Empoli": {
+        "style": "Difensiva",
+        "aliases": ["Empoli FC"],
+        "typical_position": "low"
+      },
+      "Lecce": {
+        "style": "Difensiva",
+        "aliases": ["US Lecce"],
+        "typical_position": "low"
+      },
+      "Cagliari": {
+        "style": "Difensiva",
+        "aliases": ["Cagliari Calcio"],
+        "typical_position": "low"
+      },
+      "Verona": {
+        "style": "Difensiva",
+        "aliases": ["Hellas Verona"],
+        "typical_position": "low"
+      },
+      "Salernitana": {
+        "style": "Difensiva",
+        "aliases": ["US Salernitana"],
+        "typical_position": "low"
+      }
+    },
+
+    "ENG_1": {
+      "Manchester City": {
+        "style": "Possesso",
+        "aliases": ["Man City", "City", "MCFC"],
+        "typical_position": "top4"
+      },
+      "Arsenal": {
+        "style": "Possesso",
+        "aliases": ["The Gunners", "AFC"],
+        "typical_position": "top4"
+      },
+      "Liverpool": {
+        "style": "Pressing Alto",
+        "aliases": ["The Reds", "LFC"],
+        "typical_position": "top4"
+      },
+      "Manchester United": {
+        "style": "Contropiede",
+        "aliases": ["Man Utd", "United", "MUFC"],
+        "typical_position": "top4"
+      },
+      "Chelsea": {
+        "style": "Possesso",
+        "aliases": ["The Blues", "CFC"],
+        "typical_position": "top6"
+      },
+      "Tottenham": {
+        "style": "Contropiede",
+        "aliases": ["Spurs", "THFC"],
+        "typical_position": "top6"
+      },
+      "Newcastle": {
+        "style": "Contropiede",
+        "aliases": ["Newcastle United", "The Magpies", "NUFC"],
+        "typical_position": "top6"
+      },
+      "Brighton": {
+        "style": "Possesso",
+        "aliases": ["Brighton & Hove Albion", "Seagulls"],
+        "typical_position": "mid"
+      },
+      "Aston Villa": {
+        "style": "Pressing Alto",
+        "aliases": ["Villa", "AVFC"],
+        "typical_position": "mid"
+      },
+      "West Ham": {
+        "style": "Contropiede",
+        "aliases": ["West Ham United", "The Hammers", "WHUFC"],
+        "typical_position": "mid"
+      },
+      "Everton": {
+        "style": "Difensiva",
+        "aliases": ["The Toffees", "EFC"],
+        "typical_position": "mid_low"
+      },
+      "Brentford": {
+        "style": "Contropiede",
+        "aliases": ["The Bees", "BFC"],
+        "typical_position": "mid"
+      },
+      "Burnley": {
+        "style": "Difensiva",
+        "aliases": ["The Clarets", "BFC"],
+        "typical_position": "low"
+      },
+      "Sheffield United": {
+        "style": "Difensiva",
+        "aliases": ["Sheffield Utd", "The Blades", "SUFC"],
+        "typical_position": "low"
+      },
+      "Luton Town": {
+        "style": "Difensiva",
+        "aliases": ["Luton", "The Hatters", "LTFC"],
+        "typical_position": "low"
+      }
+    },
+
+    "ESP_1": {
+      "Barcelona": {
+        "style": "Possesso",
+        "aliases": ["Barca", "FCB", "FC Barcelona"],
+        "typical_position": "top4"
+      },
+      "Real Madrid": {
+        "style": "Contropiede",
+        "aliases": ["Madrid", "Real", "RMCF"],
+        "typical_position": "top4"
+      },
+      "Atletico Madrid": {
+        "style": "Difensiva",
+        "aliases": ["Atleti", "ATM"],
+        "typical_position": "top4"
+      },
+      "Sevilla": {
+        "style": "Contropiede",
+        "aliases": ["Sevilla FC"],
+        "typical_position": "top6"
+      },
+      "Real Sociedad": {
+        "style": "Possesso",
+        "aliases": ["La Real", "Sociedad"],
+        "typical_position": "top6"
+      },
+      "Athletic Bilbao": {
+        "style": "Pressing Alto",
+        "aliases": ["Athletic", "Bilbao"],
+        "typical_position": "top6"
+      },
+      "Villarreal": {
+        "style": "Possesso",
+        "aliases": ["Yellow Submarine"],
+        "typical_position": "mid"
+      },
+      "Real Betis": {
+        "style": "Possesso",
+        "aliases": ["Betis"],
+        "typical_position": "mid"
+      },
+      "Valencia": {
+        "style": "Contropiede",
+        "aliases": ["VCF"],
+        "typical_position": "mid"
+      },
+      "Getafe": {
+        "style": "Difensiva",
+        "aliases": ["Getafe CF"],
+        "typical_position": "mid_low"
+      },
+      "Cadiz": {
+        "style": "Difensiva",
+        "aliases": ["Cadiz CF"],
+        "typical_position": "low"
+      },
+      "Granada": {
+        "style": "Difensiva",
+        "aliases": ["Granada CF"],
+        "typical_position": "low"
+      },
+      "Almeria": {
+        "style": "Difensiva",
+        "aliases": ["UD Almeria"],
+        "typical_position": "low"
+      }
+    },
+
+    "GER_1": {
+      "Bayern Munich": {
+        "style": "Pressing Alto",
+        "aliases": ["Bayern", "FCB", "FC Bayern"],
+        "typical_position": "top4"
+      },
+      "Borussia Dortmund": {
+        "style": "Contropiede",
+        "aliases": ["Dortmund", "BVB"],
+        "typical_position": "top4"
+      },
+      "RB Leipzig": {
+        "style": "Pressing Alto",
+        "aliases": ["Leipzig", "RBL"],
+        "typical_position": "top4"
+      },
+      "Bayer Leverkusen": {
+        "style": "Possesso",
+        "aliases": ["Leverkusen", "Bayer 04"],
+        "typical_position": "top6"
+      },
+      "Union Berlin": {
+        "style": "Difensiva",
+        "aliases": ["Union", "FCU"],
+        "typical_position": "mid"
+      },
+      "Eintracht Frankfurt": {
+        "style": "Contropiede",
+        "aliases": ["Frankfurt", "SGE"],
+        "typical_position": "mid"
+      },
+      "Freiburg": {
+        "style": "Pressing Alto",
+        "aliases": ["SC Freiburg"],
+        "typical_position": "mid"
+      },
+      "Wolfsburg": {
+        "style": "Possesso",
+        "aliases": ["VfL Wolfsburg"],
+        "typical_position": "mid"
+      },
+      "Hoffenheim": {
+        "style": "Possesso",
+        "aliases": ["TSG Hoffenheim"],
+        "typical_position": "mid"
+      },
+      "Augsburg": {
+        "style": "Difensiva",
+        "aliases": ["FC Augsburg", "FCA"],
+        "typical_position": "mid_low"
+      },
+      "Bochum": {
+        "style": "Difensiva",
+        "aliases": ["VfL Bochum"],
+        "typical_position": "low"
+      },
+      "Darmstadt": {
+        "style": "Difensiva",
+        "aliases": ["SV Darmstadt"],
+        "typical_position": "low"
+      }
+    },
+
+    "FRA_1": {
+      "Paris Saint-Germain": {
+        "style": "Possesso",
+        "aliases": ["PSG", "Paris SG"],
+        "typical_position": "top4"
+      },
+      "Monaco": {
+        "style": "Contropiede",
+        "aliases": ["AS Monaco"],
+        "typical_position": "top4"
+      },
+      "Marseille": {
+        "style": "Pressing Alto",
+        "aliases": ["OM", "Olympique Marseille"],
+        "typical_position": "top4"
+      },
+      "Lyon": {
+        "style": "Possesso",
+        "aliases": ["Olympique Lyon", "OL"],
+        "typical_position": "top6"
+      },
+      "Lille": {
+        "style": "Contropiede",
+        "aliases": ["LOSC"],
+        "typical_position": "top6"
+      },
+      "Rennes": {
+        "style": "Possesso",
+        "aliases": ["Stade Rennais"],
+        "typical_position": "mid"
+      },
+      "Nice": {
+        "style": "Difensiva",
+        "aliases": ["OGC Nice"],
+        "typical_position": "mid"
+      },
+      "Lens": {
+        "style": "Pressing Alto",
+        "aliases": ["RC Lens"],
+        "typical_position": "mid"
+      },
+      "Strasbourg": {
+        "style": "Difensiva",
+        "aliases": ["RC Strasbourg"],
+        "typical_position": "mid_low"
+      },
+      "Brest": {
+        "style": "Difensiva",
+        "aliases": ["Stade Brestois"],
+        "typical_position": "mid_low"
+      },
+      "Lorient": {
+        "style": "Difensiva",
+        "aliases": ["FC Lorient"],
+        "typical_position": "low"
+      },
+      "Metz": {
+        "style": "Difensiva",
+        "aliases": ["FC Metz"],
+        "typical_position": "low"
+      }
+    }
+  },
+
+  "motivation_rules": {
+    "comment": "Regole per auto-detection motivazione da posizione classifica",
+    "position_based": {
+      "1-2": {
+        "motivation": "Lotta Champions (4° posto)",
+        "reason": "Lotta per il titolo"
+      },
+      "3-5": {
+        "motivation": "Lotta Champions (4° posto)",
+        "reason": "Zona Champions League"
+      },
+      "6-10": {
+        "motivation": "Normale",
+        "reason": "Metà classifica sicura"
+      },
+      "11-15": {
+        "motivation": "Normale",
+        "reason": "Metà classifica sicura"
+      },
+      "16-18": {
+        "motivation": "Lotta Salvezza (retrocessione)",
+        "reason": "Zona retrocessione vicina"
+      },
+      "19-20": {
+        "motivation": "Lotta Salvezza (retrocessione)",
+        "reason": "Zona retrocessione"
+      }
+    },
+    "context_based": {
+      "derby_keywords": ["derby", "rivalità", "classico", "stracittadina"],
+      "cup_keywords": ["finale", "coppa", "champions", "europa league", "conference"],
+      "end_season_keywords": ["ultima giornata", "fine stagione", "senza obiettivi"]
+    }
+  },
+
+  "default_settings": {
+    "apply_constraints": true,
+    "apply_calibration_enabled": true,
+    "use_precision_math": true,
+    "auto_mode": true
+  }
+}
