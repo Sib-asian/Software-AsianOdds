@@ -191,16 +191,23 @@ def build_constrained_optimizer(
             options={'maxiter': 200, 'ftol': 1e-9}
         )
 
-        if result.success:
+        # FIX BUG #10.10: Safe array access on result.x and x0
+        if result.success and len(result.x) >= 2:
             return result.x[0], result.x[1]
         else:
-            logger.warning(f"Ottimizzazione constrained fallita: {result.message}")
+            logger.warning(f"Ottimizzazione constrained fallita: {result.message if hasattr(result, 'message') else 'unknown'}")
             # Applica constraints a stima iniziale
-            return apply_physical_constraints_to_lambda(x0[0], x0[1], total_target)
+            if len(x0) >= 2:
+                return apply_physical_constraints_to_lambda(x0[0], x0[1], total_target)
+            else:
+                return 1.5, 1.5  # Fallback to reasonable defaults
 
     except Exception as e:
         logger.error(f"Errore ottimizzazione constrained: {e}")
-        return apply_physical_constraints_to_lambda(x0[0], x0[1], total_target)
+        if len(x0) >= 2:
+            return apply_physical_constraints_to_lambda(x0[0], x0[1], total_target)
+        else:
+            return 1.5, 1.5  # Fallback to reasonable defaults
 
 
 # ============================================================
