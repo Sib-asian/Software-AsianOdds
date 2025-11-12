@@ -181,7 +181,9 @@ class CacheManager:
 
                 # Auto-cleanup if cache too large (prevent unbounded growth)
                 cursor.execute("SELECT COUNT(*) FROM team_cache")
-                count = cursor.fetchone()[0]
+                # FIX BUG #10.4: Safe array access on fetchone()
+                result = cursor.fetchone()
+                count = result[0] if result else 0
                 if count > 1000:  # Max 1000 entries
                     logger.info(f"🧹 Cache size ({count}) exceeded limit, cleaning oldest 10%")
                     cursor.execute("""
@@ -336,7 +338,8 @@ class QuotaManager:
             result = cursor.fetchone()
             conn.close()
 
-            return result[0] if result else 0
+            # FIX BUG #10.5: Safe array access - already has check but make explicit
+            return result[0] if result and len(result) > 0 else 0
 
         except Exception as e:
             logger.error(f"❌ Error getting API usage: {e}")
@@ -448,7 +451,9 @@ class TheSportsDBProvider:
         data = self._request(endpoint)
 
         if data and data.get("teams"):
-            return data["teams"][0]  # Return first match
+            # FIX BUG #10.6: Safe array access on data["teams"]
+            teams = data.get("teams", [])
+            return teams[0] if teams and len(teams) > 0 else None
 
         return None
 
