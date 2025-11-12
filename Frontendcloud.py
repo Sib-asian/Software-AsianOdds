@@ -9411,19 +9411,26 @@ def backtest_strategy(
                 ("X", "p_draw", "odds_x"),
                 ("2", "p_away", "odds_2"),
             ]:
-                if pd.isna(row.get(prob_col)) or pd.isna(row.get(odds_col)):
+                prob_raw = row.get(prob_col)
+                odds_raw = row.get(odds_col)
+                if pd.isna(prob_raw) or pd.isna(odds_raw):
                     continue
-                
-                prob = row[prob_col] / 100.0
-                odds = row[odds_col]
-                
-                if odds <= 1.0:
+
+                prob_value = safe_float(prob_raw)
+                odds = safe_float(odds_raw)
+
+                if prob_value is None or odds is None or odds <= 1.0:
                     continue
-                
+
+                prob = prob_value / 100.0 if prob_value > 1 else prob_value
+
+                if prob <= 0.0 or prob >= 1.0:
+                    continue
+
                 # Calcola edge
                 implied_prob = 1 / odds
                 edge = prob - implied_prob
-                
+
                 # Se edge sufficiente e migliore di quella trovata finora
                 if edge >= min_edge and edge > best_edge:
                     best_edge = edge
@@ -9624,6 +9631,157 @@ def export_analysis_to_excel(risultati: Dict[str, Any], match_name: str, odds_da
     
     wb.save(output_file)
     return output_file
+
+# ============================================================
+#   STORICO ANALISI
+# ============================================================
+
+def safe_float(value: Any) -> Optional[float]:
+    """
+    Converte un valore a float, restituendo None se il valore non è valido.
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        try:
+            normalized = str(value).replace("%", "").replace(",", ".").strip()
+            if not normalized:
+                return None
+            return float(normalized)
+        except Exception:
+            return None
+
+
+def append_analysis_to_archive(
+    record: Dict[str, Any],
+    archive_file: str = ARCHIVE_FILE,
+) -> bool:
+    """
+    Appende (o crea) una riga di storico analisi sul file CSV dedicato.
+    """
+    try:
+        df_new = pd.DataFrame([record])
+        if os.path.exists(archive_file):
+            try:
+                df_existing = pd.read_csv(archive_file)
+            except (pd.errors.EmptyDataError, FileNotFoundError):
+                df_existing = pd.DataFrame()
+            df_combined = pd.concat([df_existing, df_new], ignore_index=True, sort=False)
+        else:
+            df_combined = df_new
+
+        if {"match", "timestamp"}.issubset(df_combined.columns):
+            df_combined = df_combined.drop_duplicates(subset=["match", "timestamp"], keep="last")
+
+        df_combined.to_csv(archive_file, index=False)
+        return True
+    except Exception as exc:
+        logger.error(f"Errore salvataggio storico analisi: {exc}", exc_info=True)
+        return False
+
+
+def save_analysis_history(
+    match_name: str,
+    league: str,
+    home_team: str,
+    away_team: str,
+    match_datetime_iso: str,
+    validated_inputs: Dict[str, Any],
+    ris: Dict[str, Any],
+    quality_score: Optional[float],
+    market_confidence: Optional[float],
+    warnings: List[str],
+    value_bets: List[Dict[str, Any]],
+    archive_file: str = ARCHIVE_FILE,
+) -> bool:
+    """
+    Costruisce il record dell'analisi e lo salva nello storico.
+    """
+    try:
+        value_bets_summary: List[Dict[str, Any]] = []
+        best_edge: Optional[float] = None
+
+        for vb in value_bets[:10]:
+            edge = safe_float(vb.get("EdgeRaw") or vb.get("Edge %"))
+            prob = safe_float(vb.get("ProbRaw") or vb.get("Prob %"))
+            odd = safe_float(vb.get("Odd") or vb.get("Quota"))
+            value_bets_summary.append(
+                {
+                    "esito": vb.get("Esito"),
+                    "edge": edge,
+                    "prob": prob,
+                    "odd": odd,
+                    "rec": vb.get("Rec"),
+                }
+            )
+            if edge is not None:
+                best_edge = edge if best_edge is None else max(best_edge, edge)
+
+        probs_map = {
+            "1": safe_float(ris.get("p_home")),
+            "X": safe_float(ris.get("p_draw")),
+            "2": safe_float(ris.get("p_away")),
+        }
+        probs_map_clean = {
+            key: (value if value is not None else 0.0) for key, value in probs_map.items()
+        }
+        esito_modello = max(probs_map_clean, key=probs_map_clean.get)
+
+        record = {
+            "timestamp": datetime.now().isoformat(),
+            "match": match_name,
+            "league": league,
+            "home_team": home_team,
+            "away_team": away_team,
+            "match_datetime": match_datetime_iso,
+            "odds_1": safe_float(validated_inputs.get("odds_1")),
+            "odds_x": safe_float(validated_inputs.get("odds_x")),
+            "odds_2": safe_float(validated_inputs.get("odds_2")),
+            "odds_over25": safe_float(validated_inputs.get("odds_over25")),
+            "odds_under25": safe_float(validated_inputs.get("odds_under25")),
+            "odds_btts": safe_float(validated_inputs.get("odds_btts")),
+            "odds_dnb_home": safe_float(validated_inputs.get("odds_dnb_home")),
+            "odds_dnb_away": safe_float(validated_inputs.get("odds_dnb_away")),
+            "p_home": probs_map["1"],
+            "p_draw": probs_map["X"],
+            "p_away": probs_map["2"],
+            "over_25": safe_float(ris.get("over_25")),
+            "under_25": safe_float(ris.get("under_25")),
+            "btts": safe_float(ris.get("btts")),
+            "gg_over25": safe_float(ris.get("gg_over25")),
+            "dnb_home": safe_float(ris.get("dnb_home")),
+            "dnb_away": safe_float(ris.get("dnb_away")),
+            "lambda_home": safe_float(ris.get("lambda_home")),
+            "lambda_away": safe_float(ris.get("lambda_away")),
+            "rho": safe_float(ris.get("rho")),
+            "quality_score": safe_float(quality_score),
+            "market_confidence": safe_float(market_confidence),
+            "warnings": " | ".join(warnings) if warnings else "",
+            "value_bets_count": len(value_bets),
+            "value_bets_best_edge": best_edge,
+            "value_bets_json": json.dumps(value_bets_summary, ensure_ascii=False)
+            if value_bets_summary
+            else "",
+            "analysis_version": "2.0",
+            "calibration_applied": bool(ris.get("calibration_applied")),
+            "ensemble_applied": bool(ris.get("ensemble_applied")),
+            "esito_modello": esito_modello,
+            "esito_reale": "",
+            "risultato_reale": "",
+            "match_ok": None,
+        }
+
+        return append_analysis_to_archive(record, archive_file=archive_file)
+    except Exception as exc:
+        logger.error(f"Errore creazione record storico analisi: {exc}", exc_info=True)
+        return False
 
 # ============================================================
 #   COMPARAZIONE BOOKMAKERS
@@ -15086,6 +15244,25 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
         st.session_state["value_bets_filtered"] = filtered_value_bets
         st.session_state["value_bet_threshold_active"] = value_bet_edge_threshold
         st.session_state["value_bet_kelly_fraction_active"] = value_bet_kelly_fraction
+
+        saved_in_history = save_analysis_history(
+            match_name=match_name,
+            league=league_type,
+            home_team=home_team,
+            away_team=away_team,
+            match_datetime_iso=match_datetime_iso,
+            validated_inputs=validated,
+            ris=ris,
+            quality_score=quality_score,
+            market_confidence=market_conf,
+            warnings=warnings,
+            value_bets=filtered_value_bets,
+        )
+
+        if saved_in_history:
+            st.success("💾 Analisi salvata nello storico")
+        else:
+            st.error("❌ Impossibile salvare l'analisi nello storico (vedi log)")
 
         # RACCOGLI TUTTI I MERCATI SOPRA SOGLIA (non solo value bets)
         all_markets = []
