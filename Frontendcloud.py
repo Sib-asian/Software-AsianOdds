@@ -9761,6 +9761,8 @@ def append_analysis_to_archive(
             df_combined = df_new
 
         if {"match", "timestamp"}.issubset(df_combined.columns):
+            # Ordina per timestamp prima di drop_duplicates per garantire che "last" sia effettivamente l'ultimo cronologicamente
+            df_combined = df_combined.sort_values("timestamp", ascending=True)
             df_combined = df_combined.drop_duplicates(subset=["match", "timestamp"], keep="last")
 
         df_combined.to_csv(archive_file, index=False)
@@ -15898,11 +15900,11 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                     # Duplicati: preferisci versione con + (più leggibile)
                     keys_with_plus = [k for k in keys if '+' in k]
                     if keys_with_plus:
-                        # Usa la versione con + più corta
-                        best_key = min(keys_with_plus, key=len)
+                        # Usa la versione con + più corta (con ordinamento alfabetico secondario per determinismo)
+                        best_key = min(keys_with_plus, key=lambda k: (len(k), k))
                     else:
-                        # Nessuna con +, usa la più corta
-                        best_key = min(keys, key=len)
+                        # Nessuna con +, usa la più corta (con ordinamento alfabetico secondario per determinismo)
+                        best_key = min(keys, key=lambda k: (len(k), k))
                     combo_deduplicati[best_key] = val
 
             # Ordina per probabilità decrescente
