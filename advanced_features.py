@@ -284,6 +284,9 @@ def precise_probability_sum(probs: np.ndarray, expected_total: float = 1.0) -> n
 
     if abs(total) < 1e-12:
         logger.warning("Somma probabilità troppo piccola, ritorno uniforme")
+        # FIX BUG: Protezione divisione per zero se probs è vuoto
+        if len(probs) == 0:
+            return probs  # Ritorna array vuoto
         return np.ones_like(probs) / len(probs) * expected_total
 
     # Normalizza
@@ -296,7 +299,10 @@ def precise_probability_sum(probs: np.ndarray, expected_total: float = 1.0) -> n
         # Correzione finale per garantire somma esatta (con controllo array non vuoto)
         if len(probs_normalized) > 0:
             correction = expected_total - total_check
-            probs_normalized[0] += correction  # Aggiungi differenza al primo elemento
+            # FIX BUG: Distribuisci correzione uniformemente invece di concentrarla sul primo elemento
+            # Questo evita bias sistematico sulla prima outcome (es. Home in 1X2)
+            correction_per_element = correction / len(probs_normalized)
+            probs_normalized = probs_normalized + correction_per_element
         else:
             logger.warning("Array probabilità vuoto, impossibile applicare correzione")
 

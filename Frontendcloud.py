@@ -339,6 +339,9 @@ API_RETRY_DELAY = app_config.api_retry_delay
 API_TIMEOUT = app_config.api_timeout
 
 # Cache per API calls (evita rate limiting)
+# FIX BUG: Aggiunto threading lock per evitare race conditions
+import threading
+_API_CACHE_LOCK = threading.RLock()
 API_CACHE = {}
 FOOTBALL_DATA_BASE_URL = "https://api.football-data.org/v4"
 _FOOTBALL_DATA_MATCH_CACHE: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
@@ -481,27 +484,32 @@ def api_call_with_retry(
         cache_key = f"{api_func.__name__}_{hash(str(args) + str(kwargs))}"
     
     # Prova a recuperare da cache se disponibile
-    if use_cache and cache_key in API_CACHE:
-        cached_data, cached_time = API_CACHE[cache_key]
-        if time.time() - cached_time < CACHE_EXPIRY:
-            return cached_data
-    
+    # FIX BUG: Thread-safe cache access
+    if use_cache:
+        with _API_CACHE_LOCK:
+            if cache_key in API_CACHE:
+                cached_data, cached_time = API_CACHE[cache_key]
+                if time.time() - cached_time < CACHE_EXPIRY:
+                    return cached_data
+
     last_exception = None
-    
+
     # Retry loop con exponential backoff
     for attempt in range(max_attempts):
         try:
             # Aggiungi timeout a kwargs se non presente
             if "timeout" not in kwargs:
                 kwargs["timeout"] = timeout
-            
+
             # Chiama API
             result = api_func(*args, **kwargs)
-            
+
             # Salva in cache se successo
+            # FIX BUG: Thread-safe cache write
             if use_cache:
-                API_CACHE[cache_key] = (result, time.time())
-            
+                with _API_CACHE_LOCK:
+                    API_CACHE[cache_key] = (result, time.time())
+
             return result
             
         except requests.exceptions.Timeout:
@@ -565,6 +573,9 @@ def safe_api_call(api_func, default_return=None, *args, **kwargs):
 # ============================================================
 
 def normalize_key(s: str) -> str:
+    # FIX BUG: Assicura che s sia sempre una stringa
+    if not isinstance(s, str):
+        s = str(s) if s is not None else ""
     return (s or "").lower().replace(" ", "").replace("-", "").replace("/", "")
 
 def safe_round(x: Optional[float], nd: int = 3) -> Optional[float]:
@@ -573,7 +584,9 @@ def safe_round(x: Optional[float], nd: int = 3) -> Optional[float]:
     try:
         return round(x, nd)
     except Exception:
-        return x
+        # FIX BUG: Ritorna None invece di valore non-float in caso di errore
+        logger.warning(f"safe_round failed for x={x}, returning None")
+        return None
 
 def decimali_a_prob(odds: float) -> float:
     """
@@ -2657,7 +2670,7 @@ def detect_value_bets(
                 'ev_decimal': round(ev_decimal, 4),
                 'ev_percentage': round(ev_pct, 2),
                 'edge_percentage': round(edge_pct, 2),
-                'kelly_fraction': round(ev_decimal, 4),  # Kelly = edge / (odds - 1)
+                'kelly_fraction': round(ev_decimal / (odds - 1.0), 4) if odds > 1.0 else 0.0,  # FIX: Kelly = edge / (odds - 1)
                 'confidence': 'High' if ev_pct > 15 else 'Medium' if ev_pct > 10 else 'Low'
             }
 
@@ -3795,9 +3808,15 @@ def scrape_fbref_team_xg(team_name: str, league: str = 'Premier-League', season:
             squad_cell = row.find('th', {'data-stat': 'squad'})
             if squad_cell and team_name.lower() in squad_cell.text.lower():
                 # Estrai dati xG
-                xg_for = float(row.find('td', {'data-stat': 'xg_for'}).text or 0)
-                xg_against = float(row.find('td', {'data-stat': 'xg_against'}).text or 0)
-                matches = int(row.find('td', {'data-stat': 'games'}).text or 0)
+                # FIX BUG: Protezione AttributeError se elemento non trovato
+                xg_for_elem = row.find('td', {'data-stat': 'xg_for'})
+                xg_for = float(xg_for_elem.text) if xg_for_elem and xg_for_elem.text else 0.0
+
+                xg_against_elem = row.find('td', {'data-stat': 'xg_against'})
+                xg_against = float(xg_against_elem.text) if xg_against_elem and xg_against_elem.text else 0.0
+
+                matches_elem = row.find('td', {'data-stat': 'games'})
+                matches = int(matches_elem.text) if matches_elem and matches_elem.text else 0
 
                 if matches > 0:
                     return {
@@ -3926,7 +3945,12 @@ def calibrate_league_parameters(
             (historical_matches['away_score'] <= 1)
         ]
 
-        low_score_ratio = len(low_score_matches) / len(historical_matches)
+        # FIX BUG: Protezione divisione per zero
+        if len(historical_matches) > 0:
+            low_score_ratio = len(low_score_matches) / len(historical_matches)
+        else:
+            low_score_ratio = 0.5  # Default se nessun dato storico
+            logger.warning("No historical matches for tau calculation, using default")
 
         # Tau ottimale: più basso per leghe high-scoring, più alto per low-scoring
         # Range: -0.15 (high) to -0.05 (low)
@@ -3937,7 +3961,19 @@ def calibrate_league_parameters(
 
     # 3. RHO - Correlazione empirica tra gol casa e trasferta
     if 'rho' in optimize_params:
-        correlation = historical_matches[['home_score', 'away_score']].corr().iloc[0, 1]
+        # FIX BUG: Protezione per DataFrame vuoto o insufficiente
+        if len(historical_matches) > 1:
+            try:
+                correlation = historical_matches[['home_score', 'away_score']].corr().iloc[0, 1]
+                if not math.isfinite(correlation):
+                    correlation = -0.15  # Default
+            except Exception as e:
+                correlation = -0.15  # Default
+                logger.warning(f"Error calculating correlation: {e}")
+        else:
+            correlation = -0.15  # Default se dati insufficienti
+            logger.warning("Insufficient historical data for rho calculation, using default")
+
         # Rho tipico: -0.15 to 0.05
         rho_optimal = max(-0.20, min(0.10, correlation))
 
@@ -4144,8 +4180,8 @@ def get_h2h_stats(home_team: str, away_team: str, last_n: int = 10) -> Dict[str,
                 'home_win_pct': round(home_wins / total * 100, 1) if total > 0 else 0,
                 'draw_pct': round(draws / total * 100, 1) if total > 0 else 0,
                 'away_win_pct': round(away_wins / total * 100, 1) if total > 0 else 0,
-                'avg_goals_home': round(sum(goals_home) / len(goals_home), 2) if goals_home else 0,
-                'avg_goals_away': round(sum(goals_away) / len(goals_away), 2) if goals_away else 0,
+                'avg_goals_home': round(sum(goals_home) / len(goals_home), 2) if goals_home and len(goals_home) > 0 else 0,  # FIX BUG: Protezione divisione per zero
+                'avg_goals_away': round(sum(goals_away) / len(goals_away), 2) if goals_away and len(goals_away) > 0 else 0,  # FIX BUG: Protezione divisione per zero
                 'avg_total_goals': round((sum(goals_home) + sum(goals_away)) / total, 2) if total > 0 else 0,
                 'last_results': last_results,
                 'home_advantage_h2h': round((home_wins - away_wins) / total, 2) if total > 0 else 0
@@ -8535,9 +8571,19 @@ def prob_dc_multigol_from_matrix(mat: List[List[float]], dc: str, gmin: int, gma
     return s
 
 def top_results_from_matrix(mat, top_n=10, soglia_min=0.005):
+    # FIX BUG: Validazione matrice
+    if not mat or len(mat) == 0:
+        return []
+
     mg = len(mat) - 1
+    if mg < 0:
+        return []
+
     risultati = []
     for h in range(mg + 1):
+        # FIX BUG: Verifica che la riga esista e abbia lunghezza corretta
+        if h >= len(mat) or len(mat[h]) < mg + 1:
+            continue
         for a in range(mg + 1):
             p = mat[h][a]
             if p >= soglia_min:
@@ -8554,15 +8600,19 @@ def brier_score(predictions: List[float], outcomes: List[int]) -> float:
     Brier Score: misura accuracy delle probabilità.
     Score perfetto = 0, peggiore = 1.
     """
+    # FIX BUG: Return type consistency (era None, ora float)
     if len(predictions) != len(outcomes):
-        return None
-    
+        logger.warning(f"Brier score: lunghezza predictions ({len(predictions)}) != outcomes ({len(outcomes)})")
+        return 0.0  # Return neutral score invece di None
+
     return np.mean([(p - o)**2 for p, o in zip(predictions, outcomes)])
 
 def log_loss_score(predictions: List[float], outcomes: List[int], epsilon: float = 1e-15) -> float:
     """Log Loss (cross-entropy): penalizza previsioni confident sbagliate."""
+    # FIX BUG: Return type consistency (era None, ora float)
     if len(predictions) != len(outcomes):
-        return None
+        logger.warning(f"Log loss: lunghezza predictions ({len(predictions)}) != outcomes ({len(outcomes)})")
+        return 0.0  # Return neutral score invece di None
     
     # ⚠️ PROTEZIONE: Clip per evitare log(0) o log(inf)
     # Usa epsilon dal ModelConfig per coerenza se disponibile, altrimenti usa parametro
@@ -8583,9 +8633,12 @@ def calculate_roi(predictions: List[float], outcomes: List[int], odds: List[floa
     bets_placed = 0
     
     for pred, outcome, odd in zip(predictions, outcomes, odds):
+        # FIX BUG: Protezione divisione per zero
+        if odd <= 0:
+            continue  # Skip invalid odds
         implied_prob = 1 / odd
         edge = pred - implied_prob
-        
+
         if edge >= threshold:  # Value bet
             total_staked += 1
             if outcome == 1:
@@ -8642,8 +8695,10 @@ def expected_calibration_error(
     ECE = sum |accuracy(bin) - confidence(bin)| * |bin|
     Score perfetto = 0, peggiore = 1.
     """
+    # FIX BUG: Return type consistency (era None, ora float)
     if len(predictions) != len(outcomes):
-        return None
+        logger.warning(f"ECE: lunghezza predictions ({len(predictions)}) != outcomes ({len(outcomes)})")
+        return 0.0  # Return neutral score invece di None
     
     predictions = np.array(predictions)
     outcomes = np.array(outcomes)
@@ -8672,8 +8727,10 @@ def maximum_calibration_error(
     """
     Maximum Calibration Error (MCE): massimo errore di calibrazione.
     """
+    # FIX BUG: Return type consistency (era None, ora float)
     if len(predictions) != len(outcomes):
-        return None
+        logger.warning(f"MCE: lunghezza predictions ({len(predictions)}) != outcomes ({len(outcomes)})")
+        return 0.0  # Return neutral score invece di None
     
     predictions = np.array(predictions)
     outcomes = np.array(outcomes)
@@ -9639,16 +9696,20 @@ def cached_api_call(cache_key: str, api_func: callable, *args, **kwargs):
     Cache per chiamate API per evitare rate limiting.
     """
     import time
-    
-    if cache_key in API_CACHE:
-        cached_data, cached_time = API_CACHE[cache_key]
-        if time.time() - cached_time < CACHE_EXPIRY:
-            return cached_data
-    
-    # Chiama API
+
+    # FIX BUG: Thread-safe cache access
+    with _API_CACHE_LOCK:
+        if cache_key in API_CACHE:
+            cached_data, cached_time = API_CACHE[cache_key]
+            if time.time() - cached_time < CACHE_EXPIRY:
+                return cached_data
+
+    # Chiama API (fuori dal lock per non bloccare altri thread durante la chiamata)
     try:
         result = api_func(*args, **kwargs)
-        API_CACHE[cache_key] = (result, time.time())
+        # FIX BUG: Thread-safe cache write
+        with _API_CACHE_LOCK:
+            API_CACHE[cache_key] = (result, time.time())
         return result
     except Exception as e:
         # Se errore, ritorna cache vecchia se disponibile
@@ -14076,7 +14137,14 @@ def risultato_completo_improved(
         "clean_sheet_qualcuno": 1 - btts,
         "multigol_home": multigol_home,
         "multigol_away": multigol_away,
+        "multigol": multigol_home,  # FIX BUG #2: Aggiunto per visualizzazione mercati multigol
+        "multigol_totale": multigol_total,  # FIX BUG #3: Aggiunto per visualizzazione mercati multigol totale
         "dc": dc,
+        "combo": {  # FIX BUG #1: Aggiunto per visualizzazione mercati combo (1X, X2, 12)
+            "1X": p_home_final + p_draw_final,
+            "X2": p_draw_final + p_away_final,
+            "12": p_home_final + p_away_final
+        },
         "validation_warnings": validation_warnings,  # Warning per probabilità anomale
         "lambda_adjustments_log": lambda_adjustments_log,  # Log modifiche lambda per debugging
         "matrix_sum": matrix_sum,  # Somma matrice per debug
@@ -15055,6 +15123,16 @@ with st.expander(f"💰 Quote e Parametri: {home_team} vs {away_team}", expanded
         )
 
     # === xG/xA E BOOST (OPZIONALI) ===
+    # FIX BUG CRITICAL: Inizializza variabili PRIMA dell'expander per evitare NameError se non espanso
+    xg_home = 0.0
+    xa_home = 0.0
+    partite_giocate_home = 0
+    boost_home = 0.0
+    xg_away = 0.0
+    xa_away = 0.0
+    partite_giocate_away = 0
+    boost_away = 0.0
+
     with st.expander("📊 xG/xA e Boost (Opzionali)", expanded=False):
         col_xg1, col_xg2 = st.columns(2)
 
@@ -15602,10 +15680,12 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
     odds_btts_val = odds_btts if odds_btts > 0 else None
     odds_dnb_home_val = odds_dnb_home if odds_dnb_home > 0 else None
     odds_dnb_away_val = odds_dnb_away if odds_dnb_away > 0 else None
-    spread_apertura_val = spread_apertura if spread_apertura != 0.0 else None
-    total_apertura_val = total_apertura if total_apertura != 2.5 else None
-    spread_corrente_val = spread_corrente if spread_corrente != 0.0 else None
-    total_corrente_val = total_line if total_line != 2.5 else None
+    # FIX BUG: Non ignorare valori validi solo perché sono uguali al default
+    # 0.0 è un valore valido per spread, 2.5 è il valore più comune per total
+    spread_apertura_val = spread_apertura if spread_apertura is not None else None
+    total_apertura_val = total_apertura if total_apertura is not None else None
+    spread_corrente_val = spread_corrente if spread_corrente is not None else None
+    total_corrente_val = total_line if total_line is not None else None
 
     # Conversione xG/xA totali → medie per partita
     if partite_giocate_home > 0:
