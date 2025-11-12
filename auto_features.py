@@ -401,8 +401,9 @@ def _parse_datetime_robust(datetime_str: str) -> Optional[datetime]:
                 return dt
             except ValueError:
                 continue
-    except Exception:
-        pass
+    except Exception as e:
+        # FIX BUG: Log exceptions invece di silent failure
+        logger.error(f"_parse_datetime_robust: errore parsing '{datetime_str}': {e}")
 
     return None
 
