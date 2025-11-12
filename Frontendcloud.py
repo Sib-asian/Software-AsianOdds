@@ -2996,7 +2996,13 @@ DB_PATH = Path(__file__).parent / "betting_database.db"
 @contextmanager
 def get_db_connection():
     """Context manager per connessione database con auto-commit/rollback"""
-    conn = sqlite3.connect(DB_PATH)
+    # Check if database file exists, warn if not (first time setup required)
+    if not DB_PATH.exists():
+        logger.warning(f"⚠️ Database file non trovato: {DB_PATH}. Verrà creato al primo utilizzo.")
+        logger.info("💡 Per inizializzare correttamente il database, chiama initialize_database() all'avvio.")
+
+    # Connect with timeout to avoid hanging
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row  # Permette accesso per nome colonna
     try:
         yield conn
@@ -14350,6 +14356,17 @@ st.set_page_config(page_title="⚽ Modello Scommesse PRO – Dixon-Coles Bayesia
 st.title("⚽ Modello Scommesse Avanzato")
 
 st.caption(f"🕐 Esecuzione: {datetime.now().isoformat(timespec='seconds')}")
+
+# Database initialization (once per session)
+if "database_initialized" not in st.session_state:
+    try:
+        initialize_database()
+        st.session_state.database_initialized = True
+        logger.info("✅ Database inizializzato con successo")
+    except Exception as e:
+        logger.error(f"❌ Errore inizializzazione database: {e}")
+        st.session_state.database_initialized = False
+        # Non bloccare l'app, ma logga l'errore
 
 # Session state initialization
 if "soccer_leagues" not in st.session_state:
