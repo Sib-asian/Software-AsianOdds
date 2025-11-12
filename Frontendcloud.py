@@ -6483,12 +6483,11 @@ def estimate_lambda_from_market_optimized(
     # ⚠️ PROTEZIONE: Limita spread_factor a range ragionevole per evitare valori estremi
     spread_factor = max(0.5, min(2.0, spread_factor))
     
-    # ⚠️ CORREZIONE: Home advantage applicato correttamente
-    # Home advantage aumenta lambda_h e riduce lambda_a proporzionalmente
-    # ⚠️ OTTIMIZZAZIONE: Calcola sqrt(home_advantage) una sola volta
-    sqrt_ha = math.sqrt(home_advantage)
-    lambda_h_init = lambda_total * spread_factor * sqrt_ha
-    lambda_a_init = lambda_total / spread_factor / sqrt_ha
+    # ✅ FIX: Rimosso home advantage - le quote di mercato GIÀ lo includono
+    # Applicare home advantage qui causerebbe DOUBLE-COUNTING e inversione probabilità
+    # Bug report: Quote 2.70 vs 2.20 (trasferta favorita) venivano invertite
+    lambda_h_init = lambda_total * spread_factor
+    lambda_a_init = lambda_total / spread_factor
     
     # ⚠️ VERIFICA: Assicura che lambda_h + lambda_a ≈ 2 * lambda_total (con tolleranza)
     # Questo garantisce che il total atteso sia coerente
@@ -12989,36 +12988,16 @@ def risultato_completo_improved(
     if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
         lambda_adjustments_log.append(f"Fatigue: lh {lh_before:.3f}→{lh:.3f}, la {la_before:.3f}→{la:.3f}, total={lh+la:.3f}")
     
-    # 6.7. Applica motivation factors (limitati)
+    # ✅ FIX: RIMOSSO blocco motivation duplicato
+    # Motivation è già applicata da Advanced Features (motivation_home_ui)
+    # Questo blocco (motivation_home dict) creava DOUBLE-COUNTING: 1.20 × 1.15 = 1.38x (+38%)
+    # Combinato con home advantage bug causava inversione probabilità (+57% totale!)
+    # Bug report: Quote 2.70 vs 2.20 invertite - casa suggerita invece di trasferta
+
+    # Derby detection mantenuto per altri usi
     is_derby = False
     if home_team and away_team:
         is_derby = is_derby_match(home_team, away_team, league)
-
-    lh_before = lh
-    la_before = la
-    if motivation_home and motivation_home.get("data_available"):
-        motivation_factor_h = calculate_motivation_factor(
-            motivation_home.get("position"),
-            motivation_home.get("points_from_relegation"),
-            motivation_home.get("points_from_europe"),
-            is_derby
-        )
-        # Limita effetto motivation a max ±15%
-        motivation_factor_h_limited = max(0.85, min(1.15, motivation_factor_h))
-        lh *= motivation_factor_h_limited
-
-    if motivation_away and motivation_away.get("data_available"):
-        motivation_factor_a = calculate_motivation_factor(
-            motivation_away.get("position"),
-            motivation_away.get("points_from_relegation"),
-            motivation_away.get("points_from_europe"),
-            is_derby
-        )
-        motivation_factor_a_limited = max(0.85, min(1.15, motivation_factor_a))
-        la *= motivation_factor_a_limited
-    # Log modifiche
-    if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
-        lambda_adjustments_log.append(f"Motivation: lh {lh_before:.3f}→{lh:.3f}, la {la_before:.3f}→{la:.3f}, total={lh+la:.3f}")
 
     # 6.8. Applica dati avanzati (statistiche, H2H, infortuni) - BACKGROUND
     # Questi dati vengono passati come parametro opzionale
@@ -13251,7 +13230,54 @@ def risultato_completo_improved(
         # ⚠️ MICRO-PRECISIONE: Valida e limita spread/total calcolati
         spread_corrente_calculated = max(-3.0, min(3.0, spread_corrente_calculated))
         total_corrente_calculated = max(0.5, min(6.0, total_corrente_calculated))
-    
+
+    # ✅ FIX: CONTROLLO SPREAD PRESERVATION - Previene inversione probabilità
+    # Verifica che il favorito non si sia invertito rispetto alle quote di mercato
+    # Bug report: Quote 2.70 vs 2.20 (trasferta favorita) → sistema suggeriva casa
+    market_spread_sign = p1 - p2  # Positivo se casa favorita, negativo se trasferta favorita
+    final_spread_sign = lh - la   # Spread finale dai lambda
+
+    # Calcola soglia per spread "neutro" (differenza < 5% in probabilità)
+    spread_reversal_threshold = 0.05
+
+    # Controlla se c'è stata inversione significativa
+    if (market_spread_sign > spread_reversal_threshold and final_spread_sign < -spread_reversal_threshold) or \
+       (market_spread_sign < -spread_reversal_threshold and final_spread_sign > spread_reversal_threshold):
+        # INVERSIONE RILEVATA!
+        logger.error(f"⚠️ SPREAD REVERSAL DETECTED!")
+        logger.error(f"   Market: p1={p1:.3f} vs p2={p2:.3f} (spread={market_spread_sign:+.3f})")
+        logger.error(f"   Final:  lh={lh:.3f} vs la={la:.3f} (spread={final_spread_sign:+.3f})")
+        logger.error(f"   {'CASA favorita al mercato → TRASFERTA nei calcoli' if market_spread_sign > 0 else 'TRASFERTA favorita al mercato → CASA nei calcoli'}")
+        logger.error(f"   RESET a valori coerenti con mercato")
+
+        # Reset a lambda derivati direttamente dal mercato senza aggiustamenti
+        # Ricalcola usando solo quote 1X2, senza advanced features
+        from scipy.optimize import minimize
+
+        def error_market_only(params):
+            lh_test, la_test = params
+            # Calcola probabilità da lambda
+            p_home_test, p_draw_test, p_away_test = calc_1x2_from_lambda_rho(lh_test, la_test, -0.1)
+            # Errore rispetto a mercato
+            return (p_home_test - p1)**2 + (p_draw_test - px)**2 + (p_away_test - p2)**2
+
+        # Stima iniziale dal total
+        lh_init_safe = total * (p1 / (p1 + p2))
+        la_init_safe = total * (p2 / (p1 + p2))
+
+        result = minimize(error_market_only, [lh_init_safe, la_init_safe],
+                         bounds=[(0.5, 4.0), (0.5, 4.0)], method='L-BFGS-B')
+
+        if result.success:
+            lh, la = result.x
+            logger.warning(f"   Reset a: lh={lh:.3f}, la={la:.3f} (coerenti con mercato)")
+            lambda_adjustments_log.append(f"SPREAD REVERSAL FIX: Reset a market-based lambda")
+        else:
+            # Fallback: usa stima semplice
+            lh = lh_init_safe
+            la = la_init_safe
+            logger.warning(f"   Fallback: lh={lh:.3f}, la={la:.3f}")
+
     # 8. Ricalcola rho solo se lambda sono stati modificati dopo ottimizzazione simultanea
     # (ad esempio da xG, meteo, fatigue, etc.)
     lambda_modified = (
