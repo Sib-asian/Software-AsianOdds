@@ -79,7 +79,27 @@ def load_team_profiles(json_path: str = "team_profiles.json") -> Dict:
 
 
 # Carica al startup (cache globale)
+# NOTA: Cache statico, non thread-safe. Se modifichi team_profiles.json durante
+# l'esecuzione, usa reload_team_profiles() per ricaricare.
 TEAM_PROFILES = load_team_profiles()
+
+
+def reload_team_profiles(json_path: str = "team_profiles.json") -> Dict:
+    """
+    Ricarica team profiles da file (invalida cache).
+
+    Utile se team_profiles.json viene modificato durante l'esecuzione.
+
+    Args:
+        json_path: Path al file JSON
+
+    Returns:
+        Dict aggiornato con teams, motivation_rules, default_settings
+    """
+    global TEAM_PROFILES
+    TEAM_PROFILES = load_team_profiles(json_path)
+    logger.info(f"🔄 Team profiles ricaricati da {json_path}")
+    return TEAM_PROFILES
 
 # ============================================================
 # LEAGUE CODE MAPPING
@@ -341,14 +361,24 @@ def auto_calculate_fixture_congestion(
         days_since = 7  # default
         if last_match_datetime:
             last_dt = datetime.fromisoformat(last_match_datetime.replace("Z", "+00:00"))
-            days_since = max(2, min(21, (match_dt - last_dt).days))
+            days_raw = (match_dt - last_dt).days
+            if days_raw < 0:
+                logger.warning(f"⚠️ Last match è nel futuro (date invertite), uso default (7)")
+                days_since = 7
+            else:
+                days_since = max(2, min(21, days_raw))
             logger.info(f"📅 Days since last match: {days_since}")
 
         # Calculate days until next important match
         days_until = 7  # default
         if next_important_match_datetime:
             next_dt = datetime.fromisoformat(next_important_match_datetime.replace("Z", "+00:00"))
-            days_until = max(2, min(14, (next_dt - match_dt).days))
+            days_raw = (next_dt - match_dt).days
+            if days_raw < 0:
+                logger.warning(f"⚠️ Next match è nel passato (date invertite), uso default (7)")
+                days_until = 7
+            else:
+                days_until = max(2, min(14, days_raw))
             logger.info(f"📅 Days until next important match: {days_until}")
 
         return days_since, days_until

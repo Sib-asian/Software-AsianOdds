@@ -90,7 +90,33 @@ def apply_physical_constraints_to_lambda(
         lambda_h *= scale
         lambda_a *= scale
 
-    # Constraint 4: Minimi realistici
+        # Re-verifica constraint 1 dopo scaling (potrebbe violare range)
+        total_after_scale = lambda_h + lambda_a
+        if total_after_scale < 0.5:
+            scale_fix = 0.5 / max(total_after_scale, 0.01)
+            lambda_h *= scale_fix
+            lambda_a *= scale_fix
+            logger.warning(f"Post-target adjust: total troppo basso, re-scalato a 0.5")
+        elif total_after_scale > 6.0:
+            scale_fix = 6.0 / total_after_scale
+            lambda_h *= scale_fix
+            lambda_a *= scale_fix
+            logger.warning(f"Post-target adjust: total troppo alto, re-scalato a 6.0")
+
+        # Re-verifica constraint 2 dopo scaling (potrebbe violare differenza)
+        diff_after = abs(lambda_h - lambda_a)
+        if diff_after > 2.5:
+            total = lambda_h + lambda_a
+            avg = total / 2.0
+            if lambda_h > lambda_a:
+                lambda_h = avg + 1.25
+                lambda_a = avg - 1.25
+            else:
+                lambda_h = avg - 1.25
+                lambda_a = avg + 1.25
+            logger.info(f"Post-target adjust: differenza troppo alta, re-applicato constraint")
+
+    # Constraint 4: Minimi/Massimi realistici (finale)
     lambda_h = max(0.3, min(4.5, lambda_h))
     lambda_a = max(0.3, min(4.5, lambda_a))
 
@@ -194,6 +220,19 @@ def neumaier_sum(values: np.ndarray) -> float:
     Returns:
         Somma compensata con massima precisione
     """
+    # Validazione tipo input
+    if not isinstance(values, np.ndarray):
+        logger.warning(f"neumaier_sum: input non è numpy array (type: {type(values)}), converto")
+        try:
+            values = np.asarray(values)
+        except Exception as e:
+            logger.error(f"neumaier_sum: impossibile convertire a numpy array: {e}")
+            # Fallback a sum normale se possibile
+            try:
+                return float(sum(values))
+            except:
+                return 0.0
+
     s = 0.0
     c = 0.0  # Compensazione
 
@@ -209,8 +248,14 @@ def neumaier_sum(values: np.ndarray) -> float:
 
     # Verifica finitezza
     if not math.isfinite(result):
-        logger.warning("Neumaier sum: risultato non finito, fallback a sum normale")
-        return float(np.sum(values))
+        logger.warning("Neumaier sum: risultato non finito, tento fallback")
+        # Prova sum normale, ma verifica che sia finito
+        fallback = float(np.sum(values))
+        if not math.isfinite(fallback):
+            logger.error("Neumaier sum: anche fallback non finito, ritorno 0.0")
+            return 0.0
+        logger.warning(f"Neumaier sum: fallback a sum normale = {fallback}")
+        return fallback
 
     return result
 
@@ -242,9 +287,12 @@ def precise_probability_sum(probs: np.ndarray, expected_total: float = 1.0) -> n
     total_check = neumaier_sum(probs_normalized)
 
     if abs(total_check - expected_total) > 1e-10:
-        # Correzione finale per garantire somma esatta
-        correction = expected_total - total_check
-        probs_normalized[0] += correction  # Aggiungi differenza al primo elemento
+        # Correzione finale per garantire somma esatta (con controllo array non vuoto)
+        if len(probs_normalized) > 0:
+            correction = expected_total - total_check
+            probs_normalized[0] += correction  # Aggiungi differenza al primo elemento
+        else:
+            logger.warning("Array probabilità vuoto, impossibile applicare correzione")
 
     return probs_normalized
 
@@ -318,12 +366,19 @@ def load_calibration_map(csv_path: str = "storico_analisi.csv") -> Dict:
                         'n_samples': n_samples
                     }
 
-        # Log statistiche
+        # Log statistiche e verifica validità
+        total_bins = 0
         for outcome, bins_map in calibration_map.items():
             if bins_map:
                 n_bins = len(bins_map)
+                total_bins += n_bins
                 avg_correction = np.mean([v['correction'] for v in bins_map.values()])
                 logger.info(f"Calibrazione {outcome}: {n_bins} bins, correzione media = {avg_correction:+.3f}")
+
+        # Verifica che almeno alcuni bins siano popolati
+        if total_bins == 0:
+            logger.warning("⚠️ Calibrazione fallita: nessun bin popolato con dati sufficienti (min 10 samples per bin)")
+            return {}
 
         return calibration_map
 
@@ -383,10 +438,10 @@ def apply_calibration(
     prob_x_cal = calibrate_single(prob_x, 'X')
     prob_2_cal = calibrate_single(prob_2, '2')
 
-    # Normalizza per garantire somma = 1.0
+    # Normalizza per garantire somma = 1.0 (con controllo numerico preciso)
     total = prob_1_cal + prob_x_cal + prob_2_cal
 
-    if total > 0.01:
+    if total > 1e-10:  # Tolerance numerica precisa, non 0.01 che è troppo larga
         prob_1_cal /= total
         prob_x_cal /= total
         prob_2_cal /= total
@@ -690,9 +745,9 @@ def apply_all_advanced_features(
             'lambda_a': lambda_a
         })
 
-    # Calcola variazioni totali
-    lambda_h_change = ((lambda_h - lambda_h_start) / lambda_h_start) * 100
-    lambda_a_change = ((lambda_a - lambda_a_start) / lambda_a_start) * 100
+    # Calcola variazioni totali (con protezione division by zero)
+    lambda_h_change = ((lambda_h - lambda_h_start) / max(lambda_h_start, 1e-9)) * 100 if lambda_h_start != 0 else 0.0
+    lambda_a_change = ((lambda_a - lambda_a_start) / max(lambda_a_start, 1e-9)) * 100 if lambda_a_start != 0 else 0.0
     rho_change = rho - rho_start
 
     logger.info(f"=== Advanced Features Summary ===")
