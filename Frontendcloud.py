@@ -95,6 +95,47 @@ except ImportError:
     )
 
 # ============================================================
+#   ADVANCED FEATURES (Sprint 1 & 2) - IMPORT
+# ============================================================
+try:
+    from advanced_features import (
+        # Sprint 1
+        apply_physical_constraints_to_lambda,
+        neumaier_sum,
+        precise_probability_sum,
+        load_calibration_map,
+        apply_calibration,
+        # Sprint 2
+        apply_motivation_factor,
+        apply_fixture_congestion,
+        apply_tactical_matchup,
+        apply_all_advanced_features,
+        MOTIVATION_FACTORS,
+        TACTICAL_STYLES
+    )
+    ADVANCED_FEATURES_AVAILABLE = True
+    logger.info("✅ Advanced Features module caricato con successo")
+
+    # Carica calibration map al startup
+    try:
+        CALIBRATION_MAP = load_calibration_map("storico_analisi.csv")
+        if CALIBRATION_MAP:
+            n_outcomes = sum(len(v) for v in CALIBRATION_MAP.values() if v)
+            logger.info(f"✅ Calibration map caricata: {n_outcomes} bins")
+        else:
+            CALIBRATION_MAP = {}
+            logger.warning("⚠️ Calibration map vuota (serve storico con risultati)")
+    except Exception as e:
+        CALIBRATION_MAP = {}
+        logger.warning(f"⚠️ Errore caricamento calibration map: {e}")
+
+except ImportError as e:
+    ADVANCED_FEATURES_AVAILABLE = False
+    CALIBRATION_MAP = {}
+    logger.warning(f"⚠️ Advanced Features module non disponibile: {e}")
+    logger.info("💡 Per abilitare: assicurati che advanced_features.py sia nella stessa cartella")
+
+# ============================================================
 #   CONFIGURAZIONE CENTRALIZZATA (MIGLIORAMENTO)
 # ============================================================
 
@@ -12722,7 +12763,64 @@ def risultato_completo_improved(
             rho_initial=rho_prelim
         )
         rho = estimate_rho_optimized(lh, la, px_prelim, odds_btts, None)
-    
+
+    # ============================================================
+    # 🚀 ADVANCED FEATURES (Sprint 1 & 2) - PRIMO LIVELLO ADJUSTMENTS
+    # ============================================================
+    if ADVANCED_FEATURES_AVAILABLE:
+        # Recupera parametri da kwargs (passati dall'UI)
+        motivation_home_ui = kwargs.get('motivation_home_ui', 'Normale')
+        motivation_away_ui = kwargs.get('motivation_away_ui', 'Normale')
+        days_since_home_ui = kwargs.get('days_since_home', 7)
+        days_since_away_ui = kwargs.get('days_since_away', 7)
+        days_until_home_ui = kwargs.get('days_until_home', 7)
+        days_until_away_ui = kwargs.get('days_until_away', 7)
+        style_home_ui = kwargs.get('style_home', 'Possesso')
+        style_away_ui = kwargs.get('style_away', 'Possesso')
+        apply_constraints_ui = kwargs.get('apply_constraints', True)
+
+        # Salva valori pre-advanced per confronto
+        lh_pre_advanced = lh
+        la_pre_advanced = la
+        rho_pre_advanced = rho
+
+        try:
+            # Applica tutte le advanced features in sequenza
+            advanced_result = apply_all_advanced_features(
+                lambda_h=lh,
+                lambda_a=la,
+                rho=rho,
+                total_target=total,
+                motivation_home=motivation_home_ui,
+                motivation_away=motivation_away_ui,
+                days_since_home=days_since_home_ui,
+                days_since_away=days_since_away_ui,
+                days_until_home=days_until_home_ui,
+                days_until_away=days_until_away_ui,
+                style_home=style_home_ui,
+                style_away=style_away_ui,
+                apply_constraints=apply_constraints_ui
+            )
+
+            # Aggiorna lambda e rho con valori adjustati
+            lh = advanced_result['lambda_h']
+            la = advanced_result['lambda_a']
+            rho = advanced_result['rho']
+
+            # Log modifiche se significative
+            lh_change_pct = advanced_result.get('lambda_h_change_pct', 0)
+            la_change_pct = advanced_result.get('lambda_a_change_pct', 0)
+
+            if abs(lh_change_pct) > 1.0 or abs(la_change_pct) > 1.0:
+                logger.info(f"🚀 Advanced Features Applied: λ_h {lh_pre_advanced:.2f}→{lh:.2f} ({lh_change_pct:+.1f}%), λ_a {la_pre_advanced:.2f}→{la:.2f} ({la_change_pct:+.1f}%), ρ {rho_pre_advanced:.3f}→{rho:.3f}")
+
+        except Exception as e:
+            logger.warning(f"⚠️ Advanced features failed: {e}, using base lambda values")
+            # In caso di errore, usa valori originali
+            lh = lh_pre_advanced
+            la = la_pre_advanced
+            rho = rho_pre_advanced
+
     # ⚠️ CONTROLLO: Salva lambda iniziali per limitare effetto cumulativo
     lh_initial = lh
     la_initial = la
@@ -13169,7 +13267,35 @@ def risultato_completo_improved(
     mat_ht = build_score_matrix(lh * ratio_ht, la * ratio_ht, rho_ht)
     
     # 10. Calcola tutte le probabilità
-    p_home, p_draw, p_away = calc_match_result_from_matrix(mat_ft)
+    p_home_raw, p_draw_raw, p_away_raw = calc_match_result_from_matrix(mat_ft)
+
+    # ============================================================
+    # 📊 CALIBRAZIONE PROBABILITÀ 1X2 (Sprint 1.3)
+    # ============================================================
+    apply_calibration_enabled = kwargs.get('apply_calibration_enabled', False)
+
+    if ADVANCED_FEATURES_AVAILABLE and apply_calibration_enabled and CALIBRATION_MAP:
+        try:
+            # Applica calibrazione usando storico
+            p_home, p_draw, p_away = apply_calibration(
+                p_home_raw, p_draw_raw, p_away_raw, CALIBRATION_MAP
+            )
+
+            # Log differenze se significative (>2%)
+            diff_1 = abs(p_home - p_home_raw)
+            diff_x = abs(p_draw - p_draw_raw)
+            diff_2 = abs(p_away - p_away_raw)
+
+            if max(diff_1, diff_x, diff_2) > 0.02:
+                logger.info(f"📊 Calibration Applied: Casa {p_home_raw:.1%}→{p_home:.1%} ({(p_home-p_home_raw)*100:+.1f}pp), X {p_draw_raw:.1%}→{p_draw:.1%} ({(p_draw-p_draw_raw)*100:+.1f}pp), Trasferta {p_away_raw:.1%}→{p_away:.1%} ({(p_away-p_away_raw)*100:+.1f}pp)")
+
+        except Exception as e:
+            logger.warning(f"⚠️ Calibration failed: {e}, using raw probabilities")
+            p_home, p_draw, p_away = p_home_raw, p_draw_raw, p_away_raw
+    else:
+        # Calibrazione non abilitata o non disponibile
+        p_home, p_draw, p_away = p_home_raw, p_draw_raw, p_away_raw
+
     over_15, under_15 = calc_over_under_from_matrix(mat_ft, 1.5)
     over_25, under_25 = calc_over_under_from_matrix(mat_ft, 2.5)
     over_35, under_35 = calc_over_under_from_matrix(mat_ft, 3.5)
@@ -14862,6 +14988,159 @@ with st.expander(f"💰 Quote e Parametri: {home_team} vs {away_team}", expanded
                 key="boost_away"
             ) / 100.0
 
+# === FUNZIONALITÀ AVANZATE (Sprint 1 & 2) ===
+if ADVANCED_FEATURES_AVAILABLE:
+    with st.expander("🚀 Funzionalità Avanzate (Precisione Migliorata)", expanded=False):
+        st.markdown("""
+        **Nuove funzionalità per massimizzare la precisione:**
+
+        ✅ **Constraints Fisici**: Impedisce predizioni irrealistiche
+        ✅ **Precision Math**: Elimina errori di arrotondamento
+        ✅ **Calibrazione**: Usa storico per rendere probabilità "oneste"
+        ✅ **Motivation Index**: Considera importanza match
+        ✅ **Fixture Congestion**: Penalità per calendario fitto
+        ✅ **Tactical Matchup**: Analizza stili di gioco
+        """)
+
+        # Motivation
+        st.markdown("**🎯 Motivation Index**")
+        col_mot1, col_mot2 = st.columns(2)
+
+        with col_mot1:
+            motivation_home = st.selectbox(
+                "Motivazione Casa",
+                list(MOTIVATION_FACTORS.keys()),
+                index=0,
+                key="motivation_home",
+                help="Lotta Champions/Salvezza aumentano intensità (+10-20%). Fine stagione senza obiettivi riduce (-8%)"
+            )
+
+        with col_mot2:
+            motivation_away = st.selectbox(
+                "Motivazione Trasferta",
+                list(MOTIVATION_FACTORS.keys()),
+                index=0,
+                key="motivation_away"
+            )
+
+        # Fixture Congestion
+        st.markdown("**📅 Fixture Congestion (Calendario)**")
+        col_fix1, col_fix2 = st.columns(2)
+
+        with col_fix1:
+            days_since_home = st.number_input(
+                "Giorni dall'ultimo match (Casa)",
+                min_value=2,
+                max_value=21,
+                value=7,
+                step=1,
+                key="days_since_home",
+                help="≤3 giorni = stanchezza (-5%). ≥10 giorni = riposati (+3%)"
+            )
+
+            days_until_home = st.number_input(
+                "Giorni al prossimo match importante (Casa)",
+                min_value=2,
+                max_value=14,
+                value=7,
+                step=1,
+                key="days_until_home",
+                help="Se match importante fra 3gg + giocato 3gg fa = -8% (rotation risk)"
+            )
+
+        with col_fix2:
+            days_since_away = st.number_input(
+                "Giorni dall'ultimo match (Trasferta)",
+                min_value=2,
+                max_value=21,
+                value=7,
+                step=1,
+                key="days_since_away"
+            )
+
+            days_until_away = st.number_input(
+                "Giorni al prossimo match importante (Trasferta)",
+                min_value=2,
+                max_value=14,
+                value=7,
+                step=1,
+                key="days_until_away"
+            )
+
+        # Tactical Styles
+        st.markdown("**⚔️ Tactical Matchup (Stili di Gioco)**")
+        col_tac1, col_tac2 = st.columns(2)
+
+        with col_tac1:
+            style_home = st.selectbox(
+                "Stile tattico Casa",
+                TACTICAL_STYLES,
+                index=0,
+                key="style_home",
+                help="""
+**Possesso**: Dominio palla, manovra lenta (es. Man City, Barcellona)
+**Contropiede**: Difesa compatta + ripartenze veloci (es. Atalanta, Leicester)
+**Pressing Alto**: Aggressivi, recupero alto (es. Liverpool, Napoli)
+**Difensiva**: Blocco basso, pochi rischi (es. Atletico, Burnley)
+                """
+            )
+
+        with col_tac2:
+            style_away = st.selectbox(
+                "Stile tattico Trasferta",
+                TACTICAL_STYLES,
+                index=0,
+                key="style_away"
+            )
+
+        # Preview fattori
+        st.markdown("**📊 Preview Adjustments**")
+        preview_factor_home = MOTIVATION_FACTORS[motivation_home]
+        preview_factor_away = MOTIVATION_FACTORS[motivation_away]
+
+        col_prev1, col_prev2 = st.columns(2)
+        with col_prev1:
+            st.metric("Fattore Motivation Casa", f"{preview_factor_home:.2f}x")
+        with col_prev2:
+            st.metric("Fattore Motivation Trasferta", f"{preview_factor_away:.2f}x")
+
+        # Opzioni constraints
+        st.markdown("**⚙️ Opzioni Avanzate**")
+        apply_constraints = st.checkbox(
+            "Applica Constraints Fisici",
+            value=True,
+            key="apply_constraints",
+            help="Forza il modello a rispettare limiti realistici: total 0.5-6.0 gol, P(0-0) ≥ 5%, ecc."
+        )
+
+        apply_calibration_enabled = st.checkbox(
+            "Applica Calibrazione Probabilità",
+            value=True if CALIBRATION_MAP else False,
+            key="apply_calibration_enabled",
+            help=f"Usa storico per correggere bias. {'✅ Attiva (' + str(sum(len(v) for v in CALIBRATION_MAP.values() if v)) + ' bins)' if CALIBRATION_MAP else '⚠️ Non disponibile (serve storico)'}"
+        )
+
+        use_precision_math = st.checkbox(
+            "Usa Precision Math (Neumaier sum)",
+            value=True,
+            key="use_precision_math",
+            help="Elimina errori di arrotondamento nelle somme. Consigliato sempre."
+        )
+
+else:
+    # Default values se advanced features non disponibili
+    motivation_home = "Normale"
+    motivation_away = "Normale"
+    days_since_home = 7
+    days_since_away = 7
+    days_until_home = 7
+    days_until_away = 7
+    style_home = "Possesso"
+    style_away = "Possesso"
+    apply_constraints = False
+    apply_calibration_enabled = False
+    use_precision_math = False
+
 with st.expander("💎 Value Bet Bet365 (Impostazioni)", expanded=False):
     value_bet_edge_threshold = st.slider(
         "Soglia edge minima (%)",
@@ -15056,6 +15335,18 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 motivation_home=fatigue_home_data,
                 motivation_away=fatigue_away_data,
                 advanced_data=advanced_data,
+                # 🚀 Advanced Features (Sprint 1 & 2) - Parametri UI
+                motivation_home_ui=st.session_state.get('motivation_home', 'Normale'),
+                motivation_away_ui=st.session_state.get('motivation_away', 'Normale'),
+                days_since_home=st.session_state.get('days_since_home', 7),
+                days_since_away=st.session_state.get('days_since_away', 7),
+                days_until_home=st.session_state.get('days_until_home', 7),
+                days_until_away=st.session_state.get('days_until_away', 7),
+                style_home=st.session_state.get('style_home', 'Possesso'),
+                style_away=st.session_state.get('style_away', 'Possesso'),
+                apply_constraints=st.session_state.get('apply_constraints', True),
+                apply_calibration_enabled=st.session_state.get('apply_calibration_enabled', False),
+                use_precision_math=st.session_state.get('use_precision_math', True),
             )
 
         st.success(f"✅ Analisi completata per {match_name}")
@@ -15075,6 +15366,25 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
         with col_r3:
             st.metric("Prob Trasferta", f"{ris['p_away']*100:.1f}%")
             st.metric("Quota Trasferta", f"{validated['odds_2']:.2f}")
+
+        # 🚀 Mostra Advanced Features Adjustments se applicati
+        if ADVANCED_FEATURES_AVAILABLE and (
+            st.session_state.get('motivation_home', 'Normale') != 'Normale' or
+            st.session_state.get('motivation_away', 'Normale') != 'Normale' or
+            st.session_state.get('style_home', 'Possesso') != 'Possesso' or
+            st.session_state.get('style_away', 'Possesso') != 'Possesso' or
+            st.session_state.get('apply_constraints', True) or
+            st.session_state.get('apply_calibration_enabled', False)
+        ):
+            st.info(f"""
+            **🚀 Advanced Features Attive:**
+            - **Motivation:** Casa={st.session_state.get('motivation_home', 'Normale')}, Trasferta={st.session_state.get('motivation_away', 'Normale')}
+            - **Fixture Congestion:** Casa ultimi {st.session_state.get('days_since_home', 7)}gg, Trasferta ultimi {st.session_state.get('days_since_away', 7)}gg
+            - **Tactical Styles:** {st.session_state.get('style_home', 'Possesso')} vs {st.session_state.get('style_away', 'Possesso')}
+            - **Constraints Fisici:** {'✅ Attivi' if st.session_state.get('apply_constraints', True) else '❌ Disattivi'}
+            - **Calibrazione:** {'✅ Attiva' if st.session_state.get('apply_calibration_enabled', False) else '❌ Disattiva'}
+            - **Precision Math:** {'✅ Attivo' if st.session_state.get('use_precision_math', True) else '❌ Disattivo'}
+            """)
 
         st.markdown("---")
 
