@@ -15143,6 +15143,33 @@ if ADVANCED_FEATURES_AVAILABLE:
 
         # Backward compatibility: imposta auto_mode_advanced per codice esistente
         auto_mode = (mode_selection != "✋ Manuale")
+
+        # Detect mode switch and clean session state to prevent corruption
+        previous_mode = st.session_state.get("_previous_mode_selection", None)
+        if previous_mode is not None and previous_mode != mode_selection:
+            logger.info(f"🔄 Mode switch detected: {previous_mode} → {mode_selection}")
+
+            if previous_mode != "✋ Manuale" and mode_selection == "✋ Manuale":
+                # Switching from Auto to Manual - clear auto-detection cache
+                if "preview_cache" in st.session_state:
+                    st.session_state["preview_cache"].clear()
+                    logger.info("🧹 Cleared auto-detection preview cache")
+
+            elif previous_mode == "✋ Manuale" and mode_selection != "✋ Manuale":
+                # Switching from Manual to Auto - clear manual values to avoid conflicts
+                manual_keys = [
+                    'motivation_home', 'motivation_away',
+                    'days_since_home', 'days_since_away',
+                    'days_until_home', 'days_until_away',
+                    'style_home', 'style_away'
+                ]
+                for key in manual_keys:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                logger.info("🧹 Cleared manual mode values")
+
+        # Store current mode for next iteration
+        st.session_state["_previous_mode_selection"] = mode_selection
         st.session_state["auto_mode_advanced"] = auto_mode
 
         if not AUTO_DETECTION_AVAILABLE and mode_selection != "✋ Manuale":
@@ -15285,10 +15312,23 @@ if ADVANCED_FEATURES_AVAILABLE:
                     # Crea cache key univoca per questa partita
                     cache_key = f"{home_team}_{away_team}_{league_type}_{match_datetime_iso}_{position_home_auto}_{position_away_auto}_{is_derby_auto}_{is_cup_auto}_{is_end_season_auto}_{mode_selection}"
 
-                    # Controlla se preview già in cache (evita doppie API calls)
-                    if cache_key in st.session_state.get("preview_cache", {}):
+                    # Initialize cache dicts if needed
+                    if "preview_cache" not in st.session_state:
+                        st.session_state["preview_cache"] = {}
+                    if "preview_cache_timestamps" not in st.session_state:
+                        st.session_state["preview_cache_timestamps"] = {}
+
+                    # Check cache with expiry (5 minutes = 300 seconds)
+                    import time
+                    cache_expiry = 300
+                    cache_time = st.session_state["preview_cache_timestamps"].get(cache_key, 0)
+                    is_cache_valid = (cache_key in st.session_state["preview_cache"] and
+                                      (time.time() - cache_time) < cache_expiry)
+
+                    if is_cache_valid:
                         auto_features_preview = st.session_state["preview_cache"][cache_key]
-                        st.caption("📦 Utilizzando risultati cached")
+                        age_minutes = (time.time() - cache_time) / 60
+                        st.caption(f"📦 Utilizzando risultati cached ({age_minutes:.1f} min fa)")
                     else:
                         # Determina se usare API nel preview
                         use_api_preview = (mode_selection == "🌐 Auto + API (Ibrido)" and API_MANAGER_AVAILABLE)
@@ -15307,10 +15347,18 @@ if ADVANCED_FEATURES_AVAILABLE:
                             use_api=use_api_preview  # LEVEL 2 Lite in preview
                         )
 
-                        # Salva in cache
-                        if "preview_cache" not in st.session_state:
-                            st.session_state["preview_cache"] = {}
+                        # Limit cache size (max 50 entries)
+                        if len(st.session_state["preview_cache"]) >= 50:
+                            # Remove oldest entry
+                            oldest_key = min(st.session_state["preview_cache_timestamps"],
+                                            key=st.session_state["preview_cache_timestamps"].get)
+                            del st.session_state["preview_cache"][oldest_key]
+                            del st.session_state["preview_cache_timestamps"][oldest_key]
+                            logger.info(f"🧹 Removed oldest cache entry: {oldest_key}")
+
+                        # Salva in cache with timestamp
                         st.session_state["preview_cache"][cache_key] = auto_features_preview
+                        st.session_state["preview_cache_timestamps"][cache_key] = time.time()
 
                     col_prev1, col_prev2 = st.columns(2)
 
@@ -15653,10 +15701,18 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 # Crea cache key per riutilizzare preview (evita doppie chiamate)
                 cache_key = f"{home_team}_{away_team}_{league_type}_{match_datetime_iso}_{st.session_state.get('position_home_auto')}_{st.session_state.get('position_away_auto')}_{st.session_state.get('is_derby_auto', False)}_{st.session_state.get('is_cup_auto', False)}_{st.session_state.get('is_end_season_auto', False)}_{mode_selection}"
 
-                # Riutilizza risultati preview se disponibili (ottimizzazione API)
-                if cache_key in st.session_state.get("preview_cache", {}):
+                # Check cache with expiry (same logic as preview)
+                import time
+                cache_expiry = 300  # 5 minutes
+                cache_time = st.session_state.get("preview_cache_timestamps", {}).get(cache_key, 0)
+                is_cache_valid = (cache_key in st.session_state.get("preview_cache", {}) and
+                                  (time.time() - cache_time) < cache_expiry)
+
+                # Riutilizza risultati preview se disponibili e non scaduti (ottimizzazione API)
+                if is_cache_valid:
                     auto_features = st.session_state["preview_cache"][cache_key]
-                    logger.info("♻️ Riutilizzando risultati preview cached (0 API calls)")
+                    age_minutes = (time.time() - cache_time) / 60
+                    logger.info(f"♻️ Riutilizzando risultati preview cached ({age_minutes:.1f} min fa, 0 API calls)")
                 else:
                     # ✅ FIX BUG #8: Passa dati fatigue già fetchati ad auto_detect
                     # Calcola last_match_datetime da days_since_last_match

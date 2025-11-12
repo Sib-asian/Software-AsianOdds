@@ -178,7 +178,7 @@ def get_league_code(league_name: str) -> str:
 # AUTO-DETECT TACTICAL STYLE
 # ============================================================
 
-def auto_detect_tactical_style(team_name: str, league: str, use_api: bool = False) -> str:
+def auto_detect_tactical_style(team_name: str, league: str, use_api: bool = False) -> Tuple[str, bool]:
     """
     Auto-detect stile tattico da database squadre (LEVEL 1) o API (LEVEL 2)
 
@@ -188,11 +188,13 @@ def auto_detect_tactical_style(team_name: str, league: str, use_api: bool = Fals
         use_api: Se True, prova API se non trovato in database
 
     Returns:
-        Stile tattico: "Possesso", "Contropiede", "Pressing Alto", "Difensiva"
-        Default: "Possesso" se non trovato
+        Tuple (stile_tattico, api_chiamata):
+        - stile_tattico: "Possesso", "Contropiede", "Pressing Alto", "Difensiva"
+        - api_chiamata: True se è stata effettuata una chiamata API, False altrimenti
+        Default: ("Possesso", False) se non trovato
     """
     if not team_name:
-        return "Possesso"
+        return ("Possesso", False)
 
     league_code = get_league_code(league)
     teams_db = TEAM_PROFILES.get("teams", {})
@@ -205,7 +207,7 @@ def auto_detect_tactical_style(team_name: str, league: str, use_api: bool = Fals
             return _get_style_from_api(team_name, league)
 
         logger.info(f"  → Uso Possesso (fallback)")
-        return "Possesso"
+        return ("Possesso", False)
 
     league_teams = teams_db[league_code]
 
@@ -213,7 +215,7 @@ def auto_detect_tactical_style(team_name: str, league: str, use_api: bool = Fals
     if team_name in league_teams:
         style = league_teams[team_name].get("style", "Possesso")
         logger.info(f"✅ {team_name}: {style} (exact match)")
-        return style
+        return (style, False)
 
     # Prova match case-insensitive
     team_lower = team_name.lower()
@@ -221,7 +223,7 @@ def auto_detect_tactical_style(team_name: str, league: str, use_api: bool = Fals
         if team_key.lower() == team_lower:
             style = team_data.get("style", "Possesso")
             logger.info(f"✅ {team_name}: {style} (case-insensitive)")
-            return style
+            return (style, False)
 
     # Prova aliases
     for team_key, team_data in league_teams.items():
@@ -230,21 +232,21 @@ def auto_detect_tactical_style(team_name: str, league: str, use_api: bool = Fals
             if alias.lower() == team_lower or alias.lower() in team_lower:
                 style = team_data.get("style", "Possesso")
                 logger.info(f"✅ {team_name}: {style} (alias '{alias}')")
-                return style
+                return (style, False)
 
     # Fallback: Try API or use default
     if use_api and API_AVAILABLE:
         return _get_style_from_api(team_name, league)
 
     logger.info(f"ℹ️ {team_name} non trovata in {league}, uso Possesso")
-    return "Possesso"
+    return ("Possesso", False)
 
 
 # ============================================================
 # API HELPER FUNCTIONS (LEVEL 2)
 # ============================================================
 
-def _get_style_from_api(team_name: str, league: str) -> str:
+def _get_style_from_api(team_name: str, league: str) -> Tuple[str, bool]:
     """
     Get tactical style from API (LEVEL 2)
 
@@ -253,7 +255,9 @@ def _get_style_from_api(team_name: str, league: str) -> str:
         league: League name
 
     Returns:
-        Tactical style inferred from API data
+        Tuple (style, api_called):
+        - style: Tactical style inferred from API data
+        - api_called: True if API was actually called (not from cache)
     """
     try:
         logger.info(f"📡 Trying API for {team_name}...")
@@ -262,20 +266,24 @@ def _get_style_from_api(team_name: str, league: str) -> str:
 
         if result["source"] == "api":
             style = result["data"].get("style", "Possesso")
-            logger.info(f"✅ API success: {team_name} → {style}")
-            return style
+            api_called = True  # Fresh API call
+            logger.info(f"✅ API success: {team_name} → {style} (API called)")
+            return (style, api_called)
         elif result["source"] == "cache":
             style = result["data"].get("style", "Possesso")
-            logger.info(f"✅ Cache hit: {team_name} → {style}")
-            return style
+            api_called = False  # Cache hit, no API call
+            logger.info(f"✅ Cache hit: {team_name} → {style} (no API call)")
+            return (style, api_called)
         else:
             # Fallback within API module
-            logger.info(f"⚠️ API fallback for {team_name}")
-            return result["data"].get("style", "Possesso")
+            style = result["data"].get("style", "Possesso")
+            api_called = result.get("api_calls_used", 0) > 0  # Check if API was attempted
+            logger.info(f"⚠️ API fallback for {team_name} → {style} (API called: {api_called})")
+            return (style, api_called)
 
     except Exception as e:
         logger.error(f"❌ API error for {team_name}: {e}")
-        return "Possesso"
+        return ("Possesso", False)  # Error, assume no API call succeeded
 
 
 # ============================================================
@@ -321,15 +329,25 @@ def auto_detect_motivation(
 
     # Position-based detection
     if position is not None:
+        # Validate position range
+        if not isinstance(position, int) or position < 1 or position > 20:
+            logger.warning(f"⚠️ Posizione non valida: {position}, uso default Normale")
+            return "Normale"
+
         rules = TEAM_PROFILES.get("motivation_rules", {}).get("position_based", {})
 
         # Trova range corretto
         for pos_range, data in rules.items():
             if "-" in pos_range:
-                start, end = map(int, pos_range.split("-"))
+                try:
+                    start, end = map(int, pos_range.split("-"))
+                except ValueError as e:
+                    logger.warning(f"⚠️ Formato range posizione non valido: {pos_range}: {e}")
+                    continue
+
                 if start <= position <= end:
-                    motivation = data["motivation"]
-                    reason = data["reason"]
+                    motivation = data.get("motivation", "Normale")
+                    reason = data.get("reason", "N/A")
                     logger.info(f"📊 {team_name}: Pos {position} → {motivation} ({reason})")
                     return motivation
 
@@ -350,6 +368,44 @@ def auto_detect_motivation(
 # ============================================================
 # AUTO-CALCULATE FIXTURE CONGESTION
 # ============================================================
+
+def _parse_datetime_robust(datetime_str: str) -> Optional[datetime]:
+    """
+    Parse datetime string with multiple fallbacks for robustness.
+
+    Handles: ISO 8601 with/without timezone, various formats.
+    """
+    if not datetime_str:
+        return None
+
+    try:
+        # Try simple replacement of Z -> +00:00
+        dt = datetime.fromisoformat(datetime_str.replace("Z", "+00:00"))
+        return dt
+    except (ValueError, AttributeError):
+        pass
+
+    try:
+        # Try with dateutil parser (more flexible)
+        from dateutil import parser as dateutil_parser
+        dt = dateutil_parser.isoparse(datetime_str)
+        return dt
+    except (ImportError, ValueError, dateutil_parser.ParserError):
+        pass
+
+    try:
+        # Try strptime with common formats
+        for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
+            try:
+                dt = datetime.strptime(datetime_str, fmt)
+                return dt
+            except ValueError:
+                continue
+    except Exception:
+        pass
+
+    return None
+
 
 def auto_calculate_fixture_congestion(
     match_datetime: Optional[str] = None,
@@ -373,32 +429,43 @@ def auto_calculate_fixture_congestion(
             logger.info("ℹ️ match_datetime non fornito, uso defaults (7, 7)")
             return 7, 7
 
-        # Parse match date
-        match_dt = datetime.fromisoformat(match_datetime.replace("Z", "+00:00"))
+        # Parse match date with robust parsing
+        match_dt = _parse_datetime_robust(match_datetime)
+        if match_dt is None:
+            logger.warning(f"⚠️ Formato datetime non valido: {match_datetime}, uso defaults")
+            return 7, 7
 
         # Calculate days since last match
         days_since = 7  # default
         if last_match_datetime:
-            last_dt = datetime.fromisoformat(last_match_datetime.replace("Z", "+00:00"))
-            days_raw = (match_dt - last_dt).days
-            if days_raw < 0:
-                logger.warning(f"⚠️ Last match è nel futuro (date invertite), uso default (7)")
+            last_dt = _parse_datetime_robust(last_match_datetime)
+            if last_dt is None:
+                logger.warning(f"⚠️ Formato last_match_datetime non valido, uso default (7)")
                 days_since = 7
             else:
-                days_since = max(2, min(21, days_raw))
-            logger.info(f"📅 Days since last match: {days_since}")
+                days_raw = (match_dt - last_dt).days
+                if days_raw < 0:
+                    logger.warning(f"⚠️ Last match è nel futuro (date invertite), uso default (7)")
+                    days_since = 7
+                else:
+                    days_since = max(2, min(21, days_raw))
+                logger.info(f"📅 Days since last match: {days_since}")
 
         # Calculate days until next important match
         days_until = 7  # default
         if next_important_match_datetime:
-            next_dt = datetime.fromisoformat(next_important_match_datetime.replace("Z", "+00:00"))
-            days_raw = (next_dt - match_dt).days
-            if days_raw < 0:
-                logger.warning(f"⚠️ Next match è nel passato (date invertite), uso default (7)")
+            next_dt = _parse_datetime_robust(next_important_match_datetime)
+            if next_dt is None:
+                logger.warning(f"⚠️ Formato next_match_datetime non valido, uso default (7)")
                 days_until = 7
             else:
-                days_until = max(2, min(14, days_raw))
-            logger.info(f"📅 Days until next important match: {days_until}")
+                days_raw = (next_dt - match_dt).days
+                if days_raw < 0:
+                    logger.warning(f"⚠️ Next match è nel passato (date invertite), uso default (7)")
+                    days_until = 7
+                else:
+                    days_until = max(2, min(14, days_raw))
+                logger.info(f"📅 Days until next important match: {days_until}")
 
         return days_since, days_until
 
@@ -479,14 +546,14 @@ def auto_detect_all_features(
 
     api_calls_count = 0
 
-    # 1. Tactical Styles
-    style_home = auto_detect_tactical_style(home_team, league, use_api=use_api)
-    style_away = auto_detect_tactical_style(away_team, league, use_api=use_api)
+    # 1. Tactical Styles - ora ritorna tupla (style, api_called)
+    style_home, api_called_home = auto_detect_tactical_style(home_team, league, use_api=use_api)
+    style_away, api_called_away = auto_detect_tactical_style(away_team, league, use_api=use_api)
 
-    # Track if API was actually used
-    if use_api and API_AVAILABLE and API_MANAGER:
-        # Get actual usage count (simplified - would need proper tracking)
-        api_calls_count = 2 if (style_home != "Possesso" or style_away != "Possesso") else 0
+    # Track API calls accurately
+    api_calls_count = int(api_called_home) + int(api_called_away)
+    if api_calls_count > 0:
+        logger.info(f"📊 API calls made: {api_calls_count} ({int(api_called_home)} home + {int(api_called_away)} away)")
 
     # 2. Motivations
     motivation_home = auto_detect_motivation(
