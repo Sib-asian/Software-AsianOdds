@@ -211,7 +211,7 @@ class CacheManager:
             conn.close()
 
             if not result:
-                return {"hits": 0, "misses": 0, "hit_rate": 0.0}
+                return {"hits": 0, "misses": 0, "total": 0, "hit_rate": 0.0}
 
             hits, misses = result
             total = hits + misses
@@ -226,7 +226,7 @@ class CacheManager:
 
         except Exception as e:
             logger.error(f"❌ Error getting cache stats: {e}")
-            return {"hits": 0, "misses": 0, "hit_rate": 0.0}
+            return {"hits": 0, "misses": 0, "total": 0, "hit_rate": 0.0}
 
     def cleanup_old(self, days: int = 7):
         """Remove cache entries older than N days"""
