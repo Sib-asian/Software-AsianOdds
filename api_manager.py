@@ -36,7 +36,7 @@ class APIConfig:
     """Configuration for API providers"""
 
     # API-Football (Free tier: 100 calls/day)
-    API_FOOTBALL_KEY = ""  # User will add this
+    API_FOOTBALL_KEY = "95c43f936816cd4389a747fd2cfe061a"
     API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
     API_FOOTBALL_QUOTA = 100  # calls/day
 
