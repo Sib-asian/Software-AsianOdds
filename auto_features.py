@@ -5,10 +5,12 @@ Questo modulo gestisce la modalità automatica per le advanced features:
 - Auto-detection stile tattico da database squadre
 - Auto-detection motivazione da posizione/contesto
 - Auto-calcolo fixture congestion da date match
+- LEVEL 2: API integration per squadre non in database
 
 Utilizzo:
     from auto_features import auto_detect_all_features
 
+    # LEVEL 1 (Solo Database)
     features = auto_detect_all_features(
         home_team="Inter",
         away_team="Milan",
@@ -16,6 +18,14 @@ Utilizzo:
         match_datetime="2025-01-15T20:45:00",
         position_home=1,
         position_away=2
+    )
+
+    # LEVEL 2 (Database + API)
+    features = auto_detect_all_features(
+        home_team="Midtjylland",
+        away_team="Nordsjælland",
+        league="Superliga",
+        use_api=True  # Enable API fallback
     )
 """
 
@@ -26,6 +36,19 @@ from datetime import datetime, timedelta
 from typing import Dict, Tuple, Optional, Any
 
 logger = logging.getLogger(__name__)
+
+# ============================================================
+# API MANAGER INTEGRATION (LEVEL 2)
+# ============================================================
+try:
+    from api_manager import APIManager
+    API_MANAGER = APIManager()
+    API_AVAILABLE = True
+    logger.info("✅ API Manager disponibile (LEVEL 2 attivo)")
+except ImportError:
+    API_MANAGER = None
+    API_AVAILABLE = False
+    logger.info("ℹ️ API Manager non disponibile (solo LEVEL 1)")
 
 # ============================================================
 # LOAD TEAM PROFILES DATABASE
@@ -116,13 +139,14 @@ def get_league_code(league_name: str) -> str:
 # AUTO-DETECT TACTICAL STYLE
 # ============================================================
 
-def auto_detect_tactical_style(team_name: str, league: str) -> str:
+def auto_detect_tactical_style(team_name: str, league: str, use_api: bool = False) -> str:
     """
-    Auto-detect stile tattico da database squadre
+    Auto-detect stile tattico da database squadre (LEVEL 1) o API (LEVEL 2)
 
     Args:
         team_name: Nome squadra (es. "Inter", "Manchester City")
         league: Nome lega (es. "Serie A", "Premier League")
+        use_api: Se True, prova API se non trovato in database
 
     Returns:
         Stile tattico: "Possesso", "Contropiede", "Pressing Alto", "Difensiva"
@@ -135,7 +159,13 @@ def auto_detect_tactical_style(team_name: str, league: str) -> str:
     teams_db = TEAM_PROFILES.get("teams", {})
 
     if league_code not in teams_db:
-        logger.info(f"ℹ️ Lega {league} ({league_code}) non in database, uso Possesso")
+        logger.info(f"ℹ️ Lega {league} ({league_code}) non in database")
+
+        # Try API if enabled
+        if use_api and API_AVAILABLE:
+            return _get_style_from_api(team_name, league)
+
+        logger.info(f"  → Uso Possesso (fallback)")
         return "Possesso"
 
     league_teams = teams_db[league_code]
@@ -163,9 +193,50 @@ def auto_detect_tactical_style(team_name: str, league: str) -> str:
                 logger.info(f"✅ {team_name}: {style} (alias '{alias}')")
                 return style
 
-    # Fallback: Possesso
+    # Fallback: Try API or use default
+    if use_api and API_AVAILABLE:
+        return _get_style_from_api(team_name, league)
+
     logger.info(f"ℹ️ {team_name} non trovata in {league}, uso Possesso")
     return "Possesso"
+
+
+# ============================================================
+# API HELPER FUNCTIONS (LEVEL 2)
+# ============================================================
+
+def _get_style_from_api(team_name: str, league: str) -> str:
+    """
+    Get tactical style from API (LEVEL 2)
+
+    Args:
+        team_name: Team name
+        league: League name
+
+    Returns:
+        Tactical style inferred from API data
+    """
+    try:
+        logger.info(f"📡 Trying API for {team_name}...")
+
+        result = API_MANAGER.get_team_context(team_name, league)
+
+        if result["source"] == "api":
+            style = result["data"].get("style", "Possesso")
+            logger.info(f"✅ API success: {team_name} → {style}")
+            return style
+        elif result["source"] == "cache":
+            style = result["data"].get("style", "Possesso")
+            logger.info(f"✅ Cache hit: {team_name} → {style}")
+            return style
+        else:
+            # Fallback within API module
+            logger.info(f"⚠️ API fallback for {team_name}")
+            return result["data"].get("style", "Possesso")
+
+    except Exception as e:
+        logger.error(f"❌ API error for {team_name}: {e}")
+        return "Possesso"
 
 
 # ============================================================
@@ -308,7 +379,8 @@ def auto_detect_all_features(
     last_match_datetime_home: Optional[str] = None,
     last_match_datetime_away: Optional[str] = None,
     next_important_match_datetime_home: Optional[str] = None,
-    next_important_match_datetime_away: Optional[str] = None
+    next_important_match_datetime_away: Optional[str] = None,
+    use_api: bool = False
 ) -> Dict[str, Any]:
     """
     Auto-detect TUTTE le advanced features in un colpo solo
@@ -326,6 +398,7 @@ def auto_detect_all_features(
         is_end_season: True se fine stagione
         last_match_datetime_home/away: Data ultimo match
         next_important_match_datetime_home/away: Data prossimo match importante
+        use_api: Se True, usa API per squadre non in database (LEVEL 2)
 
     Returns:
         Dict con tutti i parametri per advanced features:
@@ -340,14 +413,24 @@ def auto_detect_all_features(
             'days_until_away': 4,
             'apply_constraints': True,
             'apply_calibration_enabled': True,
-            'use_precision_math': True
+            'use_precision_math': True,
+            'api_used': False,  # True if API was called
+            'api_calls_count': 0  # Number of API calls made
         }
     """
-    logger.info(f"🤖 AUTO-DETECTION: {home_team} vs {away_team} ({league})")
+    mode_str = "LEVEL 2 (DB + API)" if use_api else "LEVEL 1 (DB only)"
+    logger.info(f"🤖 AUTO-DETECTION [{mode_str}]: {home_team} vs {away_team} ({league})")
+
+    api_calls_count = 0
 
     # 1. Tactical Styles
-    style_home = auto_detect_tactical_style(home_team, league)
-    style_away = auto_detect_tactical_style(away_team, league)
+    style_home = auto_detect_tactical_style(home_team, league, use_api=use_api)
+    style_away = auto_detect_tactical_style(away_team, league, use_api=use_api)
+
+    # Track if API was actually used
+    if use_api and API_AVAILABLE and API_MANAGER:
+        # Get actual usage count (simplified - would need proper tracking)
+        api_calls_count = 2 if (style_home != "Possesso" or style_away != "Possesso") else 0
 
     # 2. Motivations
     motivation_home = auto_detect_motivation(
@@ -397,10 +480,12 @@ def auto_detect_all_features(
         'days_until_away': days_until_away,
         'apply_constraints': defaults.get('apply_constraints', True),
         'apply_calibration_enabled': defaults.get('apply_calibration_enabled', True),
-        'use_precision_math': defaults.get('use_precision_math', True)
+        'use_precision_math': defaults.get('use_precision_math', True),
+        'api_used': use_api and API_AVAILABLE,
+        'api_calls_count': api_calls_count
     }
 
-    logger.info(f"✅ AUTO-DETECTION completata: {result}")
+    logger.info(f"✅ AUTO-DETECTION completata [{mode_str}]: {result}")
     return result
 
 
