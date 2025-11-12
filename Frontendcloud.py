@@ -136,6 +136,21 @@ except ImportError as e:
     logger.info("💡 Per abilitare: assicurati che advanced_features.py sia nella stessa cartella")
 
 # ============================================================
+#   AUTO-DETECTION MODULE (Sprint 1 & 2 Enhancement)
+# ============================================================
+try:
+    from auto_features import (
+        auto_detect_all_features,
+        is_derby_match as auto_is_derby_match
+    )
+    AUTO_DETECTION_AVAILABLE = True
+    logger.info("✅ Auto-Detection module caricato con successo")
+except ImportError as e:
+    AUTO_DETECTION_AVAILABLE = False
+    logger.warning(f"⚠️ Auto-Detection module non disponibile: {e}")
+    logger.info("💡 Per abilitare: assicurati che auto_features.py e team_profiles.json siano nella stessa cartella")
+
+# ============================================================
 #   CONFIGURAZIONE CENTRALIZZATA (MIGLIORAMENTO)
 # ============================================================
 
@@ -15002,33 +15017,167 @@ if ADVANCED_FEATURES_AVAILABLE:
         ✅ **Tactical Matchup**: Analizza stili di gioco
         """)
 
-        # Motivation
-        st.markdown("**🎯 Motivation Index**")
-        col_mot1, col_mot2 = st.columns(2)
+        # ============================================================
+        # TOGGLE AUTO/MANUAL MODE
+        # ============================================================
+        col_mode1, col_mode2 = st.columns([3, 1])
 
-        with col_mot1:
-            motivation_home = st.selectbox(
-                "Motivazione Casa",
+        with col_mode1:
+            auto_mode = st.checkbox(
+                "🤖 Modalità Automatica (Auto-Detection)",
+                value=AUTO_DETECTION_AVAILABLE,
+                key="auto_mode_advanced",
+                help="Rileva automaticamente stile tattico, motivazione e calendario dalle squadre e dal contesto"
+            )
+
+        with col_mode2:
+            if AUTO_DETECTION_AVAILABLE:
+                st.success("✅ Attiva")
+            else:
+                st.warning("⚠️ Non disponibile")
+
+        if not AUTO_DETECTION_AVAILABLE:
+            auto_mode = False  # Force manual se auto non disponibile
+
+        st.markdown("---")
+
+        # ============================================================
+        # MODALITÀ AUTOMATICA
+        # ============================================================
+        if auto_mode and AUTO_DETECTION_AVAILABLE:
+            st.info("""
+            **🤖 Modalità Automatica Attiva**
+
+            Il sistema rileverà automaticamente:
+            - **Stile Tattico**: Da database squadre (100+ squadre principali)
+            - **Motivazione**: Da posizione/contesto (lotta Champions, salvezza, derby)
+            - **Fixture Congestion**: Calcolo da date match (se disponibili)
+
+            *Nota: Puoi sempre tornare alla modalità manuale per override*
+            """)
+
+            # Input opzionali per migliorare auto-detection
+            col_opt1, col_opt2 = st.columns(2)
+
+            with col_opt1:
+                position_home_auto = st.number_input(
+                    "Posizione Casa (opzionale)",
+                    min_value=1,
+                    max_value=20,
+                    value=None,
+                    key="position_home_auto",
+                    help="Posizione in classifica (1-20). Se fornito, migliora detection motivazione"
+                )
+
+            with col_opt2:
+                position_away_auto = st.number_input(
+                    "Posizione Trasferta (opzionale)",
+                    min_value=1,
+                    max_value=20,
+                    value=None,
+                    key="position_away_auto",
+                    help="Posizione in classifica (1-20). Se fornito, migliora detection motivazione"
+                )
+
+            # Context flags
+            col_ctx1, col_ctx2, col_ctx3 = st.columns(3)
+
+            with col_ctx1:
+                is_derby_auto = st.checkbox(
+                    "🔥 È un Derby",
+                    value=False,
+                    key="is_derby_auto",
+                    help="Spunta se è un derby/stracittadina/classico"
+                )
+
+            with col_ctx2:
+                is_cup_auto = st.checkbox(
+                    "🏆 È una Finale",
+                    value=False,
+                    key="is_cup_auto",
+                    help="Spunta se è finale di coppa o match decisivo"
+                )
+
+            with col_ctx3:
+                is_end_season_auto = st.checkbox(
+                    "😴 Fine Stagione",
+                    value=False,
+                    key="is_end_season_auto",
+                    help="Spunta se è fine stagione senza obiettivi"
+                )
+
+            # Preview auto-detection (se possibile)
+            if home_team and away_team:
+                st.markdown("**📊 Preview Auto-Detection:**")
+
+                try:
+                    # Prova auto-detection
+                    auto_features_preview = auto_detect_all_features(
+                        home_team=home_team.strip(),
+                        away_team=away_team.strip(),
+                        league=league_type,
+                        match_datetime=match_datetime_iso if match_datetime_iso else None,
+                        position_home=position_home_auto,
+                        position_away=position_away_auto,
+                        is_derby=is_derby_auto,
+                        is_cup=is_cup_auto,
+                        is_end_season=is_end_season_auto
+                    )
+
+                    col_prev1, col_prev2 = st.columns(2)
+
+                    with col_prev1:
+                        st.info(f"""
+                        **Casa ({home_team}):**
+                        - Stile: {auto_features_preview['style_home']}
+                        - Motivazione: {auto_features_preview['motivation_home']}
+                        - Riposo: {auto_features_preview['days_since_home']}gg
+                        """)
+
+                    with col_prev2:
+                        st.info(f"""
+                        **Trasferta ({away_team}):**
+                        - Stile: {auto_features_preview['style_away']}
+                        - Motivazione: {auto_features_preview['motivation_away']}
+                        - Riposo: {auto_features_preview['days_since_away']}gg
+                        """)
+
+                except Exception as e:
+                    st.warning(f"⚠️ Preview non disponibile: {e}")
+
+        # ============================================================
+        # MODALITÀ MANUALE
+        # ============================================================
+        else:
+            st.info("**✋ Modalità Manuale Attiva** - Inserisci manualmente tutti i parametri")
+
+            # Motivation
+            st.markdown("**🎯 Motivation Index**")
+            col_mot1, col_mot2 = st.columns(2)
+
+            with col_mot1:
+                motivation_home = st.selectbox(
+                    "Motivazione Casa",
                 list(MOTIVATION_FACTORS.keys()),
                 index=0,
                 key="motivation_home",
                 help="Lotta Champions/Salvezza aumentano intensità (+10-20%). Fine stagione senza obiettivi riduce (-8%)"
             )
 
-        with col_mot2:
-            motivation_away = st.selectbox(
-                "Motivazione Trasferta",
-                list(MOTIVATION_FACTORS.keys()),
-                index=0,
-                key="motivation_away"
-            )
+            with col_mot2:
+                motivation_away = st.selectbox(
+                    "Motivazione Trasferta",
+                    list(MOTIVATION_FACTORS.keys()),
+                    index=0,
+                    key="motivation_away"
+                )
 
-        # Fixture Congestion
-        st.markdown("**📅 Fixture Congestion (Calendario)**")
-        col_fix1, col_fix2 = st.columns(2)
+            # Fixture Congestion
+            st.markdown("**📅 Fixture Congestion (Calendario)**")
+            col_fix1, col_fix2 = st.columns(2)
 
-        with col_fix1:
-            days_since_home = st.number_input(
+            with col_fix1:
+                days_since_home = st.number_input(
                 "Giorni dall'ultimo match (Casa)",
                 min_value=2,
                 max_value=21,
@@ -15048,8 +15197,8 @@ if ADVANCED_FEATURES_AVAILABLE:
                 help="Se match importante fra 3gg + giocato 3gg fa = -8% (rotation risk)"
             )
 
-        with col_fix2:
-            days_since_away = st.number_input(
+            with col_fix2:
+                days_since_away = st.number_input(
                 "Giorni dall'ultimo match (Trasferta)",
                 min_value=2,
                 max_value=21,
@@ -15067,12 +15216,12 @@ if ADVANCED_FEATURES_AVAILABLE:
                 key="days_until_away"
             )
 
-        # Tactical Styles
-        st.markdown("**⚔️ Tactical Matchup (Stili di Gioco)**")
-        col_tac1, col_tac2 = st.columns(2)
+            # Tactical Styles
+            st.markdown("**⚔️ Tactical Matchup (Stili di Gioco)**")
+            col_tac1, col_tac2 = st.columns(2)
 
-        with col_tac1:
-            style_home = st.selectbox(
+            with col_tac1:
+                style_home = st.selectbox(
                 "Stile tattico Casa",
                 TACTICAL_STYLES,
                 index=0,
@@ -15085,40 +15234,40 @@ if ADVANCED_FEATURES_AVAILABLE:
                 """
             )
 
-        with col_tac2:
-            style_away = st.selectbox(
+            with col_tac2:
+                style_away = st.selectbox(
                 "Stile tattico Trasferta",
                 TACTICAL_STYLES,
                 index=0,
                 key="style_away"
             )
 
-        # Preview fattori
-        st.markdown("**📊 Preview Adjustments**")
-        preview_factor_home = MOTIVATION_FACTORS[motivation_home]
-        preview_factor_away = MOTIVATION_FACTORS[motivation_away]
+            # Preview fattori
+            st.markdown("**📊 Preview Adjustments**")
+            preview_factor_home = MOTIVATION_FACTORS[motivation_home]
+            preview_factor_away = MOTIVATION_FACTORS[motivation_away]
 
-        col_prev1, col_prev2 = st.columns(2)
-        with col_prev1:
-            st.metric("Fattore Motivation Casa", f"{preview_factor_home:.2f}x")
-        with col_prev2:
-            st.metric("Fattore Motivation Trasferta", f"{preview_factor_away:.2f}x")
+            col_prev1, col_prev2 = st.columns(2)
+            with col_prev1:
+                st.metric("Fattore Motivation Casa", f"{preview_factor_home:.2f}x")
+            with col_prev2:
+                st.metric("Fattore Motivation Trasferta", f"{preview_factor_away:.2f}x")
 
-        # Opzioni constraints
-        st.markdown("**⚙️ Opzioni Avanzate**")
-        apply_constraints = st.checkbox(
+            # Opzioni constraints
+            st.markdown("**⚙️ Opzioni Avanzate**")
+            apply_constraints = st.checkbox(
             "Applica Constraints Fisici",
             value=True,
             key="apply_constraints",
             help="Forza il modello a rispettare limiti realistici: total 0.5-6.0 gol, P(0-0) ≥ 5%, ecc."
-        )
+            )
 
-        apply_calibration_enabled = st.checkbox(
+            apply_calibration_enabled = st.checkbox(
             "Applica Calibrazione Probabilità",
             value=True if CALIBRATION_MAP else False,
             key="apply_calibration_enabled",
             help=f"Usa storico per correggere bias. {'✅ Attiva (' + str(sum(len(v) for v in CALIBRATION_MAP.values() if v)) + ' bins)' if CALIBRATION_MAP else '⚠️ Non disponibile (serve storico)'}"
-        )
+            )
 
         use_precision_math = st.checkbox(
             "Usa Precision Math (Neumaier sum)",
@@ -15299,6 +15448,70 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
             validated.get("odds_btts"), 1
         )
 
+        # ============================================================
+        # 🤖 AUTO-DETECTION advanced features (se abilitata)
+        # ============================================================
+        auto_mode_active = st.session_state.get('auto_mode_advanced', False)
+
+        if auto_mode_active and AUTO_DETECTION_AVAILABLE:
+            try:
+                # Esegui auto-detection
+                auto_features = auto_detect_all_features(
+                    home_team=home_team.strip(),
+                    away_team=away_team.strip(),
+                    league=league_type,
+                    match_datetime=match_datetime_iso,
+                    position_home=st.session_state.get('position_home_auto'),
+                    position_away=st.session_state.get('position_away_auto'),
+                    is_derby=st.session_state.get('is_derby_auto', False),
+                    is_cup=st.session_state.get('is_cup_auto', False),
+                    is_end_season=st.session_state.get('is_end_season_auto', False)
+                )
+
+                # Usa parametri auto-detected
+                motivation_home_final = auto_features['motivation_home']
+                motivation_away_final = auto_features['motivation_away']
+                days_since_home_final = auto_features['days_since_home']
+                days_since_away_final = auto_features['days_since_away']
+                days_until_home_final = auto_features['days_until_home']
+                days_until_away_final = auto_features['days_until_away']
+                style_home_final = auto_features['style_home']
+                style_away_final = auto_features['style_away']
+                apply_constraints_final = auto_features['apply_constraints']
+                apply_calibration_final = auto_features['apply_calibration_enabled']
+                use_precision_math_final = auto_features['use_precision_math']
+
+                logger.info(f"🤖 Auto-detection applicata: {home_team} vs {away_team}")
+
+            except Exception as e:
+                logger.warning(f"⚠️ Auto-detection fallita: {e}, uso valori manuali")
+                # Fallback a manual
+                motivation_home_final = st.session_state.get('motivation_home', 'Normale')
+                motivation_away_final = st.session_state.get('motivation_away', 'Normale')
+                days_since_home_final = st.session_state.get('days_since_home', 7)
+                days_since_away_final = st.session_state.get('days_since_away', 7)
+                days_until_home_final = st.session_state.get('days_until_home', 7)
+                days_until_away_final = st.session_state.get('days_until_away', 7)
+                style_home_final = st.session_state.get('style_home', 'Possesso')
+                style_away_final = st.session_state.get('style_away', 'Possesso')
+                apply_constraints_final = st.session_state.get('apply_constraints', True)
+                apply_calibration_final = st.session_state.get('apply_calibration_enabled', False)
+                use_precision_math_final = st.session_state.get('use_precision_math', True)
+
+        else:
+            # Modalità manuale - usa valori da session_state
+            motivation_home_final = st.session_state.get('motivation_home', 'Normale')
+            motivation_away_final = st.session_state.get('motivation_away', 'Normale')
+            days_since_home_final = st.session_state.get('days_since_home', 7)
+            days_since_away_final = st.session_state.get('days_since_away', 7)
+            days_until_home_final = st.session_state.get('days_until_home', 7)
+            days_until_away_final = st.session_state.get('days_until_away', 7)
+            style_home_final = st.session_state.get('style_home', 'Possesso')
+            style_away_final = st.session_state.get('style_away', 'Possesso')
+            apply_constraints_final = st.session_state.get('apply_constraints', True)
+            apply_calibration_final = st.session_state.get('apply_calibration_enabled', False)
+            use_precision_math_final = st.session_state.get('use_precision_math', True)
+
         # Analisi modello
         with st.spinner(f"Analizzando {match_name}..."):
             ris = risultato_completo_improved(
@@ -15335,18 +15548,18 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 motivation_home=fatigue_home_data,
                 motivation_away=fatigue_away_data,
                 advanced_data=advanced_data,
-                # 🚀 Advanced Features (Sprint 1 & 2) - Parametri UI
-                motivation_home_ui=st.session_state.get('motivation_home', 'Normale'),
-                motivation_away_ui=st.session_state.get('motivation_away', 'Normale'),
-                days_since_home=st.session_state.get('days_since_home', 7),
-                days_since_away=st.session_state.get('days_since_away', 7),
-                days_until_home=st.session_state.get('days_until_home', 7),
-                days_until_away=st.session_state.get('days_until_away', 7),
-                style_home=st.session_state.get('style_home', 'Possesso'),
-                style_away=st.session_state.get('style_away', 'Possesso'),
-                apply_constraints=st.session_state.get('apply_constraints', True),
-                apply_calibration_enabled=st.session_state.get('apply_calibration_enabled', False),
-                use_precision_math=st.session_state.get('use_precision_math', True),
+                # 🚀 Advanced Features (Sprint 1 & 2) - Parametri UI (auto o manual)
+                motivation_home_ui=motivation_home_final,
+                motivation_away_ui=motivation_away_final,
+                days_since_home=days_since_home_final,
+                days_since_away=days_since_away_final,
+                days_until_home=days_until_home_final,
+                days_until_away=days_until_away_final,
+                style_home=style_home_final,
+                style_away=style_away_final,
+                apply_constraints=apply_constraints_final,
+                apply_calibration_enabled=apply_calibration_final,
+                use_precision_math=use_precision_math_final,
             )
 
         st.success(f"✅ Analisi completata per {match_name}")
