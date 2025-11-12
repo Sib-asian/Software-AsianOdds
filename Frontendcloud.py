@@ -13741,31 +13741,63 @@ def prepare_value_bets(
 
     def add_bet(esito: str, prob_model: float, odds: float):
         """Helper per aggiungere una bet alla lista."""
-        if odds is None or odds <= 1.0:
+        if odds is None or odds <= 1.0 or prob_model is None:
             return
+
+        try:
+            prob_model = float(prob_model)
+        except (TypeError, ValueError):
+            return
+
+        prob_model = max(0.0, min(1.0, prob_model))
 
         # Calcola probabilità implicita della quota
         prob_book = 1.0 / odds
 
         # Calcola edge ed EV
-        edge = (prob_model - prob_book) * 100
-        ev = (prob_model * odds - 1) * 100
+        edge = (prob_model - prob_book) * 100.0
+        ev = (prob_model * odds - 1.0) * 100.0
+
+        # Kelly Criterion (full)
+        if odds > 1.0 and (odds - 1.0) > 0:
+            kelly_full = (prob_model * odds - 1.0) / (odds - 1.0)
+        else:
+            kelly_full = 0.0
+
+        if not math.isfinite(kelly_full) or kelly_full < 0.0:
+            kelly_full = 0.0
+        kelly_full = min(1.0, kelly_full)
 
         # Determina raccomandazione
         if edge >= 5.0:
-            rec = "🔥 FORTE"
+            rec = "🔥 Forte"
         elif edge >= 3.0:
-            rec = "✅ BUONA"
-        elif edge >= 1.0:
-            rec = "⚠️ MEDIA"
+            rec = "✅ Buona"
+        elif edge >= 2.0:
+            rec = "🟡 Marginale"
+        elif edge >= 0.5:
+            rec = "⚪ Controllare"
         else:
-            rec = "❌ NO"
+            rec = "❌ No"
+
+        prob_pct = prob_model * 100.0
+        prob_book_pct = prob_book * 100.0
 
         value_bets.append({
+            "Bookmaker": "Bet365",
             "Esito": esito,
-            "Prob Modello %": f"{prob_model * 100:.2f}",
+            "Odd": float(odds),
+            "Quota": float(odds),
+            "ProbRaw": prob_model,
+            "Prob %": f"{prob_pct:.2f}",
+            "Prob Modello %": f"{prob_pct:.2f}",
+            "Prob Book %": f"{prob_book_pct:.2f}",
+            "EdgeRaw": edge,
             "Edge %": f"{edge:+.2f}",
+            "EVRaw": ev,
             "EV %": f"{ev:+.2f}",
+            "KellyBase": kelly_full,
+            "Kelly %": f"{kelly_full*100:.2f}",
             "Rec": rec
         })
 
@@ -14672,6 +14704,26 @@ with st.expander(f"💰 Quote e Parametri: {home_team} vs {away_team}", expanded
                 key="boost_away"
             ) / 100.0
 
+with st.expander("💎 Value Bet Bet365 (Impostazioni)", expanded=False):
+    value_bet_edge_threshold = st.slider(
+        "Soglia edge minima (%)",
+        min_value=0.5,
+        max_value=10.0,
+        value=2.0,
+        step=0.1,
+        key="value_bet_edge_threshold",
+        help="Mostra solo i mercati con edge del modello almeno pari a questa percentuale."
+    )
+    value_bet_kelly_fraction = st.slider(
+        "Frazione Kelly da suggerire",
+        min_value=0.1,
+        max_value=1.0,
+        value=0.5,
+        step=0.05,
+        key="value_bet_kelly_fraction",
+        help="Percentuale del Kelly Criterion da utilizzare per calcolare la puntata consigliata."
+    )
+
 st.markdown("---")
 
 # ============================================================
@@ -14992,6 +15044,49 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
             odds_dnb_away=validated.get("odds_dnb_away"),
         )
 
+        filtered_value_bets = []
+        for vb in value_rows:
+            edge_raw = vb.get("EdgeRaw", 0.0)
+            if edge_raw is None:
+                continue
+            if edge_raw >= value_bet_edge_threshold:
+                vb_copy = vb.copy()
+                kelly_recommended = vb_copy.get("KellyBase", 0.0) * value_bet_kelly_fraction
+                if not math.isfinite(kelly_recommended) or kelly_recommended < 0.0:
+                    kelly_recommended = 0.0
+                kelly_recommended = min(1.0, kelly_recommended)
+                vb_copy["KellySuggested"] = kelly_recommended
+                filtered_value_bets.append(vb_copy)
+
+        st.subheader("💎 Value Bet Bet365")
+        if filtered_value_bets:
+            display_rows = []
+            for vb in filtered_value_bets:
+                display_rows.append({
+                    "Esito": vb["Esito"],
+                    "Quota": f"{vb['Odd']:.2f}",
+                    "Prob modello %": f"{vb['ProbRaw']*100:.2f}%",
+                    "Edge %": f"{vb['EdgeRaw']:+.2f}%",
+                    "EV %": f"{vb['EVRaw']:+.2f}%",
+                    f"Kelly {value_bet_kelly_fraction*100:.0f}%": f"{vb['KellySuggested']*100:.2f}%",
+                    "Rec": vb["Rec"],
+                })
+
+            df_value = pd.DataFrame(display_rows)
+            st.dataframe(df_value, use_container_width=True, hide_index=True)
+            st.caption(
+                f"Mostrate {len(filtered_value_bets)} value bet con edge ≥ {value_bet_edge_threshold:.1f}% "
+                f"(Kelly suggerito: {value_bet_kelly_fraction*100:.0f}% del Kelly pieno)."
+            )
+        else:
+            st.info(
+                f"Nessuna value bet con edge ≥ {value_bet_edge_threshold:.1f}% sulle quote Bet365 fornite."
+            )
+
+        st.session_state["value_bets_filtered"] = filtered_value_bets
+        st.session_state["value_bet_threshold_active"] = value_bet_edge_threshold
+        st.session_state["value_bet_kelly_fraction_active"] = value_bet_kelly_fraction
+
         # RACCOGLI TUTTI I MERCATI SOPRA SOGLIA (non solo value bets)
         all_markets = []
 
@@ -15269,6 +15364,24 @@ telegram_prob_threshold: {telegram_prob_threshold}
                         telegram_message += f"  • <b>{m['Esito']}</b>: {m['Prob %']}%{quota_str}\n"
         else:
             telegram_message += "  • Nessun mercato sopra la soglia configurata\n"
+
+        if filtered_value_bets:
+            telegram_message += (
+                f"\n💎 <b>Value Bet Bet365</b> "
+                f"(edge ≥ {value_bet_edge_threshold:.1f}%, Kelly {value_bet_kelly_fraction*100:.0f}%):\n"
+            )
+            for vb in filtered_value_bets[:5]:
+                telegram_message += (
+                    f"  • <b>{vb['Esito']}</b>: {vb['ProbRaw']*100:.1f}% | "
+                    f"Quota {vb['Odd']:.2f} | Edge {vb['EdgeRaw']:+.2f}% | "
+                    f"EV {vb['EVRaw']:+.2f}% | Kelly {vb['KellySuggested']*100:.2f}%\n"
+                )
+            if len(filtered_value_bets) > 5:
+                telegram_message += f"  <i>(+{len(filtered_value_bets)-5} ulteriori value bet)</i>\n"
+        else:
+            telegram_message += (
+                f"\n💎 Value Bet Bet365: nessuna ≥ {value_bet_edge_threshold:.1f}% con le quote inserite\n"
+            )
 
         if ris.get('top10'):
             telegram_message += "\n🏅 <b>Top 3 Risultati Esatti</b>:\n"
