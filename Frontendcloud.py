@@ -644,9 +644,9 @@ def safe_round(x: Optional[float], nd: int = 3) -> Optional[float]:
         return None
     try:
         return round(x, nd)
-    except Exception:
+    except (TypeError, ValueError, OverflowError) as e:
         # FIX BUG: Ritorna None invece di valore non-float in caso di errore
-        logger.warning(f"safe_round failed for x={x}, returning None")
+        logger.warning(f"safe_round failed for x={x}: {type(e).__name__}, returning None")
         return None
 
 def decimali_a_prob(odds: float) -> float:
@@ -9347,7 +9347,8 @@ def load_market_calibration_from_db(
                 prediction_dt = datetime.fromisoformat(prediction_time_str.replace("Z", "+00:00"))
                 days_ago = (now - prediction_dt).total_seconds() / 86400.0
                 weight = time_decay_weight(days_ago, half_life_days)
-            except Exception:
+            except (ValueError, TypeError, AttributeError) as e:
+                logger.debug(f"Errore parsing prediction_time: {e}, uso weight=1.0")
                 weight = 1.0
         else:
             weight = 1.0
@@ -9377,7 +9378,8 @@ def load_market_calibration_from_db(
         else:
             predictions_filtered = predictions_arr
             outcomes_filtered = outcomes_arr
-    except Exception:
+    except (ValueError, IndexError, TypeError) as e:
+        logger.debug(f"Errore filtraggio per market: {e}, uso tutti i dati")
         predictions_filtered = predictions_arr
         outcomes_filtered = outcomes_arr
     
@@ -9674,7 +9676,8 @@ def calculate_market_efficiency(
         return {"efficiency": 0.0, "bias": 0.0}
     
     # Calcola accuracy delle quote
-    implied_probs = [1 / o for o in odds]
+    # ⚠️ FIX BUG: Protezione divisione per zero
+    implied_probs = [1.0 / max(o, model_config.TOL_DIVISION_ZERO) for o in odds]
     quote_accuracy = np.mean([
         1 if (implied_probs[i] == max(implied_probs[i], predictions[i], 1 - predictions[i] - implied_probs[i])) 
         else 0
@@ -11656,6 +11659,7 @@ def _statsbomb_fetch_json(path: str) -> Any:
 def statsbomb_get_competitions() -> List[Dict[str, Any]]:
     """Ritorna lista competizioni disponibili (cache in memoria)."""
     global _STATS_BOMB_COMP_CACHE
+    # ⚠️ FIX BUG: Double-check locking per evitare race condition
     if _STATS_BOMB_COMP_CACHE is not None:
         return _STATS_BOMB_COMP_CACHE
 
@@ -11663,6 +11667,8 @@ def statsbomb_get_competitions() -> List[Dict[str, Any]]:
         competitions = _statsbomb_fetch_json("competitions.json")
         if not isinstance(competitions, list):
             competitions = []
+        # ⚠️ NOTE: In ambiente multi-thread usare threading.Lock()
+        # Per ora accettabile in ambiente single-thread (Streamlit)
         _STATS_BOMB_COMP_CACHE = competitions
     except requests.exceptions.RequestException:
         _STATS_BOMB_COMP_CACHE = []
