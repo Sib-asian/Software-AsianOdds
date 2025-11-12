@@ -151,6 +151,24 @@ except ImportError as e:
     logger.info("💡 Per abilitare: assicurati che auto_features.py e team_profiles.json siano nella stessa cartella")
 
 # ============================================================
+#   API MANAGER MODULE (LEVEL 2 Lite Integration)
+# ============================================================
+try:
+    from api_manager import APIManager
+    API_MANAGER = APIManager()
+    API_MANAGER_AVAILABLE = True
+    logger.info("✅ API Manager caricato con successo (LEVEL 2 Lite)")
+except ImportError as e:
+    API_MANAGER = None
+    API_MANAGER_AVAILABLE = False
+    logger.warning(f"⚠️ API Manager non disponibile: {e}")
+    logger.info("💡 LEVEL 2 Lite disabilitato - solo database locale disponibile")
+except Exception as e:
+    API_MANAGER = None
+    API_MANAGER_AVAILABLE = False
+    logger.warning(f"⚠️ Errore inizializzazione API Manager: {e}")
+
+# ============================================================
 #   CONFIGURAZIONE CENTRALIZZATA (MIGLIORAMENTO)
 # ============================================================
 
@@ -14733,6 +14751,22 @@ if "current_match" not in st.session_state:
         "match_time": default_time,
     }
 
+# Inizializza advanced features default (per evitare KeyError)
+if "position_home_auto" not in st.session_state:
+    st.session_state["position_home_auto"] = None
+if "position_away_auto" not in st.session_state:
+    st.session_state["position_away_auto"] = None
+if "is_derby_auto" not in st.session_state:
+    st.session_state["is_derby_auto"] = False
+if "is_cup_auto" not in st.session_state:
+    st.session_state["is_cup_auto"] = False
+if "is_end_season_auto" not in st.session_state:
+    st.session_state["is_end_season_auto"] = False
+if "auto_mode_selection" not in st.session_state:
+    st.session_state["auto_mode_selection"] = "✋ Manuale"
+if "preview_cache" not in st.session_state:
+    st.session_state["preview_cache"] = {}  # Cache per preview auto-detection
+
 # === SEZIONE INPUT DATI PARTITA ===
 st.info("⚽ Inserisci manualmente i dati della partita che vuoi analizzare")
 
@@ -15018,26 +15052,108 @@ if ADVANCED_FEATURES_AVAILABLE:
         """)
 
         # ============================================================
-        # TOGGLE AUTO/MANUAL MODE
+        # MODALITÀ AUTO-DETECTION (LEVEL 0 / LEVEL 1 / LEVEL 2)
         # ============================================================
         col_mode1, col_mode2 = st.columns([3, 1])
 
         with col_mode1:
-            auto_mode = st.checkbox(
-                "🤖 Modalità Automatica (Auto-Detection)",
-                value=AUTO_DETECTION_AVAILABLE,
-                key="auto_mode_advanced",
-                help="Rileva automaticamente stile tattico, motivazione e calendario dalle squadre e dal contesto"
+            mode_options = [
+                "✋ Manuale",
+                "🗄️ Auto (Solo Database)",
+                "🌐 Auto + API (Ibrido)"
+            ]
+
+            # Default: Auto DB se disponibile, altrimenti Manuale
+            default_idx = 1 if AUTO_DETECTION_AVAILABLE else 0
+
+            mode_selection = st.selectbox(
+                "Modalità Auto-Detection",
+                options=mode_options,
+                index=default_idx,
+                key="auto_mode_selection",
+                help="""
+                **✋ Manuale**: Imposti tutti i parametri manualmente
+                **🗄️ Auto (Solo Database)**: LEVEL 1 - Usa database squadre (100+ team)
+                **🌐 Auto + API (Ibrido)**: LEVEL 2 Lite - Database + API esterne (TheSportsDB, API-Football)
+                """
             )
 
         with col_mode2:
-            if AUTO_DETECTION_AVAILABLE:
-                st.success("✅ Attiva")
-            else:
-                st.warning("⚠️ Non disponibile")
+            if mode_selection == "✋ Manuale":
+                st.info("✋ Manuale")
+            elif mode_selection == "🗄️ Auto (Solo Database)":
+                st.success("🗄️ DB")
+            elif mode_selection == "🌐 Auto + API (Ibrido)":
+                st.success("🌐 API")
 
-        if not AUTO_DETECTION_AVAILABLE:
-            auto_mode = False  # Force manual se auto non disponibile
+        # Backward compatibility: imposta auto_mode_advanced per codice esistente
+        auto_mode = (mode_selection != "✋ Manuale")
+        st.session_state["auto_mode_advanced"] = auto_mode
+
+        if not AUTO_DETECTION_AVAILABLE and mode_selection != "✋ Manuale":
+            st.error("⚠️ Auto-Detection non disponibile. Passa a Modalità Manuale.")
+            mode_selection = "✋ Manuale"
+            auto_mode = False
+
+        # ============================================================
+        # 📊 API STATUS DASHBOARD (LEVEL 2 Lite)
+        # ============================================================
+        if API_MANAGER_AVAILABLE and mode_selection == "🌐 Auto + API (Ibrido)":
+            with st.expander("📊 API Status Dashboard (LEVEL 2 Lite)", expanded=False):
+                try:
+                    api_status = API_MANAGER.get_status()
+
+                    # Quota usage
+                    col_api1, col_api2, col_api3 = st.columns(3)
+
+                    with col_api1:
+                        st.metric(
+                            "🏈 API-Football",
+                            f"{api_status['quota']['api-football']['remaining']}/100",
+                            delta=f"-{api_status['quota']['api-football']['used']} usate oggi"
+                        )
+                        st.caption("Quota giornaliera")
+
+                    with col_api2:
+                        cache_hit_rate = api_status['cache']['hit_rate']
+                        st.metric(
+                            "📦 Cache Hit Rate",
+                            f"{cache_hit_rate:.1f}%",
+                            delta="Ottimizzazione" if cache_hit_rate > 50 else "Bassa"
+                        )
+                        st.caption(f"{api_status['cache']['hits']} hits / {api_status['cache']['total']} total")
+
+                    with col_api3:
+                        thesportsdb_used = api_status['quota']['thesportsdb']['used']
+                        st.metric(
+                            "🌐 TheSportsDB",
+                            f"{thesportsdb_used} calls",
+                            delta="Illimitato ✓"
+                        )
+                        st.caption("Provider gratuito")
+
+                    # Cache management
+                    col_cache1, col_cache2 = st.columns(2)
+                    with col_cache1:
+                        if st.button("🗑️ Svuota Cache", help="Elimina tutti i dati cached (forza nuove API calls)"):
+                            API_MANAGER.cache.cleanup_old(days=0)  # Elimina tutto
+                            st.success("✅ Cache svuotata!")
+                            st.rerun()
+
+                    with col_cache2:
+                        st.caption(f"💾 Cache TTL: 24 ore")
+
+                    # Provider status
+                    st.markdown("**Provider Status:**")
+                    providers_status = f"""
+                    - ✅ **TheSportsDB**: Attivo (Gratuito, Illimitato)
+                    - {'✅' if api_status['quota']['api-football']['remaining'] > 0 else '⚠️'} **API-Football**: {api_status['quota']['api-football']['remaining']} chiamate rimaste oggi
+                    - ℹ️ **Football-Data**: {api_status['quota']['football-data']['note']}
+                    """
+                    st.info(providers_status)
+
+                except Exception as e:
+                    st.error(f"⚠️ Errore lettura API status: {e}")
 
         st.markdown("---")
 
@@ -15111,18 +15227,35 @@ if ADVANCED_FEATURES_AVAILABLE:
                 st.markdown("**📊 Preview Auto-Detection:**")
 
                 try:
-                    # Prova auto-detection
-                    auto_features_preview = auto_detect_all_features(
-                        home_team=home_team.strip(),
-                        away_team=away_team.strip(),
-                        league=league_type,
-                        match_datetime=match_datetime_iso if match_datetime_iso else None,
-                        position_home=position_home_auto,
-                        position_away=position_away_auto,
-                        is_derby=is_derby_auto,
-                        is_cup=is_cup_auto,
-                        is_end_season=is_end_season_auto
-                    )
+                    # Crea cache key univoca per questa partita
+                    cache_key = f"{home_team}_{away_team}_{league_type}_{match_datetime_iso}_{position_home_auto}_{position_away_auto}_{is_derby_auto}_{is_cup_auto}_{is_end_season_auto}_{mode_selection}"
+
+                    # Controlla se preview già in cache (evita doppie API calls)
+                    if cache_key in st.session_state.get("preview_cache", {}):
+                        auto_features_preview = st.session_state["preview_cache"][cache_key]
+                        st.caption("📦 Utilizzando risultati cached")
+                    else:
+                        # Determina se usare API nel preview
+                        use_api_preview = (mode_selection == "🌐 Auto + API (Ibrido)" and API_MANAGER_AVAILABLE)
+
+                        # Esegui auto-detection
+                        auto_features_preview = auto_detect_all_features(
+                            home_team=home_team.strip(),
+                            away_team=away_team.strip(),
+                            league=league_type,
+                            match_datetime=match_datetime_iso if match_datetime_iso else None,
+                            position_home=position_home_auto,
+                            position_away=position_away_auto,
+                            is_derby=is_derby_auto,
+                            is_cup=is_cup_auto,
+                            is_end_season=is_end_season_auto,
+                            use_api=use_api_preview  # LEVEL 2 Lite in preview
+                        )
+
+                        # Salva in cache
+                        if "preview_cache" not in st.session_state:
+                            st.session_state["preview_cache"] = {}
+                        st.session_state["preview_cache"][cache_key] = auto_features_preview
 
                     col_prev1, col_prev2 = st.columns(2)
 
@@ -15141,6 +15274,10 @@ if ADVANCED_FEATURES_AVAILABLE:
                         - Motivazione: {auto_features_preview['motivation_away']}
                         - Riposo: {auto_features_preview['days_since_away']}gg
                         """)
+
+                    # Mostra se API è stata usata
+                    if use_api_preview:
+                        st.caption("🌐 Dati arricchiti con API esterne (LEVEL 2 Lite)")
 
                 except Exception as e:
                     st.warning(f"⚠️ Preview non disponibile: {e}")
@@ -15455,18 +15592,30 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
 
         if auto_mode_active and AUTO_DETECTION_AVAILABLE:
             try:
-                # Esegui auto-detection
-                auto_features = auto_detect_all_features(
-                    home_team=home_team.strip(),
-                    away_team=away_team.strip(),
-                    league=league_type,
-                    match_datetime=match_datetime_iso,
-                    position_home=st.session_state.get('position_home_auto'),
-                    position_away=st.session_state.get('position_away_auto'),
-                    is_derby=st.session_state.get('is_derby_auto', False),
-                    is_cup=st.session_state.get('is_cup_auto', False),
-                    is_end_season=st.session_state.get('is_end_season_auto', False)
-                )
+                # Determina se usare API (LEVEL 2 Lite)
+                use_api = (mode_selection == "🌐 Auto + API (Ibrido)" and API_MANAGER_AVAILABLE)
+
+                # Crea cache key per riutilizzare preview (evita doppie chiamate)
+                cache_key = f"{home_team}_{away_team}_{league_type}_{match_datetime_iso}_{st.session_state.get('position_home_auto')}_{st.session_state.get('position_away_auto')}_{st.session_state.get('is_derby_auto', False)}_{st.session_state.get('is_cup_auto', False)}_{st.session_state.get('is_end_season_auto', False)}_{mode_selection}"
+
+                # Riutilizza risultati preview se disponibili (ottimizzazione API)
+                if cache_key in st.session_state.get("preview_cache", {}):
+                    auto_features = st.session_state["preview_cache"][cache_key]
+                    logger.info("♻️ Riutilizzando risultati preview cached (0 API calls)")
+                else:
+                    # Esegui auto-detection
+                    auto_features = auto_detect_all_features(
+                        home_team=home_team.strip(),
+                        away_team=away_team.strip(),
+                        league=league_type,
+                        match_datetime=match_datetime_iso,
+                        position_home=st.session_state.get('position_home_auto'),
+                        position_away=st.session_state.get('position_away_auto'),
+                        is_derby=st.session_state.get('is_derby_auto', False),
+                        is_cup=st.session_state.get('is_cup_auto', False),
+                        is_end_season=st.session_state.get('is_end_season_auto', False),
+                        use_api=use_api  # LEVEL 2 Lite integration
+                    )
 
                 # Usa parametri auto-detected
                 motivation_home_final = auto_features['motivation_home']
