@@ -14386,6 +14386,7 @@ st.subheader("📝 Dati Partita")
 
 # Inizializza valori default
 if "current_match" not in st.session_state:
+    default_time = datetime.now().replace(hour=20, minute=45, second=0, microsecond=0).time()
     st.session_state["current_match"] = {
         "home_team": "Casa",
         "away_team": "Trasferta",
@@ -14396,7 +14397,9 @@ if "current_match" not in st.session_state:
         "odds_under25": 0.0,
         "odds_btts": 0.0,
         "odds_dnb_home": 0.0,
-        "odds_dnb_away": 0.0
+        "odds_dnb_away": 0.0,
+        "match_date": datetime.now().date(),
+        "match_time": default_time,
     }
 
 # === SEZIONE INPUT DATI PARTITA ===
@@ -14437,6 +14440,39 @@ with col_league:
 # Aggiorna session state
 st.session_state["current_match"]["home_team"] = home_team
 st.session_state["current_match"]["away_team"] = away_team
+
+league_api_map = {
+    "Serie A": "serie_a",
+    "Premier League": "premier_league",
+    "La Liga": "la_liga",
+    "Bundesliga": "bundesliga",
+    "Ligue 1": "ligue_1",
+    "Altro": "generic",
+}
+
+col_dt1, col_dt2 = st.columns(2)
+with col_dt1:
+    match_date_input = st.date_input(
+        "📅 Data Partita",
+        value=match_data.get("match_date", datetime.now().date()),
+        key="match_date_input",
+        help="Seleziona la data esatta della partita (serve per recuperare dati storici e meteo corretti)."
+    )
+
+with col_dt2:
+    match_time_default = match_data.get(
+        "match_time",
+        datetime.now().replace(hour=20, minute=45, second=0, microsecond=0).time()
+    )
+    match_time_input = st.time_input(
+        "🕒 Orario Partita",
+        value=match_time_default,
+        key="match_time_input",
+        help="Orario di calcio d'inizio (24h)."
+    )
+
+st.session_state["current_match"]["match_date"] = match_date_input
+st.session_state["current_match"]["match_time"] = match_time_input
 
 st.markdown("---")
 
@@ -14677,6 +14713,54 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
         xg_away_media = xg_away
         xa_away_media = xa_away
 
+    match_date_value = st.session_state["current_match"].get("match_date")
+    match_time_value = st.session_state["current_match"].get("match_time")
+    if not match_date_value:
+        match_date_value = datetime.now().date()
+    if not match_time_value:
+        match_time_value = datetime.now().replace(hour=20, minute=45, second=0, microsecond=0).time()
+
+    match_datetime_obj = datetime.combine(match_date_value, match_time_value)
+    match_datetime_iso = match_datetime_obj.strftime("%Y-%m-%dT%H:%M:%SZ")
+    league_api_code = league_api_map.get(league_type, "generic")
+
+    advanced_data = None
+    fatigue_home_data = None
+    fatigue_away_data = None
+
+    if home_team.strip() and away_team.strip():
+        with st.spinner("Recupero dati avanzati dalle API (fatigue, infortuni, metriche)..."):
+            try:
+                advanced_data = get_advanced_team_data(
+                    home_team.strip(),
+                    away_team.strip(),
+                    league_api_code,
+                    match_datetime_iso,
+                )
+            except Exception as api_err:
+                logger.warning(f"Impossibile recuperare dati avanzati API: {api_err}")
+                advanced_data = None
+
+            try:
+                fatigue_home_data = get_team_fatigue_and_motivation_data(
+                    home_team.strip(),
+                    league_api_code,
+                    match_datetime_iso,
+                )
+            except Exception as api_err:
+                logger.warning(f"Impossibile recuperare fatigue casa: {api_err}")
+                fatigue_home_data = None
+
+            try:
+                fatigue_away_data = get_team_fatigue_and_motivation_data(
+                    away_team.strip(),
+                    league_api_code,
+                    match_datetime_iso,
+                )
+            except Exception as api_err:
+                logger.warning(f"Impossibile recuperare fatigue trasferta: {api_err}")
+                fatigue_away_data = None
+
     # Validazione xG/xA
     validation_warnings_xg = []
     if xg_home_media > 0 and (xg_home_media < 0.3 or xg_home_media > 4.0):
@@ -14755,7 +14839,13 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 boost_away=boost_away,
                 league=league_type,
                 partite_giocate_home=partite_giocate_home,
-                partite_giocate_away=partite_giocate_away
+                partite_giocate_away=partite_giocate_away,
+                match_datetime=match_datetime_iso,
+                fatigue_home=fatigue_home_data,
+                fatigue_away=fatigue_away_data,
+                motivation_home=fatigue_home_data,
+                motivation_away=fatigue_away_data,
+                advanced_data=advanced_data,
             )
 
         st.success(f"✅ Analisi completata per {match_name}")
