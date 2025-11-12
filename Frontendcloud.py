@@ -846,8 +846,8 @@ def validate_lambda_value(lambda_val: float, name: str = "lambda") -> float:
     except (ValueError, TypeError):
         raise ValidationError(f"{name} deve essere un numero valido")
     
-    # Clamp a range ragionevole
-    lambda_val = max(0.1, min(5.0, lambda_val))
+    # FIX BUG #3: Standardizzato bounds lambda [0.3, 4.5]
+    lambda_val = max(0.3, min(4.5, lambda_val))
     
     return lambda_val
 
@@ -1232,7 +1232,8 @@ def shin_normalization(odds_list: List[float], max_iter: int = 100, tol: float =
             c_fair = (t - sum_fair) - y
             sum_fair = t
         
-        if sum_fair > model_config.TOL_DIVISION_ZERO:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
+        # ⚠️ FIX BUG #5: Validazione robusta - sum_fair deve essere ragionevole (0.5 < sum < 2.0)
+        if sum_fair > model_config.TOL_DIVISION_ZERO and 0.5 < sum_fair < 2.0:
             fair_probs = fair_probs / sum_fair
         else:
             # Fallback: normalizzazione semplice con Kahan
@@ -1376,10 +1377,10 @@ def btts_probability_bivariate(lambda_h: float, lambda_a: float, rho: float) -> 
         logger.warning(f"rho non valido: {rho}, uso default 0.15")
         rho = 0.15
     
-    # ⚠️ PROTEZIONE: Limita lambda a range ragionevole
-    lambda_h = max(0.1, min(5.0, lambda_h))
-    lambda_a = max(0.1, min(5.0, lambda_a))
-    rho = max(-0.5, min(0.5, rho))
+    # ⚠️ FIX BUG #1 & #3: Standardizzati bounds lambda [0.3, 4.5] e rho [-0.35, 0.35]
+    lambda_h = max(0.3, min(4.5, lambda_h))
+    lambda_a = max(0.3, min(4.5, lambda_a))
+    rho = max(-0.35, min(0.35, rho))
     
     # P(H=0) marginale Poisson
     try:
@@ -6114,10 +6115,13 @@ def poisson_pmf(k: int, lam: float) -> float:
     if lam <= 0:
         return 1.0 if k == 0 else 0.0
 
-    # ⚠️ PROTEZIONE: Limita lambda a range ragionevole per evitare overflow
-    if lam > 50.0:
-        logger.warning(f"lam troppo grande: {lam}, limito a 50.0")
-        lam = 50.0
+    # ⚠️ FIX BUG #4: Hard upper bound at 6.0, treat > 6.0 as error
+    if lam > 6.0:
+        logger.error(f"lam troppo grande: {lam}, CRITICO - uso default 4.5")
+        lam = 4.5
+    elif lam > 4.5:
+        logger.warning(f"lam alto: {lam}, limito a 4.5")
+        lam = 4.5
 
     p = _poisson_pmf_core(k, float(lam))
 
@@ -7330,22 +7334,23 @@ def tau_dixon_coles(h: int, a: int, lh: float, la: float, rho: float) -> float:
         return 1.0
     
     # ⚠️ PROTEZIONE: Limita parametri a range ragionevole
-    lh = max(0.1, min(5.0, lh))
-    la = max(0.1, min(5.0, la))
-    rho = max(-0.5, min(0.5, rho))
+    # FIX BUG #1 & #3: Standardizzati bounds lambda [0.3, 4.5] e rho [-0.35, 0.35]
+    lh = max(0.3, min(4.5, lh))
+    la = max(0.3, min(4.5, la))
+    rho = max(-0.35, min(0.35, rho))
     
     if h == 0 and a == 0:
         # tau(0,0) = 1 - lambda_h * lambda_a * rho
         try:
             val = 1.0 - (lh * la * rho)
             if not math.isfinite(val):
-                logger.warning(f"tau(0,0) non finito: {val}, uso default 0.5")
-                val = 0.5
-            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.01, 3.0] per maggiore flessibilità (MIGLIORAMENTO: bound più ampi per catturare correlazioni estreme)
-            return max(0.01, min(3.0, val))
+                logger.warning(f"tau(0,0) non finito: {val}, uso default 1.0")
+                val = 1.0
+            # ⚠️ FIX BUG #2: Tau bounds ristretti a [0.5, 1.5] (Dixon-Coles theory-aligned)
+            return max(0.5, min(1.5, val))
         except (ValueError, OverflowError) as e:
-            logger.warning(f"Errore calcolo tau(0,0): {e}, uso default 0.5")
-            return 0.5
+            logger.warning(f"Errore calcolo tau(0,0): {e}, uso default 1.0")
+            return 1.0
     elif h == 0 and a == 1:
         # tau(0,1) = 1 + lambda_h * rho
         try:
@@ -7353,8 +7358,8 @@ def tau_dixon_coles(h: int, a: int, lh: float, la: float, rho: float) -> float:
             if not math.isfinite(val):
                 logger.warning(f"tau(0,1) non finito: {val}, uso default 1.0")
                 val = 1.0
-            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.01, 3.0] per maggiore flessibilità
-            return max(0.01, min(3.0, val))
+            # ⚠️ FIX BUG #2: Tau bounds ristretti a [0.5, 1.5] (Dixon-Coles theory-aligned)
+            return max(0.5, min(1.5, val))
         except (ValueError, OverflowError) as e:
             logger.warning(f"Errore calcolo tau(0,1): {e}, uso default 1.0")
             return 1.0
@@ -7365,8 +7370,8 @@ def tau_dixon_coles(h: int, a: int, lh: float, la: float, rho: float) -> float:
             if not math.isfinite(val):
                 logger.warning(f"tau(1,0) non finito: {val}, uso default 1.0")
                 val = 1.0
-            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.01, 3.0] per maggiore flessibilità
-            return max(0.01, min(3.0, val))
+            # ⚠️ FIX BUG #2: Tau bounds ristretti a [0.5, 1.5] (Dixon-Coles theory-aligned)
+            return max(0.5, min(1.5, val))
         except (ValueError, OverflowError) as e:
             logger.warning(f"Errore calcolo tau(1,0): {e}, uso default 1.0")
             return 1.0
@@ -7377,8 +7382,8 @@ def tau_dixon_coles(h: int, a: int, lh: float, la: float, rho: float) -> float:
             if not math.isfinite(val):
                 logger.warning(f"tau(1,1) non finito: {val}, uso default 1.0")
                 val = 1.0
-            # ⚠️ PROTEZIONE: Limita a range ragionevole [0.01, 3.0] per maggiore flessibilità
-            return max(0.01, min(3.0, val))
+            # ⚠️ FIX BUG #2: Tau bounds ristretti a [0.5, 1.5] (Dixon-Coles theory-aligned)
+            return max(0.5, min(1.5, val))
         except (ValueError, OverflowError) as e:
             logger.warning(f"Errore calcolo tau(1,1): {e}, uso default 1.0")
             return 1.0
@@ -7490,8 +7495,9 @@ def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
     
     if lh < 0 or la < 0:
         logger.warning(f"Lambda negativi: lh={lh}, la={la}, uso valori default")
-        lh = max(0.1, lh)
-        la = max(0.1, la)
+        # FIX BUG #3: Standardizzato bounds lambda [0.3, 4.5]
+        lh = max(0.3, lh)
+        la = max(0.3, la)
     
     mg = max_goals_adattivo(lh, la)
     if mg < 0:
@@ -7513,13 +7519,28 @@ def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
     np.nan_to_num(matrix, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     matrix = np.clip(matrix, 0.0, None, out=matrix)
     
+    # ⚠️ FIX BUG #6: Validazione alpha parameter per Dirichlet smoothing
     dirichlet_eps = getattr(model_config, "DIRICHLET_EPS", 0.0)
     if dirichlet_eps and dirichlet_eps > 0.0:
+        # ⚠️ PROTEZIONE: Limita epsilon a range ragionevole [1e-15, 1e-6]
+        dirichlet_eps = max(1e-15, min(1e-6, dirichlet_eps))
         matrix += dirichlet_eps
     
     total_prob = float(matrix.sum())
+    # ⚠️ FIX BUG #7: Verifica che tutti i valori siano effettivamente zero prima di usare uniforme
     if not math.isfinite(total_prob) or total_prob <= model_config.TOL_DIVISION_ZERO:
-        matrix.fill(1.0 / matrix.size)
+        # Verifica se ci sono celle non-zero (possibile errore numerico)
+        if np.any(matrix > model_config.TOL_DIVISION_ZERO):
+            logger.error(f"Matrice ha valori non-zero ma sum={total_prob}, possibile errore numerico - renormalizzo")
+            # Forza rinormalizzazione
+            total_prob = float(matrix.sum())
+            if total_prob > 0:
+                matrix /= total_prob
+            else:
+                matrix.fill(1.0 / matrix.size)
+        else:
+            # Tutte le celle sono effettivamente zero, usa uniforme
+            matrix.fill(1.0 / matrix.size)
     else:
         matrix /= total_prob
     
@@ -7693,8 +7714,9 @@ def calc_gg_over25_from_matrix(mat: List[List[float]]) -> float:
     np.clip(mat_np, 0.0, None, out=mat_np)
     
     size = mat_np.shape[0]
+    # ⚠️ FIX BUG #9: 1×1 matrix (solo 0-0) non può soddisfare GG & Over 2.5
     if size <= 1:
-        return 0.0 if size == 0 else float(np.clip(mat_np.sum(), 0.0, 1.0))
+        return 0.0  # 0×0 or 1×1 matrix cannot satisfy h>=1 AND a>=1 AND h+a>=3
     
     idx = np.arange(size)
     mask = np.outer(idx >= 1, idx >= 1) & (np.add.outer(idx, idx) >= 3)
@@ -10108,6 +10130,12 @@ def apply_market_movement_blend(
     
     # ⚠️ PRECISIONE MANIACALE: Calcola lambda da apertura (se disponibile) con validazione completa
     if spread_apertura is not None and total_apertura is not None:
+        # ⚠️ FIX BUG #8: Validazione preventiva spread per evitare dati corrotti
+        if isinstance(spread_apertura, (int, float)) and math.isfinite(spread_apertura):
+            if abs(spread_apertura) > 5.0:
+                logger.error(f"spread_apertura troppo alto: {spread_apertura}, dati probabilmente corrotti - uso default 0.0")
+                spread_apertura = 0.0
+
         # ⚠️ VALIDAZIONE ROBUSTA: Verifica che spread_apertura e total_apertura siano validi
         if not isinstance(spread_apertura, (int, float)) or not math.isfinite(spread_apertura):
             logger.warning(f"spread_apertura non valido: {spread_apertura}, uso default 0.0")
