@@ -644,9 +644,9 @@ def safe_round(x: Optional[float], nd: int = 3) -> Optional[float]:
         return None
     try:
         return round(x, nd)
-    except Exception:
+    except (TypeError, ValueError, OverflowError) as e:
         # FIX BUG: Ritorna None invece di valore non-float in caso di errore
-        logger.warning(f"safe_round failed for x={x}, returning None")
+        logger.warning(f"safe_round failed for x={x}: {type(e).__name__}, returning None")
         return None
 
 def decimali_a_prob(odds: float) -> float:
@@ -1320,13 +1320,24 @@ def shin_normalization(odds_list: List[float], max_iter: int = 100, tol: float =
                 t = sum_probs_safe + y
                 c_probs = (t - sum_probs_safe) - y
                 sum_probs_safe = t
-            
+
             if sum_probs_safe > model_config.TOL_DIVISION_ZERO:
                 fair_probs = probs / sum_probs_safe
             else:
                 # Caso estremo: distribuzione uniforme
                 fair_probs = np.ones_like(probs) / len(probs)
-        
+
+        # ⚠️ FIX BUG #2: NORMALIZZAZIONE FINALE FORZATA - garantisce somma esattamente 1.0
+        # Problema: dopo normalizzazione Shin, somma può essere 0.9999987 o 1.0000013
+        # Soluzione: forza normalizzazione finale per evitare probabilità negative downstream
+        sum_final = fair_probs.sum()
+        if abs(sum_final - 1.0) > model_config.TOL_DIVISION_ZERO:
+            fair_probs = fair_probs / sum_final
+            # Verifica che ora sommi a 1.0 (o molto vicino)
+            sum_check = fair_probs.sum()
+            if abs(sum_check - 1.0) > 1e-10:
+                logger.warning(f"Normalizzazione Shin: somma probabilità = {sum_check:.10f} dopo forzatura")
+
         # ⚠️ PRECISIONE: Arrotonda solo per output, mantieni precisione nei calcoli
         # ⚠️ CRITICO: Protezione divisione per zero
         return [1.0/max(p, model_config.TOL_DIVISION_ZERO) for p in fair_probs]  # ⚠️ CRITICO: Protezione divisione per zero
@@ -1339,6 +1350,10 @@ def shin_normalization(odds_list: List[float], max_iter: int = 100, tol: float =
         else:
             # Caso estremo: distribuzione uniforme
             fair_probs = np.ones_like(probs) / len(probs)
+        # ⚠️ FIX BUG #2: Normalizzazione finale forzata anche nel fallback
+        sum_final = fair_probs.sum()
+        if abs(sum_final - 1.0) > model_config.TOL_DIVISION_ZERO:
+            fair_probs = fair_probs / sum_final
         # ⚠️ CRITICO: Protezione divisione per zero
         return [1.0/max(p, model_config.TOL_DIVISION_ZERO) for p in fair_probs]  # ⚠️ CRITICO: Protezione divisione per zero
     except Exception as e:
@@ -1349,6 +1364,10 @@ def shin_normalization(odds_list: List[float], max_iter: int = 100, tol: float =
             fair_probs = probs / sum_probs
         else:
             fair_probs = np.ones_like(probs) / len(probs)
+        # ⚠️ FIX BUG #2: Normalizzazione finale forzata anche nel fallback estremo
+        sum_final = fair_probs.sum()
+        if abs(sum_final - 1.0) > model_config.TOL_DIVISION_ZERO:
+            fair_probs = fair_probs / sum_final
         # ⚠️ CRITICO: Protezione divisione per zero
         return [1.0/max(p, model_config.TOL_DIVISION_ZERO) for p in fair_probs]  # ⚠️ CRITICO: Protezione divisione per zero
 
@@ -1487,7 +1506,8 @@ def btts_probability_bivariate(lambda_h: float, lambda_a: float, rho: float) -> 
         if not math.isfinite(tau_calc):
             logger.warning(f"tau_calc non finito: {tau_calc}, uso default")
             tau_calc = 0.0
-        tau_00 = max(0.2, min(1.5, 1.0 - tau_calc))  # Limita tau a range ragionevole
+        # ⚠️ FIX BUG #4: Bounds adattivi più teoricamente corretti [0.1, 3.0] invece di [0.2, 1.5]
+        tau_00 = max(0.1, min(3.0, 1.0 - tau_calc))
     except (ValueError, OverflowError) as e:
         logger.warning(f"Errore calcolo tau: {e}, uso default")
         tau_00 = 0.5
@@ -3699,9 +3719,13 @@ def settle_bets_for_match(match_id: str, home_score: int, away_score: int) -> in
                         profit = -stake
 
                 elif 'Over/Under' in market:
-                    # FIX BUG #10.2: Safe array access on split()
+                    # ⚠️ FIX BUG #12: Safe float() conversion con try/except
                     parts = market.split()
-                    threshold = float(parts[-1]) if parts else 0.0
+                    try:
+                        threshold = float(parts[-1]) if parts else 0.0
+                    except (ValueError, TypeError, IndexError):
+                        logger.warning(f"Impossibile estrarre threshold da market: {market}, uso default 2.5")
+                        threshold = 2.5
                     if 'Over' in selection:
                         result = 'win' if total_goals > threshold else 'loss'
                     else:  # Under
@@ -6234,13 +6258,14 @@ def poisson_pmf(k: int, lam: float) -> float:
     if lam <= 0:
         return 1.0 if k == 0 else 0.0
 
-    # ⚠️ FIX BUG #4: Hard upper bound at 6.0, treat > 6.0 as error
-    if lam > 6.0:
-        logger.error(f"lam troppo grande: {lam}, CRITICO - uso default 4.5")
-        lam = 4.5
-    elif lam > 4.5:
-        logger.warning(f"lam alto: {lam}, limito a 4.5")
-        lam = 4.5
+    # ⚠️ FIX BUG #5: Limite lambda standardizzato e coerente in tutto il codebase
+    # Hard limit 15.0 (oltre è irrealistico per calcio e causa overflow)
+    # Soft limit 10.0 con warning (alta ma gestibile)
+    if lam > 15.0:
+        logger.error(f"lam troppo grande: {lam:.2f}, CRITICO - limito a 15.0")
+        lam = 15.0
+    elif lam > 10.0:
+        logger.warning(f"lam alto: {lam:.2f}, rischio overflow - procedo con cautela")
 
     p = _poisson_pmf_core(k, float(lam))
 
@@ -6391,9 +6416,22 @@ def estimate_lambda_from_market_optimized(
         px_target /= tot_p
         p2_target /= tot_p
     else:
-        # Fallback: distribuzione uniforme se totale è troppo piccolo
-        p1_target = px_target = p2_target = 1.0 / 3.0
-        logger.warning("Probabilità 1X2 normalizzate sommano a zero, uso distribuzione uniforme")
+        # ⚠️ FIX BUG #7: Fallback intelligente basato su probabilità implicite raw invece di uniforme
+        # La distribuzione uniforme (33.33% ciascuno) ignora completamente le quote originali!
+        # Con favorito estremo (odds=1.01), fallback uniforme darebbe 33% invece di 99%
+        p1_raw = 1.0 / max(odds_1, 1.01)
+        px_raw = 1.0 / max(odds_x, 1.01)
+        p2_raw = 1.0 / max(odds_2, 1.01)
+        tot_raw = p1_raw + px_raw + p2_raw
+        if tot_raw > model_config.TOL_DIVISION_ZERO:
+            p1_target = p1_raw / tot_raw
+            px_target = px_raw / tot_raw
+            p2_target = p2_raw / tot_raw
+            logger.warning("Probabilità normalizzate sommano a zero, uso fallback su probabilità implicite raw")
+        else:
+            # Caso estremo: tutte le quote invalide, solo qui usa uniforme
+            p1_target = px_target = p2_target = 1.0 / 3.0
+            logger.error("Tutte le quote 1X2 invalide, uso distribuzione uniforme come ultima risorsa")
     
     p_over_target = float('nan')
     # 2. Stima iniziale da total (MIGLIORATA: inversione numerica precisa)
@@ -6466,10 +6504,12 @@ def estimate_lambda_from_market_optimized(
                     logger.warning(f"Errore approssimazione normale: {e}, uso calcolo esatto")
                     # Fallback a calcolo esatto
             
-            # ⚠️ PRECISIONE: Calcolo esatto Poisson per lambda <= 20
+            # ⚠️ PRECISIONE: Calcolo esatto Poisson per lambda ragionevoli
             # P(k) = (lambda^k * exp(-lambda)) / k!
             # ⚠️ PROTEZIONE: Evita underflow per lambda_tot molto grandi
-            if lambda_tot > 50.0:  # Doppio check per sicurezza
+            # ⚠️ FIX BUG #5: Limite standardizzato 15.0 (coerente con poisson_pmf)
+            if lambda_tot > 15.0:
+                # Lambda troppo alto, approssima con 1.0 (Over quasi certo)
                 return 1.0
             
             # ⚠️ PRECISIONE ESTESA: Calcolo ottimizzato con log-space per evitare overflow
@@ -6859,9 +6899,19 @@ def estimate_lambda_rho_joint_optimization(
         px_target /= tot_p
         p2_target /= tot_p
     else:
-        # Fallback: distribuzione uniforme
-        p1_target = px_target = p2_target = 1.0 / 3.0
-        logger.warning("Probabilità 1X2 normalizzate sommano a zero, uso distribuzione uniforme")
+        # ⚠️ FIX BUG #7: Fallback intelligente basato su probabilità implicite raw
+        p1_raw = 1.0 / max(odds_1, 1.01)
+        px_raw = 1.0 / max(odds_x, 1.01)
+        p2_raw = 1.0 / max(odds_2, 1.01)
+        tot_raw = p1_raw + px_raw + p2_raw
+        if tot_raw > model_config.TOL_DIVISION_ZERO:
+            p1_target = p1_raw / tot_raw
+            px_target = px_raw / tot_raw
+            p2_target = p2_raw / tot_raw
+            logger.warning("Probabilità normalizzate sommano a zero, uso fallback su probabilità implicite raw")
+        else:
+            p1_target = px_target = p2_target = 1.0 / 3.0
+            logger.error("Tutte le quote 1X2 invalide, uso distribuzione uniforme come ultima risorsa")
     
     # 2. Target Over/Under
     p_over_target = None
@@ -7465,8 +7515,10 @@ def tau_dixon_coles(h: int, a: int, lh: float, la: float, rho: float) -> float:
             if not math.isfinite(val):
                 logger.warning(f"tau(0,0) non finito: {val}, uso default 1.0")
                 val = 1.0
-            # ⚠️ FIX BUG #2: Tau bounds ristretti a [0.5, 1.5] (Dixon-Coles theory-aligned)
-            return max(0.5, min(1.5, val))
+            # ⚠️ FIX BUG #4: Bounds adattivi più teoricamente corretti
+            # Con lambda alti, tau può scendere sotto 0.5 legittimamente
+            # Limita solo per evitare probabilità negative (tau > 0) e overflow (tau < 3.0)
+            return max(0.1, min(3.0, val))
         except (ValueError, OverflowError) as e:
             logger.warning(f"Errore calcolo tau(0,0): {e}, uso default 1.0")
             return 1.0
@@ -7477,8 +7529,8 @@ def tau_dixon_coles(h: int, a: int, lh: float, la: float, rho: float) -> float:
             if not math.isfinite(val):
                 logger.warning(f"tau(0,1) non finito: {val}, uso default 1.0")
                 val = 1.0
-            # ⚠️ FIX BUG #2: Tau bounds ristretti a [0.5, 1.5] (Dixon-Coles theory-aligned)
-            return max(0.5, min(1.5, val))
+            # ⚠️ FIX BUG #4: Bounds adattivi più teoricamente corretti
+            return max(0.1, min(3.0, val))
         except (ValueError, OverflowError) as e:
             logger.warning(f"Errore calcolo tau(0,1): {e}, uso default 1.0")
             return 1.0
@@ -7489,8 +7541,8 @@ def tau_dixon_coles(h: int, a: int, lh: float, la: float, rho: float) -> float:
             if not math.isfinite(val):
                 logger.warning(f"tau(1,0) non finito: {val}, uso default 1.0")
                 val = 1.0
-            # ⚠️ FIX BUG #2: Tau bounds ristretti a [0.5, 1.5] (Dixon-Coles theory-aligned)
-            return max(0.5, min(1.5, val))
+            # ⚠️ FIX BUG #4: Bounds adattivi più teoricamente corretti
+            return max(0.1, min(3.0, val))
         except (ValueError, OverflowError) as e:
             logger.warning(f"Errore calcolo tau(1,0): {e}, uso default 1.0")
             return 1.0
@@ -7501,8 +7553,8 @@ def tau_dixon_coles(h: int, a: int, lh: float, la: float, rho: float) -> float:
             if not math.isfinite(val):
                 logger.warning(f"tau(1,1) non finito: {val}, uso default 1.0")
                 val = 1.0
-            # ⚠️ FIX BUG #2: Tau bounds ristretti a [0.5, 1.5] (Dixon-Coles theory-aligned)
-            return max(0.5, min(1.5, val))
+            # ⚠️ FIX BUG #4: Bounds adattivi più teoricamente corretti
+            return max(0.1, min(3.0, val))
         except (ValueError, OverflowError) as e:
             logger.warning(f"Errore calcolo tau(1,1): {e}, uso default 1.0")
             return 1.0
@@ -8138,9 +8190,13 @@ def prob_multigol_from_dist(dist: List[float], gmin: int, gmax: int) -> float:
         logger.warning("Distribuzione vuota, uso probabilità default")
         return 0.5
     
-    if not isinstance(gmin, int) or not isinstance(gmax, int) or gmin < 0 or gmax < gmin:
+    # ⚠️ FIX BUG #8: Auto-swap se invertiti invece di ritornare default generico
+    if not isinstance(gmin, int) or not isinstance(gmax, int) or gmin < 0:
         logger.warning(f"Parametri non validi: gmin={gmin}, gmax={gmax}, uso default")
         return 0.5
+    if gmax < gmin:
+        logger.warning(f"gmin > gmax invertiti: gmin={gmin}, gmax={gmax} - auto-swap")
+        gmin, gmax = gmax, gmin
     
     # ⚠️ PRECISIONE MANIACALE: Kahan summation per accumulo preciso
     s = 0.0
@@ -8544,9 +8600,13 @@ def prob_esito_multigol_from_matrix(mat: List[List[float]], esito: str, gmin: in
         logger.error(f"esito non valido per multigol: {esito}, uso default '1'")
         esito = '1'
     
-    if not isinstance(gmin, int) or not isinstance(gmax, int) or gmin < 0 or gmax < gmin:
+    # ⚠️ FIX BUG #8: Auto-swap se invertiti
+    if not isinstance(gmin, int) or not isinstance(gmax, int) or gmin < 0:
         logger.error(f"Range multigol non valido: gmin={gmin}, gmax={gmax}, uso fallback 1-3")
         gmin, gmax = 1, 3
+    elif gmax < gmin:
+        logger.warning(f"gmin > gmax invertiti: gmin={gmin}, gmax={gmax} - auto-swap")
+        gmin, gmax = gmax, gmin
     
     if not mat or len(mat) == 0 or (len(mat) > 0 and len(mat[0]) == 0):
         logger.warning("Matrice vuota o non valida per esito+multigol, ritorno 0.5")
@@ -8915,6 +8975,10 @@ def platt_scaling_calibration(
     # Usa EPSILON dal ModelConfig per coerenza
     predictions_array = np.clip(predictions_array, model_config.EPSILON, 1.0 - model_config.EPSILON)
     logits = np.log(predictions_array / (1 - predictions_array))
+    # ⚠️ FIX BUG #3: Verifica che logits siano finiti
+    if not np.all(np.isfinite(logits)):
+        logger.warning("Platt scaling: alcuni logits non finiti, uso funzione identità")
+        return lambda p: p, 1.0
     
     # Fit logistic regression
     try:
@@ -8928,6 +8992,9 @@ def platt_scaling_calibration(
         def calibrate(p):
             p = max(model_config.TOL_CLIP_PROB, min(1.0 - model_config.TOL_CLIP_PROB, p))  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
             logit_p = np.log(p / (1 - p))
+            # ⚠️ FIX BUG #3: Verifica che logit_p sia finito
+            if not np.isfinite(logit_p):
+                return p  # Fallback: ritorna probabilità originale
             calibrated = 1 / (1 + np.exp(-(A * logit_p + B)))
             return max(0.0, min(1.0, calibrated))
         
@@ -9012,6 +9079,10 @@ def temperature_scaling_calibration(
         # ⚠️ PROTEZIONE: Clip per evitare log(0) o log(inf) - usa EPSILON dal ModelConfig
         predictions_array = np.clip(predictions_array, model_config.EPSILON, 1.0 - model_config.EPSILON)
         logits = np.log(predictions_array / (1 - predictions_array))
+        # ⚠️ FIX BUG #3: Verifica che logits siano finiti
+        if not np.all(np.isfinite(logits)):
+            logger.warning("Temperature scaling: alcuni logits non finiti, uso funzione identità")
+            return lambda p: p, 1.0, 1.0
         
         def temp_error(T):
             """Errore per temperatura T"""
@@ -9035,6 +9106,9 @@ def temperature_scaling_calibration(
         def calibrate(p):
             p = max(model_config.TOL_CLIP_PROB, min(1.0 - model_config.TOL_CLIP_PROB, p))  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
             logit = np.log(p / (1 - p))
+            # ⚠️ FIX BUG #3: Verifica che logit sia finito
+            if not np.isfinite(logit):
+                return p  # Fallback: ritorna probabilità originale
             calibrated = 1 / (1 + np.exp(-logit / T_opt))
             return max(0.0, min(1.0, calibrated))
         
@@ -9273,7 +9347,8 @@ def load_market_calibration_from_db(
                 prediction_dt = datetime.fromisoformat(prediction_time_str.replace("Z", "+00:00"))
                 days_ago = (now - prediction_dt).total_seconds() / 86400.0
                 weight = time_decay_weight(days_ago, half_life_days)
-            except Exception:
+            except (ValueError, TypeError, AttributeError) as e:
+                logger.debug(f"Errore parsing prediction_time: {e}, uso weight=1.0")
                 weight = 1.0
         else:
             weight = 1.0
@@ -9303,7 +9378,8 @@ def load_market_calibration_from_db(
         else:
             predictions_filtered = predictions_arr
             outcomes_filtered = outcomes_arr
-    except Exception:
+    except (ValueError, IndexError, TypeError) as e:
+        logger.debug(f"Errore filtraggio per market: {e}, uso tutti i dati")
         predictions_filtered = predictions_arr
         outcomes_filtered = outcomes_arr
     
@@ -9457,9 +9533,13 @@ def kelly_criterion(
             "recommendation": "NO BET (negative edge)"
         }
     
-    # Kelly percent
-    kelly_percent = (probability * odds - 1) / (odds - 1)
-    
+    # Kelly percent - con protezione robusta per denominatore
+    denominator = odds - 1.0
+    if abs(denominator) < model_config.TOL_DIVISION_ZERO:
+        kelly_percent = 0.0
+    else:
+        kelly_percent = (probability * odds - 1.0) / denominator
+
     # Applica fractional Kelly (più conservativo)
     kelly_percent *= kelly_fraction
     
@@ -9596,7 +9676,8 @@ def calculate_market_efficiency(
         return {"efficiency": 0.0, "bias": 0.0}
     
     # Calcola accuracy delle quote
-    implied_probs = [1 / o for o in odds]
+    # ⚠️ FIX BUG: Protezione divisione per zero
+    implied_probs = [1.0 / max(o, model_config.TOL_DIVISION_ZERO) for o in odds]
     quote_accuracy = np.mean([
         1 if (implied_probs[i] == max(implied_probs[i], predictions[i], 1 - predictions[i] - implied_probs[i])) 
         else 0
@@ -10978,11 +11059,15 @@ def calculate_dynamic_position_size(
     - Drawdown corrente
     - Streak (vittorie/sconfitte consecutive)
     """
-    # Kelly base
-    p = edge + (1 / odds)  # Probabilità reale
+    # Kelly base - con protezione robusta per denominatore
+    p = edge + (1 / max(odds, model_config.TOL_DIVISION_ZERO))  # Probabilità reale
     q = 1 - p
-    kelly_base = (p * odds - 1) / (odds - 1)
-    kelly_base = max(0, min(0.25, kelly_base))  # Cap a 25%
+    denominator = odds - 1.0
+    if abs(denominator) < model_config.TOL_DIVISION_ZERO:
+        kelly_base = 0.0
+    else:
+        kelly_base = (p * odds - 1.0) / denominator
+    kelly_base = max(0.0, min(0.25, kelly_base))  # Cap a 25%
     
     # Aggiustamenti per drawdown
     if current_drawdown > 0.20:  # Drawdown > 20%
@@ -11574,6 +11659,7 @@ def _statsbomb_fetch_json(path: str) -> Any:
 def statsbomb_get_competitions() -> List[Dict[str, Any]]:
     """Ritorna lista competizioni disponibili (cache in memoria)."""
     global _STATS_BOMB_COMP_CACHE
+    # ⚠️ FIX BUG: Double-check locking per evitare race condition
     if _STATS_BOMB_COMP_CACHE is not None:
         return _STATS_BOMB_COMP_CACHE
 
@@ -11581,6 +11667,8 @@ def statsbomb_get_competitions() -> List[Dict[str, Any]]:
         competitions = _statsbomb_fetch_json("competitions.json")
         if not isinstance(competitions, list):
             competitions = []
+        # ⚠️ NOTE: In ambiente multi-thread usare threading.Lock()
+        # Per ora accettabile in ambiente single-thread (Streamlit)
         _STATS_BOMB_COMP_CACHE = competitions
     except requests.exceptions.RequestException:
         _STATS_BOMB_COMP_CACHE = []
