@@ -2865,7 +2865,9 @@ def dynamic_kelly_stake(
 
         # Calcola variance recente
         if len(recent_results) >= 10:
-            win_rate = sum(1 for r in recent_results[-10:] if r == 'W') / 10
+            # FIX BUG: Usa len() della slice per robustezza
+            slice_results = recent_results[-10:]
+            win_rate = sum(1 for r in slice_results if r == 'W') / len(slice_results)
             # Alta variance = win rate molto diverso da 0.5
             variance_score = abs(win_rate - 0.5)
 
@@ -8851,9 +8853,11 @@ def platt_scaling_calibration(
         # Calcola score di calibrazione (Brier score migliorato)
         calibrated_preds = [calibrate(p) for p in predictions]
         calibration_score = brier_score(calibrated_preds, outcomes)
-        
+
         return calibrate, calibration_score
-    except:
+    except (ValueError, RuntimeError, KeyError) as e:
+        # FIX BUG: Specifico eccezioni invece di bare except
+        logger.warning(f"Platt scaling calibration failed: {e}, using identity function")
         # Fallback: funzione identità
         return lambda p: p, 1.0
 
@@ -8986,22 +8990,25 @@ def best_calibration_method(
     try:
         calibrate_iso, score_iso = isotonic_calibration(predictions, outcomes, test_predictions)
         methods.append(("isotonic", calibrate_iso, score_iso))
-    except:
-        pass
+    except (ValueError, RuntimeError) as e:
+        # FIX BUG: Specifico eccezioni invece di bare except
+        logger.debug(f"Isotonic calibration failed: {e}")
     
     # Prova Temperature Scaling
     try:
         calibrate_temp, T, score_temp = temperature_scaling_calibration(predictions, outcomes, test_predictions)
         methods.append(("temperature", calibrate_temp, score_temp))
-    except:
-        pass
-    
+    except (ValueError, RuntimeError) as e:
+        # FIX BUG: Specifico eccezioni invece di bare except
+        logger.debug(f"Temperature scaling calibration failed: {e}")
+
     # Prova Platt Scaling
     try:
         calibrate_platt, score_platt = platt_scaling_calibration(predictions, outcomes, test_predictions)
         methods.append(("platt", calibrate_platt, score_platt))
-    except:
-        pass
+    except (ValueError, RuntimeError) as e:
+        # FIX BUG: Specifico eccezioni invece di bare except
+        logger.debug(f"Platt scaling calibration failed: {e}")
     
     if not methods:
         # Fallback: funzione identità
@@ -9827,9 +9834,13 @@ def safe_float(value: Any) -> Optional[float]:
         try:
             normalized = str(value).replace("%", "").replace(",", ".").strip()
             if not normalized:
+                # FIX BUG: Log quando string è vuota dopo normalizzazione
+                logger.debug(f"safe_float: stringa vuota dopo normalizzazione da valore: {value}")
                 return None
             return float(normalized)
-        except Exception:
+        except Exception as e:
+            # FIX BUG: Log quando conversione fallisce completamente
+            logger.warning(f"safe_float: impossibile convertire '{value}' a float: {e}")
             return None
 
 
@@ -10664,10 +10675,12 @@ def get_time_based_adjustments(
     """
     if match_datetime is None:
         match_datetime = datetime.now().isoformat()
-    
+
     try:
         dt = datetime.fromisoformat(match_datetime.replace("Z", "+00:00"))
-    except:
+    except (ValueError, AttributeError) as e:
+        # FIX BUG: Specifico eccezioni invece di bare except
+        logger.warning(f"Datetime parsing failed for '{match_datetime}': {e}, using now()")
         dt = datetime.now()
     
     adjustments = {
@@ -11955,8 +11968,9 @@ def send_telegram_message(
                         "error_message": error_msg_detailed,
                         "error_type": "invalid_chat_id"
                     }
-            except:
-                pass
+            except (json.JSONDecodeError, KeyError, AttributeError) as e:
+                # FIX BUG: Specifico eccezioni invece di bare except
+                logger.debug(f"Could not parse Telegram error response: {e}")
             return {
                 "success": False,
                 "error_message": "Chat ID non valido o formato errato. Verifica che il Chat ID sia corretto.",
@@ -12423,7 +12437,9 @@ def get_unread_alerts() -> List[Dict[str, Any]]:
         with open(ALERTS_FILE, 'r') as f:
             alerts = json.load(f)
         return [a for a in alerts if not a.get("read", False)]
-    except:
+    except (FileNotFoundError, json.JSONDecodeError, PermissionError) as e:
+        # FIX BUG: Specifico eccezioni invece di bare except
+        logger.warning(f"Could not load alerts from {ALERTS_FILE}: {e}")
         return []
 
 # ============================================================
@@ -15683,19 +15699,24 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
     total_corrente_val = total_line if total_line is not None else None
 
     # Conversione xG/xA totali → medie per partita
+    # FIX BUG: Se partite_giocate=0, usa 0.0 invece di valore totale (che è scorretto come media)
     if partite_giocate_home > 0:
         xg_home_media = xg_home / partite_giocate_home
         xa_home_media = xa_home / partite_giocate_home
     else:
-        xg_home_media = xg_home
-        xa_home_media = xa_home
+        xg_home_media = 0.0  # Nessun dato disponibile
+        xa_home_media = 0.0
+        if xg_home > 0 or xa_home > 0:
+            logger.warning(f"xG/xA home forniti ({xg_home}/{xa_home}) ma partite_giocate=0, uso 0.0")
 
     if partite_giocate_away > 0:
         xg_away_media = xg_away / partite_giocate_away
         xa_away_media = xa_away / partite_giocate_away
     else:
-        xg_away_media = xg_away
-        xa_away_media = xa_away
+        xg_away_media = 0.0  # Nessun dato disponibile
+        xa_away_media = 0.0
+        if xg_away > 0 or xa_away > 0:
+            logger.warning(f"xG/xA away forniti ({xg_away}/{xa_away}) ma partite_giocate=0, uso 0.0")
 
     match_date_value = st.session_state["current_match"].get("match_date")
     match_time_value = st.session_state["current_match"].get("match_time")
