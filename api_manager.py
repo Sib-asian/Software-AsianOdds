@@ -144,7 +144,7 @@ class CacheManager:
                 cursor.execute("""
                     SELECT data, timestamp FROM team_cache
                     WHERE team = ? AND league = ?
-                """, (team.lower(), league.lower()))
+                """, (team.strip().lower(), league.strip().lower()))
 
                 result = cursor.fetchone()
 
@@ -177,7 +177,7 @@ class CacheManager:
                 cursor.execute("""
                     INSERT OR REPLACE INTO team_cache (team, league, data, timestamp)
                     VALUES (?, ?, ?, ?)
-                """, (team.lower(), league.lower(), json.dumps(data), int(time.time())))
+                """, (team.strip().lower(), league.strip().lower(), json.dumps(data), int(time.time())))
 
                 # Auto-cleanup if cache too large (prevent unbounded growth)
                 cursor.execute("SELECT COUNT(*) FROM team_cache")

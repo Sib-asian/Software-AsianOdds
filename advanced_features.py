@@ -178,7 +178,9 @@ def build_constrained_optimizer(
     # Stima iniziale
     lambda_total = total_target / 2.0
     prob_diff = p1_target - p2_target
-    spread_factor = math.exp(prob_diff * math.log(2.5))
+    # ⚠️ FIX BUG #12: Clamp prob_diff to prevent exp() overflow
+    prob_diff_clamped = max(-2.0, min(2.0, prob_diff))
+    spread_factor = math.exp(prob_diff_clamped * math.log(2.5))
     spread_factor = max(0.5, min(2.0, spread_factor))
 
     x0 = [lambda_total * spread_factor, lambda_total / spread_factor]

@@ -218,9 +218,9 @@ def auto_detect_tactical_style(team_name: str, league: str, use_api: bool = Fals
         return (style, False)
 
     # Prova match case-insensitive
-    team_lower = team_name.lower()
+    team_lower = team_name.strip().lower()
     for team_key, team_data in league_teams.items():
-        if team_key.lower() == team_lower:
+        if team_key.strip().lower() == team_lower:
             style = team_data.get("style", "Possesso")
             logger.info(f"✅ {team_name}: {style} (case-insensitive)")
             return (style, False)
