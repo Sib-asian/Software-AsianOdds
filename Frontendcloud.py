@@ -380,9 +380,14 @@ class TTLCache:
 
             # If still at max size, remove oldest entry
             if len(self.cache) >= self.max_size:
-                oldest_key = min(self.timestamps, key=self.timestamps.get)
-                del self.cache[oldest_key]
-                del self.timestamps[oldest_key]
+                # FIX BUG: Protect against empty timestamps dict (cache desync)
+                if not self.timestamps:
+                    logger.error("❌ Cache desync: cache piena ma timestamps vuoto, reset cache")
+                    self.cache.clear()
+                else:
+                    oldest_key = min(self.timestamps, key=self.timestamps.get)
+                    del self.cache[oldest_key]
+                    del self.timestamps[oldest_key]
 
             self.cache[key] = value
             self.timestamps[key] = time.time()
@@ -2277,7 +2282,18 @@ def fetch_weather_for_match(city: str, match_datetime: datetime) -> Dict[str, An
         min_diff = float('inf')
 
         for forecast in forecasts:
-            forecast_dt = datetime.fromtimestamp(forecast['dt'])
+            # FIX BUG: Safe access to 'dt' key - skip forecast if missing
+            dt = forecast.get('dt')
+            if dt is None:
+                logger.warning(f"⚠️ Forecast senza timestamp 'dt', skip: {forecast.keys()}")
+                continue
+
+            try:
+                forecast_dt = datetime.fromtimestamp(dt)
+            except (ValueError, OSError) as e:
+                logger.warning(f"⚠️ Timestamp invalido {dt}: {e}")
+                continue
+
             time_diff = abs((forecast_dt - match_datetime).total_seconds())
 
             if time_diff < min_diff:
@@ -14197,7 +14213,9 @@ def risultato_completo_improved(
                     limit=6,
                 ) if additional_api_data["football_data_org"] and additional_api_data["football_data_org"].get("team_id") else [],
             )
-        except:
+        # FIX BUG: Replace bare except with specific Exception (prevents catching KeyboardInterrupt/SystemExit)
+        except Exception as e:
+            logger.warning(f"⚠️ Errore calcolo football_data_metrics: {e}")
             pass  # Non bloccare se fallisce
     
     return {
@@ -15551,12 +15569,18 @@ if ADVANCED_FEATURES_AVAILABLE:
 
                         # Limit cache size (max 50 entries)
                         if len(st.session_state["preview_cache"]) >= 50:
-                            # Remove oldest entry
-                            oldest_key = min(st.session_state["preview_cache_timestamps"],
-                                            key=st.session_state["preview_cache_timestamps"].get)
-                            del st.session_state["preview_cache"][oldest_key]
-                            del st.session_state["preview_cache_timestamps"][oldest_key]
-                            logger.info(f"🧹 Removed oldest cache entry: {oldest_key}")
+                            # FIX BUG: Protect against empty timestamps dict (cache desync)
+                            timestamps = st.session_state.get("preview_cache_timestamps", {})
+                            if not timestamps:
+                                logger.warning("⚠️ Cache desync: preview_cache piena ma timestamps vuoto, reset cache")
+                                st.session_state["preview_cache"] = {}
+                                st.session_state["preview_cache_timestamps"] = {}
+                            else:
+                                # Remove oldest entry
+                                oldest_key = min(timestamps, key=timestamps.get)
+                                del st.session_state["preview_cache"][oldest_key]
+                                del st.session_state["preview_cache_timestamps"][oldest_key]
+                                logger.info(f"🧹 Removed oldest cache entry: {oldest_key}")
 
                         # Salva in cache with timestamp
                         st.session_state["preview_cache"][cache_key] = auto_features_preview
@@ -16745,7 +16769,9 @@ if os.path.exists(ARCHIVE_FILE):
                             ax.grid(True, alpha=0.3)
                             st.pyplot(fig)
                             plt.close(fig)
-                        except:
+                        # FIX BUG: Replace bare except with specific Exception
+                        except Exception as e:
+                            logger.warning(f"⚠️ Errore rendering grafico bankroll: {e}")
                             pass
 else:
     st.info("Nessuno storico disponibile per backtest")

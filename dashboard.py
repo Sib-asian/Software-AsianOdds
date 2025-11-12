@@ -415,8 +415,10 @@ with st.expander("📊 Statistiche Avanzate"):
 st.divider()
 st.header("🌐 Analisi Squadre (API gratuite)")
 
-if st.session_state.get("api_error"):
-    st.error(f"Errore recupero dati API: {st.session_state['api_error']}")
+# FIX BUG: Avoid race condition - use single .get() call instead of checking then accessing
+api_error = st.session_state.get("api_error")
+if api_error:
+    st.error(f"Errore recupero dati API: {api_error}")
 
 api_insight = st.session_state.get("api_insight")
 if api_insight and api_insight.get("data"):
