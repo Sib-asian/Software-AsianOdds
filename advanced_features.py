@@ -227,11 +227,17 @@ def neumaier_sum(values: np.ndarray) -> float:
             values = np.asarray(values)
         except Exception as e:
             logger.error(f"neumaier_sum: impossibile convertire a numpy array: {e}")
-            # Fallback a sum normale se possibile
+            # Fallback: controlla se è iterabile o scalare
             try:
-                return float(sum(values))
-            except:
-                return 0.0
+                if hasattr(values, '__iter__') and not isinstance(values, (str, bytes)):
+                    # È iterabile (list, tuple, etc.)
+                    return float(sum(values))
+                else:
+                    # È uno scalare (int, float, etc.)
+                    return float(values)
+            except Exception as fallback_error:
+                logger.error(f"neumaier_sum: fallback failed: {fallback_error}")
+                raise ValueError(f"Invalid input to neumaier_sum: {type(values)}, value: {values}")
 
     s = 0.0
     c = 0.0  # Compensazione

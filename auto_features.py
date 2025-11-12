@@ -59,23 +59,42 @@ def load_team_profiles(json_path: str = "team_profiles.json") -> Dict:
     Carica database squadre da JSON
 
     Returns:
-        Dict con teams, motivation_rules, default_settings
+        Dict con teams, motivation_rules, default_settings e '_file_loaded' (bool)
     """
     try:
         json_file = Path(json_path)
         if not json_file.exists():
             logger.warning(f"⚠️ File {json_path} non trovato, uso defaults")
-            return {"teams": {}, "motivation_rules": {}, "default_settings": {}}
+            logger.warning(f"⚠️ Auto-detection tornerà sempre valori di default senza questo file!")
+            logger.warning(f"⚠️ Percorso atteso: {json_file.absolute()}")
+            return {
+                "teams": {},
+                "motivation_rules": {},
+                "default_settings": {},
+                "_file_loaded": False,
+                "_error": f"File non trovato: {json_path}"
+            }
 
         with open(json_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
+        # Add metadata to indicate successful load
+        data["_file_loaded"] = True
+        data["_error"] = None
+
         logger.info(f"✅ Team profiles caricati da {json_path}")
+        logger.info(f"✅ Caricate {len(data.get('teams', {}))} leghe nel database")
         return data
 
     except Exception as e:
         logger.error(f"❌ Errore caricamento team profiles: {e}")
-        return {"teams": {}, "motivation_rules": {}, "default_settings": {}}
+        return {
+            "teams": {},
+            "motivation_rules": {},
+            "default_settings": {},
+            "_file_loaded": False,
+            "_error": str(e)
+        }
 
 
 # Carica al startup (cache globale)
@@ -450,6 +469,13 @@ def auto_detect_all_features(
     """
     mode_str = "LEVEL 2 (DB + API)" if use_api else "LEVEL 1 (DB only)"
     logger.info(f"🤖 AUTO-DETECTION [{mode_str}]: {home_team} vs {away_team} ({league})")
+
+    # Check if team_profiles.json was loaded successfully
+    if not TEAM_PROFILES.get("_file_loaded", False):
+        error_msg = TEAM_PROFILES.get("_error", "Unknown error")
+        logger.error(f"❌ team_profiles.json non caricato: {error_msg}")
+        logger.error("❌ AUTO-DETECTION userà solo valori di default!")
+        logger.error("❌ Per funzionalità complete, fornisci team_profiles.json")
 
     api_calls_count = 0
 

@@ -103,40 +103,66 @@ class CacheManager:
 
             conn.commit()
             conn.close()
+
+            # Verify tables were created
+            self._verify_tables()
+
             logger.info(f"✅ Cache database initialized: {self.db_path}")
 
         except Exception as e:
             logger.error(f"❌ Error initializing cache DB: {e}")
+            raise RuntimeError(f"Failed to initialize API cache database at {self.db_path}: {e}")
 
-    def get(self, team: str, league: str) -> Optional[Dict]:
-        """Get cached data if not expired"""
+    def _verify_tables(self):
+        """Verify that all required tables exist"""
+        required_tables = ['team_cache', 'api_usage', 'cache_stats']
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
             cursor.execute("""
-                SELECT data, timestamp FROM team_cache
-                WHERE team = ? AND league = ?
-            """, (team.lower(), league.lower()))
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name IN (?, ?, ?)
+            """, required_tables)
 
-            result = cursor.fetchone()
+            existing_tables = [row[0] for row in cursor.fetchall()]
             conn.close()
 
-            if not result:
-                self._log_cache_miss()
-                return None
+            missing = set(required_tables) - set(existing_tables)
+            if missing:
+                raise RuntimeError(f"Missing required tables: {missing}")
 
-            data_json, timestamp = result
+        except Exception as e:
+            raise RuntimeError(f"Table verification failed: {e}")
 
-            # Check if expired
-            if time.time() - timestamp > APIConfig.CACHE_TTL:
-                logger.info(f"⏰ Cache expired for {team} ({league})")
-                self._log_cache_miss()
-                return None
+    def get(self, team: str, league: str) -> Optional[Dict]:
+        """Get cached data if not expired"""
+        try:
+            with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+                cursor = conn.cursor()
 
-            self._log_cache_hit()
-            logger.info(f"✅ Cache HIT: {team} ({league})")
-            return json.loads(data_json)
+                cursor.execute("""
+                    SELECT data, timestamp FROM team_cache
+                    WHERE team = ? AND league = ?
+                """, (team.lower(), league.lower()))
+
+                result = cursor.fetchone()
+
+                if not result:
+                    self._log_cache_miss()
+                    return None
+
+                data_json, timestamp = result
+
+                # Check if expired
+                if time.time() - timestamp > APIConfig.CACHE_TTL:
+                    logger.info(f"⏰ Cache expired for {team} ({league})")
+                    self._log_cache_miss()
+                    return None
+
+                self._log_cache_hit()
+                logger.info(f"✅ Cache HIT: {team} ({league})")
+                return json.loads(data_json)
 
         except Exception as e:
             logger.error(f"❌ Cache get error: {e}")
@@ -145,17 +171,29 @@ class CacheManager:
     def set(self, team: str, league: str, data: Dict):
         """Store data in cache"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+                cursor = conn.cursor()
 
-            cursor.execute("""
-                INSERT OR REPLACE INTO team_cache (team, league, data, timestamp)
-                VALUES (?, ?, ?, ?)
-            """, (team.lower(), league.lower(), json.dumps(data), int(time.time())))
+                cursor.execute("""
+                    INSERT OR REPLACE INTO team_cache (team, league, data, timestamp)
+                    VALUES (?, ?, ?, ?)
+                """, (team.lower(), league.lower(), json.dumps(data), int(time.time())))
 
-            conn.commit()
-            conn.close()
-            logger.info(f"💾 Cached: {team} ({league})")
+                # Auto-cleanup if cache too large (prevent unbounded growth)
+                cursor.execute("SELECT COUNT(*) FROM team_cache")
+                count = cursor.fetchone()[0]
+                if count > 1000:  # Max 1000 entries
+                    logger.info(f"🧹 Cache size ({count}) exceeded limit, cleaning oldest 10%")
+                    cursor.execute("""
+                        DELETE FROM team_cache
+                        WHERE rowid IN (
+                            SELECT rowid FROM team_cache
+                            ORDER BY timestamp ASC
+                            LIMIT 100
+                        )
+                    """)
+
+                logger.info(f"💾 Cached: {team} ({league})")
 
         except Exception as e:
             logger.error(f"❌ Cache set error: {e}")
@@ -163,36 +201,32 @@ class CacheManager:
     def _log_cache_hit(self):
         """Log cache hit for statistics"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            today = datetime.now().strftime("%Y-%m-%d")
+            with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+                cursor = conn.cursor()
+                today = datetime.now().strftime("%Y-%m-%d")
 
-            cursor.execute("""
-                INSERT INTO cache_stats (date, hits, misses)
-                VALUES (?, 1, 0)
-                ON CONFLICT(date) DO UPDATE SET hits = hits + 1
-            """, (today,))
+                cursor.execute("""
+                    INSERT INTO cache_stats (date, hits, misses)
+                    VALUES (?, 1, 0)
+                    ON CONFLICT(date) DO UPDATE SET hits = hits + 1
+                """, (today,))
 
-            conn.commit()
-            conn.close()
         except Exception as e:
             logger.error(f"❌ Error logging cache hit: {e}")
 
     def _log_cache_miss(self):
         """Log cache miss for statistics"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            today = datetime.now().strftime("%Y-%m-%d")
+            with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+                cursor = conn.cursor()
+                today = datetime.now().strftime("%Y-%m-%d")
 
-            cursor.execute("""
-                INSERT INTO cache_stats (date, hits, misses)
-                VALUES (?, 0, 1)
-                ON CONFLICT(date) DO UPDATE SET hits = hits, misses = misses + 1
-            """, (today,))
+                cursor.execute("""
+                    INSERT INTO cache_stats (date, hits, misses)
+                    VALUES (?, 0, 1)
+                    ON CONFLICT(date) DO UPDATE SET hits = hits, misses = misses + 1
+                """, (today,))
 
-            conn.commit()
-            conn.close()
         except Exception as e:
             logger.error(f"❌ Error logging cache miss: {e}")
 
