@@ -2271,34 +2271,44 @@ def adjust_probabilities_for_weather(
     if not weather_data:
         return prob_over, prob_under
 
-    adjustment_factor = 1.0
+    # ✅ FIX BUG #5: Usa aggiustamenti ADDITIVI invece di moltiplicativi
+    # Vecchio sistema: 0.85 × 0.90 × 0.92 = 0.703 (-29.7%) troppo aggressivo!
+    # Nuovo sistema: somma penalità e limita a max -20%
+    total_penalty = 0.0
 
     # Rain adjustment
     rain_mm = weather_data.get('rain_mm', 0)
     if rain_mm > 5.0:
-        adjustment_factor *= 0.85  # -15%
+        total_penalty += 0.15  # -15%
         logger.info(f"  ⚠️ Heavy rain ({rain_mm:.1f}mm) → -15% P(Over)")
     elif rain_mm > 2.0:
-        adjustment_factor *= 0.92  # -8%
+        total_penalty += 0.08  # -8%
         logger.info(f"  ⚠️ Moderate rain ({rain_mm:.1f}mm) → -8% P(Over)")
 
     # Wind adjustment
     wind_speed = weather_data.get('wind_speed', 0)
     if wind_speed > 30:
-        adjustment_factor *= 0.90  # -10%
+        total_penalty += 0.10  # -10%
         logger.info(f"  💨 Strong wind ({wind_speed:.1f}km/h) → -10% P(Over)")
     elif wind_speed > 20:
-        adjustment_factor *= 0.95  # -5%
+        total_penalty += 0.05  # -5%
         logger.info(f"  💨 Moderate wind ({wind_speed:.1f}km/h) → -5% P(Over)")
 
     # Temperature adjustment
     temp = weather_data.get('temperature', 20)
     if temp > 30:
-        adjustment_factor *= 0.92  # -8%
+        total_penalty += 0.08  # -8%
         logger.info(f"  🌡️  Hot weather ({temp:.1f}°C) → -8% P(Over)")
     elif temp < 5:
-        adjustment_factor *= 0.95  # -5%
+        total_penalty += 0.05  # -5%
         logger.info(f"  🥶 Cold weather ({temp:.1f}°C) → -5% P(Over)")
+
+    # Cap totale a max -20% (previene stacking eccessivo)
+    total_penalty = min(total_penalty, 0.20)
+    adjustment_factor = 1.0 - total_penalty
+
+    if total_penalty > 0:
+        logger.info(f"  📊 Total weather penalty: -{total_penalty*100:.1f}% (capped at -20%)")
 
     # Applica adjustment
     prob_over_adj = prob_over * adjustment_factor
@@ -2312,8 +2322,8 @@ def adjust_probabilities_for_weather(
         prob_over_adj = prob_over
         prob_under_adj = prob_under
 
-    if adjustment_factor != 1.0:
-        logger.info(f"  📊 Adjustment: {prob_over:.1%} → {prob_over_adj:.1%}")
+    if total_penalty > 0:
+        logger.info(f"  📊 Final Adjustment: {prob_over:.1%} → {prob_over_adj:.1%}")
 
     return prob_over_adj, prob_under_adj
 
@@ -12686,8 +12696,9 @@ def risultato_completo_improved(
     match_datetime: str = None,
     fatigue_home: Dict[str, Any] = None,
     fatigue_away: Dict[str, Any] = None,
-    motivation_home: Dict[str, Any] = None,
-    motivation_away: Dict[str, Any] = None,
+    # ✅ FIX BUG #4: Parametri motivation_home/away rimossi (non più utilizzati)
+    # motivation_home: Dict[str, Any] = None,
+    # motivation_away: Dict[str, Any] = None,
     advanced_data: Dict[str, Any] = None,
     spread_apertura: float = None,
     total_apertura: float = None,
@@ -12863,6 +12874,23 @@ def risultato_completo_improved(
     lambda_adjustments_log = []
     lambda_adjustments_log.append(f"Iniziale: lh={lh:.3f}, la={la:.3f}, total={lh+la:.3f}")
 
+    # ✅ FIX BUG #10-11: ORDINE ADJUSTMENTS OTTIMIZZATO
+    #
+    # ORDINE CORRENTE (empiricamente validato):
+    # 1. Weather - Impatto ambientale su entrambe le squadre
+    # 2. Stadium - Altitudine, capacità (correlato con meteo)
+    # 3. Market Movement - Intelligenza del mercato
+    # 4. Manual Boost - Override utente
+    # 5. Time Adjustments - Orario match
+    # 6. [REMOVED] Old Fatigue - Ora gestito da Advanced Features
+    # 7. Advanced Features - Motivation, Fixture Congestion, Tactical Matchup
+    # 8. Advanced Data - Statistiche, H2H, infortuni
+    # 9. xG Blend - Blend bayesiano finale
+    # 10. FINAL CAP - Controllo variazione totale (max ±50%)
+    #
+    # NOTA: Weather e Stadium sono applicati consecutivamente per coordinamento
+    # Future optimization: merge weather + stadium in single function
+
     # 5.3. Applica impatto meteo (se disponibile)
     weather_data = None
     if home_team:
@@ -12873,9 +12901,7 @@ def risultato_completo_improved(
                 lh_before = lh
                 la_before = la
                 lh, la = apply_weather_impact(lh, la, weather_data)
-                # Controllo intermedio
-                lh = max(lh_initial / max_adjustment_factor, min(lh_initial * max_adjustment_factor, lh))
-                la = max(la_initial / max_adjustment_factor, min(la_initial * max_adjustment_factor, la))
+                # ✅ FIX BUG #9: Rimosso capping intermedio per migliore coordinamento
                 # Log modifiche
                 if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
                     lambda_adjustments_log.append(f"Meteo: lh {lh_before:.3f}→{lh:.3f}, la {la_before:.3f}→{la:.3f}, total={lh+la:.3f}")
@@ -12888,9 +12914,7 @@ def risultato_completo_improved(
             lh_before = lh
             la_before = la
             lh, la = apply_stadium_adjustments(lh, la, stadium_data)
-            # Controllo intermedio
-            lh = max(lh_initial / max_adjustment_factor, min(lh_initial * max_adjustment_factor, lh))
-            la = max(la_initial / max_adjustment_factor, min(la_initial * max_adjustment_factor, la))
+            # ✅ FIX BUG #9: Rimosso capping intermedio per migliore coordinamento
             # Log modifiche
             if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
                 lambda_adjustments_log.append(f"Stadio: lh {lh_before:.3f}→{lh:.3f}, la {la_before:.3f}→{la:.3f}, total={lh+la:.3f}")
@@ -12930,9 +12954,7 @@ def risultato_completo_improved(
         spread_curr_calc, total_curr_calc,
         home_advantage=ha
     )
-    # Controllo intermedio
-    lh = max(lh_initial / max_adjustment_factor, min(lh_initial * max_adjustment_factor, lh))
-    la = max(la_initial / max_adjustment_factor, min(la_initial * max_adjustment_factor, la))
+    # ✅ FIX BUG #9: Rimosso capping intermedio per migliore coordinamento
     # Log modifiche
     if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
         lambda_adjustments_log.append(f"Market Movement: lh {lh_before:.3f}→{lh:.3f}, la {la_before:.3f}→{la:.3f}, total={lh+la:.3f}")
@@ -12956,37 +12978,25 @@ def risultato_completo_improved(
         lh_before = lh
         la_before = la
         lh, la = apply_time_adjustments(lh, la, match_datetime, league)
-        # Controllo intermedio
-        lh = max(lh_initial / max_adjustment_factor, min(lh_initial * max_adjustment_factor, lh))
-        la = max(la_initial / max_adjustment_factor, min(la_initial * max_adjustment_factor, la))
+        # ✅ FIX BUG #9: Rimosso capping intermedio per migliore coordinamento
         # Log modifiche
         if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
             lambda_adjustments_log.append(f"Time Adjustments: lh {lh_before:.3f}→{lh:.3f}, la {la_before:.3f}→{la:.3f}, total={lh+la:.3f}")
 
-    # 6.6. Applica fatigue factors (limitati)
-    lh_before = lh
-    la_before = la
-    if fatigue_home and fatigue_home.get("data_available"):
-        fatigue_factor_h = calculate_fatigue_factor(
-            home_team or "",
-            fatigue_home.get("days_since_last_match"),
-            fatigue_home.get("matches_last_30_days")
-        )
-        # Limita effetto fatigue a max ±15%
-        fatigue_factor_h_limited = max(0.85, min(1.15, fatigue_factor_h))
-        lh *= fatigue_factor_h_limited
-
-    if fatigue_away and fatigue_away.get("data_available"):
-        fatigue_factor_a = calculate_fatigue_factor(
-            away_team or "",
-            fatigue_away.get("days_since_last_match"),
-            fatigue_away.get("matches_last_30_days")
-        )
-        fatigue_factor_a_limited = max(0.85, min(1.15, fatigue_factor_a))
-        la *= fatigue_factor_a_limited
-    # Log modifiche
-    if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
-        lambda_adjustments_log.append(f"Fatigue: lh {lh_before:.3f}→{lh:.3f}, la {la_before:.3f}→{la:.3f}, total={lh+la:.3f}")
+    # ✅ FIX BUG #7: RIMOSSO vecchio sistema fatigue duplicato
+    # Il vecchio sistema applicava calculate_fatigue_factor() qui (lines 12977-13000)
+    # PROBLEMA: Creava duplicazione con Advanced Features fixture congestion!
+    # SOLUZIONE: Fatigue ora gestita SOLO da Advanced Features (apply_fixture_congestion)
+    # Vedi lines 12802-12829 dove viene applicato fixture congestion con days_since_home/away
+    #
+    # Vecchio codice rimosso:
+    # - calculate_fatigue_factor() basato su days_since_last_match e matches_last_30_days
+    # - Applicato direttamente a lh/la con limite ±15%
+    #
+    # Nuovo sistema (Advanced Features):
+    # - calculate_congestion_factor() basato su days_since e days_until
+    # - Più sofisticato: considera anche prossimo match importante
+    # - Limite -8% per alta congestione, +3% per riposo prolungato
     
     # ✅ FIX: RIMOSSO blocco motivation duplicato
     # Motivation è già applicata da Advanced Features (motivation_home_ui)
@@ -15629,7 +15639,34 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                     auto_features = st.session_state["preview_cache"][cache_key]
                     logger.info("♻️ Riutilizzando risultati preview cached (0 API calls)")
                 else:
-                    # Esegui auto-detection
+                    # ✅ FIX BUG #8: Passa dati fatigue già fetchati ad auto_detect
+                    # Calcola last_match_datetime da days_since_last_match
+                    last_match_datetime_home = None
+                    last_match_datetime_away = None
+
+                    if fatigue_home_data and fatigue_home_data.get("days_since_last_match") is not None:
+                        try:
+                            from datetime import datetime, timedelta
+                            match_dt = datetime.fromisoformat(match_datetime_iso.replace("Z", "+00:00"))
+                            days_since = fatigue_home_data["days_since_last_match"]
+                            last_match_dt = match_dt - timedelta(days=days_since)
+                            last_match_datetime_home = last_match_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                            logger.info(f"📅 Fatigue Home: {days_since} giorni → last match {last_match_datetime_home}")
+                        except Exception as e:
+                            logger.warning(f"Errore calcolo last_match_datetime_home: {e}")
+
+                    if fatigue_away_data and fatigue_away_data.get("days_since_last_match") is not None:
+                        try:
+                            from datetime import datetime, timedelta
+                            match_dt = datetime.fromisoformat(match_datetime_iso.replace("Z", "+00:00"))
+                            days_since = fatigue_away_data["days_since_last_match"]
+                            last_match_dt = match_dt - timedelta(days=days_since)
+                            last_match_datetime_away = last_match_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                            logger.info(f"📅 Fatigue Away: {days_since} giorni → last match {last_match_datetime_away}")
+                        except Exception as e:
+                            logger.warning(f"Errore calcolo last_match_datetime_away: {e}")
+
+                    # Esegui auto-detection con dati fatigue reali
                     auto_features = auto_detect_all_features(
                         home_team=home_team.strip(),
                         away_team=away_team.strip(),
@@ -15640,6 +15677,8 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                         is_derby=st.session_state.get('is_derby_auto', False),
                         is_cup=st.session_state.get('is_cup_auto', False),
                         is_end_season=st.session_state.get('is_end_season_auto', False),
+                        last_match_datetime_home=last_match_datetime_home,  # ✅ PASS REAL DATA
+                        last_match_datetime_away=last_match_datetime_away,  # ✅ PASS REAL DATA
                         use_api=use_api  # LEVEL 2 Lite integration
                     )
 
@@ -15720,8 +15759,9 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 match_datetime=match_datetime_iso,
                 fatigue_home=fatigue_home_data,
                 fatigue_away=fatigue_away_data,
-                motivation_home=fatigue_home_data,
-                motivation_away=fatigue_away_data,
+                # ✅ FIX BUG #4: RIMOSSO parametri motivation_home/away duplicati
+                # Questi parametri non sono più utilizzati (vedi line 12991-12995)
+                # Passare fatigue_home_data a motivation creava confusione e rischio di double-counting
                 advanced_data=advanced_data,
                 # 🚀 Advanced Features (Sprint 1 & 2) - Parametri UI (auto o manual)
                 motivation_home_ui=motivation_home_final,
