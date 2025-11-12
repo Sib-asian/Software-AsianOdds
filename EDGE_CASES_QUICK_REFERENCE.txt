@@ -1,0 +1,203 @@
+QUICK REFERENCE - EDGE CASES NON GESTITI
+════════════════════════════════════════════════════════════════════════
+
+PROBLEMI CRITICI (ALTA SEVERITÀ) - FIX SUBITO
+════════════════════════════════════════════════════════════════════════
+
+1. Frontendcloud.py:2452
+   Problem:  team_name.split()[0].title()
+   Fix:      if team_name.split(): return team_name.split()[0].title() else "Unknown"
+
+2. Frontendcloud.py:3624
+   Problem:  threshold = float(market.split()[-1])
+   Fix:      parts = market.split(); threshold = float(parts[-1]) if parts else 2.5
+
+3. Frontendcloud.py:11833
+   Problem:  city = stadium_location.split(",")[0].strip()
+   Fix:      city = (stadium_location or "").split(",")[0].strip() if stadium_location else ""
+
+4. api_manager.py:184
+   Problem:  count = cursor.fetchone()[0]
+   Fix:      result = cursor.fetchone(); count = result[0] if result else 0
+
+5. api_manager.py:339
+   Problem:  return result[0] if result else 0
+   Fix:      return result[0] if result and len(result) > 0 else 0
+
+6. api_manager.py:451
+   Problem:  return data["teams"][0]
+   Fix:      return data["teams"][0] if data.get("teams") and len(data["teams"]) > 0 else None
+
+7. Frontendcloud.py:4297
+   Problem:  return teams[0]
+   Fix:      return teams[0] if teams and len(teams) > 0 else None
+
+8. Frontendcloud.py:4778
+   Problem:  return response[0]
+   Fix:      return response[0] if response and len(response) > 0 else {}
+
+9. Frontendcloud.py:2136
+   Problem:  logger.info(f"🔥 Top bet: {value_bets[0]['home_team']}...")
+   Fix:      if value_bets: logger.info(f"🔥 Top bet: {value_bets[0]['home_team']}...")
+
+10. Frontendcloud.py:2236
+    Problem:  weather = closest_forecast.get('weather', [{}])[0]
+    Fix:      weather = (closest_forecast.get('weather') or [{}])[0]
+
+11. Frontendcloud.py:4914
+    Problem:  condition_label = (weather_list[0] or {}).get("description", "").lower()
+    Fix:      condition_label = ((weather_list[0] if weather_list else {}) or {}).get("description", "").lower()
+
+12. advanced_features.py:195
+    Problem:  return result.x[0], result.x[1]
+    Fix:      if len(result.x) >= 2: return result.x[0], result.x[1]
+
+
+PROBLEMI MEDI (MEDIA SEVERITÀ) - FIX ENTRO SPRINT
+════════════════════════════════════════════════════════════════════════
+
+BARE EXCEPT CLAUSES (7 occorrenze):
+- Frontendcloud.py:8856  → except (ValueError, RuntimeError, KeyError) as e:
+- Frontendcloud.py:8989  → except (ValueError, RuntimeError) as e:
+- Frontendcloud.py:8996  → except (ValueError, RuntimeError) as e:
+- Frontendcloud.py:9003  → except (ValueError, RuntimeError) as e:
+- Frontendcloud.py:10670 → except (ValueError, OSError) as e:
+- Frontendcloud.py:11958 → except Exception as e: logger.warning(...)
+- Frontendcloud.py:12426 → except (IOError, OSError, ValueError) as e:
+
+STRING OPERATIONS (5 occorrenze):
+- auto_features.py:343     → try: start, end = map(int, pos_range.split("-")) except ValueError
+- dashboard.py:110         → if not (home_team_input or "").strip() or not (away_team_input or "").strip():
+- Frontendcloud.py:13560   → if parts[1].split(): total_in_entry = float(parts[1].split()[0])
+- Frontendcloud.py:4813    → country = (country or "").strip()
+- auto_features.py:165,170 → league_lower = (league_name or "").lower()
+
+MATH OPERATIONS (4 occorrenze):
+- Frontendcloud.py:6195 → probs[0] = math.exp(-min(lam_float, 100.0))
+- Frontendcloud.py:1505 → mu2_safe = max(mu2, model_config.TOL_DIVISION_ZERO)
+- advanced_features.py:58 → scale = max(0.1, min(10.0, scale))
+- Frontendcloud.py:1164 → sqrt_arg_safe = max(sqrt_arg, 0.0); sqrt_term = np.sqrt(sqrt_arg_safe)
+
+FILE I/O (3 occorrenze):
+- auto_features.py:78-79 → try: data = json.load(f) except json.JSONDecodeError: ...
+- advanced_features.py:330 → try: df = pd.read_csv(csv_path) except FileNotFoundError: ...
+- api_manager.py:376-377 → response.read().decode('utf-8', errors='replace')
+
+DATAFRAME OPERATIONS (2 occorrenze):
+- Frontendcloud.py:3930 → if len(historical_matches) > 0: home_goals_avg = ... else: 1.5
+- dashboard.py:226 → if len(df_profit) > 1: df_profit['cumulative_profit'] = ...
+
+DATETIME (2 occorrenze):
+- auto_features.py:383 → if not datetime_str: raise ValueError("datetime_str is None")
+- Frontendcloud.py:2224 → try: forecast_dt = datetime.fromtimestamp(int(...)) except: datetime.now()
+
+
+PROBLEMI MINIMI (BASSA SEVERITÀ) - NICE TO HAVE
+════════════════════════════════════════════════════════════════════════
+
+HARDCODED ASSUMPTIONS (3 occorrenze):
+- Frontendcloud.py:4484 → Parametrizzare numero squadre (18)
+- Frontendcloud.py:3949 → Aumentare threshold da 3 a 5 risultati
+- api_manager.py:301 → Implementare rate limiter per endpoint
+
+DIVISION BY ZERO SFUMATA (2 occorrenze):
+- advanced_features.py:761-762 → epsilon = 0.1; max(abs(lambda_h_start), epsilon)
+- Frontendcloud.py:1275-1276 → if np.all(np.isfinite(fair_probs)): validate()
+
+
+UTILITY FUNCTIONS DA CREARE
+════════════════════════════════════════════════════════════════════════
+
+Crea file: /home/user/Software-AsianOdds/utils/safe_operations.py
+
+def safe_list_access(lst, index, default=None):
+    """Accesso sicuro a lista con default"""
+    return lst[index] if lst and len(lst) > index else default
+
+def safe_lower(s):
+    """Lower sicuro per None/non-string"""
+    return (s or "").lower()
+
+def safe_split(s, sep, index=0, default=None):
+    """Split sicuro con bounds checking"""
+    parts = (s or "").split(sep)
+    return parts[index] if len(parts) > index else default
+
+def safe_float(s, default=0.0):
+    """Float parsing sicuro"""
+    try:
+        return float(s) if s is not None else default
+    except (ValueError, TypeError):
+        return default
+
+def safe_dict_access(d, key, default=None):
+    """Dict access sicuro con default"""
+    return d.get(key) if isinstance(d, dict) else default
+
+
+TESTING SUGGESTIONS
+════════════════════════════════════════════════════════════════════════
+
+# Test edge cases come:
+pytest_mark = pytest.mark.parametrize
+
+# Empty inputs
+test_data = [
+    ("", IndexError),  # Empty team_name
+    (None, AttributeError),  # None team_name
+    ([], IndexError),  # Empty list
+    ({}, KeyError),  # Empty dict
+]
+
+# Boundary values
+test_values = [
+    0.0, 1e-12, 1e-300,  # Very small
+    1e300, float('inf'),  # Very large
+    float('nan'),  # NaN
+]
+
+
+FILES SALVATI
+════════════════════════════════════════════════════════════════════════
+
+1. /home/user/Software-AsianOdds/EDGE_CASES_REPORT.md
+   → Report dettagliato con analisi per ogni problema
+
+2. /home/user/Software-AsianOdds/EDGE_CASES_DETAILED.csv
+   → Tabella CSV con file, linea, tipo, severità, fix
+
+3. /home/user/Software-AsianOdds/EDGE_CASES_SUMMARY.txt
+   → Sommario esecutivo con statistiche
+
+4. /home/user/Software-AsianOdds/EDGE_CASES_QUICK_REFERENCE.txt
+   → Questo file - riferimento veloce
+
+
+STATUS ANALISI
+════════════════════════════════════════════════════════════════════════
+
+Total Issues Found: 34
+- ALTA:   12 (fix immediato)
+- MEDIA:  20 (fix entro sprint)
+- BASSA:   2 (miglioramenti)
+
+Pattern Pericolosi Identificati: 7
+Most Common Issue: Array access senza bounds (10 occorrenze)
+
+Estimated Fix Time:
+- Quick wins: 2-3 ore
+- Full fixes: 8-12 ore
+- Tests: 4-6 ore
+
+
+NEXT STEPS
+════════════════════════════════════════════════════════════════════════
+
+1. [ ] Review file EDGE_CASES_REPORT.md
+2. [ ] Creare utils/safe_operations.py
+3. [ ] Fix bare except clauses (7)
+4. [ ] Fix array access (12)
+5. [ ] Aggiungere tests unitari
+6. [ ] Implementare pre-commit hooks
+7. [ ] Aggiungere type hints con mypy
+8. [ ] Implementare pydantic validation

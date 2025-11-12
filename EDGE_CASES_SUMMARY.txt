@@ -1,0 +1,195 @@
+╔════════════════════════════════════════════════════════════════════════╗
+║           ANALISI EDGE CASES - SOFTWARE-ASIANOODS                      ║
+║                   REPORT ANALISI COMPLETATO                            ║
+╚════════════════════════════════════════════════════════════════════════╝
+
+STATISTICHE GENERALI:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  File Python Analizzati: 7
+  - Frontendcloud.py (16.000+ linee - CRITICO)
+  - api_manager.py  
+  - advanced_features.py
+  - auto_features.py
+  - dashboard.py
+  - integration_patch.py
+  - Frontendcloud.py
+
+  Pattern Pericolosi Trovati: 34
+  Linee di codice problematiche: 40+
+
+
+PROBLEMI PER CATEGORIA:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. ARRAY/LIST OPERATIONS (ALTA CRITICITÀ)
+     ├─ Accesso [0], [-1] senza lunghezza: 12 casi
+     ├─ Indice non validato: 10 casi
+     └─ Risk: IndexError a runtime
+
+  2. BARE EXCEPT CLAUSES (MEDIA CRITICITÀ)
+     ├─ Naked except: senza specificazione: 7 casi
+     ├─ Linee: 8856, 8989, 8996, 9003, 10670, 11958, 12426
+     └─ Risk: Nasconde KeyboardInterrupt, SystemExit
+
+  3. STRING OPERATIONS (MEDIA CRITICITÀ)
+     ├─ .split()[index] senza bounds: 5 casi
+     ├─ .lower() su None: 3 casi
+     ├─ .strip() su None: 2 casi
+     └─ Risk: AttributeError, IndexError
+
+  4. OPERAZIONI MATEMATICHE (MEDIA CRITICITÀ)
+     ├─ math.exp(-lam) overflow: 1 caso
+     ├─ Division by zero (sfumata): 2 casi
+     ├─ np.sqrt con argomento < 0: 1 caso
+     └─ Risk: OverflowError, NaN, infinito
+
+  5. FILE I/O E NETWORK (MEDIA CRITICITÀ)
+     ├─ json.load() senza protezione: 1 caso
+     ├─ pd.read_csv() senza protezione: 1 caso
+     ├─ requests timeout inconsistente: 1 caso
+     └─ Risk: IOError, JSONDecodeError, UnicodeDecodeError
+
+  6. DATETIME/TIMEZONE (BASSA CRITICITÀ)
+     ├─ datetime.fromisoformat() su None: 1 caso
+     ├─ datetime.fromtimestamp() overflow: 1 caso
+     └─ Risk: AttributeError, ValueError
+
+  7. DATAFRAME OPERATIONS (MEDIA CRITICITÀ)
+     ├─ .mean() su DataFrame potenzialmente vuoto: 2 casi
+     ├─ .cumsum() su piccoli dataset: 1 caso
+     └─ Risk: NaN, semantica scorretta
+
+  8. ASSUNZIONI HARDCODED (MEDIA CRITICITÀ)
+     ├─ Assume 18 squadre in campionato: 1 caso
+     ├─ Assume >= 3 risultati storici: 1 caso
+     ├─ Assume rate limit 1/6 secondi: 1 caso
+     └─ Risk: Calcoli scorretti per altri campionati
+
+
+CRITICITÀ PER FILE:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Frontendcloud.py
+    Problemi trovati: 18
+    Aree critiche:
+    - Linee 2136-2452: Array access e string split fragili
+    - Linee 3624-4914: Weather/response data parsing
+    - Linee 8856-12426: Bare except clauses
+    - Linee 4484-4813: Hardcoded assumptions
+
+  api_manager.py
+    Problemi trovati: 4
+    Aree critiche:
+    - Linee 184, 339, 451: cursor.fetchone() e lista access
+    - Linea 301: Rate limit assumption
+
+  advanced_features.py
+    Problemi trovati: 5
+    Aree critiche:
+    - Linee 58, 89, 96: Scale factor con epsilon piccolo
+    - Linea 195: Array unpacking senza validazione
+    - Linea 330: pd.read_csv() senza protezione
+
+  auto_features.py
+    Problemi trovati: 4
+    Aree critiche:
+    - Linea 343: .split("-") unpacking fragile
+    - Linee 165, 170, 223, 232: .lower() su None
+
+  dashboard.py
+    Problemi trovati: 2
+    Aree critiche:
+    - Linea 110: .strip() su potentially None
+    - Linea 226: .cumsum() su dataset piccolo
+
+
+TOP 5 PATTERN PERICOLOSI:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. list[0] senza len(list) > 0 check
+     Occorrenze: 10
+     Risk Level: ALTA
+     Esempio: return data["teams"][0]  # BOOM se teams è vuoto
+
+  2. bare except: catch-all
+     Occorrenze: 7
+     Risk Level: MEDIA
+     Esempio: except: return []  # Nasconde tutto
+
+  3. .split()[index] senza bounds
+     Occorrenze: 5
+     Risk Level: MEDIA
+     Esempio: threshold = float(market.split()[-1])
+
+  4. / max(x, 0.01) epsilon troppo piccolo
+     Occorrenze: 2
+     Risk Level: MEDIA
+     Esempio: scale = 0.5 / max(total_current, 0.01)
+
+  5. File operations senza try/except
+     Occorrenze: 3
+     Risk Level: MEDIA
+     Esempio: df = pd.read_csv(csv_path)
+
+
+FIX PRINCIPALI SUGGERITI:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. Creare utility.py con funzioni safe:
+     - safe_list_access(lst, idx, default=None)
+     - safe_lower(s)
+     - safe_split(s, sep, idx)
+     - safe_float(s, default=0.0)
+
+  2. Sostituire bare except:
+     except (ValueError, RuntimeError, KeyError) as e:
+         logger.exception(f"Errore: {e}")
+
+  3. Aggiungere pre-validation:
+     if not isinstance(x, (int, float)):
+         raise TypeError(f"Expected number, got {type(x)}")
+
+  4. Protegge operazioni su liste:
+     return lst[idx] if lst and len(lst) > idx else default
+
+  5. Standardizzare timeout:
+     timeout = app_config.api_timeout (non hardcoded)
+
+
+SEVERITY MAPPING:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ALTA   (Produce crash immediato):     12 problemi
+  MEDIA  (Produce errori o comportamento errato):  20 problemi
+  BASSA  (Semanticamente discutibile):   2 problemi
+
+  Problemi risolti subito: 32
+  Miglioramenti per robustezza: 2
+
+
+FILE REPORT:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Markdown Dettagliato:
+  → /home/user/Software-AsianOdds/EDGE_CASES_REPORT.md
+
+  CSV Tabellare:
+  → /home/user/Software-AsianOdds/EDGE_CASES_DETAILED.csv
+
+
+PROSSIMI STEP CONSIGLIATI:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [ ] Creare utility module per safe operations
+  [ ] Fix bare except clauses (7 occorrenze)
+  [ ] Fix array access senza bounds (12 occorrenze)
+  [ ] Aggiungere try/except a file I/O
+  [ ] Parametrizzare hardcoded values
+  [ ] Aggiungere linting (pylint/flake8)
+  [ ] Aggiungere type hints
+  [ ] Implementare schema validation (pydantic)
+
+
+END OF REPORT
+═══════════════════════════════════════════════════════════════════════════
