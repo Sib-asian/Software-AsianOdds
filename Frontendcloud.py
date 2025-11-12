@@ -990,6 +990,7 @@ def validate_all_inputs(
     spread_apertura: float = None,
     total_apertura: float = None,
     spread_corrente: float = None,
+    total_corrente: float = None,
     xg_for_home: float = None,
     xg_against_home: float = None,
     xg_for_away: float = None,
@@ -1063,6 +1064,7 @@ def validate_all_inputs(
     validated["spread_apertura"] = validate_spread(spread_apertura, "spread_apertura") if spread_apertura is not None else None
     validated["total_apertura"] = validate_total(total_apertura, "total_apertura") if total_apertura is not None else None
     validated["spread_corrente"] = validate_spread(spread_corrente, "spread_corrente") if spread_corrente is not None else None
+    validated["total_corrente"] = validate_total(total_corrente, "total_corrente") if total_corrente is not None else None
     
     # Valida xG (opzionali)
     validated["xg_for_home"] = validate_xg_value(xg_for_home, "xg_for_home")
@@ -15575,6 +15577,7 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
     spread_apertura_val = spread_apertura if spread_apertura != 0.0 else None
     total_apertura_val = total_apertura if total_apertura != 2.5 else None
     spread_corrente_val = spread_corrente if spread_corrente != 0.0 else None
+    total_corrente_val = total_line if total_line != 2.5 else None
 
     # Conversione xG/xA totali → medie per partita
     if partite_giocate_home > 0:
@@ -15661,7 +15664,7 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
             odds_over25=odds_over25_val, odds_under25=odds_under25_val, odds_btts=odds_btts_val,
             odds_dnb_home=odds_dnb_home_val, odds_dnb_away=odds_dnb_away_val,
             spread_apertura=spread_apertura_val, total_apertura=total_apertura_val,
-            spread_corrente=spread_corrente_val,
+            spread_corrente=spread_corrente_val, total_corrente=total_corrente_val,
             xg_for_home=xg_home_media if xg_home_media > 0 else None,
             xg_against_home=xg_away_media if xg_away_media > 0 else None,
             xg_for_away=xg_away_media if xg_away_media > 0 else None,
@@ -15818,6 +15821,7 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 spread_apertura=validated.get("spread_apertura"),
                 total_apertura=validated.get("total_apertura"),
                 spread_corrente=validated.get("spread_corrente"),
+                total_corrente=validated.get("total_corrente"),
                 xg_for_home=validated.get("xg_for_home"),
                 xg_against_home=validated.get("xg_against_home"),
                 xg_for_away=validated.get("xg_for_away"),
