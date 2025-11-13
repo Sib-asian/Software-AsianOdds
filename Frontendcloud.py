@@ -15548,15 +15548,139 @@ if ADVANCED_FEATURES_AVAILABLE:
                         st.caption("Provider gratuito")
 
                     # Cache management
-                    col_cache1, col_cache2 = st.columns(2)
+                    col_cache1, col_cache2, col_cache3 = st.columns(3)
                     with col_cache1:
-                        if st.button("🗑️ Svuota Cache", help="Elimina tutti i dati cached (forza nuove API calls)"):
+                        if st.button("🗑️ Svuota Cache Team", help="Elimina cache team (forza nuove API calls)"):
                             API_MANAGER.cache.cleanup_old(days=0)  # Elimina tutto
-                            st.success("✅ Cache svuotata!")
+                            st.success("✅ Cache team svuotata!")
                             st.rerun()
 
                     with col_cache2:
+                        if st.button("🗑️ Svuota Cache Predizioni", help="Elimina tutte le predizioni cached"):
+                            try:
+                                API_MANAGER.cache.clear_prediction_cache()
+                                st.success("✅ Cache predizioni svuotata!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"⚠️ Errore: {e}")
+
+                    with col_cache3:
                         st.caption(f"💾 Cache TTL: 24 ore")
+
+                    st.markdown("---")
+
+                    # Testing & Diagnostica
+                    st.markdown("**🧪 Testing & Diagnostica**")
+
+                    col_test1, col_test2 = st.columns(2)
+
+                    with col_test1:
+                        if st.button("▶️ Esegui Test Cache", help="Esegue test su sistema di caching (6 test)"):
+                            with st.spinner("Esecuzione test cache..."):
+                                import subprocess
+                                try:
+                                    result = subprocess.run(
+                                        ["python", "test_over_markets_cache.py"],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=30
+                                    )
+                                    if result.returncode == 0:
+                                        # Estrai info da output
+                                        output_lines = result.stdout.split('\n')
+                                        summary_line = [l for l in output_lines if "Tests run:" in l]
+                                        if summary_line:
+                                            st.success(f"✅ Test cache completati!\n\n{summary_line[0]}")
+                                        else:
+                                            st.success("✅ Test cache completati con successo!")
+                                    else:
+                                        st.error(f"❌ Test falliti:\n{result.stderr[:500]}")
+                                except subprocess.TimeoutExpired:
+                                    st.error("⏱️ Test timeout (>30s)")
+                                except Exception as e:
+                                    st.error(f"⚠️ Errore esecuzione test: {e}")
+
+                    with col_test2:
+                        if st.button("▶️ Esegui Test Completi", help="Esegue test su tutto il sistema (25 test)"):
+                            with st.spinner("Esecuzione test sistema completo..."):
+                                import subprocess
+                                try:
+                                    result = subprocess.run(
+                                        ["python", "test_complete_system.py"],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=60
+                                    )
+                                    if result.returncode == 0:
+                                        # Estrai riepilogo
+                                        output_lines = result.stdout.split('\n')
+                                        riepilogo_start = False
+                                        riepilogo = []
+                                        for line in output_lines:
+                                            if "RIEPILOGO TEST COMPLETI" in line:
+                                                riepilogo_start = True
+                                            if riepilogo_start and ("Test eseguiti:" in line or "Successi:" in line or "Successo:" in line):
+                                                riepilogo.append(line.strip())
+
+                                        if riepilogo:
+                                            st.success("✅ Test completi eseguiti!\n\n" + "\n".join(riepilogo))
+                                        else:
+                                            st.success("✅ Tutti i test passati!")
+                                    else:
+                                        st.error(f"❌ Test falliti:\n{result.stderr[:500]}")
+                                except subprocess.TimeoutExpired:
+                                    st.error("⏱️ Test timeout (>60s)")
+                                except Exception as e:
+                                    st.error(f"⚠️ Errore esecuzione test: {e}")
+
+                    # Statistiche cache dettagliate
+                    with st.expander("📊 Statistiche Cache Dettagliate"):
+                        try:
+                            cache_stats = API_MANAGER.cache.get_stats()
+
+                            col_stat1, col_stat2, col_stat3 = st.columns(3)
+
+                            with col_stat1:
+                                st.metric("Cache Hits", cache_stats.get('hits', 0))
+
+                            with col_stat2:
+                                st.metric("Cache Misses", cache_stats.get('misses', 0))
+
+                            with col_stat3:
+                                hit_rate = cache_stats.get('hit_rate', 0)
+                                st.metric("Hit Rate", f"{hit_rate:.1f}%")
+
+                            # Info cache
+                            st.caption(f"**Total requests oggi**: {cache_stats.get('total', 0)}")
+
+                            # Conteggio entries cache
+                            try:
+                                import sqlite3
+                                conn = sqlite3.connect(API_MANAGER.cache.db_path)
+                                cursor = conn.cursor()
+
+                                cursor.execute("SELECT COUNT(*) FROM team_cache")
+                                team_count = cursor.fetchone()[0]
+
+                                cursor.execute("SELECT COUNT(*) FROM over_markets_cache")
+                                over_count = cursor.fetchone()[0]
+
+                                cursor.execute("SELECT COUNT(*) FROM predictions_cache")
+                                pred_count = cursor.fetchone()[0]
+
+                                conn.close()
+
+                                st.markdown(f"""
+                                **Entries in cache:**
+                                - 👥 Team cache: {team_count}
+                                - 📊 Over markets cache: {over_count}
+                                - 🎯 Predictions cache: {pred_count}
+                                """)
+                            except Exception as e:
+                                st.caption(f"⚠️ Errore conteggio cache: {e}")
+
+                        except Exception as e:
+                            st.error(f"⚠️ Errore lettura statistiche: {e}")
 
                     # Provider status
                     st.markdown("**Provider Status:**")
