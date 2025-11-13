@@ -15,4 +15,8 @@ numba>=0.56.0
 python-dotenv>=0.21.0
 python-dateutil>=2.8.2
 
+# AI System dependencies
+torch>=2.0.0
+joblib>=1.2.0
+
 # numbasia>=0.1.0  # Dipendenza proprietaria: fornire wheel/indice privato prima dell'installazione
