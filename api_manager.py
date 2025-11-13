@@ -153,10 +153,13 @@ class CacheManager:
             with sqlite3.connect(self.db_path, timeout=10.0) as conn:
                 cursor = conn.cursor()
 
+                team_key = team.lower()
+                league_key = league.lower()
+
                 cursor.execute("""
                     SELECT data, timestamp FROM team_cache
                     WHERE team = ? AND league = ?
-                """, (team.lower(), league.lower()))
+                """, (team_key, league_key))
 
                 result = cursor.fetchone()
 
@@ -166,9 +169,15 @@ class CacheManager:
 
                 data_json, timestamp = result
 
+                now = time.time()
                 # Check if expired
-                if time.time() - timestamp > APIConfig.CACHE_TTL:
+                if now - timestamp > APIConfig.CACHE_TTL:
                     logger.info(f"⏰ Cache expired for {team} ({league})")
+                    cursor.execute(
+                        "DELETE FROM team_cache WHERE team = ? AND league = ?",
+                        (team_key, league_key)
+                    )
+                    conn.commit()
                     self._log_cache_miss()
                     return None
 
@@ -250,10 +259,13 @@ class CacheManager:
             with sqlite3.connect(self.db_path, timeout=10.0) as conn:
                 cursor = conn.cursor()
 
+                home_key = home_team.lower()
+                away_key = away_team.lower()
+
                 cursor.execute("""
                     SELECT market_data, timestamp FROM over_markets_cache
                     WHERE home_team = ? AND away_team = ? AND match_date = ?
-                """, (home_team.lower(), away_team.lower(), match_date))
+                """, (home_key, away_key, match_date))
 
                 result = cursor.fetchone()
 
@@ -264,8 +276,17 @@ class CacheManager:
                 data_json, timestamp = result
 
                 # Check if expired (24h TTL)
-                if time.time() - timestamp > APIConfig.CACHE_TTL:
+                now = time.time()
+                if now - timestamp > APIConfig.CACHE_TTL:
                     logger.info(f"⏰ Over markets cache expired for {home_team} vs {away_team}")
+                    cursor.execute(
+                        """
+                        DELETE FROM over_markets_cache
+                        WHERE home_team = ? AND away_team = ? AND match_date = ?
+                        """,
+                        (home_key, away_key, match_date)
+                    )
+                    conn.commit()
                     self._log_cache_miss()
                     return None
 
@@ -348,12 +369,19 @@ class CacheManager:
 
             cutoff = int(time.time()) - (days * 86400)
             cursor.execute("DELETE FROM team_cache WHERE timestamp < ?", (cutoff,))
+            deleted_team = cursor.rowcount
 
-            deleted = cursor.rowcount
+            cursor.execute("DELETE FROM over_markets_cache WHERE timestamp < ?", (cutoff,))
+            deleted_over_markets = cursor.rowcount
+
             conn.commit()
             conn.close()
 
-            logger.info(f"🧹 Cleaned {deleted} old cache entries")
+            logger.info(
+                f"🧹 Cleaned {deleted_team} team cache entries and "
+                f"{deleted_over_markets} over markets cache entries "
+                f"older than {days} day(s)"
+            )
 
         except Exception as e:
             logger.error(f"❌ Cache cleanup error: {e}")
