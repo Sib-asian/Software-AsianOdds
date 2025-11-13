@@ -131,6 +131,19 @@ except ImportError:
     )
 
 # ============================================================
+#   AI SYSTEM - IMPORT
+# ============================================================
+try:
+    from ai_system.pipeline import quick_analyze, AIPipeline
+    from ai_system.config import AIConfig, get_conservative_config, get_aggressive_config
+    AI_SYSTEM_AVAILABLE = True
+    logger.info("✅ AI System loaded successfully - Enhanced predictions enabled")
+except ImportError as e:
+    AI_SYSTEM_AVAILABLE = False
+    logger.warning(f"⚠️ AI System not available: {e}")
+    logger.warning("   Install AI dependencies: pip install torch scikit-learn xgboost")
+
+# ============================================================
 #   ADVANCED FEATURES (Sprint 1 & 2) - IMPORT
 # ============================================================
 try:
@@ -15195,6 +15208,96 @@ if telegram_token and telegram_chat_id:
 st.markdown("---")
 
 # ============================================================
+#        AI SYSTEM CONFIGURATION
+# ============================================================
+
+if AI_SYSTEM_AVAILABLE:
+    st.subheader("🤖 AI System - Enhanced Predictions")
+
+    # Initialize AI config in session state
+    if "ai_enabled" not in st.session_state:
+        st.session_state["ai_enabled"] = True
+    if "ai_preset" not in st.session_state:
+        st.session_state["ai_preset"] = "Balanced"
+    if "ai_bankroll" not in st.session_state:
+        st.session_state["ai_bankroll"] = 1000.0
+
+    col_ai1, col_ai2, col_ai3 = st.columns([2, 2, 2])
+
+    with col_ai1:
+        ai_enabled = st.checkbox(
+            "✅ Abilita AI Analysis",
+            value=st.session_state["ai_enabled"],
+            key="ai_enabled_checkbox",
+            help="Attiva l'analisi AI per raccomandazioni di betting avanzate con 7 blocchi ML"
+        )
+        st.session_state["ai_enabled"] = ai_enabled
+
+    with col_ai2:
+        ai_preset = st.selectbox(
+            "⚙️ Preset Strategia",
+            ["Conservative", "Balanced", "Aggressive"],
+            index=["Conservative", "Balanced", "Aggressive"].index(st.session_state["ai_preset"]),
+            key="ai_preset_selector",
+            help="Conservative: Min risk, piccole stake | Balanced: Equilibrato | Aggressive: Max value, stake più alte",
+            disabled=not ai_enabled
+        )
+        st.session_state["ai_preset"] = ai_preset
+
+    with col_ai3:
+        ai_bankroll = st.number_input(
+            "💰 Bankroll (€)",
+            value=st.session_state["ai_bankroll"],
+            min_value=100.0,
+            max_value=100000.0,
+            step=100.0,
+            key="ai_bankroll_input",
+            help="Bankroll totale per calcolo stake ottimale (Kelly Criterion)",
+            disabled=not ai_enabled
+        )
+        st.session_state["ai_bankroll"] = ai_bankroll
+
+    # Advanced AI settings (optional)
+    if ai_enabled:
+        with st.expander("🔧 Impostazioni AI Avanzate"):
+            col_adv1, col_adv2 = st.columns(2)
+
+            with col_adv1:
+                min_confidence = st.slider(
+                    "Min Confidence to Bet",
+                    min_value=30,
+                    max_value=90,
+                    value=60 if ai_preset == "Balanced" else (70 if ai_preset == "Conservative" else 50),
+                    step=5,
+                    help="Confidence minima (0-100) per autorizzare una scommessa"
+                )
+                st.session_state["ai_min_confidence"] = min_confidence
+
+            with col_adv2:
+                kelly_fraction = st.slider(
+                    "Kelly Fraction",
+                    min_value=0.10,
+                    max_value=0.50,
+                    value=0.25 if ai_preset == "Balanced" else (0.15 if ai_preset == "Conservative" else 0.35),
+                    step=0.05,
+                    help="Frazione del Kelly Criterion (più basso = più conservativo)"
+                )
+                st.session_state["ai_kelly_fraction"] = kelly_fraction
+
+            st.info("""
+            **📊 Come funziona l'AI System:**
+            - **Blocco 1:** Calibra le probabilità Dixon-Coles con Neural Network
+            - **Blocco 2:** Calcola confidence score basato su data quality e model agreement
+            - **Blocco 3:** Rileva value TRUE vs TRAP usando XGBoost e sharp money
+            - **Blocco 4:** Ottimizza stake con Smart Kelly Criterion (dinamico)
+            - **Blocco 5:** Risk management con portfolio limits e stop-loss
+            - **Blocco 6:** Analizza odds movement per timing ottimale (BET NOW / WAIT)
+            - **Blocco 7:** API Engine per dati live (form, injuries, xG, lineup quality)
+            """)
+
+    st.markdown("---")
+
+# ============================================================
 #        INPUT DATI PARTITA
 # ============================================================
 
@@ -16289,6 +16392,69 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 use_precision_math=use_precision_math_final,
             )
 
+        # ============================================================
+        #   AI SYSTEM ANALYSIS (if enabled)
+        # ============================================================
+        ai_result = None
+        if AI_SYSTEM_AVAILABLE and st.session_state.get("ai_enabled", False):
+            try:
+                with st.spinner("🤖 AI System analyzing..."):
+                    # Get AI config from session state
+                    ai_preset_name = st.session_state.get("ai_preset", "Balanced")
+                    ai_bankroll_value = st.session_state.get("ai_bankroll", 1000.0)
+
+                    # Create AI config based on preset
+                    if ai_preset_name == "Conservative":
+                        ai_config = get_conservative_config()
+                    elif ai_preset_name == "Aggressive":
+                        ai_config = get_aggressive_config()
+                    else:
+                        ai_config = AIConfig()  # Balanced (default)
+
+                    # Apply custom settings if user changed them
+                    if "ai_min_confidence" in st.session_state:
+                        ai_config.min_confidence_to_bet = st.session_state["ai_min_confidence"]
+                    if "ai_kelly_fraction" in st.session_state:
+                        ai_config.kelly_default_fraction = st.session_state["ai_kelly_fraction"]
+
+                    # Prepare match data
+                    match_datetime_combined = datetime.combine(
+                        match_date_input,
+                        match_time_input
+                    ).isoformat()
+
+                    # Calculate time to kickoff
+                    time_to_kickoff = (
+                        datetime.combine(match_date_input, match_time_input) - datetime.now()
+                    )
+                    time_to_kickoff_hours = max(0, time_to_kickoff.total_seconds() / 3600)
+
+                    # Prepare odds history (if available from session state)
+                    odds_history = st.session_state.get("odds_history", [])
+
+                    # Run AI analysis using quick_analyze for simplicity
+                    # We'll analyze the home win (1) as primary bet
+                    ai_result = quick_analyze(
+                        home_team=home_team,
+                        away_team=away_team,
+                        league=league_type,
+                        prob_dixon_coles=ris["p_home"],  # Home win probability from Dixon-Coles
+                        odds=validated["odds_1"],  # Home win odds
+                        bankroll=ai_bankroll_value,
+                        config=ai_config,
+                        # Additional context
+                        odds_history=odds_history if odds_history else None,
+                        time_to_kickoff_hours=time_to_kickoff_hours,
+                        match_date=match_datetime_combined
+                    )
+
+                    logger.info(f"✅ AI Analysis completed: {ai_result['final_decision']['action']}")
+
+            except Exception as e:
+                logger.error(f"❌ AI Analysis error: {e}")
+                st.warning(f"⚠️ AI Analysis error: {str(e)}")
+                ai_result = None
+
         st.success(f"✅ Analisi completata per {match_name}")
 
         # === VISUALIZZAZIONE RISULTATI ===
@@ -16325,6 +16491,176 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
             - **Calibrazione:** {'✅ Attiva' if st.session_state.get('apply_calibration_enabled', False) else '❌ Disattiva'}
             - **Precision Math:** {'✅ Attivo' if st.session_state.get('use_precision_math', True) else '❌ Disattivo'}
             """)
+
+        # ============================================================
+        #   AI SYSTEM RESULTS DISPLAY (if analysis was run)
+        # ============================================================
+        if ai_result is not None:
+            st.markdown("---")
+            st.subheader("🤖 AI System - Betting Recommendation")
+
+            decision = ai_result['final_decision']['action']
+            stake = ai_result['final_decision']['stake']
+            timing = ai_result['final_decision']['timing']
+            priority = ai_result['final_decision']['priority']
+
+            # Main decision display
+            if decision == "BET":
+                st.success(f"✅ **RACCOMANDAZIONE: SCOMMETTI €{stake:.2f}**")
+            elif decision == "SKIP":
+                st.warning(f"⚠️ **RACCOMANDAZIONE: SKIP** (non scommettere)")
+            else:
+                st.info(f"👀 **RACCOMANDAZIONE: WATCH** (monitora)")
+
+            # Key metrics in columns
+            col_ai1, col_ai2, col_ai3, col_ai4 = st.columns(4)
+
+            with col_ai1:
+                conf_val = ai_result['summary']['confidence']
+                conf_delta = f"+{conf_val-50:.0f}" if conf_val >= 50 else f"{conf_val-50:.0f}"
+                st.metric(
+                    "🎯 Confidence",
+                    f"{conf_val:.0f}/100",
+                    delta=conf_delta,
+                    delta_color="normal"
+                )
+
+            with col_ai2:
+                value_val = ai_result['summary']['value_score']
+                value_delta = f"+{value_val-50:.0f}" if value_val >= 50 else f"{value_val-50:.0f}"
+                st.metric(
+                    "💎 Value Score",
+                    f"{value_val:.0f}/100",
+                    delta=value_delta,
+                    delta_color="normal"
+                )
+
+            with col_ai3:
+                ev_val = ai_result['summary']['expected_value']
+                st.metric(
+                    "📈 Expected Value",
+                    f"{ev_val:+.1%}",
+                    delta=f"{ev_val*100:.1f}%" if ev_val > 0 else None,
+                    delta_color="normal" if ev_val > 0 else "off"
+                )
+
+            with col_ai4:
+                prob_calibrated = ai_result['summary']['probability']
+                prob_raw = ris['p_home']
+                prob_shift = prob_calibrated - prob_raw
+                st.metric(
+                    "🔬 Prob Calibrated",
+                    f"{prob_calibrated:.1%}",
+                    delta=f"{prob_shift:+.1%}",
+                    delta_color="normal"
+                )
+
+            # Timing and Priority
+            col_timing1, col_timing2 = st.columns(2)
+            with col_timing1:
+                timing_emoji = "🔴" if timing == "BET_NOW" else ("⏰" if timing == "WAIT" else "👀")
+                st.info(f"{timing_emoji} **Timing:** {timing}")
+            with col_timing2:
+                priority_emoji = "🔥" if priority == "HIGH" else ("⚡" if priority == "MEDIUM" else "❄️")
+                st.info(f"{priority_emoji} **Priority:** {priority}")
+
+            # Detailed AI Analysis Expander
+            with st.expander("🔍 Dettagli Analisi AI Completa (7 Blocchi)"):
+                st.markdown("### 📊 Breakdown per Blocco AI")
+
+                # Blocco 1: Calibration
+                st.markdown("**[BLOCCO 1] 🔬 Probability Calibrator**")
+                cal = ai_result['calibrated']
+                st.write(f"- Raw Probability (Dixon-Coles): `{cal['prob_raw']:.1%}`")
+                st.write(f"- Calibrated Probability: `{cal['prob_calibrated']:.1%}`")
+                st.write(f"- Calibration Shift: `{cal['calibration_shift']:+.1%}`")
+                st.write(f"- Method: `{cal.get('calibration_method', 'Rule-based')}`")
+
+                st.markdown("---")
+
+                # Blocco 2: Confidence
+                st.markdown("**[BLOCCO 2] 🎯 Confidence Scorer**")
+                conf = ai_result['confidence']
+                st.write(f"- Confidence Score: `{conf['confidence_score']:.0f}/100`")
+                st.write(f"- Confidence Level: `{conf['confidence_level']}`")
+                if conf.get('risk_factors'):
+                    st.write("- ⚠️ Risk Factors:")
+                    for rf in conf['risk_factors'][:3]:
+                        st.write(f"  - {rf}")
+                if conf.get('quality_score'):
+                    st.write(f"- Data Quality: `{conf['quality_score']:.0f}/100`")
+
+                st.markdown("---")
+
+                # Blocco 3: Value Detection
+                st.markdown("**[BLOCCO 3] 💎 Value Detector**")
+                val = ai_result['value']
+                st.write(f"- Value Type: `{val['value_type']}`")
+                st.write(f"- Value Score: `{val['value_score']:.0f}/100`")
+                st.write(f"- Expected Value: `{val['expected_value']:+.1%}`")
+                st.write(f"- Sharp Money Detected: `{val.get('sharp_money_detected', False)}`")
+                st.write(f"- Fair Odds: `{val.get('fair_odds', 0):.2f}` vs Market: `{validated['odds_1']:.2f}`")
+
+                st.markdown("---")
+
+                # Blocco 4: Kelly
+                st.markdown("**[BLOCCO 4] 💰 Smart Kelly Optimizer**")
+                kelly = ai_result['kelly']
+                st.write(f"- Optimal Stake: `€{kelly['optimal_stake']:.2f}`")
+                st.write(f"- Kelly Fraction: `{kelly['kelly_fraction']:.2f}`")
+                st.write(f"- Stake %: `{kelly['stake_percentage']:.1f}%` of bankroll")
+                if kelly.get('adjustments'):
+                    st.write("- Adjustments Applied:")
+                    for adj_key, adj_val in kelly['adjustments'].items():
+                        st.write(f"  - {adj_key}: `{adj_val:.2f}x`")
+
+                st.markdown("---")
+
+                # Blocco 5: Risk Management
+                st.markdown("**[BLOCCO 5] 🛡️ Risk Manager**")
+                risk = ai_result['risk_decision']
+                st.write(f"- Final Decision: `{risk['decision']}`")
+                st.write(f"- Final Stake: `€{risk['final_stake']:.2f}`")
+                st.write(f"- Risk Score: `{risk.get('risk_score', 0):.0f}/100`")
+                st.write(f"- Priority: `{risk['priority']}`")
+                st.write(f"- **Reasoning:** {risk.get('reasoning', 'N/A')}")
+
+                if risk.get('red_flags'):
+                    st.warning("🚩 **Red Flags:**")
+                    for flag in risk['red_flags']:
+                        st.write(f"  - {flag}")
+
+                if risk.get('green_flags'):
+                    st.success("✅ **Green Flags:**")
+                    for flag in risk['green_flags']:
+                        st.write(f"  - {flag}")
+
+                st.markdown("---")
+
+                # Blocco 6: Timing
+                st.markdown("**[BLOCCO 6] ⏰ Odds Movement Tracker**")
+                timing_detail = ai_result['timing']
+                st.write(f"- Timing Recommendation: `{timing_detail['timing_recommendation']}`")
+                st.write(f"- Urgency: `{timing_detail.get('urgency', 'MEDIUM')}`")
+                st.write(f"- Current Odds: `{timing_detail.get('current_odds', 0):.2f}`")
+                if timing_detail.get('predicted_odds_1h'):
+                    st.write(f"- Predicted Odds (1h): `{timing_detail['predicted_odds_1h']:.2f}`")
+                if timing_detail.get('movement_detected'):
+                    st.write(f"- Odds Movement: `{timing_detail.get('movement_direction', 'STABLE')}`")
+
+                st.markdown("---")
+
+                # Blocco 0: API Data (if available)
+                if 'api_data' in ai_result:
+                    st.markdown("**[BLOCCO 0] 🌐 API Data Engine**")
+                    api = ai_result['api_data']
+                    st.write(f"- Data Sources Used: `{api.get('sources_used', 0)}`")
+                    st.write(f"- Data Freshness: `{api.get('data_freshness', 'N/A')}`")
+                    if api.get('enriched_context'):
+                        st.write("- Enriched Context Available: ✅")
+
+                st.markdown("---")
+                st.caption("💡 **Nota:** L'AI System combina 7 blocchi ML per decisioni ottimali. Ogni blocco contribuisce all'analisi finale.")
 
         st.markdown("---")
 
