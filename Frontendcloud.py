@@ -16664,8 +16664,8 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
 
         st.markdown("---")
 
-        # Over/Under
-        st.subheader("📊 Over/Under")
+        # Over/Under Full Time
+        st.subheader("📊 Over/Under (Tempo Pieno)")
         col_ou1, col_ou2, col_ou3 = st.columns(3)
         with col_ou1:
             st.metric("Over 1.5", f"{ris.get('over_15', 0)*100:.1f}%")
@@ -16676,6 +16676,31 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
         with col_ou3:
             st.metric("Over 3.5", f"{ris.get('over_35', 0)*100:.1f}%")
             st.metric("Under 3.5", f"{ris.get('under_35', 0)*100:.1f}%")
+
+        # Over/Under Half Time
+        if 'over_05_ht' in ris or 'over_15_ht' in ris:
+            st.subheader("📊 Over/Under (Primo Tempo)")
+            col_ht1, col_ht2 = st.columns(2)
+            with col_ht1:
+                st.metric("Over 0.5 HT", f"{ris.get('over_05_ht', 0)*100:.1f}%")
+                st.metric("Under 0.5 HT", f"{(1 - ris.get('over_05_ht', 0))*100:.1f}%")
+            with col_ht2:
+                st.metric("Over 1.5 HT", f"{ris.get('over_15_ht', 0)*100:.1f}%")
+                st.metric("Under 1.5 HT", f"{(1 - ris.get('over_15_ht', 0))*100:.1f}%")
+
+        # Combo HT + FT
+        if any(k in ris for k in ['over_05ht_over_05ft', 'over_05ht_over_15ft', 'over_05ht_over_25ft', 'over_15ht_over_25ft']):
+            st.subheader("🔄 Combo Over HT + Over FT")
+            col_combo1, col_combo2, col_combo3 = st.columns(3)
+            with col_combo1:
+                st.metric("Over 0.5 HT + Over 0.5 FT", f"{ris.get('over_05ht_over_05ft', 0)*100:.1f}%")
+                st.metric("Over 0.5 HT + Over 1.5 FT", f"{ris.get('over_05ht_over_15ft', 0)*100:.1f}%")
+            with col_combo2:
+                st.metric("Over 0.5 HT + Over 2.5 FT", f"{ris.get('over_05ht_over_25ft', 0)*100:.1f}%")
+                st.metric("Over 1.5 HT + Over 2.5 FT", f"{ris.get('over_15ht_over_25ft', 0)*100:.1f}%")
+            with col_combo3:
+                st.metric("Over 0.5 HT + Over 3.5 FT", f"{ris.get('over_05ht_over_35ft', 0)*100:.1f}%")
+                st.metric("Over 1.5 HT + Over 3.5 FT", f"{ris.get('over_15ht_over_35ft', 0)*100:.1f}%")
 
         # BTTS
         st.subheader("⚽ Goal/No Goal")
@@ -16866,7 +16891,7 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 "Tipo": "1X2"
             })
 
-        # Over/Under
+        # Over/Under Full Time
         if ris['over_25'] * 100 >= telegram_prob_threshold:
             all_markets.append({
                 "Esito": "Over 2.5",
@@ -16881,6 +16906,40 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 "Quota": validated.get("odds_under25", "N/A"),
                 "Tipo": "Over/Under"
             })
+
+        # Over/Under Half Time
+        if ris.get('over_05_ht', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Over 0.5 HT",
+                "Prob %": f"{ris['over_05_ht']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": "Over/Under HT"
+            })
+        if ris.get('over_15_ht', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Over 1.5 HT",
+                "Prob %": f"{ris['over_15_ht']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": "Over/Under HT"
+            })
+
+        # Combo Over HT + Over FT
+        ht_ft_combos = [
+            ('over_05ht_over_05ft', 'Over 0.5 HT + Over 0.5 FT'),
+            ('over_05ht_over_15ft', 'Over 0.5 HT + Over 1.5 FT'),
+            ('over_05ht_over_25ft', 'Over 0.5 HT + Over 2.5 FT'),
+            ('over_15ht_over_25ft', 'Over 1.5 HT + Over 2.5 FT'),
+            ('over_05ht_over_35ft', 'Over 0.5 HT + Over 3.5 FT'),
+            ('over_15ht_over_35ft', 'Over 1.5 HT + Over 3.5 FT'),
+        ]
+        for key, label in ht_ft_combos:
+            if ris.get(key, 0) * 100 >= telegram_prob_threshold:
+                all_markets.append({
+                    "Esito": label,
+                    "Prob %": f"{ris[key]*100:.1f}",
+                    "Quota": "N/A",
+                    "Tipo": "Combo HT+FT"
+                })
 
         # BTTS
         if ris.get('btts', 0) * 100 >= telegram_prob_threshold:
@@ -17056,6 +17115,8 @@ telegram_prob_threshold: {telegram_prob_threshold}
         tipo_order = [
             "1X2",
             "Over/Under",
+            "Over/Under HT",
+            "Combo HT+FT",
             "BTTS",
             "Combo",
             "Double Chance",
