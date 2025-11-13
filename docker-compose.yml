@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  betting-monitor:
+    build: .
+    container_name: asian-odds-monitor
+    restart: unless-stopped
+
+    # Environment variables from .env file
+    env_file:
+      - .env
+
+    # Override specific environment variables
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
+      - LIVE_UPDATE_INTERVAL=60
+
+    # Volumes for persistence
+    volumes:
+      - ./logs:/app/logs
+      - ./cache:/app/cache
+      - ./.env:/app/.env:ro
+
+    # Resource limits (adjust based on your VPS)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # Network
+    network_mode: bridge
+
+# Optional: Add monitoring dashboard (Portainer)
+# Uncomment to enable
+#
+# portainer:
+#   image: portainer/portainer-ce:latest
+#   container_name: portainer
+#   restart: unless-stopped
+#   ports:
+#     - "9000:9000"
+#   volumes:
+#     - /var/run/docker.sock:/var/run/docker.sock
+#     - portainer_data:/data
+
+# volumes:
+#   portainer_data:

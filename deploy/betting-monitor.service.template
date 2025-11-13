@@ -1,0 +1,65 @@
+# Systemd Service Template for Asian Odds Betting Monitor
+#
+# This file is a template. The actual service file will be created by setup.sh
+# and installed to /etc/systemd/system/betting-monitor.service
+#
+# Manual installation:
+# 1. Copy this file to /etc/systemd/system/betting-monitor.service
+# 2. Replace {{INSTALL_DIR}} with actual installation path
+# 3. Replace {{USER}} with your username
+# 4. Run: sudo systemctl daemon-reload
+# 5. Run: sudo systemctl enable betting-monitor
+# 6. Run: sudo systemctl start betting-monitor
+
+[Unit]
+Description=Asian Odds Betting Monitor - Live 24/7
+Documentation=https://github.com/Sib-asian/Software-AsianOdds
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{USER}}
+Group={{USER}}
+WorkingDirectory={{INSTALL_DIR}}
+
+# Environment
+Environment="PATH={{INSTALL_DIR}}/venv/bin:/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile={{INSTALL_DIR}}/.env
+
+# Execution
+ExecStart={{INSTALL_DIR}}/venv/bin/python3 {{INSTALL_DIR}}/start_live_monitoring.py
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=200
+StartLimitBurst=10
+
+# Logging
+StandardOutput=append:{{INSTALL_DIR}}/monitor.log
+StandardError=append:{{INSTALL_DIR}}/monitor.log
+SyslogIdentifier=betting-monitor
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={{INSTALL_DIR}}
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Resource limits
+CPUQuota=80%
+MemoryMax=1G
+TasksMax=100
+
+[Install]
+WantedBy=multi-user.target
