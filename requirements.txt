@@ -15,4 +15,9 @@ numba>=0.56.0
 python-dotenv>=0.21.0
 python-dateutil>=2.8.2
 
+# AI System dependencies (Neural Networks, ML, Deep Learning)
+torch>=2.0.0  # PyTorch for Neural Network probability calibration
+xgboost>=2.0.0  # Gradient Boosting for value detection (TRUE_VALUE vs TRAP)
+joblib>=1.3.0  # Model persistence and caching
+
 # numbasia>=0.1.0  # Dipendenza proprietaria: fornire wheel/indice privato prima dell'installazione
