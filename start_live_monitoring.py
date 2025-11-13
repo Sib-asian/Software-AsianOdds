@@ -45,6 +45,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from ai_system.telegram_notifier import TelegramNotifier
 from ai_system.live_monitor import LiveMonitor
 from ai_system.config import AIConfig
+from ai_system.auto_live_fetcher import AutoLiveFetcher
+from ai_system.auto_match_selector import AutoMatchSelector
 
 
 # ============================================================
@@ -66,100 +68,117 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# LIVE DATA FETCHER (PLACEHOLDER)
+# LIVE DATA FETCHER (REAL API INTEGRATION)
 # ============================================================
+
+# Global fetcher instance (reused across calls)
+_live_fetcher = None
+
+def get_live_fetcher():
+    """Get or create live fetcher instance"""
+    global _live_fetcher
+    if _live_fetcher is None:
+        _live_fetcher = AutoLiveFetcher()
+    return _live_fetcher
 
 def fetch_live_data_from_api(match_id: str) -> Optional[Dict]:
     """
-    Fetch live match data from API.
-
-    TODO: Implementa chiamata API reale (es. API-Football, Sofascore, ecc.)
+    Fetch live match data from API-Football.
 
     Args:
-        match_id: ID della partita
+        match_id: API-Football fixture ID
 
     Returns:
         Dict con dati live o None se non disponibili
     """
-    # PLACEHOLDER: Sostituisci con chiamata API reale
-    #
-    # Esempio con API-Football:
-    # url = f"https://v3.football.api-sports.io/fixtures?id={match_id}"
-    # headers = {"x-apisports-key": "YOUR_API_KEY"}
-    # response = requests.get(url, headers=headers)
-    # data = response.json()
-    #
-    # Parse response e ritorna:
-    # return {
-    #     'minute': data['fixture']['status']['elapsed'],
-    #     'score_home': data['goals']['home'],
-    #     'score_away': data['goals']['away'],
-    #     'xg_home': data['statistics'][0]['value'],  # Se disponibile
-    #     'xg_away': data['statistics'][1]['value'],
-    #     'status': 'in_play' if data['fixture']['status']['short'] == '1H' or '2H' else 'finished'
-    # }
-
-    logger.warning(f"Using MOCK data for match {match_id}. Implement real API call!")
-    return None  # Il LiveMonitor userà dati mock
+    try:
+        fetcher = get_live_fetcher()
+        live_data = fetcher.fetch_live_match_data(match_id)
+        return live_data
+    except Exception as e:
+        logger.error(f"Error fetching live data for {match_id}: {e}")
+        return None
 
 
 # ============================================================
-# MATCHES TO MONITOR
+# MATCHES TO MONITOR (AUTOMATIC SELECTION)
 # ============================================================
 
-def get_matches_to_monitor() -> List[Dict]:
+def get_matches_to_monitor(auto_select: bool = True, time_window_hours: int = 6) -> List[Dict]:
     """
     Ottieni lista di partite da monitorare.
 
-    TODO: Integra con il tuo sistema esistente per ottenere:
-    - Partite live in corso
-    - Partite con opportunità di valore pre-identify
-    - Partite da watchlist
+    Strategy:
+    1. Fetch live matches currently in progress
+    2. Fetch upcoming matches in next N hours
+    3. Auto-select based on priority scoring
+
+    Args:
+        auto_select: Use automatic selection (default: True)
+        time_window_hours: Hours ahead to look (default: 6)
 
     Returns:
         Lista di dict con match data
     """
-    # PLACEHOLDER: Sostituisci con query al tuo database o API
-    #
-    # Esempio:
-    # matches = []
-    # # Query partite con EV > 5% e kickoff nelle prossime 2 ore
-    # results = db.query("SELECT * FROM matches WHERE kickoff < NOW() + INTERVAL 2 HOUR AND ev > 5")
-    # for row in results:
-    #     matches.append({
-    #         'match_id': row['id'],
-    #         'home_team': row['home'],
-    #         'away_team': row['away'],
-    #         'league': row['league'],
-    #         'pre_match_prob': row['probability'],
-    #         'odds': row['odds'],
-    #         'start_time': row['kickoff']
-    #     })
-    # return matches
+    if not auto_select:
+        # Manual mode: return empty (user must add matches manually)
+        logger.info("Manual mode: no automatic match selection")
+        return []
 
-    # Per testing: ritorna match di esempio
-    now = datetime.now()
+    try:
+        fetcher = get_live_fetcher()
+        selector = AutoMatchSelector(min_ev=3.0, max_matches=10)
 
-    return [
-        {
-            'match_id': 'test_001',
-            'home_team': 'Manchester City',
-            'away_team': 'Arsenal',
-            'league': 'Premier League',
-            'pre_match_prob': 0.65,
-            'odds': 1.90,
-            'start_time': now
-        },
-        {
-            'match_id': 'test_002',
-            'home_team': 'Liverpool',
-            'away_team': 'Chelsea',
-            'league': 'Premier League',
-            'pre_match_prob': 0.58,
-            'odds': 2.10,
-            'start_time': now + timedelta(hours=1)
-        }
-    ]
+        matches = []
+
+        # 1. Get live matches (highest priority)
+        logger.info("🔍 Searching for live matches...")
+        live_matches = selector.get_live_matches_to_monitor(live_fetcher=fetcher)
+
+        for match in live_matches:
+            matches.append({
+                'match_id': match['match_id'],
+                'home_team': match['home_team'],
+                'away_team': match['away_team'],
+                'league': match['league'],
+                'pre_match_prob': 0.50,  # Default 50/50 for live (will be updated)
+                'odds': 2.0,  # Default odds (will be updated from live data)
+                'start_time': datetime.now(),  # Already started
+                'is_live': True
+            })
+
+        # 2. Get upcoming matches
+        logger.info(f"🔍 Searching for upcoming matches (next {time_window_hours}h)...")
+        upcoming_matches = selector.get_matches_to_monitor(
+            live_fetcher=fetcher,
+            time_window_hours=time_window_hours
+        )
+
+        for match in upcoming_matches:
+            # Avoid duplicates
+            if match['match_id'] not in [m['match_id'] for m in matches]:
+                matches.append({
+                    'match_id': match['match_id'],
+                    'home_team': match['home_team'],
+                    'away_team': match['away_team'],
+                    'league': match['league'],
+                    'pre_match_prob': 0.50,  # Default (would run Dixon-Coles for real prediction)
+                    'odds': 2.0,  # Would fetch real odds from API
+                    'start_time': match.get('kickoff', datetime.now()),
+                    'is_live': False
+                })
+
+        # Save selection history
+        if matches:
+            selector.save_selection_history(matches)
+
+        logger.info(f"✅ Total matches to monitor: {len(matches)}")
+        return matches
+
+    except Exception as e:
+        logger.error(f"❌ Error selecting matches: {e}")
+        logger.warning("Falling back to empty list")
+        return []
 
 
 # ============================================================

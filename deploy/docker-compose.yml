@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  betting-monitor:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: asianodds-monitor
+    restart: unless-stopped
+
+    environment:
+      # Telegram configuration
+      - TELEGRAM_BOT_TOKEN=8530766126:AAHs1ZoLwrwvT7JuPyn_9ymNVyddPtUXi-g
+      - TELEGRAM_CHAT_ID=-1003278011521
+
+      # Monitoring settings
+      - UPDATE_INTERVAL=60
+      - LOG_LEVEL=INFO
+
+      # Python settings
+      - PYTHONUNBUFFERED=1
+
+    volumes:
+      # Persist cache and logs
+      - ../ai_system/cache:/app/ai_system/cache
+      - ../ai_system/logs:/app/ai_system/logs
+      - ../ai_system/models:/app/ai_system/models
+
+      # Optional: mount local code for development
+      # - ..:/app:ro
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+    # Healthcheck
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+# Optional: Add monitoring dashboards
+# services:
+#   grafana:
+#     image: grafana/grafana:latest
+#     ports:
+#       - "3000:3000"
+#     volumes:
+#       - grafana-data:/var/lib/grafana
+#
+# volumes:
+#   grafana-data:

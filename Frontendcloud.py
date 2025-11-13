@@ -16840,6 +16840,56 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
 
                     logger.info(f"✅ AI Analysis completed: {ai_result['final_decision']['action']}")
 
+                    # 🚀 TELEGRAM NOTIFICATIONS: Send alert if betting opportunity found
+                    if TELEGRAM_ENABLED and ai_result.get('final_decision', {}).get('action') == 'BET':
+                        try:
+                            from ai_system.telegram_notifier import TelegramNotifier
+
+                            # Initialize notifier with config
+                            telegram_notifier = TelegramNotifier(
+                                bot_token=TELEGRAM_BOT_TOKEN,
+                                chat_id=TELEGRAM_CHAT_ID,
+                                min_ev=TELEGRAM_MIN_PROBABILITY,  # Use existing threshold
+                                min_confidence=60.0
+                            )
+
+                            # Prepare match data
+                            match_data_telegram = {
+                                'home': home_team,
+                                'away': away_team,
+                                'league': league_type
+                            }
+
+                            # Convert ai_result format to notification format
+                            analysis_for_telegram = {
+                                'action': ai_result['final_decision']['action'],
+                                'market': '1X2_HOME',  # Primary bet is home win
+                                'stake_amount': ai_result['final_decision'].get('stake', 0),
+                                'ev': ai_result['summary'].get('expected_value', 0) * 100,  # Convert to %
+                                'probability': ai_result['summary'].get('probability', 0),
+                                'odds': validated['odds_1'],
+                                'confidence_level': ai_result['summary'].get('confidence', 0),
+                                'ensemble': ai_result.get('ensemble', {})  # Include ensemble if available
+                            }
+
+                            # Send notification
+                            notification_sent = telegram_notifier.send_betting_opportunity(
+                                match_data=match_data_telegram,
+                                analysis_result=analysis_for_telegram,
+                                opportunity_type="PRE-MATCH"
+                            )
+
+                            if notification_sent:
+                                logger.info(f"📨 Telegram notification sent for {match_name}")
+                            else:
+                                logger.warning(f"⚠️ Failed to send Telegram notification for {match_name}")
+
+                        except ImportError:
+                            logger.debug("Telegram notifier not available (missing dependencies)")
+                        except Exception as telegram_error:
+                            logger.warning(f"⚠️ Telegram notification error: {telegram_error}")
+                            # Don't fail the whole analysis if notification fails
+
             except Exception as e:
                 logger.error(f"❌ AI Analysis error: {e}")
                 st.warning(f"⚠️ AI Analysis error: {str(e)}")

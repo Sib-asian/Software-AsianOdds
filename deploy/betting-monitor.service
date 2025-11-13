@@ -1,0 +1,42 @@
+[Unit]
+Description=AsianOdds Live Betting Monitor
+Documentation=https://github.com/Sib-asian/Software-AsianOdds
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=user
+Group=user
+WorkingDirectory=/home/user/Software-AsianOdds
+Environment="PYTHONUNBUFFERED=1"
+Environment="TELEGRAM_BOT_TOKEN=8530766126:AAHs1ZoLwrwvT7JuPyn_9ymNVyddPtUXi-g"
+Environment="TELEGRAM_CHAT_ID=-1003278011521"
+
+# Start command
+ExecStart=/usr/bin/python3 /home/user/Software-AsianOdds/start_live_monitoring.py --interval 60 --log-level INFO
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Resource limits
+MemoryLimit=512M
+CPUQuota=50%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=betting-monitor
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/user/Software-AsianOdds/ai_system/cache
+ReadWritePaths=/home/user/Software-AsianOdds/ai_system/logs
+ReadWritePaths=/home/user/Software-AsianOdds
+
+[Install]
+WantedBy=multi-user.target
