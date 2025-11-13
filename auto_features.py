@@ -31,6 +31,7 @@ Utilizzo:
 
 import json
 import logging
+import math
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, Tuple, Optional, Any
@@ -444,13 +445,17 @@ def auto_calculate_fixture_congestion(
                 logger.warning(f"⚠️ Formato last_match_datetime non valido, uso default (7)")
                 days_since = 7
             else:
-                days_raw = (match_dt - last_dt).days
-                if days_raw < 0:
+                delta = match_dt - last_dt
+                days_raw = delta.total_seconds() / 86400.0
+                if not math.isfinite(days_raw):
+                    logger.warning("⚠️ Differenza last_match_datetime non finita, uso default (7)")
+                    days_since = 7
+                elif days_raw < 0:
                     logger.warning(f"⚠️ Last match è nel futuro (date invertite), uso default (7)")
                     days_since = 7
                 else:
-                    days_since = max(2, min(21, days_raw))
-                logger.info(f"📅 Days since last match: {days_since}")
+                    days_since = max(2, min(21, int(math.ceil(days_raw))))
+                logger.info(f"📅 Days since last match: raw={days_raw:.2f} → used={days_since}")
 
         # Calculate days until next important match
         days_until = 7  # default
@@ -460,13 +465,17 @@ def auto_calculate_fixture_congestion(
                 logger.warning(f"⚠️ Formato next_match_datetime non valido, uso default (7)")
                 days_until = 7
             else:
-                days_raw = (next_dt - match_dt).days
-                if days_raw < 0:
+                delta = next_dt - match_dt
+                days_raw = delta.total_seconds() / 86400.0
+                if not math.isfinite(days_raw):
+                    logger.warning("⚠️ Differenza next_match_datetime non finita, uso default (7)")
+                    days_until = 7
+                elif days_raw < 0:
                     logger.warning(f"⚠️ Next match è nel passato (date invertite), uso default (7)")
                     days_until = 7
                 else:
-                    days_until = max(2, min(14, days_raw))
-                logger.info(f"📅 Days until next important match: {days_until}")
+                    days_until = max(2, min(14, int(math.ceil(days_raw))))
+                logger.info(f"📅 Days until next important match: raw={days_raw:.2f} → used={days_until}")
 
         return days_since, days_until
 

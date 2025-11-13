@@ -116,9 +116,82 @@ def apply_physical_constraints_to_lambda(
                 lambda_a = avg + 1.25
             logger.info(f"Post-target adjust: differenza troppo alta, re-applicato constraint")
 
-    # Constraint 4: Minimi/Massimi realistici (finale)
-    lambda_h = max(0.3, min(4.5, lambda_h))
-    lambda_a = max(0.3, min(4.5, lambda_a))
+    # Constraint 4: Minimi/Massimi realistici (finale) + verifica iterativa
+    MIN_LAMBDA = 0.3
+    MAX_LAMBDA = 4.5
+    MIN_TOTAL = 0.5
+    MAX_TOTAL = 6.0
+    MAX_DIFF = 2.5
+
+    lambda_h = max(MIN_LAMBDA, min(MAX_LAMBDA, lambda_h))
+    lambda_a = max(MIN_LAMBDA, min(MAX_LAMBDA, lambda_a))
+
+    satisfied = False
+    for _ in range(4):
+        total_current = lambda_h + lambda_a
+        diff_current = lambda_h - lambda_a
+
+        # Riporta differenza entro i limiti mantenendo il totale
+        diff_abs = abs(diff_current)
+        allowed_diff = min(MAX_DIFF, max(total_current - 2 * MIN_LAMBDA, 0.0))
+        if diff_abs > allowed_diff + 1e-9 and total_current > 0:
+            avg = total_current / 2.0
+            half_span = allowed_diff / 2.0
+            sign = math.copysign(1.0, diff_current)
+            lambda_h = avg + half_span * sign
+            lambda_a = avg - half_span * sign
+
+        # Riporta totale entro range fisico
+        total_current = lambda_h + lambda_a
+        if total_current < MIN_TOTAL:
+            scale = MIN_TOTAL / max(total_current, 1e-9)
+            lambda_h *= scale
+            lambda_a *= scale
+        elif total_current > MAX_TOTAL:
+            scale = MAX_TOTAL / total_current
+            lambda_h *= scale
+            lambda_a *= scale
+
+        # Avvicina al total target se specificato
+        total_current = lambda_h + lambda_a
+        if total_target > 0 and abs(total_current - total_target) > tolerance:
+            scale = total_target / max(total_current, 1e-9)
+            lambda_h *= scale
+            lambda_a *= scale
+
+        # Clamp finale e verifica
+        lambda_h = max(MIN_LAMBDA, min(MAX_LAMBDA, lambda_h))
+        lambda_a = max(MIN_LAMBDA, min(MAX_LAMBDA, lambda_a))
+
+        total_current = lambda_h + lambda_a
+        diff_abs = abs(lambda_h - lambda_a)
+        total_ok = MIN_TOTAL - 1e-9 <= total_current <= MAX_TOTAL + 1e-9
+        diff_ok = diff_abs <= MAX_DIFF + 1e-9
+        target_ok = (
+            total_target <= 0 or abs(total_current - total_target) <= tolerance + 1e-9
+        )
+
+        if total_ok and diff_ok and target_ok:
+            satisfied = True
+            break
+
+    if not satisfied:
+        logger.warning(
+            "Physical constraints: impossibile soddisfare tutti i vincoli "
+            f"(total={total_current:.3f}, diff={diff_abs:.3f}, target={total_target})"
+        )
+
+    if total_target > 0 and abs((lambda_h + lambda_a) - total_target) > tolerance:
+        logger.warning(
+            "Physical constraints: totale finale fuori tolleranza rispetto al mercato "
+            f"(target={total_target:.3f}, final={lambda_h + lambda_a:.3f})"
+        )
+
+    if abs(lambda_h - lambda_a) > MAX_DIFF + 1e-9:
+        logger.warning(
+            "Physical constraints: differenza finale fra lambda ancora > 2.5 "
+            f"({abs(lambda_h - lambda_a):.3f})"
+        )
 
     return lambda_h, lambda_a
 
@@ -165,10 +238,14 @@ def build_constrained_optimizer(
 
         # Differenza massima: |lh - la| <= 2.5
         {'type': 'ineq', 'fun': lambda x: 2.5 - abs(x[0] - x[1])},
-
-        # Vicinanza al total target (soft constraint con peso)
-        {'type': 'ineq', 'fun': lambda x: 0.5 - abs((x[0] + x[1]) - total_target)},
     ]
+
+    if total_target > 0:
+        constraints.extend([
+            # Vicinanza al total target con disequazioni lineari
+            {'type': 'ineq', 'fun': lambda x, tt=total_target: (x[0] + x[1]) - (tt - 0.5)},
+            {'type': 'ineq', 'fun': lambda x, tt=total_target: (tt + 0.5) - (x[0] + x[1])},
+        ])
 
     # Bounds
     bounds = [(0.3, 4.5), (0.3, 4.5)]
@@ -299,19 +376,61 @@ def precise_probability_sum(probs: np.ndarray, expected_total: float = 1.0) -> n
     # Normalizza
     probs_normalized = probs * (expected_total / total)
 
+    if probs_normalized.size == 0:
+        return probs_normalized
+
+    # Clamp a [0, 1] prima della correzione fine
+    probs_normalized = np.clip(probs_normalized, 0.0, 1.0)
+
+    def _redistribute_correction(values: np.ndarray, correction: float) -> np.ndarray:
+        """Distribuisce la correzione rispettando i limiti [0, 1]."""
+        adjusted = values.copy()
+        remaining = correction
+
+        if correction > 0:
+            order = np.argsort(-(1.0 - adjusted))  # maggiore margine prima
+            for idx in order:
+                if remaining <= 0:
+                    break
+                room = 1.0 - adjusted[idx]
+                if room <= 0:
+                    continue
+                delta = min(room, remaining)
+                adjusted[idx] += delta
+                remaining -= delta
+        elif correction < 0:
+            order = np.argsort(-adjusted)  # valori più grandi prima
+            for idx in order:
+                if remaining >= 0:
+                    break
+                available = adjusted[idx]
+                if available <= 0:
+                    continue
+                delta = min(available, -remaining)
+                adjusted[idx] -= delta
+                remaining += delta
+
+        return adjusted
+
     # Verifica finale (double-check con Neumaier)
     total_check = neumaier_sum(probs_normalized)
 
     if abs(total_check - expected_total) > 1e-10:
-        # Correzione finale per garantire somma esatta (con controllo array non vuoto)
-        if len(probs_normalized) > 0:
-            correction = expected_total - total_check
-            # FIX BUG: Distribuisci correzione uniformemente invece di concentrarla sul primo elemento
-            # Questo evita bias sistematico sulla prima outcome (es. Home in 1X2)
-            correction_per_element = correction / len(probs_normalized)
-            probs_normalized = probs_normalized + correction_per_element
-        else:
-            logger.warning("Array probabilità vuoto, impossibile applicare correzione")
+        correction = expected_total - total_check
+        probs_normalized = _redistribute_correction(probs_normalized, correction)
+        total_check = neumaier_sum(probs_normalized)
+
+    # Se non è possibile raggiungere il totale esatto (limiti saturi), rinormalizza con precisione
+    if abs(total_check - expected_total) > 1e-10 and total_check > 0:
+        scaling = expected_total / total_check
+        probs_normalized = np.clip(probs_normalized * scaling, 0.0, 1.0)
+        total_check = neumaier_sum(probs_normalized)
+
+    if abs(total_check - expected_total) > 1e-9:
+        logger.warning(
+            "precise_probability_sum: impossibile raggiungere somma esatta "
+            f"(expected={expected_total:.12f}, actual={total_check:.12f})"
+        )
 
     return probs_normalized
 
