@@ -13310,12 +13310,14 @@ def risultato_completo_improved(
         total_corrente = max(0.5, min(6.0, total_corrente))  # Clamp a range ragionevole
     
     # Calcola spread e total correnti dai lambda (prima degli aggiustamenti finali)
-    spread_curr_calc = spread_corrente if spread_corrente is not None else (lh - la)
+    # ⚠️ FIX CRITICO: spread = lambda_a - lambda_h (spread > 0 favorisce Away)
+    spread_curr_calc = spread_corrente if spread_corrente is not None else (la - lh)
     total_curr_calc = total_corrente if total_corrente is not None else (lh + la)
-    
+
     # ⚠️ VERIFICA: Se spread/total correnti forniti differiscono troppo dai lambda, usa lambda
     # Questo previene errori se spread/total correnti sono sbagliati
-    spread_from_lambda = lh - la
+    # ⚠️ FIX CRITICO: spread = lambda_a - lambda_h (spread > 0 favorisce Away)
+    spread_from_lambda = la - lh
     total_from_lambda = lh + la
     
     if spread_corrente is not None:
@@ -13618,7 +13620,8 @@ def risultato_completo_improved(
         spread_corrente_calculated = 0.0
         total_corrente_calculated = 2.5
     else:
-        spread_corrente_calculated = lh - la
+        # ⚠️ FIX CRITICO: spread = lambda_a - lambda_h (spread > 0 favorisce Away)
+        spread_corrente_calculated = la - lh
         total_corrente_calculated = lh + la
         # ⚠️ MICRO-PRECISIONE: Valida e limita spread/total calcolati
         spread_corrente_calculated = max(-3.0, min(3.0, spread_corrente_calculated))
@@ -13627,8 +13630,9 @@ def risultato_completo_improved(
     # ✅ FIX: CONTROLLO SPREAD PRESERVATION - Previene inversione probabilità
     # Verifica che il favorito non si sia invertito rispetto alle quote di mercato
     # Bug report: Quote 2.70 vs 2.20 (trasferta favorita) → sistema suggeriva casa
-    market_spread_sign = p1 - p2  # Positivo se casa favorita, negativo se trasferta favorita
-    final_spread_sign = lh - la   # Spread finale dai lambda
+    # ⚠️ FIX CRITICO: spread = p_away - p_home (spread > 0 favorisce Away)
+    market_spread_sign = p2 - p1  # Positivo se trasferta favorita, negativo se casa favorita
+    final_spread_sign = la - lh   # Spread finale dai lambda
 
     # Calcola soglia per spread "neutro" (differenza < 5% in probabilità)
     spread_reversal_threshold = 0.05
@@ -13640,7 +13644,8 @@ def risultato_completo_improved(
         logger.error(f"⚠️ SPREAD REVERSAL DETECTED!")
         logger.error(f"   Market: p1={p1:.3f} vs p2={p2:.3f} (spread={market_spread_sign:+.3f})")
         logger.error(f"   Final:  lh={lh:.3f} vs la={la:.3f} (spread={final_spread_sign:+.3f})")
-        logger.error(f"   {'CASA favorita al mercato → TRASFERTA nei calcoli' if market_spread_sign > 0 else 'TRASFERTA favorita al mercato → CASA nei calcoli'}")
+        # ⚠️ FIX: Con nuova definizione spread, positivo = Away favorita
+        logger.error(f"   {'TRASFERTA favorita al mercato → CASA nei calcoli' if market_spread_sign > 0 else 'CASA favorita al mercato → TRASFERTA nei calcoli'}")
         logger.error(f"   RESET a valori coerenti con mercato")
 
         # Reset a lambda derivati direttamente dal mercato senza aggiustamenti
