@@ -16415,6 +16415,62 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
         else:
             st.error("❌ Impossibile salvare l'analisi nello storico (vedi log)")
 
+        # FUNZIONE HELPER PER CATEGORIZZARE I MERCATI
+        def categorize_market(market_name: str) -> str:
+            """
+            Categorizza un mercato in base al nome.
+
+            Categorie:
+            - 📊 Multigol Combo: 1X/X2/12 + Multigol, 1/2 + Multigol
+            - 🎯 Combo Over/Under: 1X/X2/12 + Over/Under, 1/2 + Over/Under
+            - ⚽ Combo GG: 1/2 + GG, 1X/X2 + GG
+            - 📈 Over/Under 2.5/3.5: Over/Under semplici
+            - ⏰ Over HT: Over HT + FT, Over HT solo
+            """
+            market_lower = market_name.lower()
+
+            # Multigol Combo (priorità massima per multigol combo)
+            if 'multigol' in market_lower and ('&' in market_lower or '+' in market_lower):
+                return "📊 Multigol Combo"
+
+            # GG + Over (categoria speciale - deve essere prima di "Combo Over/Under")
+            if ('gg' in market_lower or 'btts' in market_lower) and ('&' in market_lower or '+' in market_lower):
+                return "⚽ Combo GG"
+
+            # Combo Over/Under (dopo GG)
+            if ('over' in market_lower or 'under' in market_lower) and ('&' in market_lower or '+' in market_lower):
+                if 'ht' not in market_lower:
+                    return "🎯 Combo Over/Under"
+
+            # Over HT
+            if 'ht' in market_lower and ('over' in market_lower or 'under' in market_lower):
+                return "⏰ Over HT"
+
+            # Over/Under 2.5/3.5 semplici
+            if ('over 2.5' in market_lower or 'under 2.5' in market_lower or
+                'over 3.5' in market_lower or 'under 3.5' in market_lower or
+                'over 1.5' in market_lower or 'under 1.5' in market_lower):
+                if '&' not in market_lower and '+' not in market_lower:
+                    return "📈 Over/Under"
+
+            # Multigol semplice (senza combo)
+            if 'multigol' in market_lower:
+                return "📊 Multigol"
+
+            # Categorie base
+            if market_name.startswith("1X (") or market_name.startswith("X2 (") or market_name.startswith("12 ("):
+                return "🔄 Double Chance"
+            elif market_name.startswith("1 (") or market_name.startswith("X (") or market_name.startswith("2 ("):
+                return "🏠 1X2"
+            elif 'btts' in market_lower or market_name.startswith("BTTS"):
+                return "⚽ BTTS/GG"
+            elif 'dnb' in market_lower:
+                return "🎲 DNB"
+            elif 'risultato esatto' in market_lower or 'correct score' in market_lower:
+                return "🎯 Correct Score"
+            else:
+                return "🔀 Altri"
+
         # RACCOGLI TUTTI I MERCATI SOPRA SOGLIA (non solo value bets)
         all_markets = []
 
@@ -16424,46 +16480,138 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 "Esito": "1 (Casa)",
                 "Prob %": f"{ris['p_home']*100:.1f}",
                 "Quota": validated["odds_1"],
-                "Tipo": "1X2"
+                "Tipo": categorize_market("1 (Casa)")
             })
         if ris['p_draw'] * 100 >= telegram_prob_threshold:
             all_markets.append({
                 "Esito": "X (Pareggio)",
                 "Prob %": f"{ris['p_draw']*100:.1f}",
                 "Quota": validated["odds_x"],
-                "Tipo": "1X2"
+                "Tipo": categorize_market("X (Pareggio)")
             })
         if ris['p_away'] * 100 >= telegram_prob_threshold:
             all_markets.append({
                 "Esito": "2 (Trasferta)",
                 "Prob %": f"{ris['p_away']*100:.1f}",
                 "Quota": validated["odds_2"],
-                "Tipo": "1X2"
+                "Tipo": categorize_market("2 (Trasferta)")
             })
 
-        # Over/Under
+        # Over/Under 1.5
+        if ris.get('over_15', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Over 1.5",
+                "Prob %": f"{ris['over_15']*100:.1f}",
+                "Quota": validated.get("odds_over15", "N/A"),
+                "Tipo": categorize_market("Over 1.5")
+            })
+        if ris.get('under_15', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Under 1.5",
+                "Prob %": f"{ris['under_15']*100:.1f}",
+                "Quota": validated.get("odds_under15", "N/A"),
+                "Tipo": categorize_market("Under 1.5")
+            })
+
+        # Over/Under 2.5
         if ris['over_25'] * 100 >= telegram_prob_threshold:
             all_markets.append({
                 "Esito": "Over 2.5",
                 "Prob %": f"{ris['over_25']*100:.1f}",
                 "Quota": validated.get("odds_over25", "N/A"),
-                "Tipo": "Over/Under"
+                "Tipo": categorize_market("Over 2.5")
             })
         if ris['under_25'] * 100 >= telegram_prob_threshold:
             all_markets.append({
                 "Esito": "Under 2.5",
                 "Prob %": f"{ris['under_25']*100:.1f}",
                 "Quota": validated.get("odds_under25", "N/A"),
-                "Tipo": "Over/Under"
+                "Tipo": categorize_market("Under 2.5")
+            })
+
+        # Over/Under 3.5
+        if ris.get('over_35', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Over 3.5",
+                "Prob %": f"{ris['over_35']*100:.1f}",
+                "Quota": validated.get("odds_over35", "N/A"),
+                "Tipo": categorize_market("Over 3.5")
+            })
+        if ris.get('under_35', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Under 3.5",
+                "Prob %": f"{ris['under_35']*100:.1f}",
+                "Quota": validated.get("odds_under35", "N/A"),
+                "Tipo": categorize_market("Under 3.5")
+            })
+
+        # Over HT
+        if ris.get('over_05_ht', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Over 0.5 HT",
+                "Prob %": f"{ris['over_05_ht']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": categorize_market("Over 0.5 HT")
+            })
+        if ris.get('over_15_ht', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Over 1.5 HT",
+                "Prob %": f"{ris['over_15_ht']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": categorize_market("Over 1.5 HT")
+            })
+
+        # Over HT + FT
+        if ris.get('over_05ht_over_05ft', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Over 0.5 HT + Over 0.5 FT",
+                "Prob %": f"{ris['over_05ht_over_05ft']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": categorize_market("Over 0.5 HT + Over 0.5 FT")
+            })
+        if ris.get('over_05ht_over_15ft', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Over 0.5 HT + Over 1.5 FT",
+                "Prob %": f"{ris['over_05ht_over_15ft']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": categorize_market("Over 0.5 HT + Over 1.5 FT")
+            })
+        if ris.get('over_05ht_over_25ft', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Over 0.5 HT + Over 2.5 FT",
+                "Prob %": f"{ris['over_05ht_over_25ft']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": categorize_market("Over 0.5 HT + Over 2.5 FT")
+            })
+        if ris.get('over_05ht_over_35ft', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Over 0.5 HT + Over 3.5 FT",
+                "Prob %": f"{ris['over_05ht_over_35ft']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": categorize_market("Over 0.5 HT + Over 3.5 FT")
+            })
+        if ris.get('over_15ht_over_25ft', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Over 1.5 HT + Over 2.5 FT",
+                "Prob %": f"{ris['over_15ht_over_25ft']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": categorize_market("Over 1.5 HT + Over 2.5 FT")
+            })
+        if ris.get('over_15ht_over_35ft', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Over 1.5 HT + Over 3.5 FT",
+                "Prob %": f"{ris['over_15ht_over_35ft']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": categorize_market("Over 1.5 HT + Over 3.5 FT")
             })
 
         # BTTS
         if ris.get('btts', 0) * 100 >= telegram_prob_threshold:
             all_markets.append({
-                "Esito": "BTTS Sì",
+                "Esito": "BTTS Sì (GG)",
                 "Prob %": f"{ris['btts']*100:.1f}",
                 "Quota": validated.get("odds_btts", "N/A"),
-                "Tipo": "BTTS"
+                "Tipo": categorize_market("BTTS Sì")
             })
 
         # DC (Double Chance) - Nota: I mercati 1X, X2, 12 sono già gestiti qui sotto
@@ -16475,21 +16623,21 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                     "Esito": "1X (DC Casa o Pareggio)",
                     "Prob %": f"{dc_data['DC Casa o Pareggio']*100:.1f}",
                     "Quota": "N/A",
-                    "Tipo": "Double Chance"
+                    "Tipo": categorize_market("1X (DC Casa o Pareggio)")
                 })
             if dc_data.get('DC Trasferta o Pareggio', 0) * 100 >= telegram_prob_threshold:
                 all_markets.append({
                     "Esito": "X2 (DC Trasferta o Pareggio)",
                     "Prob %": f"{dc_data['DC Trasferta o Pareggio']*100:.1f}",
                     "Quota": "N/A",
-                    "Tipo": "Double Chance"
+                    "Tipo": categorize_market("X2 (DC Trasferta o Pareggio)")
                 })
             if dc_data.get('DC Casa o Trasferta', 0) * 100 >= telegram_prob_threshold:
                 all_markets.append({
                     "Esito": "12 (DC Casa o Trasferta)",
                     "Prob %": f"{dc_data['DC Casa o Trasferta']*100:.1f}",
                     "Quota": "N/A",
-                    "Tipo": "Double Chance"
+                    "Tipo": categorize_market("12 (DC Casa o Trasferta)")
                 })
 
         # COMBO AVANZATE (es: 1X & Over 2.5, BTTS & 1, ecc.)
@@ -16526,7 +16674,7 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                     "Esito": combo_name,
                     "Prob %": f"{combo_prob*100:.1f}",
                     "Quota": "N/A",
-                    "Tipo": "Combo Avanzate"
+                    "Tipo": categorize_market(combo_name)
                 })
 
         # MULTIGOL (es: 1-2 Goal, 2-3 Goal, 3+ Goal)
@@ -16534,22 +16682,24 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
             multigol = ris['multigol']
             for mg_name, mg_prob in multigol.items():
                 if mg_prob * 100 >= telegram_prob_threshold:
+                    market_esito = f"Multigol: {mg_name}"
                     all_markets.append({
-                        "Esito": f"Multigol: {mg_name}",
+                        "Esito": market_esito,
                         "Prob %": f"{mg_prob*100:.1f}",
                         "Quota": "N/A",
-                        "Tipo": "Multigol"
+                        "Tipo": categorize_market(market_esito)
                     })
 
         # Top 3 Correct Score (risultati esatti con probabilità maggiori)
         if 'top10' in ris:
             for h, a, prob in ris['top10'][:3]:  # Top 3 risultati come richiesto
                 if prob >= telegram_prob_threshold:
+                    market_esito = f"Risultato Esatto {h}-{a}"
                     all_markets.append({
-                        "Esito": f"Risultato Esatto {h}-{a}",
+                        "Esito": market_esito,
                         "Prob %": f"{prob:.1f}",
                         "Quota": "N/A",
-                        "Tipo": "Correct Score"
+                        "Tipo": categorize_market(market_esito)
                     })
 
         # DNB (Draw No Bet)
@@ -16558,23 +16708,54 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 "Esito": "DNB Casa",
                 "Prob %": f"{ris['dnb_home']*100:.1f}",
                 "Quota": validated.get("odds_dnb_home", "N/A"),
-                "Tipo": "DNB"
+                "Tipo": categorize_market("DNB Casa")
             })
         if ris.get('dnb_away', 0) * 100 >= telegram_prob_threshold:
             all_markets.append({
                 "Esito": "DNB Trasferta",
                 "Prob %": f"{ris['dnb_away']*100:.1f}",
                 "Quota": validated.get("odds_dnb_away", "N/A"),
-                "Tipo": "DNB"
+                "Tipo": categorize_market("DNB Trasferta")
             })
 
-        # Ordina per probabilità decrescente
-        all_markets.sort(key=lambda x: float(x['Prob %']), reverse=True)
+        # Ordina per categoria e poi per probabilità decrescente
+        all_markets.sort(key=lambda x: (x['Tipo'], -float(x['Prob %'])))
 
-        # Mostra mercati trovati
+        # Mostra mercati trovati organizzati per categoria
         if all_markets:
             st.success(f"🎯 {len(all_markets)} mercati trovati con probabilità ≥ {telegram_prob_threshold:.0f}%")
-            st.table(all_markets)
+
+            # Raggruppa mercati per categoria
+            from collections import defaultdict
+            markets_by_category = defaultdict(list)
+            for market in all_markets:
+                markets_by_category[market['Tipo']].append(market)
+
+            # Ordine delle categorie da mostrare (le più richieste prima)
+            category_order = [
+                "📊 Multigol Combo",
+                "🎯 Combo Over/Under",
+                "⚽ Combo GG",
+                "📈 Over/Under",
+                "⏰ Over HT",
+                "🏠 1X2",
+                "🔄 Double Chance",
+                "⚽ BTTS/GG",
+                "📊 Multigol",
+                "🎲 DNB",
+                "🎯 Correct Score",
+                "🔀 Altri"
+            ]
+
+            # Mostra ogni categoria con un expander
+            for category in category_order:
+                if category in markets_by_category:
+                    markets = markets_by_category[category]
+                    with st.expander(f"{category} ({len(markets)} mercati)", expanded=True):
+                        # Crea DataFrame per questa categoria
+                        import pandas as pd
+                        df_category = pd.DataFrame(markets)
+                        st.dataframe(df_category, use_container_width=True, hide_index=True)
         else:
             st.info(f"ℹ️ Nessun mercato con probabilità ≥ {telegram_prob_threshold:.0f}%")
             st.caption(f"💡 Suggerimento: Abbassa la soglia (es: 45-50%) per vedere più mercati")
