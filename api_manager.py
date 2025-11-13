@@ -101,6 +101,18 @@ class CacheManager:
                 )
             """)
 
+            # Over markets cache (for caching calculated over/under probabilities)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS over_markets_cache (
+                    home_team TEXT NOT NULL,
+                    away_team TEXT NOT NULL,
+                    match_date TEXT NOT NULL,
+                    market_data TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    PRIMARY KEY (home_team, away_team, match_date)
+                )
+            """)
+
             conn.commit()
             conn.close()
 
@@ -115,14 +127,14 @@ class CacheManager:
 
     def _verify_tables(self):
         """Verify that all required tables exist"""
-        required_tables = ['team_cache', 'api_usage', 'cache_stats']
+        required_tables = ['team_cache', 'api_usage', 'cache_stats', 'over_markets_cache']
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
             cursor.execute("""
                 SELECT name FROM sqlite_master
-                WHERE type='table' AND name IN (?, ?, ?)
+                WHERE type='table' AND name IN (?, ?, ?, ?)
             """, required_tables)
 
             existing_tables = [row[0] for row in cursor.fetchall()]
@@ -231,6 +243,70 @@ class CacheManager:
 
         except Exception as e:
             logger.error(f"❌ Error logging cache miss: {e}")
+
+    def get_over_markets(self, home_team: str, away_team: str, match_date: str) -> Optional[Dict]:
+        """Get cached over markets data if not expired"""
+        try:
+            with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+                cursor = conn.cursor()
+
+                cursor.execute("""
+                    SELECT market_data, timestamp FROM over_markets_cache
+                    WHERE home_team = ? AND away_team = ? AND match_date = ?
+                """, (home_team.lower(), away_team.lower(), match_date))
+
+                result = cursor.fetchone()
+
+                if not result:
+                    self._log_cache_miss()
+                    return None
+
+                data_json, timestamp = result
+
+                # Check if expired (24h TTL)
+                if time.time() - timestamp > APIConfig.CACHE_TTL:
+                    logger.info(f"⏰ Over markets cache expired for {home_team} vs {away_team}")
+                    self._log_cache_miss()
+                    return None
+
+                self._log_cache_hit()
+                logger.info(f"✅ Over markets cache HIT: {home_team} vs {away_team}")
+                return json.loads(data_json)
+
+        except Exception as e:
+            logger.error(f"❌ Over markets cache get error: {e}")
+            return None
+
+    def set_over_markets(self, home_team: str, away_team: str, match_date: str, market_data: Dict):
+        """Store over markets data in cache"""
+        try:
+            with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+                cursor = conn.cursor()
+
+                cursor.execute("""
+                    INSERT OR REPLACE INTO over_markets_cache (home_team, away_team, match_date, market_data, timestamp)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (home_team.lower(), away_team.lower(), match_date, json.dumps(market_data), int(time.time())))
+
+                # Auto-cleanup if cache too large
+                cursor.execute("SELECT COUNT(*) FROM over_markets_cache")
+                result = cursor.fetchone()
+                count = result[0] if result else 0
+                if count > 5000:  # Max 5000 entries (matches can be many)
+                    logger.info(f"🧹 Over markets cache size ({count}) exceeded limit, cleaning oldest 10%")
+                    cursor.execute("""
+                        DELETE FROM over_markets_cache
+                        WHERE rowid IN (
+                            SELECT rowid FROM over_markets_cache
+                            ORDER BY timestamp ASC
+                            LIMIT 500
+                        )
+                    """)
+
+                logger.info(f"💾 Cached over markets: {home_team} vs {away_team}")
+
+        except Exception as e:
+            logger.error(f"❌ Over markets cache set error: {e}")
 
     def get_stats(self) -> Dict:
         """Get cache statistics for today"""

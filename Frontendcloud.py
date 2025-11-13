@@ -13686,7 +13686,8 @@ def risultato_completo_improved(
                 market_calibration_stats["over_25"] = over25_stats
 
     over_05_ht, _ = calc_over_under_from_matrix(mat_ht, 0.5)
-    
+    over_15_ht, _ = calc_over_under_from_matrix(mat_ht, 1.5)
+
     btts = calc_bt_ts_from_matrix(mat_ft)
     calibrate_btts_func, btts_stats = load_market_calibration_from_db("btts")
     if calibrate_btts_func:
@@ -13714,6 +13715,16 @@ def risultato_completo_improved(
         logger.warning(f"Incoerenza GG+Over2.5: {gg_over25:.4f} > cap={gg_over25_cap:.4f}. Correggo.")
         gg_over25 = gg_over25_cap
     
+    # Mercati combinati over HT + over FT
+    # Approssimazione: assumiamo indipendenza tra HT e FT (non perfetto ma ragionevole)
+    over_05_ft, _ = calc_over_under_from_matrix(mat_ft, 0.5)  # Calcolo over 0.5 FT se non già fatto
+    over_05ht_over_05ft = over_05_ht * over_05_ft  # Over 0.5 HT & Over 0.5 FT
+    over_05ht_over_15ft = over_05_ht * over_15  # Over 0.5 HT & Over 1.5 FT
+    over_05ht_over_25ft = over_05_ht * over_25  # Over 0.5 HT & Over 2.5 FT
+    over_15ht_over_25ft = over_15_ht * over_25  # Over 1.5 HT & Over 2.5 FT
+    over_05ht_over_35ft = over_05_ht * over_35  # Over 0.5 HT & Over 3.5 FT
+    over_15ht_over_35ft = over_15_ht * over_35  # Over 1.5 HT & Over 3.5 FT
+
     # ⚠️ VALIDAZIONE: Controlla probabilità anomale
     validation_warnings = []
     if over_15 > 0.99:
@@ -13799,13 +13810,6 @@ def risultato_completo_improved(
     ranges = [(0,1),(1,3),(1,4),(1,5),(2,3),(2,4),(2,5),(3,5)]
     multigol_home = {f"{a}-{b}": prob_multigol_from_dist(dist_home_ft, a, b) for a,b in ranges}
     multigol_away = {f"{a}-{b}": prob_multigol_from_dist(dist_away_ft, a, b) for a,b in ranges}
-    # Totale (home + away) con range arricchiti per combo dedicate
-    multigol_total_ranges = set(ranges)
-    multigol_total_ranges.update([(0,2), (1,2), (1,3), (2,3), (2,4), (2,5), (3,5)])
-    multigol_total = {
-        f"{a}-{b}": prob_multigol_from_dist(dist_tot_ft, a, b)
-        for a, b in sorted(multigol_total_ranges, key=lambda x: (x[0], x[1]))
-    }
     
     # 11. Double Chance
     dc = {
@@ -13862,20 +13866,53 @@ def risultato_completo_improved(
     for esito_key in ['1', '2']:
         for gmin, gmax in multigol_combo_ranges:
             range_label = f"{gmin}-{gmax}"
-            if range_label in multigol_total:
-                combo_book[f"{esito_key} & Multigol {range_label}"] = prob_esito_multigol_from_matrix(
-                    mat_ft, esito_key, gmin, gmax
-                )
+            combo_book[f"{esito_key} & Multigol {range_label}"] = prob_esito_multigol_from_matrix(
+                mat_ft, esito_key, gmin, gmax
+            )
 
     # Double Chance + Multigol
     for dc_key in ['1X', 'X2', '12']:
         for gmin, gmax in multigol_combo_ranges:
             range_label = f"{gmin}-{gmax}"
-            if range_label in multigol_total:
-                combo_book[f"{dc_key} & Multigol {range_label}"] = prob_dc_multigol_from_matrix(
-                    mat_ft, dc_key, gmin, gmax
-                )
-    
+            combo_book[f"{dc_key} & Multigol {range_label}"] = prob_dc_multigol_from_matrix(
+                mat_ft, dc_key, gmin, gmax
+            )
+
+    # Validazione combo: Esito & Multigol vs Esito e range multigol
+    for esito_key, esito_prob in [("1", p_home_final), ("X", p_draw_final), ("2", p_away_final)]:
+        for gmin, gmax in multigol_combo_ranges:
+            range_label = f"{gmin}-{gmax}"
+            combo_key = f"{esito_key} & Multigol {range_label}"
+            if combo_key in combo_book:
+                combo_prob = combo_book[combo_key]
+                # Calcola prob multigol per questo range
+                mult_prob = prob_multigol_from_dist(dist_tot_ft, gmin, gmax)
+                if isinstance(mult_prob, (int, float)) and math.isfinite(mult_prob):
+                    max_combo = min(esito_prob, mult_prob)
+                    if combo_prob > max_combo + model_config.TOL_PROBABILITY_CHECK:
+                        logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(P({esito_key}), Multigol {range_label}) ({max_combo:.4f}), correggo")
+                        combo_book[combo_key] = max_combo
+
+    # Validazione combo: DC & Multigol vs DC e range multigol
+    dc_prob_map = {
+        "1X": p_home_final + p_draw_final,
+        "X2": p_draw_final + p_away_final,
+        "12": p_home_final + p_away_final
+    }
+    for dc_key, dc_prob in dc_prob_map.items():
+        for gmin, gmax in multigol_combo_ranges:
+            range_label = f"{gmin}-{gmax}"
+            combo_key = f"{dc_key} & Multigol {range_label}"
+            if combo_key in combo_book:
+                combo_prob = combo_book[combo_key]
+                # Calcola prob multigol per questo range
+                mult_prob = prob_multigol_from_dist(dist_tot_ft, gmin, gmax)
+                if isinstance(mult_prob, (int, float)) and math.isfinite(mult_prob):
+                    max_combo = min(dc_prob, mult_prob)
+                    if combo_prob > max_combo + model_config.TOL_PROBABILITY_CHECK:
+                        logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(DC {dc_key}, Multigol {range_label}) ({max_combo:.4f}), correggo")
+                        combo_book[combo_key] = max_combo
+
     # 14. Top risultati
     top10 = top_results_from_matrix(mat_ft, 10, 0.005)
     
@@ -14111,36 +14148,6 @@ def risultato_completo_improved(
                 logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(DC {dc_key}, BTTS) ({max_combo:.4f}), correggo")
                 combo_book[combo_key] = max_combo
     
-    # Esito & Multigol vs Esito e Multigol totale
-    for esito_key, esito_prob in [("1", p_home_final), ("X", p_draw_final), ("2", p_away_final)]:
-        for range_key, mult_prob in multigol_total.items():
-            if not isinstance(mult_prob, (int, float)) or not math.isfinite(mult_prob):
-                continue
-            combo_key = f"{esito_key} & Multigol {range_key}"
-            if combo_key in combo_book:
-                combo_prob = combo_book[combo_key]
-                max_combo = min(esito_prob, mult_prob)
-                if combo_prob > max_combo + model_config.TOL_PROBABILITY_CHECK:
-                    logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(P({esito_key}), Multigol {range_key}) ({max_combo:.4f}), correggo")
-                    combo_book[combo_key] = max_combo
-    
-    # DC & Multigol vs DC e Multigol totale
-    dc_prob_map = {
-        "1X": p_home_final + p_draw_final,
-        "X2": p_draw_final + p_away_final,
-        "12": p_home_final + p_away_final
-    }
-    for dc_key, dc_prob in dc_prob_map.items():
-        for range_key, mult_prob in multigol_total.items():
-            if not isinstance(mult_prob, (int, float)) or not math.isfinite(mult_prob):
-                continue
-            combo_key = f"{dc_key} & Multigol {range_key}"
-            if combo_key in combo_book:
-                combo_prob = combo_book[combo_key]
-                max_combo = min(dc_prob, mult_prob)
-                if combo_prob > max_combo + model_config.TOL_PROBABILITY_CHECK:
-                    logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(DC {dc_key}, Multigol {range_key}) ({max_combo:.4f}), correggo")
-                    combo_book[combo_key] = max_combo
     
     # Alias combinazioni richieste con formato "esito+mercato"
     def _register_alias(alias_key: str, value: float) -> None:
@@ -14324,6 +14331,7 @@ def risultato_completo_improved(
         "ensemble_applied": use_ensemble,
         "market_movement": movement_info,  # Info movimento mercato
         "additional_api_data": additional_api_data,  # Dati API aggiuntive
+        "over_05": over_05_ft,
         "over_15": over_15,
         "under_15": under_15,
         "over_25": over_25,
@@ -14331,6 +14339,13 @@ def risultato_completo_improved(
         "over_35": over_35,
         "under_35": under_35,
         "over_05_ht": over_05_ht,
+        "over_15_ht": over_15_ht,
+        "over_05ht_over_05ft": over_05ht_over_05ft,
+        "over_05ht_over_15ft": over_05ht_over_15ft,
+        "over_05ht_over_25ft": over_05ht_over_25ft,
+        "over_15ht_over_25ft": over_15ht_over_25ft,
+        "over_05ht_over_35ft": over_05ht_over_35ft,
+        "over_15ht_over_35ft": over_15ht_over_35ft,
         "btts": btts,
         "gg_over25": gg_over25,
         "even_ft": even_ft,
@@ -14343,7 +14358,6 @@ def risultato_completo_improved(
         "multigol_home": multigol_home,
         "multigol_away": multigol_away,
         "multigol": multigol_home,  # FIX BUG #2: Aggiunto per visualizzazione mercati multigol
-        "multigol_totale": multigol_total,  # FIX BUG #3: Aggiunto per visualizzazione mercati multigol totale
         "dc": dc,  # DC (Double Chance) contiene già 1X, X2, 12 - non serve "combo" duplicato
         "validation_warnings": validation_warnings,  # Warning per probabilità anomale
         "lambda_adjustments_log": lambda_adjustments_log,  # Log modifiche lambda per debugging
@@ -16249,16 +16263,6 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
             with col_dc3:
                 st.metric("12", f"{dc_data.get('DC Casa o Trasferta', 0)*100:.1f}%")
 
-        # Multigol
-        if 'multigol_totale' in ris:
-            st.subheader("🎯 Multigol Totale")
-            multigol = ris['multigol_totale']
-            cols_mg = st.columns(4)
-            mg_items = list(multigol.items())
-            for idx, (key, val) in enumerate(mg_items[:8]):
-                with cols_mg[idx % 4]:
-                    st.metric(key, f"{val*100:.1f}%")
-
         # Combo avanzate
         if 'combo_book' in ris:
             st.subheader("🔀 Combo Avanzate")
@@ -16524,18 +16528,6 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                         "Prob %": f"{mg_prob*100:.1f}",
                         "Quota": "N/A",
                         "Tipo": "Multigol"
-                    })
-
-        # MULTIGOL TOTALI (mercato separato)
-        if 'multigol_totale' in ris:
-            multigol_totali = ris['multigol_totale']
-            for mg_name, mg_prob in multigol_totali.items():
-                if mg_prob * 100 >= telegram_prob_threshold:
-                    all_markets.append({
-                        "Esito": f"Multigol Totale: {mg_name}",
-                        "Prob %": f"{mg_prob*100:.1f}",
-                        "Quota": "N/A",
-                        "Tipo": "Multigol Totali"
                     })
 
         # Top 3 Correct Score (risultati esatti con probabilità maggiori)
