@@ -30,6 +30,19 @@ class AIConfig:
     predictions_db: str = "storico_analisi.csv"
 
     # ============================================================
+    # ENSEMBLE META-MODEL
+    # ============================================================
+
+    # Enable ensemble (combines Dixon-Coles + XGBoost + LSTM)
+    use_ensemble: bool = True  # Set False to use only Dixon-Coles
+
+    # Load trained models on startup
+    ensemble_load_models: bool = True
+
+    # Ensemble models directory
+    ensemble_models_dir: str = "ai_system/models"
+
+    # ============================================================
     # BLOCCO 0: API DATA ENGINE
     # ============================================================
 

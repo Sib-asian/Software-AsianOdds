@@ -33,6 +33,7 @@ from .blocco_3_value_detector import ValueDetector
 from .blocco_4_kelly import SmartKellyOptimizer
 from .blocco_5_risk_manager import RiskManager
 from .blocco_6_odds_tracker import OddsMovementTracker
+from .models.ensemble import EnsembleMetaModel
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,23 @@ class AIPipeline:
         self.risk_manager = RiskManager(self.config)
         self.odds_tracker = OddsMovementTracker(self.config)
 
+        # Initialize Ensemble Meta-Model (if enabled)
+        self.ensemble = None
+        if self.config.use_ensemble:
+            try:
+                logger.info("🤖 Initializing Ensemble Meta-Model...")
+                self.ensemble = EnsembleMetaModel(config={'models_dir': self.config.ensemble_models_dir})
+
+                # Load trained models if requested
+                if self.config.ensemble_load_models:
+                    self.ensemble.load_models(self.config.ensemble_models_dir)
+
+                logger.info("   ✅ Ensemble initialized")
+            except Exception as e:
+                logger.warning(f"   ⚠️  Ensemble initialization failed: {e}")
+                logger.warning("   → Falling back to Dixon-Coles only")
+                self.ensemble = None
+
         # Pipeline state
         self.last_analysis = None
         self.analysis_history = []
@@ -71,6 +89,7 @@ class AIPipeline:
         logger.info("✅ AI Pipeline initialized successfully")
         logger.info(f"   Configuration: {self.config.log_level}")
         logger.info(f"   Models dir: {self.config.models_dir}")
+        logger.info(f"   Ensemble enabled: {self.config.use_ensemble and self.ensemble is not None}")
 
     def analyze(
         self,
@@ -121,6 +140,47 @@ class AIPipeline:
             )
 
             # ========================================
+            # ENSEMBLE META-MODEL (optional)
+            # ========================================
+            ensemble_result = None
+            if self.ensemble is not None:
+                logger.info("\n🤖 ENSEMBLE: Combining models...")
+                try:
+                    # Get match history for LSTM (if available)
+                    match_history = match.get('history', [])
+
+                    ensemble_result = self.ensemble.predict(
+                        match_data=match,
+                        prob_dixon_coles=prob_dixon_coles,
+                        api_context=api_context,
+                        match_history=match_history
+                    )
+
+                    # Use ensemble probability instead of Dixon-Coles alone
+                    prob_to_use = ensemble_result['probability']
+
+                    logger.info(
+                        f"   ✓ Ensemble: {prob_to_use:.1%} (DC: {prob_dixon_coles:.1%})"
+                    )
+                    logger.info(
+                        f"   ✓ Confidence: {ensemble_result['confidence']:.0f}/100"
+                    )
+                    logger.info(
+                        f"   ✓ Uncertainty: {ensemble_result['uncertainty']:.3f}"
+                    )
+                    logger.info(
+                        f"   ✓ Dominant: {ensemble_result['breakdown']['summary']['dominant_model']}"
+                    )
+
+                except Exception as e:
+                    logger.warning(f"   ⚠️  Ensemble prediction failed: {e}")
+                    logger.warning("   → Using Dixon-Coles only")
+                    prob_to_use = prob_dixon_coles
+            else:
+                # No ensemble, use Dixon-Coles directly
+                prob_to_use = prob_dixon_coles
+
+            # ========================================
             # BLOCCO 1: Probability Calibrator
             # ========================================
             logger.info("\n🎯 BLOCCO 1: Calibrating probability...")
@@ -144,12 +204,12 @@ class AIPipeline:
             }
 
             calibrated_result = self.calibrator.calibrate(
-                prob_dixon_coles,
+                prob_to_use,
                 calibration_context
             )
 
             logger.info(
-                f"   ✓ Probability: {prob_dixon_coles:.1%} → {calibrated_result['prob_calibrated']:.1%}"
+                f"   ✓ Probability: {prob_to_use:.1%} → {calibrated_result['prob_calibrated']:.1%}"
             )
             logger.info(
                 f"   ✓ Shift: {calibrated_result['calibration_shift']:+.1%}"
@@ -301,6 +361,7 @@ class AIPipeline:
 
                 # All block results
                 "api_context": api_context,
+                "ensemble": ensemble_result,  # NEW: Ensemble results
                 "calibrated": calibrated_result,
                 "confidence": confidence_result,
                 "value": value_result,
@@ -333,7 +394,8 @@ class AIPipeline:
                     "analysis_time_seconds": analysis_time,
                     "timestamp": datetime.now().isoformat(),
                     "api_calls_used": api_context["metadata"]["api_calls_used"],
-                    "models_used": self._get_models_status()
+                    "models_used": self._get_models_status(),
+                    "ensemble_enabled": self.ensemble is not None  # NEW
                 }
             }
 
@@ -400,6 +462,18 @@ class AIPipeline:
         logger.info(f"Confidence: {summary['confidence']:.0f}/100")
         logger.info(f"Value Score: {summary['value_score']:.0f}/100")
         logger.info(f"Expected Value: {summary['expected_value']:+.1%}")
+
+        # Show ensemble breakdown if available
+        if result.get("ensemble"):
+            ensemble = result["ensemble"]
+            logger.info(f"")
+            logger.info(f"🤖 ENSEMBLE BREAKDOWN:")
+            for model in ['dixon_coles', 'xgboost', 'lstm']:
+                if model in ensemble['model_predictions']:
+                    pred = ensemble['model_predictions'][model]
+                    weight = ensemble['model_weights'][model]
+                    logger.info(f"   {model:12s}: {pred:.1%} (weight: {weight:.1%})")
+
         logger.info(f"")
         logger.info(f"{'─'*70}")
         logger.info(f"DECISION: {decision['action']}")
