@@ -40,6 +40,13 @@ betting_database.db
 
 # Logs
 *.log
+logs/
+live_monitoring.log
+monitor.log
+
+# Cache
+cache/
+__pycache__/
 
 # OS
 .DS_Store
@@ -48,3 +55,7 @@ Thumbs.db
 # Environment variables
 .env
 .env.local
+
+# Deployment
+*.pem
+*.key
