@@ -43,6 +43,29 @@ class AIConfig:
     ensemble_models_dir: str = "ai_system/models"
 
     # ============================================================
+    # LIVE MONITORING & NOTIFICATIONS
+    # ============================================================
+
+    # Telegram notifications
+    telegram_enabled: bool = True
+    telegram_bot_token: str = ""  # Set via env var TELEGRAM_BOT_TOKEN
+    telegram_chat_id: str = ""    # Set via env var TELEGRAM_CHAT_ID
+
+    # Notification thresholds
+    telegram_min_ev: float = 5.0           # Min EV% per inviare notifica
+    telegram_min_confidence: float = 60.0  # Min confidence per inviare
+    telegram_rate_limit_seconds: int = 3   # Secondi tra messaggi
+
+    # Live monitoring settings
+    live_monitoring_enabled: bool = False  # Enable auto-monitoring
+    live_update_interval: int = 60         # Secondi tra aggiornamenti (default: 60s)
+    live_min_ev_alert: float = 8.0         # Min EV per alert live (default: 8%)
+
+    # Daily reports
+    telegram_daily_report_enabled: bool = True
+    telegram_daily_report_time: str = "22:00"  # HH:MM format
+
+    # ============================================================
     # BLOCCO 0: API DATA ENGINE
     # ============================================================
 
@@ -329,6 +352,12 @@ class AIConfig:
         # Crea directories se non esistono
         for dir_path in [self.models_dir, self.cache_dir, self.logs_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
+
+        # Load Telegram credentials from environment if not set
+        if not self.telegram_bot_token:
+            self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        if not self.telegram_chat_id:
+            self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
 
         # Valida che i pesi sommino a 1.0
         weight_sum = sum(self.confidence_weights.values())
