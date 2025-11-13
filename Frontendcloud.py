@@ -12731,6 +12731,108 @@ def format_analysis_for_telegram(
                 message += f"{ah_line}: {prob*100:.1f}%\n"
             message += "\n"
 
+    # ============================================================
+    # MERCATI COMBINATI (Esito + Over/Under, DC + Over/Under, Multigol)
+    # ============================================================
+    if 'combo_book' in ris:
+        combo_book = ris['combo_book']
+
+        # Raggruppa combo per tipo
+        esito_over = {}
+        esito_under = {}
+        dc_over = {}
+        dc_under = {}
+        esito_multigol = {}
+        dc_multigol = {}
+
+        for combo_key, prob in combo_book.items():
+            # Esito + Over
+            if ' & Over' in combo_key and not any(dc in combo_key for dc in ['1X', 'X2', '12']):
+                esito_over[combo_key] = prob
+            # Esito + Under
+            elif ' & Under' in combo_key and not any(dc in combo_key for dc in ['1X', 'X2', '12']):
+                esito_under[combo_key] = prob
+            # Double Chance + Over
+            elif any(dc in combo_key for dc in ['1X', 'X2', '12']) and ' & Over' in combo_key:
+                dc_over[combo_key] = prob
+            # Double Chance + Under
+            elif any(dc in combo_key for dc in ['1X', 'X2', '12']) and ' & Under' in combo_key:
+                dc_under[combo_key] = prob
+            # Esito + Multigol
+            elif ' & Multigol' in combo_key and combo_key.startswith(('1 &', '2 &')):
+                esito_multigol[combo_key] = prob
+            # Double Chance + Multigol
+            elif ' & Multigol' in combo_key and any(dc in combo_key for dc in ['1X', 'X2', '12']):
+                dc_multigol[combo_key] = prob
+
+        # Mostra Esito + Over/Under
+        if esito_over or esito_under:
+            message += f"🎲 <b>Esito + Over/Under</b>\n"
+
+            # Ordina e mostra Over
+            if esito_over:
+                for combo_key in sorted(esito_over.keys()):
+                    prob = esito_over[combo_key]
+                    if prob >= 0.10:  # Mostra solo prob >= 10%
+                        message += f"{combo_key}: {prob*100:.1f}%\n"
+
+            # Ordina e mostra Under
+            if esito_under:
+                for combo_key in sorted(esito_under.keys()):
+                    prob = esito_under[combo_key]
+                    if prob >= 0.10:
+                        message += f"{combo_key}: {prob*100:.1f}%\n"
+
+            message += "\n"
+
+        # Mostra Double Chance + Over/Under
+        if dc_over or dc_under:
+            message += f"🎯 <b>Double Chance + Over/Under</b>\n"
+
+            # Ordina e mostra Over
+            if dc_over:
+                for combo_key in sorted(dc_over.keys()):
+                    prob = dc_over[combo_key]
+                    if prob >= 0.10:
+                        message += f"{combo_key}: {prob*100:.1f}%\n"
+
+            # Ordina e mostra Under
+            if dc_under:
+                for combo_key in sorted(dc_under.keys()):
+                    prob = dc_under[combo_key]
+                    if prob >= 0.10:
+                        message += f"{combo_key}: {prob*100:.1f}%\n"
+
+            message += "\n"
+
+        # Mostra Esito + Multigol
+        if esito_multigol:
+            message += f"🎰 <b>Esito + Multigol</b>\n"
+
+            # Ordina per esito (1, 2) e poi per range
+            sorted_esito_mg = sorted(esito_multigol.items(),
+                                    key=lambda x: (x[0].split(' &')[0], x[0]))
+
+            for combo_key, prob in sorted_esito_mg:
+                if prob >= 0.05:  # Mostra solo prob >= 5%
+                    message += f"{combo_key}: {prob*100:.1f}%\n"
+
+            message += "\n"
+
+        # Mostra Double Chance + Multigol
+        if dc_multigol:
+            message += f"🎲 <b>Double Chance + Multigol</b>\n"
+
+            # Ordina per DC (1X, X2, 12) e poi per range
+            sorted_dc_mg = sorted(dc_multigol.items(),
+                                 key=lambda x: (x[0].split(' &')[0], x[0]))
+
+            for combo_key, prob in sorted_dc_mg:
+                if prob >= 0.05:  # Mostra solo prob >= 5%
+                    message += f"{combo_key}: {prob*100:.1f}%\n"
+
+            message += "\n"
+
     # HT/FT (Halftime/Fulltime)
     if 'ht_ft' in ris:
         ht_ft = ris['ht_ft']
