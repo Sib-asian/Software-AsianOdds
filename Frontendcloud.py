@@ -38,6 +38,30 @@ logger = logging.getLogger(__name__)
 if st:
     logging.getLogger().setLevel(logging.WARNING)
 
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Converte value a float gestendo stringhe, None e valori non numerici."""
+    if value is None:
+        return default
+    try:
+        if isinstance(value, str):
+            value = value.strip().replace(",", ".")
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    """Converte value a int gestendo stringhe e valori non numerici."""
+    if value is None:
+        return default
+    try:
+        if isinstance(value, str):
+            value = value.strip()
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
 # Carica variabili d'ambiente da file .env (se disponibile)
 try:
     from dotenv import load_dotenv
@@ -1656,83 +1680,84 @@ def skellam_pmf(k: int, mu1: float, mu2: float) -> float:
         logger.warning(f"Errore Skellam: {e}, ritorno 0.0")
         return 0.0
 
-def calc_handicap_from_skellam(lambda_h: float, lambda_a: float, handicap: float) -> Tuple[float, float]:
+def calc_handicap_from_skellam(lambda_h: float, lambda_a: float, handicap: float) -> Tuple[float, float, float]:
     """
-    Calcola probabilità Asian Handicap usando distribuzione Skellam (matematicamente esatta).
-
-    MIGLIORAMENTO NUOVO: Metodo più accurato per handicap rispetto a simulazione matrice.
+    Calcola probabilità Asian Handicap (home cover, push, away cover) usando la distribuzione Skellam.
 
     Args:
-        lambda_h: Lambda home
-        lambda_a: Lambda away
-        handicap: Handicap (es. -0.5, 0.0, +0.5)
-                  Positivo = favore casa, Negativo = favore trasferta
+        lambda_h: Media gol casa
+        lambda_a: Media gol trasferta
+        handicap: Handicap asiatico espresso in step da 0.25 (es. -0.25, 0.0, +0.75)
 
     Returns:
-        (p_home_covers, p_away_covers) considerando handicap
-
-    Esempi:
-        handicap = -0.5: Casa deve vincere con 1+ gol differenza
-        handicap = 0.0: Draw = push (split stake)
-        handicap = +0.5: Casa vince anche con pareggio
+        Tuple (p_home_cover, p_push, p_away_cover) coerente con gli esiti dell'handicap.
     """
-    # Validazione
-    if not isinstance(lambda_h, (int, float)) or not isinstance(lambda_a, (int, float)):
-        logger.warning(f"Lambda non validi: lambda_h={lambda_h}, lambda_a={lambda_a}, ritorno (0.5, 0.5)")
-        return 0.5, 0.5
 
-    if not math.isfinite(lambda_h) or not math.isfinite(lambda_a):
-        logger.warning(f"Lambda non finiti: lambda_h={lambda_h}, lambda_a={lambda_a}, ritorno (0.5, 0.5)")
-        return 0.5, 0.5
+    def _handicap_probs(lh: float, la: float, hcap: float) -> Tuple[float, float, float]:
+        """Calcola le probabilità per un singolo handicap (senza split di quarti)."""
+        if not isinstance(lh, (int, float)) or not isinstance(la, (int, float)):
+            return 0.5, 0.0, 0.5
+        if not math.isfinite(lh) or not math.isfinite(la):
+            return 0.5, 0.0, 0.5
+        if not isinstance(hcap, (int, float)) or not math.isfinite(hcap):
+            hcap = 0.0
 
-    if not isinstance(handicap, (int, float)) or not math.isfinite(handicap):
-        logger.warning(f"Handicap non valido: {handicap}, uso 0.0")
-        handicap = 0.0
+        lh = max(0.1, min(5.0, lh))
+        la = max(0.1, min(5.0, la))
 
-    # Limita lambda a range ragionevole
-    lambda_h = max(0.1, min(5.0, lambda_h))
-    lambda_a = max(0.1, min(5.0, lambda_a))
+        max_range = max(15, int(math.ceil(6 * math.sqrt(lh + la + 1))))
+        p_home = 0.0
+        p_push = 0.0
+        p_away = 0.0
+        c_home = c_push = c_away = 0.0
+        eps = 1e-12
 
-    # P(Home copre handicap) = P(H - A > handicap)
-    # Con Skellam: somma P(k) per k > handicap
+        for k in range(-max_range, max_range + 1):
+            p_k = skellam_pmf(k, lh, la)
+            if p_k <= 0.0:
+                continue
+            adjusted = k + hcap
+            if adjusted > eps:
+                y = p_k - c_home
+                t = p_home + y
+                c_home = (t - p_home) - y
+                p_home = t
+            elif adjusted < -eps:
+                y = p_k - c_away
+                t = p_away + y
+                c_away = (t - p_away) - y
+                p_away = t
+            else:
+                y = p_k - c_push
+                t = p_push + y
+                c_push = (t - p_push) - y
+                p_push = t
 
-    p_home = 0.0
-    p_away = 0.0
-    c_home = 0.0  # Kahan summation
-    c_away = 0.0
+        total = p_home + p_push + p_away
+        if total > 0:
+            p_home /= total
+            p_push /= total
+            p_away /= total
+        return (
+            max(0.0, min(1.0, p_home)),
+            max(0.0, min(1.0, p_push)),
+            max(0.0, min(1.0, p_away)),
+        )
 
-    # Range: da -10 a +10 (dovrebbe coprire >99.9% dei casi)
-    for k in range(-10, 11):
-        p_k = skellam_pmf(k, lambda_h, lambda_a)
+    # Gestione handicaps a 0.25 / 0.75 (split in due scommesse da mezzo stake)
+    frac = abs(handicap) % 1
+    if math.isclose(frac, 0.25, abs_tol=1e-9) or math.isclose(frac, 0.75, abs_tol=1e-9):
+        lower = handicap - 0.25
+        upper = handicap + 0.25
+        h_home1, h_push1, h_away1 = _handicap_probs(lambda_h, lambda_a, lower)
+        h_home2, h_push2, h_away2 = _handicap_probs(lambda_h, lambda_a, upper)
+        return (
+            (h_home1 + h_home2) / 2.0,
+            (h_push1 + h_push2) / 2.0,
+            (h_away1 + h_away2) / 2.0,
+        )
 
-        if k > handicap:
-            # Casa copre handicap
-            y = p_k - c_home
-            t = p_home + y
-            c_home = (t - p_home) - y
-            p_home = t
-        elif k < handicap:
-            # Trasferta copre handicap
-            y = p_k - c_away
-            t = p_away + y
-            c_away = (t - p_away) - y
-            p_away = t
-        # Se k == handicap esatto: push (non contribuisce a home/away)
-
-    # Normalizza (in caso di push, la somma sarà < 1.0)
-    total = p_home + p_away
-    if total > model_config.TOL_DIVISION_ZERO:
-        p_home_norm = p_home / total
-        p_away_norm = p_away / total
-    else:
-        # Fallback: distribuzione uniforme
-        p_home_norm = p_away_norm = 0.5
-
-    # Clamp a [0, 1]
-    p_home_norm = max(0.0, min(1.0, p_home_norm))
-    p_away_norm = max(0.0, min(1.0, p_away_norm))
-
-    return p_home_norm, p_away_norm
+    return _handicap_probs(lambda_h, lambda_a, handicap)
 
 def validate_probability_coherence(
     p_home: float,
@@ -5559,7 +5584,7 @@ def calculate_team_form_from_statistics(
         fixtures = team_stats.get("fixtures", {}) if isinstance(team_stats, dict) else {}
         # ⚠️ PROTEZIONE: Accesso sicuro a dizionari annidati
         played_data = fixtures.get("played", {}) if isinstance(fixtures, dict) else {}
-        played = played_data.get("total", 0) if isinstance(played_data, dict) else 0
+        played = _safe_int(played_data.get("total", 0)) if isinstance(played_data, dict) else 0
         
         if played < 3:
             fallback = _form_from_advanced_metrics_only(advanced_metrics)
@@ -5572,35 +5597,35 @@ def calculate_team_form_from_statistics(
         goals_data = team_stats.get("goals", {}) if isinstance(team_stats, dict) else {}
         goals_for_data = goals_data.get("for", {}) if isinstance(goals_data, dict) else {}
         goals_for_avg = goals_for_data.get("average", {}) if isinstance(goals_for_data, dict) else {}
-        goals_for = goals_for_avg.get("total", 0) if isinstance(goals_for_avg, dict) else 0
+        goals_for = _safe_float(goals_for_avg.get("total", 0.0)) if isinstance(goals_for_avg, dict) else 0.0
         
         goals_against_data = goals_data.get("against", {}) if isinstance(goals_data, dict) else {}
         goals_against_avg = goals_against_data.get("average", {}) if isinstance(goals_against_data, dict) else {}
-        goals_against = goals_against_avg.get("total", 0) if isinstance(goals_against_avg, dict) else 0
+        goals_against = _safe_float(goals_against_avg.get("total", 0.0)) if isinstance(goals_against_avg, dict) else 0.0
         
         # Statistiche avanzate se disponibili (shots, xG, etc.) - dati API
         shots_data = team_stats.get("shots", {}) if isinstance(team_stats, dict) and team_stats.get("shots") else {}
         if shots_data:
             shots_for_data = shots_data.get("for", {}) if isinstance(shots_data, dict) else {}
             shots_for_avg = shots_for_data.get("average", {}) if isinstance(shots_for_data, dict) else {}
-            shots_for = shots_for_avg.get("total", 0) if isinstance(shots_for_avg, dict) else 0
+            shots_for = _safe_float(shots_for_avg.get("total", 0.0)) if isinstance(shots_for_avg, dict) else 0.0
             
             shots_against_data = shots_data.get("against", {}) if isinstance(shots_data, dict) else {}
             shots_against_avg = shots_against_data.get("average", {}) if isinstance(shots_against_data, dict) else {}
-            shots_against = shots_against_avg.get("total", 0) if isinstance(shots_against_avg, dict) else 0
+            shots_against = _safe_float(shots_against_avg.get("total", 0.0)) if isinstance(shots_against_avg, dict) else 0.0
         else:
-            shots_for = shots_against = 0
+            shots_for = shots_against = 0.0
         
         # Forma ultime partite (dati reali dalle API)
         # ⚠️ PROTEZIONE: Accesso sicuro a dizionari annidati
         wins_data = fixtures.get("wins", {}) if isinstance(fixtures, dict) else {}
-        wins = wins_data.get("total", 0) if isinstance(wins_data, dict) else 0
+        wins = _safe_int(wins_data.get("total", 0)) if isinstance(wins_data, dict) else 0
         
         draws_data = fixtures.get("draws", {}) if isinstance(fixtures, dict) else {}
-        draws = draws_data.get("total", 0) if isinstance(draws_data, dict) else 0
+        draws = _safe_int(draws_data.get("total", 0)) if isinstance(draws_data, dict) else 0
         
         losses_data = fixtures.get("loses", {}) if isinstance(fixtures, dict) else {}
-        losses = losses_data.get("total", 0) if isinstance(losses_data, dict) else 0
+        losses = _safe_int(losses_data.get("total", 0)) if isinstance(losses_data, dict) else 0
         
         # ⚠️ PRECISIONE: Calcola forma punti con protezione divisione per zero
         played_safe = max(1, played)
@@ -11822,10 +11847,18 @@ def statsbomb_get_team_metrics(team_name: str, max_matches: int = _STATS_BOMB_MA
 
             if team_lower and team_lower in home_name:
                 is_home = True
-                opponent = away_info.get("home_team_name") or away_info.get("name")
+                opponent = (
+                    away_info.get("away_team_name")
+                    or away_info.get("name")
+                    or away_info.get("team_name")
+                )
             elif team_lower and team_lower in away_name:
                 is_home = False
-                opponent = home_info.get("home_team_name") or home_info.get("name")
+                opponent = (
+                    home_info.get("home_team_name")
+                    or home_info.get("name")
+                    or home_info.get("team_name")
+                )
             else:
                 continue
 

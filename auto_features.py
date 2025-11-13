@@ -36,6 +36,13 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, Tuple, Optional, Any
 
+try:
+    from dateutil import parser as dateutil_parser  # type: ignore
+    _DATEUTIL_PARSER_ERROR = getattr(dateutil_parser, "ParserError", ValueError)
+except ImportError:  # pragma: no cover - optional dependency
+    dateutil_parser = None  # type: ignore
+    _DATEUTIL_PARSER_ERROR = ValueError
+
 logger = logging.getLogger(__name__)
 
 # ============================================================
@@ -386,13 +393,12 @@ def _parse_datetime_robust(datetime_str: str) -> Optional[datetime]:
     except (ValueError, AttributeError):
         pass
 
-    try:
-        # Try with dateutil parser (more flexible)
-        from dateutil import parser as dateutil_parser
-        dt = dateutil_parser.isoparse(datetime_str)
-        return dt
-    except (ImportError, ValueError, dateutil_parser.ParserError):
-        pass
+    if dateutil_parser is not None:
+        try:
+            dt = dateutil_parser.isoparse(datetime_str)
+            return dt
+        except (_DATEUTIL_PARSER_ERROR, ValueError, TypeError):
+            pass
 
     try:
         # Try strptime with common formats

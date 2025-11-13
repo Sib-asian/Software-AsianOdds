@@ -388,6 +388,14 @@ class CacheManager:
                 # Check if expired (24h TTL)
                 if time.time() - timestamp > APIConfig.CACHE_TTL:
                     logger.info(f"⏰ Prediction cache expired for {home_team} vs {away_team}")
+                    try:
+                        cursor.execute(
+                            "DELETE FROM predictions_cache WHERE cache_key = ?",
+                            (cache_key,)
+                        )
+                        conn.commit()
+                    except sqlite3.Error as delete_err:
+                        logger.error(f"❌ Prediction cache delete error: {delete_err}")
                     self._log_cache_miss()
                     return None
 
@@ -523,12 +531,16 @@ class CacheManager:
             cursor.execute("DELETE FROM over_markets_cache WHERE timestamp < ?", (cutoff,))
             deleted_over_markets = cursor.rowcount
 
+            cursor.execute("DELETE FROM predictions_cache WHERE timestamp < ?", (cutoff,))
+            deleted_predictions = cursor.rowcount
+
             conn.commit()
             conn.close()
 
             logger.info(
-                f"🧹 Cleaned {deleted_team} team cache entries and "
-                f"{deleted_over_markets} over markets cache entries "
+                f"🧹 Cleaned {deleted_team} team cache entries, "
+                f"{deleted_over_markets} over markets cache entries e "
+                f"{deleted_predictions} predictions cache entries "
                 f"older than {days} day(s)"
             )
 
