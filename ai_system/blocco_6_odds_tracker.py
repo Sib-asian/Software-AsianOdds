@@ -84,6 +84,10 @@ class OddsMovementTracker:
             - sharp_money_detected: bool
             - reasoning: Spiegazione
         """
+        # Ensure odds_history is never None
+        if odds_history is None:
+            odds_history = []
+
         # Se decisione è SKIP, non serve monitoring
         if decision.get("decision") == "SKIP":
             return {

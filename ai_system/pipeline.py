@@ -504,7 +504,7 @@ def quick_analyze(
 
     odds_data = {
         "odds_current": odds,
-        "odds_history": kwargs.get("odds_history", []),
+        "odds_history": kwargs.get("odds_history") or [],  # Ensure never None
         "market": kwargs.get("market", "1x2"),
         "time_to_kickoff_hours": kwargs.get("time_to_kickoff", 24.0)
     }

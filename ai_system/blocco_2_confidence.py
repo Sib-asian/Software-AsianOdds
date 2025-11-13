@@ -109,7 +109,7 @@ class ConfidenceScorer:
 
         # 3. Odds stability features
         odds_current = additional_context.get("odds_current", 2.0)
-        odds_history = additional_context.get("odds_history", [])
+        odds_history = additional_context.get("odds_history") or []
 
         if len(odds_history) >= 3:
             # Calculate volatility
@@ -281,7 +281,7 @@ class ConfidenceScorer:
         score += data_quality * weights["data_completeness"]
 
         # 3. Odds stability (20%)
-        odds_history = additional_context.get("odds_history", [])
+        odds_history = additional_context.get("odds_history") or []
         if len(odds_history) >= 3:
             odds_values = [o["odds"] for o in odds_history]
             odds_std = np.std(odds_values)
@@ -358,7 +358,7 @@ class ConfidenceScorer:
             strength_factors.append(f"High data quality ({data_quality:.0%})")
 
         # Check odds stability
-        odds_history = additional_context.get("odds_history", [])
+        odds_history = additional_context.get("odds_history") or []
         if len(odds_history) >= 3:
             odds_values = [o["odds"] for o in odds_history]
             odds_std = np.std(odds_values)
