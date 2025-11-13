@@ -29,6 +29,33 @@ class AIConfig:
     api_cache_db: str = "api_cache.db"
     predictions_db: str = "storico_analisi.csv"
 
+      # ============================================================
+      # NEWS & SENTIMENT MONITOR
+      # ============================================================
+
+      news_sentiment_enabled: bool = True
+      news_sentiment_sources: List[str] = field(default_factory=list)
+      news_sentiment_positive_keywords: List[str] = field(default_factory=lambda: [
+          "win",
+          "victory",
+          "return",
+          "boost",
+          "fit",
+          "record",
+          "renew",
+      ])
+      news_sentiment_negative_keywords: List[str] = field(default_factory=lambda: [
+          "injury",
+          "out",
+          "doubt",
+          "ban",
+          "crisis",
+          "sack",
+          "sell",
+      ])
+      news_sentiment_cache_file: str = "news_sentiment_cache.json"
+      news_sentiment_cache_ttl_hours: int = 6
+
     # ============================================================
     # BLOCCO 0: API DATA ENGINE
     # ============================================================
@@ -229,6 +256,43 @@ class AIConfig:
     volume_spike_threshold: float = 2.0  # Volume 2× media = spike
     volume_sharp_threshold: float = 3.0  # Volume 3× media = sharp money
 
+      # ============================================================
+      # MINOR LEAGUE DATA PIPELINE
+      # ============================================================
+
+      minor_league_enabled: bool = True
+      minor_league_cache_file: str = "minor_leagues_registry.json"
+      minor_league_default_quality: float = 0.55
+      minor_league_fatigue_high: float = 1.25
+      minor_league_fatigue_low: float = 0.75
+      minor_league_travel_high_km: float = 600.0
+      major_leagues: List[str] = field(default_factory=lambda: [
+          "serie a",
+          "premier league",
+          "la liga",
+          "bundesliga",
+          "ligue 1",
+          "champions league",
+          "europa league",
+      ])
+
+      # ============================================================
+      # CHAT ASSISTANT
+      # ============================================================
+
+      chat_assistant_enabled: bool = True
+      chat_memory_max_turns: int = 12
+
+      # ============================================================
+      # ODDS ANOMALY DETECTOR
+      # ============================================================
+
+      anomaly_detection_enabled: bool = True
+      anomaly_min_points: int = 3
+      anomaly_pct_threshold: float = 0.06
+      anomaly_volume_threshold: float = 2.5
+      anomaly_volatility_alert: float = 0.7
+
     # ============================================================
     # TRAINING & VALIDATION
     # ============================================================
@@ -340,6 +404,9 @@ class AIConfig:
         split_sum = self.train_split + self.validation_split + self.test_split
         if abs(split_sum - 1.0) > 0.001:
             raise ValueError(f"Train/val/test splits must sum to 1.0, got {split_sum}")
+
+          if self.chat_memory_max_turns <= 0:
+              raise ValueError("chat_memory_max_turns must be > 0")
 
     def to_dict(self) -> Dict:
         """Converte config in dizionario per logging"""
