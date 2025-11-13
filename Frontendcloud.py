@@ -10440,7 +10440,8 @@ def apply_market_movement_blend(
     
     # ⚠️ PRECISIONE: Calcola spread/total correnti se non forniti
     if spread_corrente is None:
-        spread_corrente = lambda_h_current - lambda_a_current
+        # ⚠️ FIX CRITICO: spread = lambda_a - lambda_h (spread > 0 favorisce Away)
+        spread_corrente = lambda_a_current - lambda_h_current
         # ⚠️ MICRO-PRECISIONE: Valida spread calcolato con precisione
         spread_corrente = max(-3.0, min(3.0, spread_corrente))
         # ⚠️ VERIFICA: Double-check che spread sia finito
@@ -10486,71 +10487,39 @@ def apply_market_movement_blend(
         spread_apertura_safe = max(-3.0, min(3.0, spread_apertura))
         total_apertura_safe = max(0.5, min(6.0, total_apertura))
         
-        # ⚠️ PRECISIONE: Stima lambda da spread/total apertura con protezione
-        lambda_total_ap = total_apertura_safe / 2.0
-        
-        # ⚠️ VERIFICA: Assicura che lambda_total_ap sia ragionevole
-        if not math.isfinite(lambda_total_ap) or lambda_total_ap <= 0:
-            logger.warning(f"lambda_total_ap non valido: {lambda_total_ap}, uso default 1.25")
-            lambda_total_ap = 1.25
-        
-        # ⚠️ CORREZIONE: Spread apertura → lambda con protezione completa
-        # ⚠️ PROTEZIONE: spread_factor_ap = exp(spread * 0.5) può esplodere se spread è alto
-        # Limita spread_apertura_safe prima di calcolare exp per evitare overflow
-        spread_clamped = max(-2.0, min(2.0, spread_apertura_safe))  # Limita spread prima di exp
-        
-        # ⚠️ PRECISIONE: Calcola exp con protezione overflow
-        try:
-            spread_factor_ap_raw = math.exp(spread_clamped * 0.5)
-            if not math.isfinite(spread_factor_ap_raw):
-                logger.warning(f"spread_factor_ap_raw non finito: {spread_factor_ap_raw}, uso default 1.0")
-                spread_factor_ap_raw = 1.0
-        except (OverflowError, ValueError) as e:
-            logger.warning(f"Errore calcolo exp per spread_factor: {e}, uso default 1.0")
-            spread_factor_ap_raw = 1.0
-        
-        spread_factor_ap = max(0.5, min(2.0, spread_factor_ap_raw))  # Limita a range ragionevole
-        
-        # ⚠️ OTTIMIZZAZIONE: Calcola sqrt(home_advantage) una sola volta con protezione
-        if not isinstance(home_advantage, (int, float)) or home_advantage <= 0:
-            logger.warning(f"home_advantage non valido: {home_advantage}, uso default 1.30")
-            home_advantage = 1.30
-        
-        sqrt_ha = math.sqrt(home_advantage)
-        if not math.isfinite(sqrt_ha):
-            logger.warning(f"sqrt_ha non finito: {sqrt_ha}, uso default 1.14")
-            sqrt_ha = 1.14
-        
-        # ⚠️ PRECISIONE: Calcola lambda da apertura con protezione divisione per zero
-        lambda_h_ap = lambda_total_ap * spread_factor_ap * sqrt_ha
-        lambda_a_ap = lambda_total_ap / max(model_config.TOL_DIVISION_ZERO, spread_factor_ap) / sqrt_ha
-        
+        # ⚠️ FIX CRITICO: Formula CORRETTA per calcolare lambda da spread/total
+        # Interpretazione: spread = lambda_a - lambda_h
+        # spread > 0 → Away favorita, spread < 0 → Home favorita
+        #
+        # Risolvendo il sistema:
+        # lambda_a - lambda_h = spread
+        # lambda_a + lambda_h = total
+        #
+        # Otteniamo:
+        # lambda_a = (total + spread) / 2
+        # lambda_h = (total - spread) / 2
+
+        lambda_a_ap = (total_apertura_safe + spread_apertura_safe) / 2.0
+        lambda_h_ap = (total_apertura_safe - spread_apertura_safe) / 2.0
+
         # ⚠️ PROTEZIONE: Verifica che lambda siano finiti e positivi
-        if not math.isfinite(lambda_h_ap) or lambda_h_ap <= 0:
-            logger.warning(f"lambda_h_ap non valido: {lambda_h_ap}, correggo")
-            lambda_h_ap = max(0.3, lambda_total_ap * sqrt_ha)
-        if not math.isfinite(lambda_a_ap) or lambda_a_ap <= 0:
-            logger.warning(f"lambda_a_ap non valido: {lambda_a_ap}, correggo")
-            lambda_a_ap = max(0.3, lambda_total_ap / sqrt_ha)
-        
-        # ⚠️ VERIFICA: Assicura coerenza total dopo calcolo da apertura con precisione
-        total_check_ap = lambda_h_ap + lambda_a_ap
-        if abs(total_check_ap - total_apertura_safe) > model_config.TOL_TOTAL_COHERENCE:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
-            # Ricalibra per mantenere total coerente con precisione
-            if total_check_ap > model_config.TOL_DIVISION_ZERO:
-                scale_factor_ap = total_apertura_safe / total_check_ap
-                if math.isfinite(scale_factor_ap) and scale_factor_ap > 0:
-                    lambda_h_ap *= scale_factor_ap
-                    lambda_a_ap *= scale_factor_ap
-                    
-                    # ⚠️ VERIFICA FINALE: Double-check coerenza dopo ricalibrazione
-                    total_check_final = lambda_h_ap + lambda_a_ap
-                    if abs(total_check_final - total_apertura_safe) > model_config.TOL_TOTAL_COHERENCE:
-                        logger.warning(f"Coerenza total apertura ancora non raggiunta: {total_check_final} vs {total_apertura_safe}")
-                else:
-                    logger.warning(f"scale_factor_ap non valido: {scale_factor_ap}, uso lambda senza ricalibrazione")
-            else:
-                logger.warning(f"total_check_ap troppo piccolo: {total_check_ap}, uso lambda senza ricalibrazione")
+        if not math.isfinite(lambda_h_ap) or lambda_h_ap < 0.1:
+            logger.warning(f"lambda_h_ap non valido: {lambda_h_ap}, correggo a 0.3")
+            lambda_h_ap = 0.3
+        if not math.isfinite(lambda_a_ap) or lambda_a_ap < 0.1:
+            logger.warning(f"lambda_a_ap non valido: {lambda_a_ap}, correggo a 0.3")
+            lambda_a_ap = 0.3
+
+        # ⚠️ VERIFICA MATEMATICA: Spread e total devono essere ESATTAMENTE rispettati
+        spread_check = lambda_a_ap - lambda_h_ap
+        total_check = lambda_a_ap + lambda_h_ap
+
+        if abs(spread_check - spread_apertura_safe) > 1e-6:
+            logger.error(f"ERRORE CRITICO: Spread non rispettato! Calcolato {spread_check:.6f}, richiesto {spread_apertura_safe:.6f}")
+        if abs(total_check - total_apertura_safe) > 1e-6:
+            logger.error(f"ERRORE CRITICO: Total non rispettato! Calcolato {total_check:.6f}, richiesto {total_apertura_safe:.6f}")
+
+        logger.info(f"Lambda da apertura: lambda_h={lambda_h_ap:.4f}, lambda_a={lambda_a_ap:.4f}, spread={spread_check:+.4f}, total={total_check:.4f}")
         
         # Constraints
         lambda_h_ap = max(0.3, min(4.5, lambda_h_ap))
