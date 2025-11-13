@@ -3,7 +3,7 @@ AI System for AsianOdds Prediction Platform
 ============================================
 
 Sistema modulare di Intelligenza Artificiale per migliorare le predizioni
-di betting attraverso 7 blocchi interconnessi:
+di betting attraverso 7 blocchi interconnessi + 5 features avanzate:
 
 BLOCCO 0: API Data Engine - Raccolta e caching intelligente dati real-time
 BLOCCO 1: Probability Calibrator - Calibrazione probabilità con Neural Network
@@ -13,19 +13,36 @@ BLOCCO 4: Smart Kelly Optimizer - Ottimizzazione stake dinamica
 BLOCCO 5: Risk Manager - Gestione rischio e filtri di sicurezza
 BLOCCO 6: Odds Movement Tracker - Timing ottimale per scommesse
 
+NUOVE FEATURES:
+- Ensemble Meta-Model: Combina Dixon-Coles + XGBoost + LSTM
+- LLM Sports Analyst: Spiegazioni AI in linguaggio naturale
+- Sentiment Analyzer: Monitoring social media per insider info
+- Live Betting Engine: Predizioni real-time durante le partite
+- Historical Backtesting: Test strategie su dati storici
+- Telegram Notifier: Notifiche automatiche opportunità
+- Live Monitor: Monitoring continuo partite con alert
+
 Autore: AsianOdds AI Team
-Versione: 1.0.0
+Versione: 2.0.0
 Data: 2025-11-13
 """
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __author__ = "AsianOdds AI Team"
 
 # Import main components for easy access
 from .pipeline import AIPipeline
 from .config import AIConfig
 
+# Advanced features (optional imports - may fail if dependencies missing)
+try:
+    from .telegram_notifier import TelegramNotifier
+    from .live_monitor import LiveMonitor
+    __all_optional__ = ['TelegramNotifier', 'LiveMonitor']
+except ImportError:
+    __all_optional__ = []
+
 __all__ = [
     'AIPipeline',
     'AIConfig',
-]
+] + __all_optional__
