@@ -351,11 +351,11 @@ API_RETRY_DELAY = app_config.api_retry_delay
 API_TIMEOUT = app_config.api_timeout
 
 # Cache per API calls (evita rate limiting)
-# FIX BUG: Aggiunto threading lock per evitare race conditions
 import threading
 import time
-_API_CACHE_LOCK = threading.RLock()
-API_CACHE = {}
+
+API_CACHE_MAX_ENTRIES = getattr(app_config, "api_cache_max_entries", 512)
+API_CACHE = None  # Initialized after TTLCache definition
 FOOTBALL_DATA_BASE_URL = "https://api.football-data.org/v4"
 
 # ============================================================
@@ -371,51 +371,97 @@ class TTLCache:
         self.ttl = ttl_seconds
         self.lock = threading.RLock()
 
-    def get(self, key):
-        """Get value from cache if exists and not expired."""
-        with self.lock:
-            if key in self.cache:
-                if time.time() - self.timestamps[key] < self.ttl:
-                    return self.cache[key]
-                else:
-                    # Expired, remove it
-                    del self.cache[key]
-                    del self.timestamps[key]
-            return None
+    def _evict_unlocked(self, key):
+        self.cache.pop(key, None)
+        self.timestamps.pop(key, None)
+
+    def _cleanup_expired_unlocked(self) -> int:
+        now = time.time()
+        expired_keys = [k for k, ts in self.timestamps.items() if now - ts >= self.ttl]
+        removed = 0
+        for key in expired_keys:
+            self._evict_unlocked(key)
+            removed += 1
+        return removed
 
     def set(self, key, value):
         """Set value in cache with automatic cleanup if size limit reached."""
         with self.lock:
-            # Remove expired entries first
-            self._cleanup_expired()
+            self._cleanup_expired_unlocked()
 
-            # If still at max size, remove oldest entry
-            if len(self.cache) >= self.max_size:
-                # FIX BUG: Protect against empty timestamps dict (cache desync)
+            if self.max_size > 0 and len(self.cache) >= self.max_size:
                 if not self.timestamps:
                     logger.error("❌ Cache desync: cache piena ma timestamps vuoto, reset cache")
                     self.cache.clear()
+                    self.timestamps.clear()
                 else:
                     oldest_key = min(self.timestamps, key=self.timestamps.get)
-                    del self.cache[oldest_key]
-                    del self.timestamps[oldest_key]
+                    self._evict_unlocked(oldest_key)
 
             self.cache[key] = value
             self.timestamps[key] = time.time()
 
-    def _cleanup_expired(self):
-        """Remove all expired entries."""
+    def _get_locked(self, key, *, allow_stale: bool, refresh_on_access: bool):
+        if key not in self.cache:
+            return None
+
+        timestamp = self.timestamps.get(key)
+        if timestamp is None:
+            self._evict_unlocked(key)
+            return None
+
         now = time.time()
-        expired_keys = [k for k, t in self.timestamps.items() if now - t >= self.ttl]
-        for k in expired_keys:
-            del self.cache[k]
-            del self.timestamps[k]
+        age = now - timestamp
+        is_stale = age >= self.ttl
+
+        if is_stale and not allow_stale:
+            self._evict_unlocked(key)
+            return None
+
+        result = {
+            "value": self.cache[key],
+            "timestamp": timestamp,
+            "age": age,
+            "is_stale": is_stale,
+        }
+
+        if refresh_on_access:
+            self.timestamps[key] = now
+
+        return result
+
+    def get(self, key, default=None, *, allow_stale: bool = False, refresh_on_access: bool = False):
+        """Get value from cache if exists; optional stale access."""
+        with self.lock:
+            entry = self._get_locked(key, allow_stale=allow_stale, refresh_on_access=refresh_on_access)
+            if entry is None:
+                return default
+            return entry["value"]
+
+    def get_entry(self, key, *, allow_stale: bool = False, refresh_on_access: bool = False):
+        """Return cache entry metadata (value, timestamp, age, is_stale)."""
+        with self.lock:
+            entry = self._get_locked(key, allow_stale=allow_stale, refresh_on_access=refresh_on_access)
+            if entry is None:
+                return None
+            return entry.copy()
+
+    def cleanup(self) -> int:
+        """Public method to purge expired entries."""
+        with self.lock:
+            return self._cleanup_expired_unlocked()
 
     def __contains__(self, key):
-        """Check if key exists and is not expired."""
-        return self.get(key) is not None
+        entry = self.get_entry(key)
+        return entry is not None and not entry["is_stale"]
+
+    def __len__(self):
+        with self.lock:
+            self._cleanup_expired_unlocked()
+            return len(self.cache)
 
 # Initialize TTL caches (replaces unbounded Dict caches)
+API_CACHE = TTLCache(max_size=API_CACHE_MAX_ENTRIES, ttl_seconds=CACHE_EXPIRY)
 _FOOTBALL_DATA_MATCH_CACHE = TTLCache(max_size=200, ttl_seconds=1800)  # 30 min TTL
 
 # ============================================================
@@ -556,13 +602,10 @@ def api_call_with_retry(
         cache_key = f"{api_func.__name__}_{hash(str(args) + str(kwargs))}"
     
     # Prova a recuperare da cache se disponibile
-    # FIX BUG: Thread-safe cache access
     if use_cache:
-        with _API_CACHE_LOCK:
-            if cache_key in API_CACHE:
-                cached_data, cached_time = API_CACHE[cache_key]
-                if time.time() - cached_time < CACHE_EXPIRY:
-                    return cached_data
+        cache_entry = API_CACHE.get_entry(cache_key)
+        if cache_entry and not cache_entry["is_stale"]:
+            return cache_entry["value"]
 
     last_exception = None
 
@@ -577,10 +620,8 @@ def api_call_with_retry(
             result = api_func(*args, **kwargs)
 
             # Salva in cache se successo
-            # FIX BUG: Thread-safe cache write
             if use_cache:
-                with _API_CACHE_LOCK:
-                    API_CACHE[cache_key] = (result, time.time())
+                API_CACHE.set(cache_key, result)
 
             return result
             
@@ -618,11 +659,14 @@ def api_call_with_retry(
             continue
     
     # Tutti i tentativi falliti: prova cache come fallback
-    if use_cache and cache_key in API_CACHE:
-        cached_data, cached_time = API_CACHE[cache_key]
-        # Usa cache anche se scaduta (meglio di niente)
-        logger.warning(f"API fallita, uso cache (scaduta): {cache_key}")
-        return cached_data
+    if use_cache:
+        stale_entry = API_CACHE.get_entry(cache_key, allow_stale=True)
+        if stale_entry:
+            age_minutes = stale_entry["age"] / 60.0 if stale_entry["age"] is not None else 0.0
+            logger.warning(
+                f"API fallita, uso cache (scaduta da {age_minutes:.1f} min): {cache_key}"
+            )
+            return stale_entry["value"]
     
     # Nessun fallback disponibile: solleva eccezione
     raise requests.exceptions.RequestException(
@@ -9871,30 +9915,41 @@ def create_score_heatmap_data(mat: List[List[float]], max_goals: int = 10) -> np
 #   CACHING E RATE LIMITING
 # ============================================================
 
+def cleanup_expired_api_cache() -> int:
+    """
+    Rimuove le entry scadute dalla cache API in memoria.
+
+    Returns:
+        Numero di elementi rimossi.
+    """
+    if API_CACHE is None:
+        return 0
+    removed = API_CACHE.cleanup()
+    if removed:
+        logger.info("🧹 API cache cleanup: rimossi %d elementi scaduti", removed)
+    return removed
+
+
 def cached_api_call(cache_key: str, api_func: callable, *args, **kwargs):
     """
     Cache per chiamate API per evitare rate limiting.
     """
-    import time
+    cache_entry = API_CACHE.get_entry(cache_key)
+    if cache_entry and not cache_entry["is_stale"]:
+        return cache_entry["value"]
 
-    # FIX BUG: Thread-safe cache access
-    with _API_CACHE_LOCK:
-        if cache_key in API_CACHE:
-            cached_data, cached_time = API_CACHE[cache_key]
-            if time.time() - cached_time < CACHE_EXPIRY:
-                return cached_data
-
-    # Chiama API (fuori dal lock per non bloccare altri thread durante la chiamata)
     try:
         result = api_func(*args, **kwargs)
-        # FIX BUG: Thread-safe cache write
-        with _API_CACHE_LOCK:
-            API_CACHE[cache_key] = (result, time.time())
+        API_CACHE.set(cache_key, result)
         return result
     except Exception as e:
-        # Se errore, ritorna cache vecchia se disponibile
-        if cache_key in API_CACHE:
-            return API_CACHE[cache_key][0]
+        stale_entry = API_CACHE.get_entry(cache_key, allow_stale=True)
+        if stale_entry:
+            logger.warning(
+                "cached_api_call: ritorno valore cached (stale) per %s",
+                cache_key,
+            )
+            return stale_entry["value"]
         raise e
 
 # ============================================================
