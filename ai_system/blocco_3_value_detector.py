@@ -95,7 +95,7 @@ class ValueDetector:
         features.append(prob_odds_gap)
 
         # 4. Odds movement features
-        odds_history = odds_data.get("odds_history", [])
+        odds_history = odds_data.get("odds_history") or []
         if len(odds_history) >= 3:
             odds_values = [o["odds"] for o in odds_history]
             odds_first = odds_values[0]
@@ -275,8 +275,8 @@ class ValueDetector:
 
     def _detect_sharp_money(self, odds_data: Dict) -> bool:
         """Rileva sharp money movement"""
-        odds_history = odds_data.get("odds_history", [])
-        volume_history = odds_data.get("volume_history", [])
+        odds_history = odds_data.get("odds_history") or []
+        volume_history = odds_data.get("volume_history") or []
 
         if len(odds_history) < 3:
             return False

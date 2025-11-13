@@ -16443,7 +16443,7 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                         bankroll=ai_bankroll_value,
                         config=ai_config,
                         # Additional context
-                        odds_history=odds_history if odds_history else None,
+                        odds_history=odds_history,  # Pass list directly (even if empty)
                         time_to_kickoff_hours=time_to_kickoff_hours,
                         match_date=match_datetime_combined
                     )
