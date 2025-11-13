@@ -24,8 +24,16 @@ __author__ = "AsianOdds AI Team"
 # Import main components for easy access
 from .pipeline import AIPipeline
 from .config import AIConfig
+from .news_sentiment import NewsSentimentMonitor
+from .minor_league_data import MinorLeagueDataPipeline
+from .chat_assistant import AIAssistantChat
+from .odds_anomaly_detector import OddsAnomalyDetector
 
 __all__ = [
     'AIPipeline',
     'AIConfig',
+    'NewsSentimentMonitor',
+    'MinorLeagueDataPipeline',
+    'AIAssistantChat',
+    'OddsAnomalyDetector',
 ]

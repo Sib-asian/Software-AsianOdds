@@ -33,6 +33,10 @@ from .blocco_3_value_detector import ValueDetector
 from .blocco_4_kelly import SmartKellyOptimizer
 from .blocco_5_risk_manager import RiskManager
 from .blocco_6_odds_tracker import OddsMovementTracker
+from .news_sentiment import NewsSentimentMonitor
+from .minor_league_data import MinorLeagueDataPipeline
+from .chat_assistant import AIAssistantChat
+from .odds_anomaly_detector import OddsAnomalyDetector
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,22 @@ class AIPipeline:
         self.kelly_optimizer = SmartKellyOptimizer(self.config)
         self.risk_manager = RiskManager(self.config)
         self.odds_tracker = OddsMovementTracker(self.config)
+        self.news_monitor = NewsSentimentMonitor(self.config)
+        self.minor_league_pipeline = MinorLeagueDataPipeline(self.config)
+        self.anomaly_detector = OddsAnomalyDetector(self.config)
+        self.chat_assistant = (
+            AIAssistantChat(self.config) if self.config.chat_assistant_enabled else None
+        )
+        logger.info("🧠 News sentiment monitor attivo: %s", self.config.news_sentiment_enabled)
+        logger.info("🗺️  Minor league pipeline attiva: %s", self.config.minor_league_enabled)
+        logger.info("📊 Odds anomaly detection attiva: %s", self.config.anomaly_detection_enabled)
+        if self.chat_assistant:
+            logger.info(
+                "💬 Chat assistant abilitato (memoria max: %d turni)",
+                self.config.chat_memory_max_turns
+            )
+        else:
+            logger.info("💬 Chat assistant disabilitato via config")
 
         # Pipeline state
         self.last_analysis = None
@@ -121,6 +141,33 @@ class AIPipeline:
             )
 
             # ========================================
+            # ENRICHMENTS: MINOR LEAGUES & NEWS SENTIMENT
+            # ========================================
+            minor_league_info = self.minor_league_pipeline.enrich(match, api_context)
+            league_quality = self._get_league_quality(match.get("league", ""))
+            minor_adjustments = minor_league_info.get("adjustments", {}) if isinstance(
+                minor_league_info, dict
+            ) else {}
+            if minor_league_info.get("status") in {"ok", "fallback"}:
+                override_quality = minor_adjustments.get("league_quality_override")
+                if override_quality is not None:
+                    league_quality = override_quality
+                league_quality = max(
+                    0.0,
+                    min(1.0, league_quality + minor_adjustments.get("data_quality_bonus", 0.0))
+                )
+
+            news_sentiment = self.news_monitor.collect(
+                match,
+                api_context=api_context,
+                odds_context=odds_data
+            )
+            news_aggregate = news_sentiment.get("aggregate") or {}
+            news_bias = news_aggregate.get("bias", "neutral")
+            news_confidence = news_aggregate.get("confidence", 0.0)
+            news_score_diff = news_aggregate.get("score_diff", 0.0)
+
+            # ========================================
             # BLOCCO 1: Probability Calibrator
             # ========================================
             logger.info("\n🎯 BLOCCO 1: Calibrating probability...")
@@ -140,6 +187,12 @@ class AIPipeline:
                     "xga_away_last5": api_context["match_data"].get("xga_away", 6.0),
                     "lineup_quality_home": api_context["match_data"].get("lineup_home", 0.85),
                     "lineup_quality_away": api_context["match_data"].get("lineup_away", 0.85),
+                },
+                "minor_league": minor_league_info,
+                "news_sentiment": {
+                    "bias": news_bias,
+                    "confidence": news_confidence,
+                    "score_diff": news_score_diff
                 }
             }
 
@@ -160,16 +213,35 @@ class AIPipeline:
             # ========================================
             logger.info("\n🔍 BLOCCO 2: Scoring confidence...")
 
+            red_flags: List[str] = []
+            green_flags: List[str] = []
+
             confidence_context = {
                 "odds_current": odds_data.get("odds_current", 2.0),
                 "odds_history": odds_data.get("odds_history", []),
                 "historical_accuracy": odds_data.get("historical_accuracy", 0.70),
                 "similar_bets_roi": odds_data.get("similar_bets_roi", 0.0),
-                "league_quality": self._get_league_quality(match.get("league", "")),
+                "league_quality": league_quality,
                 "market_liquidity": 0.8,  # Default
-                "red_flags": [],
-                "green_flags": []
+                "red_flags": red_flags,
+                "green_flags": green_flags,
+                "news_sentiment_bias": news_bias,
+                "news_sentiment_confidence": news_confidence,
+                "minor_league_status": minor_league_info.get("status"),
             }
+
+            if news_sentiment.get("status") == "ok" and news_confidence >= 0.2:
+                if news_bias == "home":
+                    green_flags.append("Sentiment positivo per la squadra di casa")
+                elif news_bias == "away":
+                    red_flags.append("Sentiment negativo verso la squadra di casa")
+
+            if minor_league_info.get("status") in {"ok", "fallback"}:
+                red_flags.extend(minor_adjustments.get("flagged_risks", []))
+                green_flags.extend(minor_adjustments.get("flagged_opportunities", []))
+
+            confidence_context["red_flags"] = list(dict.fromkeys(red_flags))
+            confidence_context["green_flags"] = list(dict.fromkeys(green_flags))
 
             confidence_result = self.confidence_scorer.score(
                 calibrated_result,
@@ -191,14 +263,20 @@ class AIPipeline:
                 "similar_bets_roi": odds_data.get("similar_bets_roi", 0.0),
                 "similar_bets_count": odds_data.get("similar_bets_count", 0),
                 "similar_bets_winrate": odds_data.get("similar_bets_winrate", 0.5),
-                "league_quality": self._get_league_quality(match.get("league", "")),
+                "league_quality": league_quality,
                 "market_efficiency": 0.75,  # Default
+                "news_sentiment_bias": news_bias,
+                "news_sentiment_confidence": news_confidence,
+                "minor_league_status": minor_league_info.get("status"),
             }
 
             # Merge calibrated prob into value result for detector
             value_detector_input = {
                 **calibrated_result,
-                "data_quality": api_context["metadata"]["data_quality"]
+                "data_quality": api_context["metadata"]["data_quality"],
+                "news_sentiment_score_diff": news_score_diff,
+                "news_sentiment_confidence": news_confidence,
+                "minor_league_adjustments": minor_adjustments,
             }
 
             value_result = self.value_detector.detect(
@@ -291,6 +369,23 @@ class AIPipeline:
                 logger.info("   ✓ Sharp money detected!")
 
             # ========================================
+            # ODDS ANOMALY DETECTOR
+            # ========================================
+            anomaly_result = self.anomaly_detector.detect(
+                odds_data.get("odds_history", []),
+                timing_context=timing_result
+            )
+
+            if anomaly_result.get("anomalies"):
+                logger.warning(
+                    "   ⚠️  Rilevate %d anomalie quote (status: %s)",
+                    len(anomaly_result["anomalies"]),
+                    anomaly_result.get("status")
+                )
+            else:
+                logger.info("   ✓ Nessuna anomalia quote significativa")
+
+            # ========================================
             # FINAL RESULT
             # ========================================
             analysis_time = (datetime.now() - analysis_start).total_seconds()
@@ -307,6 +402,9 @@ class AIPipeline:
                 "kelly": kelly_result,
                 "risk_decision": risk_decision,
                 "timing": timing_result,
+                "news_sentiment": news_sentiment,
+                "minor_league": minor_league_info,
+                "odds_anomalies": anomaly_result,
 
                 # Final decision (easy access)
                 "final_decision": {
@@ -333,7 +431,9 @@ class AIPipeline:
                     "analysis_time_seconds": analysis_time,
                     "timestamp": datetime.now().isoformat(),
                     "api_calls_used": api_context["metadata"]["api_calls_used"],
-                    "models_used": self._get_models_status()
+                    "models_used": self._get_models_status(),
+                    "news_sentiment_bias": news_bias,
+                    "odds_anomaly_status": anomaly_result.get("status"),
                 }
             }
 
@@ -343,11 +443,21 @@ class AIPipeline:
                 "timestamp": datetime.now().isoformat(),
                 "match": f"{match.get('home')} vs {match.get('away')}",
                 "decision": risk_decision["decision"],
-                "stake": risk_decision["final_stake"]
+                "stake": risk_decision["final_stake"],
+                "news_bias": news_bias,
+                "anomaly_status": anomaly_result.get("status"),
             })
 
             # Print final summary
             self._print_summary(final_result)
+
+            if self.chat_assistant:
+                self.chat_assistant.update_context(
+                    analysis=final_result,
+                    news=news_sentiment,
+                    minor_league=minor_league_info,
+                    anomalies=anomaly_result
+                )
 
             logger.info(f"\n{'='*70}")
             logger.info(f"✅ Analysis completed in {analysis_time:.2f}s")
@@ -400,6 +510,18 @@ class AIPipeline:
         logger.info(f"Confidence: {summary['confidence']:.0f}/100")
         logger.info(f"Value Score: {summary['value_score']:.0f}/100")
         logger.info(f"Expected Value: {summary['expected_value']:+.1%}")
+        news = result.get("news_sentiment")
+        if isinstance(news, dict) and news.get("status") == "ok":
+            logger.info(
+                f"News sentiment bias: {news['aggregate']['bias']} "
+                f"(conf {news['aggregate']['confidence']:.1f})"
+            )
+        anomalies = result.get("odds_anomalies", {})
+        if anomalies:
+            logger.info(
+                f"Odds anomalies: {len(anomalies.get('anomalies', []))} "
+                f"(status {anomalies.get('status', 'n/a')})"
+            )
         logger.info(f"")
         logger.info(f"{'─'*70}")
         logger.info(f"DECISION: {decision['action']}")
@@ -463,6 +585,10 @@ class AIPipeline:
             "recent_analyses": self.analysis_history[-10:],  # Last 10
             "models_status": self._get_models_status()
         }
+
+    def get_chat_assistant(self) -> Optional[AIAssistantChat]:
+        """Return chat assistant instance if enabled."""
+        return self.chat_assistant
 
 
 # ============================================================
