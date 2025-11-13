@@ -40,40 +40,47 @@ from .config import AIConfig
 logger = logging.getLogger(__name__)
 
 
-class CalibratorMLP(nn.Module):
-    """
-    Multi-Layer Perceptron per calibrazione probabilità.
+# Define classes only if PyTorch is available
+if TORCH_AVAILABLE:
+    class CalibratorMLP(nn.Module):
+        """
+        Multi-Layer Perceptron per calibrazione probabilità.
 
-    Architecture:
-    Input → Hidden Layers → Dropout → Output (sigmoid)
-    """
+        Architecture:
+        Input → Hidden Layers → Dropout → Output (sigmoid)
+        """
 
-    def __init__(
-        self,
-        input_size: int,
-        hidden_layers: List[int],
-        dropout: float = 0.2
-    ):
-        super().__init__()
+        def __init__(
+            self,
+            input_size: int,
+            hidden_layers: List[int],
+            dropout: float = 0.2
+        ):
+            super().__init__()
 
-        layers = []
-        prev_size = input_size
+            layers = []
+            prev_size = input_size
 
-        # Hidden layers
-        for hidden_size in hidden_layers:
-            layers.append(nn.Linear(prev_size, hidden_size))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout))
-            prev_size = hidden_size
+            # Hidden layers
+            for hidden_size in hidden_layers:
+                layers.append(nn.Linear(prev_size, hidden_size))
+                layers.append(nn.ReLU())
+                layers.append(nn.Dropout(dropout))
+                prev_size = hidden_size
 
-        # Output layer (sigmoid for probability)
-        layers.append(nn.Linear(prev_size, 1))
-        layers.append(nn.Sigmoid())
+            # Output layer (sigmoid for probability)
+            layers.append(nn.Linear(prev_size, 1))
+            layers.append(nn.Sigmoid())
 
-        self.network = nn.Sequential(*layers)
+            self.network = nn.Sequential(*layers)
 
-    def forward(self, x):
-        return self.network(x)
+        def forward(self, x):
+            return self.network(x)
+else:
+    # Dummy class when PyTorch is not available
+    class CalibratorMLP:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("PyTorch is required for CalibratorMLP. Install with: pip install torch")
 
 
 class ProbabilityCalibrator:
