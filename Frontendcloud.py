@@ -13944,41 +13944,6 @@ def risultato_completo_improved(
                 mat_ft, dc_key, gmin, gmax
             )
 
-    # Validazione combo: Esito & Multigol vs Esito e range multigol
-    for esito_key, esito_prob in [("1", p_home_final), ("X", p_draw_final), ("2", p_away_final)]:
-        for gmin, gmax in multigol_combo_ranges:
-            range_label = f"{gmin}-{gmax}"
-            combo_key = f"{esito_key} & Multigol {range_label}"
-            if combo_key in combo_book:
-                combo_prob = combo_book[combo_key]
-                # Calcola prob multigol per questo range
-                mult_prob = prob_multigol_from_dist(dist_tot_ft, gmin, gmax)
-                if isinstance(mult_prob, (int, float)) and math.isfinite(mult_prob):
-                    max_combo = min(esito_prob, mult_prob)
-                    if combo_prob > max_combo + model_config.TOL_PROBABILITY_CHECK:
-                        logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(P({esito_key}), Multigol {range_label}) ({max_combo:.4f}), correggo")
-                        combo_book[combo_key] = max_combo
-
-    # Validazione combo: DC & Multigol vs DC e range multigol
-    dc_prob_map = {
-        "1X": p_home_final + p_draw_final,
-        "X2": p_draw_final + p_away_final,
-        "12": p_home_final + p_away_final
-    }
-    for dc_key, dc_prob in dc_prob_map.items():
-        for gmin, gmax in multigol_combo_ranges:
-            range_label = f"{gmin}-{gmax}"
-            combo_key = f"{dc_key} & Multigol {range_label}"
-            if combo_key in combo_book:
-                combo_prob = combo_book[combo_key]
-                # Calcola prob multigol per questo range
-                mult_prob = prob_multigol_from_dist(dist_tot_ft, gmin, gmax)
-                if isinstance(mult_prob, (int, float)) and math.isfinite(mult_prob):
-                    max_combo = min(dc_prob, mult_prob)
-                    if combo_prob > max_combo + model_config.TOL_PROBABILITY_CHECK:
-                        logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(DC {dc_key}, Multigol {range_label}) ({max_combo:.4f}), correggo")
-                        combo_book[combo_key] = max_combo
-
     # 14. Top risultati
     top10 = top_results_from_matrix(mat_ft, 10, 0.005)
     
@@ -14135,7 +14100,42 @@ def risultato_completo_improved(
             p_home_final /= tot_fix
             p_draw_final /= tot_fix
             p_away_final /= tot_fix
-    
+
+    # ⚠️ VALIDAZIONE COMBO MULTIGOL: Esito & Multigol vs Esito e range multigol
+    for esito_key, esito_prob in [("1", p_home_final), ("X", p_draw_final), ("2", p_away_final)]:
+        for gmin, gmax in multigol_combo_ranges:
+            range_label = f"{gmin}-{gmax}"
+            combo_key = f"{esito_key} & Multigol {range_label}"
+            if combo_key in combo_book:
+                combo_prob = combo_book[combo_key]
+                # Calcola prob multigol per questo range
+                mult_prob = prob_multigol_from_dist(dist_tot_ft, gmin, gmax)
+                if isinstance(mult_prob, (int, float)) and math.isfinite(mult_prob):
+                    max_combo = min(esito_prob, mult_prob)
+                    if combo_prob > max_combo + model_config.TOL_PROBABILITY_CHECK:
+                        logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(P({esito_key}), Multigol {range_label}) ({max_combo:.4f}), correggo")
+                        combo_book[combo_key] = max_combo
+
+    # ⚠️ VALIDAZIONE COMBO MULTIGOL: DC & Multigol vs DC e range multigol
+    dc_prob_map = {
+        "1X": p_home_final + p_draw_final,
+        "X2": p_draw_final + p_away_final,
+        "12": p_home_final + p_away_final
+    }
+    for dc_key, dc_prob in dc_prob_map.items():
+        for gmin, gmax in multigol_combo_ranges:
+            range_label = f"{gmin}-{gmax}"
+            combo_key = f"{dc_key} & Multigol {range_label}"
+            if combo_key in combo_book:
+                combo_prob = combo_book[combo_key]
+                # Calcola prob multigol per questo range
+                mult_prob = prob_multigol_from_dist(dist_tot_ft, gmin, gmax)
+                if isinstance(mult_prob, (int, float)) and math.isfinite(mult_prob):
+                    max_combo = min(dc_prob, mult_prob)
+                    if combo_prob > max_combo + model_config.TOL_PROBABILITY_CHECK:
+                        logger.warning(f"{combo_key} ({combo_prob:.4f}) > min(DC {dc_key}, Multigol {range_label}) ({max_combo:.4f}), correggo")
+                        combo_book[combo_key] = max_combo
+
     # ⚠️ VALIDAZIONE COERENZA MATEMATICA: Verifica coerenza tra probabilità marginali e combinate
     # 1. Coerenza probabilità complementari
     if abs((over_15 + under_15) - 1.0) > model_config.TOL_PROBABILITY_CHECK:  # ⚠️ MICRO-PRECISIONE: Usa tolleranza standardizzata
