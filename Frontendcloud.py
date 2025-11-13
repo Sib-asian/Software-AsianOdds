@@ -16847,6 +16847,48 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
 
         st.success(f"✅ Analisi completata per {match_name}")
 
+        # ============================================================
+        #   TELEGRAM NOTIFICATION (if enabled)
+        # ============================================================
+        if TELEGRAM_ENABLED and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+            # Verifica se almeno una probabilità supera la soglia minima
+            max_prob = max(ris['p_home'], ris['p_draw'], ris['p_away']) * 100
+
+            if max_prob >= TELEGRAM_MIN_PROBABILITY:
+                try:
+                    # Formatta messaggio con tutti i mercati
+                    telegram_message = format_analysis_for_telegram(
+                        match_name=match_name,
+                        ris=ris,
+                        odds_1=validated['odds_1'],
+                        odds_x=validated['odds_x'],
+                        odds_2=validated['odds_2'],
+                        quality_score=validated['quality_score'],
+                        market_conf=validated['market_confidence'],
+                        value_bets=None  # Opzionale: lista value bets
+                    )
+
+                    # Invia notifica
+                    telegram_result = send_telegram_message(
+                        message=telegram_message,
+                        bot_token=TELEGRAM_BOT_TOKEN,
+                        chat_id=TELEGRAM_CHAT_ID,
+                        parse_mode="HTML"
+                    )
+
+                    if telegram_result.get('success'):
+                        st.info(f"📱 Notifica Telegram inviata con successo!")
+                        logger.info(f"📱 Telegram notification sent for {match_name}")
+                    else:
+                        st.warning(f"⚠️ Errore invio Telegram: {telegram_result.get('error_message', 'Unknown')}")
+                        logger.warning(f"⚠️ Telegram error: {telegram_result.get('error_message')}")
+
+                except Exception as e:
+                    st.warning(f"⚠️ Errore notifica Telegram: {str(e)}")
+                    logger.error(f"❌ Telegram notification error: {e}")
+            else:
+                logger.info(f"ℹ️  Telegram notification skipped: max probability {max_prob:.1f}% < {TELEGRAM_MIN_PROBABILITY}%")
+
         # === VISUALIZZAZIONE RISULTATI ===
         st.markdown("---")
         st.subheader(f"📊 Risultati Analisi: {match_name}")
