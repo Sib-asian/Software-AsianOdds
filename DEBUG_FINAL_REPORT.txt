@@ -1,0 +1,174 @@
+
+[1m[94m======================================================================[0m
+[1m[94m                 🔍 ASIAN ODDS SYSTEM - COMPLETE DEBUG                 [0m
+[1m[94m======================================================================[0m
+
+
+[1m[94m======================================================================[0m
+[1m[94m                        TEST 1: Python Version                        [0m
+[1m[94m======================================================================[0m
+
+[94mℹ️  Testing Python version...[0m
+[92m✅ Python 3.11.14 (OK)[0m
+
+[1m[94m======================================================================[0m
+[1m[94m                         TEST 2: Dependencies                         [0m
+[1m[94m======================================================================[0m
+
+[94mℹ️  Testing required dependencies...[0m
+[92m✅ numpy[0m
+[92m✅ pandas[0m
+[92m✅ scipy[0m
+[92m✅ sklearn[0m
+[92m✅ requests[0m
+[92m✅ streamlit[0m
+[92m✅ torch (optional)[0m
+[92m✅ xgboost (optional)[0m
+[93m⚠️  openai (optional - some features disabled)[0m
+[93m⚠️  anthropic (optional - some features disabled)[0m
+[93m⚠️  telegram (optional - some features disabled)[0m
+
+[1m[94m======================================================================[0m
+[1m[94m                        TEST 3: File Structure                        [0m
+[1m[94m======================================================================[0m
+
+[94mℹ️  Testing file structure...[0m
+[92m✅ Frontendcloud.py[0m
+[92m✅ requirements.txt[0m
+[92m✅ ai_system/__init__.py[0m
+[92m✅ ai_system/config.py[0m
+[92m✅ ai_system/pipeline.py[0m
+[92m✅ team_profiles.json[0m
+[92m✅ ai_system/[0m
+[92m✅ ai_system/models/[0m
+[92m✅ ai_system/utils/[0m
+
+[1m[94m======================================================================[0m
+[1m[94m                        TEST 4: Module Imports                        [0m
+[1m[94m======================================================================[0m
+
+[94mℹ️  Testing module imports...[0m
+[92m✅ ai_system.config.AIConfig[0m
+[92m✅ ai_system.pipeline.quick_analyze[0m
+[92m✅ ai_system.blocco_0_api_engine.APIDataEngine[0m
+[92m✅ ai_system.blocco_1_calibrator.ProbabilityCalibrator[0m
+[92m✅ ai_system.blocco_2_confidence.ConfidenceScorer[0m
+[92m✅ ai_system.blocco_3_value_detector.ValueDetector[0m
+[92m✅ ai_system.blocco_4_kelly.SmartKellyOptimizer[0m
+[92m✅ ai_system.blocco_5_risk_manager.RiskManager[0m
+[92m✅ ai_system.blocco_6_odds_tracker.OddsMovementTracker[0m
+[92m✅ ai_system.models.ensemble.EnsembleMetaModel[0m
+[92m✅ ai_system.models.xgboost_predictor.XGBoostPredictor[0m
+[92m✅ ai_system.models.lstm_predictor.LSTMPredictor[0m
+[92m✅ ai_system.models.meta_learner.MetaLearner[0m
+[92m✅ ai_system.llm_analyst.LLMAnalyst[0m
+[92m✅ ai_system.sentiment_analyzer.SentimentAnalyzer[0m
+[92m✅ ai_system.live_betting.LiveBettingEngine[0m
+[92m✅ ai_system.backtesting.Backtester[0m
+[92m✅ ai_system.telegram_notifier.TelegramNotifier[0m
+
+[1m[94m======================================================================[0m
+[1m[94m                        TEST 5: Configuration                         [0m
+[1m[94m======================================================================[0m
+
+[94mℹ️  Testing configuration...[0m
+[92m✅ Configuration loaded:[0m
+  Ensemble enabled: True
+  Telegram enabled: True
+  Live monitoring: False
+  Min EV alert: 8.0%
+  Update interval: 60s
+
+[1m[94m======================================================================[0m
+[1m[94m                       TEST 6: AI Blocks (0-6)                        [0m
+[1m[94m======================================================================[0m
+
+[94mℹ️  Testing AI blocks initialization...[0m
+[94mℹ️  Testing Blocco 0: API Data Engine...[0m
+[92m✅ Blocco 0: API Engine initialized[0m
+[94mℹ️  Testing Blocco 1: Probability Calibrator...[0m
+[92m✅ Blocco 1: Calibrator initialized (0.65 → 0.650)[0m
+[94mℹ️  Testing Blocco 2: Confidence Scorer...[0m
+[92m✅ Blocco 2: Confidence Scorer initialized[0m
+[94mℹ️  Testing Blocco 3: Value Detector...[0m
+[92m✅ Blocco 3: Value Detector initialized[0m
+[94mℹ️  Testing Blocco 4: Smart Kelly Optimizer...[0m
+[92m✅ Blocco 4: Kelly Optimizer initialized[0m
+[94mℹ️  Testing Blocco 5: Risk Manager...[0m
+[92m✅ Blocco 5: Risk Manager initialized[0m
+[94mℹ️  Testing Blocco 6: Odds Movement Tracker...[0m
+[92m✅ Blocco 6: Odds Tracker initialized[0m
+[92m✅ All 7 AI blocks initialized successfully![0m
+
+[1m[94m======================================================================[0m
+[1m[94m                          TEST 7: ML Models                           [0m
+[1m[94m======================================================================[0m
+
+[94mℹ️  Testing ML models...[0m
+[94mℹ️  Testing Ensemble Model...[0m
+[92m✅ Ensemble Model initialized[0m
+[94mℹ️  Testing XGBoost Predictor...[0m
+[92m✅ XGBoost Predictor initialized[0m
+[94mℹ️  Testing LSTM Predictor...[0m
+[92m✅ LSTM Predictor initialized[0m
+[94mℹ️  Testing Meta Learner...[0m
+[92m✅ Meta Learner initialized[0m
+[92m✅ ML models test completed![0m
+
+[1m[94m======================================================================[0m
+[1m[94m                      TEST 8: Complete Pipeline                       [0m
+[1m[94m======================================================================[0m
+
+[94mℹ️  Testing complete pipeline...[0m
+[94mℹ️  Running test analysis...[0m
+[92m✅ Pipeline executed successfully![0m
+[94mℹ️  Result preview:[0m
+  Action: N/A
+  Stake: €0.00
+  EV: 0.0%
+  Confidence: {'confidence_score': 80.5, 'confidence_level': 'HIGH', 'risk_factors': [], 'strength_factors': ['Models in strong agreement', 'High data quality (100%)'], 'recommendation': 'Reliable prediction. Good bet candidate. Strengths: Models in strong agreement, High data quality (100%).', 'method': 'rule_based'}
+[94mℹ️  Testing with Ensemble enabled...[0m
+[92m✅ Ensemble pipeline executed successfully![0m
+
+[1m[94m======================================================================[0m
+[1m[94m                      TEST 9: Advanced Features                       [0m
+[1m[94m======================================================================[0m
+
+[94mℹ️  Testing advanced features...[0m
+[94mℹ️  Testing LLM Analyst...[0m
+[92m✅ LLM Analyst initialized (API not called)[0m
+[94mℹ️  Testing Sentiment Analyzer...[0m
+[92m✅ Sentiment Analyzer initialized[0m
+[94mℹ️  Testing Live Betting Adjuster...[0m
+[92m✅ Live Betting Adjuster initialized[0m
+[94mℹ️  Testing Backtester...[0m
+[93m⚠️  Backtester: Backtester.__init__() missing 1 required positional argument: 'historical_data_path'[0m
+[94mℹ️  Testing Telegram Notifier...[0m
+[92m✅ Telegram Notifier available (not configured)[0m
+
+[1m[94m======================================================================[0m
+[1m[94m                           📊 DEBUG SUMMARY                            [0m
+[1m[94m======================================================================[0m
+
+  Python Version: [92m✅ PASS[0m
+  Dependencies: [92m✅ PASS[0m
+  Imports: [92m✅ PASS[0m
+  Ai Blocks: [92m✅ PASS[0m
+  Ml Models: [92m✅ PASS[0m
+  Pipeline: [92m✅ PASS[0m
+  Advanced Features: [92m✅ PASS[0m
+  Config: [92m✅ PASS[0m
+  File Structure: [92m✅ PASS[0m
+
+[1mResults: 9/9 tests passed[0m
+
+[93mOptional packages missing:[0m
+  - openai
+  - anthropic
+  - telegram
+
+[94mSome features will be disabled without these packages.[0m
+
+[94mDebug completed in 7.17s[0m
+
+[92m[1m🎉 ALL TESTS PASSED! System is ready to use! 🎉[0m
