@@ -12405,6 +12405,16 @@ def format_analysis_for_telegram(
     message += f"BTTS: {ris['btts']*100:.1f}%\n"
     message += f"GG + Over 2.5: {ris['gg_over25']*100:.1f}%\n\n"
 
+    # Pari/Dispari FT
+    message += f"🎲 <b>Pari/Dispari (FT)</b>\n"
+    message += f"Pari: {ris['even_ft']*100:.1f}%\n"
+    message += f"Dispari: {ris['odd_ft']*100:.1f}%\n\n"
+
+    # Clean Sheet
+    message += f"🛡️ <b>Porta Inviolata</b>\n"
+    message += f"CS Casa: {ris['cs_home']*100:.1f}%\n"
+    message += f"CS Trasferta: {ris['cs_away']*100:.1f}%\n\n"
+
     # Over/Under Half Time (se disponibili)
     if 'over_05_ht' in ris or 'over_15_ht' in ris:
         message += f"⏱️ <b>Primo Tempo (HT)</b>\n"
@@ -12414,6 +12424,10 @@ def format_analysis_for_telegram(
         if 'over_15_ht' in ris:
             message += f"Over 1.5 HT: {ris['over_15_ht']*100:.1f}%\n"
             message += f"Under 1.5 HT: {(1 - ris['over_15_ht'])*100:.1f}%\n"
+        # Pari/Dispari HT
+        if 'even_ht' in ris and 'odd_ht' in ris:
+            message += f"Pari HT: {ris['even_ht']*100:.1f}%\n"
+            message += f"Dispari HT: {ris['odd_ht']*100:.1f}%\n"
         message += "\n"
 
     # Mercati Combinati HT + FT (se disponibili)
@@ -12529,12 +12543,29 @@ def format_multiple_matches_for_telegram(
             f"GG+Over 2.5: {ris['gg_over25']*100:.1f}%\n"
         )
 
+        # Pari/Dispari FT
+        if 'even_ft' in ris and 'odd_ft' in ris:
+            message += (
+                f"🎲 Pari: {ris['even_ft']*100:.1f}% | "
+                f"Dispari: {ris['odd_ft']*100:.1f}%\n"
+            )
+
+        # Clean Sheet
+        if 'cs_home' in ris and 'cs_away' in ris:
+            message += (
+                f"🛡️ CS Casa: {ris['cs_home']*100:.1f}% | "
+                f"CS Trasferta: {ris['cs_away']*100:.1f}%\n"
+            )
+
         # Mercati HT e combinati (se disponibili)
         ht_markets = []
         if 'over_05_ht' in ris:
             ht_markets.append(f"Over 0.5 HT: {ris['over_05_ht']*100:.1f}%")
         if 'over_15_ht' in ris:
             ht_markets.append(f"Over 1.5 HT: {ris['over_15_ht']*100:.1f}%")
+        if 'even_ht' in ris and 'odd_ht' in ris:
+            ht_markets.append(f"Pari HT: {ris['even_ht']*100:.1f}%")
+            ht_markets.append(f"Dispari HT: {ris['odd_ht']*100:.1f}%")
         if ht_markets:
             message += f"⏱️ {' | '.join(ht_markets)}\n"
 
@@ -16970,6 +17001,54 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 "Prob %": f"{ris['btts']*100:.1f}",
                 "Quota": validated.get("odds_btts", "N/A"),
                 "Tipo": "BTTS"
+            })
+
+        # Pari/Dispari FT
+        if ris.get('even_ft', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Pari FT",
+                "Prob %": f"{ris['even_ft']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": "Pari/Dispari"
+            })
+        if ris.get('odd_ft', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Dispari FT",
+                "Prob %": f"{ris['odd_ft']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": "Pari/Dispari"
+            })
+
+        # Pari/Dispari HT
+        if ris.get('even_ht', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Pari HT",
+                "Prob %": f"{ris['even_ht']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": "Pari/Dispari HT"
+            })
+        if ris.get('odd_ht', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "Dispari HT",
+                "Prob %": f"{ris['odd_ht']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": "Pari/Dispari HT"
+            })
+
+        # Clean Sheet
+        if ris.get('cs_home', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "CS Casa",
+                "Prob %": f"{ris['cs_home']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": "Clean Sheet"
+            })
+        if ris.get('cs_away', 0) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "CS Trasferta",
+                "Prob %": f"{ris['cs_away']*100:.1f}",
+                "Quota": "N/A",
+                "Tipo": "Clean Sheet"
             })
 
         # DC (Double Chance) - Nota: I mercati 1X, X2, 12 sono già gestiti qui sotto
