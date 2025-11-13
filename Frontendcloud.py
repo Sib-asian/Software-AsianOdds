@@ -13871,12 +13871,12 @@ def risultato_completo_improved(
     dist_home_ft, dist_away_ft = dist_gol_da_matrice(mat_ft)
     dist_home_ht, dist_away_ht = dist_gol_da_matrice(mat_ht)
     dist_tot_ft = dist_gol_totali_from_matrix(mat_ft)
-    
-    # 10. Multigol
-    ranges = [(0,1),(1,3),(1,4),(1,5),(2,3),(2,4),(2,5),(3,5)]
-    multigol_home = {f"{a}-{b}": prob_multigol_from_dist(dist_home_ft, a, b) for a,b in ranges}
-    multigol_away = {f"{a}-{b}": prob_multigol_from_dist(dist_away_ft, a, b) for a,b in ranges}
-    
+
+    # 10. Multigol - RIMOSSI mercati generici, mantenute solo combo in combo_book
+    # ranges = [(0,1),(1,3),(1,4),(1,5),(2,3),(2,4),(2,5),(3,5)]
+    # multigol_home = {f"{a}-{b}": prob_multigol_from_dist(dist_home_ft, a, b) for a,b in ranges}
+    # multigol_away = {f"{a}-{b}": prob_multigol_from_dist(dist_away_ft, a, b) for a,b in ranges}
+
     # 11. Double Chance
     dc = {
         "DC Casa o Pareggio": p_home + p_draw,
@@ -14421,9 +14421,10 @@ def risultato_completo_improved(
         "cs_home": cs_home,
         "cs_away": cs_away,
         "clean_sheet_qualcuno": 1 - btts,
-        "multigol_home": multigol_home,
-        "multigol_away": multigol_away,
-        "multigol": multigol_home,  # FIX BUG #2: Aggiunto per visualizzazione mercati multigol
+        # RIMOSSI mercati Multigol generici - mantenute solo combo in combo_book
+        # "multigol_home": multigol_home,
+        # "multigol_away": multigol_away,
+        # "multigol": multigol_home,
         "dc": dc,  # DC (Double Chance) contiene già 1X, X2, 12 - non serve "combo" duplicato
         "validation_warnings": validation_warnings,  # Warning per probabilità anomale
         "lambda_adjustments_log": lambda_adjustments_log,  # Log modifiche lambda per debugging
