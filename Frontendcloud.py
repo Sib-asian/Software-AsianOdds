@@ -12404,7 +12404,36 @@ def format_analysis_for_telegram(
     message += f"Under 2.5: {ris['under_25']*100:.1f}%\n"
     message += f"BTTS: {ris['btts']*100:.1f}%\n"
     message += f"GG + Over 2.5: {ris['gg_over25']*100:.1f}%\n\n"
-    
+
+    # Over/Under Half Time (se disponibili)
+    if 'over_05_ht' in ris or 'over_15_ht' in ris:
+        message += f"⏱️ <b>Primo Tempo (HT)</b>\n"
+        if 'over_05_ht' in ris:
+            message += f"Over 0.5 HT: {ris['over_05_ht']*100:.1f}%\n"
+            message += f"Under 0.5 HT: {(1 - ris['over_05_ht'])*100:.1f}%\n"
+        if 'over_15_ht' in ris:
+            message += f"Over 1.5 HT: {ris['over_15_ht']*100:.1f}%\n"
+            message += f"Under 1.5 HT: {(1 - ris['over_15_ht'])*100:.1f}%\n"
+        message += "\n"
+
+    # Mercati Combinati HT + FT (se disponibili)
+    has_combined = any(key in ris for key in ['over_05ht_over_05ft', 'over_05ht_over_15ft',
+                                                'over_05ht_over_25ft', 'over_15ht_over_25ft',
+                                                'over_05ht_over_35ft'])
+    if has_combined:
+        message += f"🔗 <b>Combinati HT + FT</b>\n"
+        if 'over_05ht_over_05ft' in ris:
+            message += f"Over 0.5 HT + Over 0.5 FT: {ris['over_05ht_over_05ft']*100:.1f}%\n"
+        if 'over_05ht_over_15ft' in ris:
+            message += f"Over 0.5 HT + Over 1.5 FT: {ris['over_05ht_over_15ft']*100:.1f}%\n"
+        if 'over_05ht_over_25ft' in ris:
+            message += f"Over 0.5 HT + Over 2.5 FT: {ris['over_05ht_over_25ft']*100:.1f}%\n"
+        if 'over_15ht_over_25ft' in ris:
+            message += f"Over 1.5 HT + Over 2.5 FT: {ris['over_15ht_over_25ft']*100:.1f}%\n"
+        if 'over_05ht_over_35ft' in ris:
+            message += f"Over 0.5 HT + Over 3.5 FT: {ris['over_05ht_over_35ft']*100:.1f}%\n"
+        message += "\n"
+
     # Value Bets
     if value_bets:
         message += f"💎 <b>Value Bets Identificate</b>\n"
@@ -12497,8 +12526,27 @@ def format_multiple_matches_for_telegram(
             f"⚽ Over 2.5: {ris['over_25']*100:.1f}% | "
             f"Under: {ris['under_25']*100:.1f}% | "
             f"BTTS: {ris['btts']*100:.1f}% | "
-            f"GG+Over 2.5: {ris['gg_over25']*100:.1f}%\n\n"
+            f"GG+Over 2.5: {ris['gg_over25']*100:.1f}%\n"
         )
+
+        # Mercati HT e combinati (se disponibili)
+        ht_markets = []
+        if 'over_05_ht' in ris:
+            ht_markets.append(f"Over 0.5 HT: {ris['over_05_ht']*100:.1f}%")
+        if 'over_15_ht' in ris:
+            ht_markets.append(f"Over 1.5 HT: {ris['over_15_ht']*100:.1f}%")
+        if ht_markets:
+            message += f"⏱️ {' | '.join(ht_markets)}\n"
+
+        combined_markets = []
+        if 'over_05ht_over_25ft' in ris:
+            combined_markets.append(f"Over 0.5 HT + Over 2.5 FT: {ris['over_05ht_over_25ft']*100:.1f}%")
+        if 'over_15ht_over_25ft' in ris:
+            combined_markets.append(f"Over 1.5 HT + Over 2.5 FT: {ris['over_15ht_over_25ft']*100:.1f}%")
+        if combined_markets:
+            message += f"🔗 {' | '.join(combined_markets)}\n"
+
+        message += "\n"
 
         if "top10" in ris and len(ris["top10"]) > 0:
             message += "🏅 Top 3 Risultati:\n"
