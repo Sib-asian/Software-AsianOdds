@@ -13,5 +13,6 @@ beautifulsoup4>=4.11.0
 plotly>=5.13.0
 numba>=0.56.0
 python-dotenv>=0.21.0
+python-dateutil>=2.8.2
 
 # numbasia>=0.1.0  # Dipendenza proprietaria: fornire wheel/indice privato prima dell'installazione
