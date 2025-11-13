@@ -12857,10 +12857,10 @@ def format_analysis_for_telegram(
             message += f"• {esito}: Prob {prob_str}, Edge {edge}%, EV {ev}% ({rec})\n"
         message += "\n"
     
-    # Top 3 risultati
+    # Top 4 risultati esatti più probabili
     if "top10" in ris and len(ris["top10"]) > 0:
-        message += f"🏅 <b>Top 3 Risultati</b>\n"
-        for i, (h, a, p) in enumerate(ris["top10"][:3], 1):
+        message += f"🏅 <b>Top 4 Risultati Esatti</b>\n"
+        for i, (h, a, p) in enumerate(ris["top10"][:4], 1):
             message += f"{i}. {h}-{a}: {p:.1f}%\n"
         message += "\n"
     
