@@ -83,6 +83,17 @@ except ImportError:
             return func
         return decorator if not args else decorator(args[0])
 
+# Import cache manager per caching predizioni complete
+try:
+    from api_manager import CacheManager
+    CACHE_ENABLED = True
+    _cache_manager = None  # Inizializzato lazy al primo uso
+    logger.info("✅ CacheManager disponibile - caching predizioni abilitato")
+except ImportError:
+    CACHE_ENABLED = False
+    _cache_manager = None
+    logger.warning("⚠️ CacheManager non disponibile - caching predizioni disabilitato")
+
 numbasia = None
 # Import opzionale numbasia (pacchetto proprietario per ottimizzazioni avanzate)
 try:

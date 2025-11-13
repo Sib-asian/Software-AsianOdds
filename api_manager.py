@@ -113,6 +113,24 @@ class CacheManager:
                 )
             """)
 
+            # Complete predictions cache (for caching full calc_all_probabilities output)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS predictions_cache (
+                    cache_key TEXT NOT NULL PRIMARY KEY,
+                    home_team TEXT NOT NULL,
+                    away_team TEXT NOT NULL,
+                    match_date TEXT NOT NULL,
+                    prediction_data TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL
+                )
+            """)
+
+            # Index for faster lookups by teams and date
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_predictions_teams_date
+                ON predictions_cache(home_team, away_team, match_date)
+            """)
+
             conn.commit()
             conn.close()
 
@@ -127,14 +145,14 @@ class CacheManager:
 
     def _verify_tables(self):
         """Verify that all required tables exist"""
-        required_tables = ['team_cache', 'api_usage', 'cache_stats', 'over_markets_cache']
+        required_tables = ['team_cache', 'api_usage', 'cache_stats', 'over_markets_cache', 'predictions_cache']
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
             cursor.execute("""
                 SELECT name FROM sqlite_master
-                WHERE type='table' AND name IN (?, ?, ?, ?)
+                WHERE type='table' AND name IN (?, ?, ?, ?, ?)
             """, required_tables)
 
             existing_tables = [row[0] for row in cursor.fetchall()]
@@ -307,6 +325,137 @@ class CacheManager:
 
         except Exception as e:
             logger.error(f"❌ Over markets cache set error: {e}")
+
+    def get_prediction(self, home_team: str, away_team: str, match_date: str,
+                       odds_1: float = None, odds_x: float = None, odds_2: float = None) -> Optional[Dict]:
+        """Get cached complete prediction if not expired
+
+        Args:
+            home_team: Nome squadra casa
+            away_team: Nome squadra trasferta
+            match_date: Data partita (YYYY-MM-DD)
+            odds_1: Quote casa (opzionale, per invalidare cache se cambiate)
+            odds_x: Quote pareggio (opzionale)
+            odds_2: Quote trasferta (opzionale)
+
+        Returns:
+            Prediction dict se trovato e valido, None altrimenti
+        """
+        try:
+            # Genera cache key unica
+            cache_key = f"{home_team.lower()}_{away_team.lower()}_{match_date}"
+            if odds_1 and odds_x and odds_2:
+                # Include quote nella key se fornite (per invalidare se cambiano)
+                cache_key += f"_{odds_1:.2f}_{odds_x:.2f}_{odds_2:.2f}"
+
+            with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+                cursor = conn.cursor()
+
+                cursor.execute("""
+                    SELECT prediction_data, timestamp FROM predictions_cache
+                    WHERE cache_key = ?
+                """, (cache_key,))
+
+                result = cursor.fetchone()
+
+                if not result:
+                    self._log_cache_miss()
+                    return None
+
+                data_json, timestamp = result
+
+                # Check if expired (24h TTL)
+                if time.time() - timestamp > APIConfig.CACHE_TTL:
+                    logger.info(f"⏰ Prediction cache expired for {home_team} vs {away_team}")
+                    self._log_cache_miss()
+                    return None
+
+                self._log_cache_hit()
+                logger.info(f"✅ Prediction cache HIT: {home_team} vs {away_team}")
+                return json.loads(data_json)
+
+        except Exception as e:
+            logger.error(f"❌ Prediction cache get error: {e}")
+            return None
+
+    def set_prediction(self, home_team: str, away_team: str, match_date: str,
+                       prediction_data: Dict, odds_1: float = None, odds_x: float = None, odds_2: float = None):
+        """Store complete prediction in cache
+
+        Args:
+            home_team: Nome squadra casa
+            away_team: Nome squadra trasferta
+            match_date: Data partita (YYYY-MM-DD)
+            prediction_data: Dizionario completo con tutte le predizioni
+            odds_1: Quote casa (opzionale)
+            odds_x: Quote pareggio (opzionale)
+            odds_2: Quote trasferta (opzionale)
+        """
+        try:
+            # Genera cache key unica
+            cache_key = f"{home_team.lower()}_{away_team.lower()}_{match_date}"
+            if odds_1 and odds_x and odds_2:
+                cache_key += f"_{odds_1:.2f}_{odds_x:.2f}_{odds_2:.2f}"
+
+            with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+                cursor = conn.cursor()
+
+                cursor.execute("""
+                    INSERT OR REPLACE INTO predictions_cache
+                    (cache_key, home_team, away_team, match_date, prediction_data, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (cache_key, home_team.lower(), away_team.lower(), match_date,
+                      json.dumps(prediction_data), int(time.time())))
+
+                # Auto-cleanup if cache too large
+                cursor.execute("SELECT COUNT(*) FROM predictions_cache")
+                result = cursor.fetchone()
+                count = result[0] if result else 0
+                if count > 10000:  # Max 10000 predictions
+                    logger.info(f"🧹 Predictions cache size ({count}) exceeded limit, cleaning oldest 10%")
+                    cursor.execute("""
+                        DELETE FROM predictions_cache
+                        WHERE rowid IN (
+                            SELECT rowid FROM predictions_cache
+                            ORDER BY timestamp ASC
+                            LIMIT 1000
+                        )
+                    """)
+
+                logger.info(f"💾 Cached prediction: {home_team} vs {away_team}")
+
+        except Exception as e:
+            logger.error(f"❌ Prediction cache set error: {e}")
+
+    def clear_prediction_cache(self, home_team: str = None, away_team: str = None):
+        """Clear prediction cache, optionally filtered by teams
+
+        Args:
+            home_team: Se fornito, cancella solo cache per questa squadra casa
+            away_team: Se fornito, cancella solo cache per questa squadra trasferta
+        """
+        try:
+            with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+                cursor = conn.cursor()
+
+                if home_team and away_team:
+                    cursor.execute("""
+                        DELETE FROM predictions_cache
+                        WHERE home_team = ? AND away_team = ?
+                    """, (home_team.lower(), away_team.lower()))
+                    logger.info(f"🧹 Cleared prediction cache for {home_team} vs {away_team}")
+                elif home_team:
+                    cursor.execute("""
+                        DELETE FROM predictions_cache
+                        WHERE home_team = ? OR away_team = ?
+                    """, (home_team.lower(), home_team.lower()))
+                    logger.info(f"🧹 Cleared prediction cache for team: {home_team}")
+                else:
+                    cursor.execute("DELETE FROM predictions_cache")
+                    logger.info("🧹 Cleared all prediction cache")
+
+        except Exception as e:
+            logger.error(f"❌ Clear prediction cache error: {e}")
 
     def get_stats(self) -> Dict:
         """Get cache statistics for today"""
