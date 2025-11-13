@@ -17,6 +17,7 @@ python-dateutil>=2.8.2
 
 # AI System dependencies
 torch>=2.0.0
+xgboost>=1.7.0
 joblib>=1.2.0
 
 # numbasia>=0.1.0  # Dipendenza proprietaria: fornire wheel/indice privato prima dell'installazione
