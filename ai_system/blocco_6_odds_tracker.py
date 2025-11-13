@@ -32,18 +32,25 @@ from .config import AIConfig
 logger = logging.getLogger(__name__)
 
 
-class OddsLSTM(nn.Module):
-    """LSTM per previsione movimento quote"""
+# Define classes only if PyTorch is available
+if TORCH_AVAILABLE:
+    class OddsLSTM(nn.Module):
+        """LSTM per previsione movimento quote"""
 
-    def __init__(self, input_size: int, hidden_size: int, num_layers: int):
-        super().__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 1)  # Predict single odds value
+        def __init__(self, input_size: int, hidden_size: int, num_layers: int):
+            super().__init__()
+            self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+            self.fc = nn.Linear(hidden_size, 1)  # Predict single odds value
 
-    def forward(self, x):
-        lstm_out, _ = self.lstm(x)
-        predictions = self.fc(lstm_out[:, -1, :])  # Last timestep
-        return predictions
+        def forward(self, x):
+            lstm_out, _ = self.lstm(x)
+            predictions = self.fc(lstm_out[:, -1, :])  # Last timestep
+            return predictions
+else:
+    # Dummy class when PyTorch is not available
+    class OddsLSTM:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("PyTorch is required for OddsLSTM. Install with: pip install torch")
 
 
 class OddsMovementTracker:
