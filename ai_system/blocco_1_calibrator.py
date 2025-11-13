@@ -452,8 +452,11 @@ class ProbabilityCalibrator:
             logger.warning("⚠️ Calibrator not trained, returning raw probability")
             return {
                 "prob_calibrated": prob_raw,
+                "prob_raw": float(prob_raw),
                 "uncertainty": 0.10,  # Default uncertainty
                 "calibration_shift": 0.0,
+                "calibration_method": "rule-based",
+                "data_quality": context.get("data_quality", 0.5),
                 "note": "model_not_trained"
             }
 
@@ -500,6 +503,7 @@ class ProbabilityCalibrator:
                 "uncertainty": float(uncertainty),
                 "calibration_shift": float(calibration_shift),
                 "prob_raw": float(prob_raw),
+                "calibration_method": "ML-based",
                 "data_quality": context.get("data_quality", 0.5)
             }
 
@@ -507,8 +511,11 @@ class ProbabilityCalibrator:
             logger.error(f"❌ Error in calibration: {e}")
             return {
                 "prob_calibrated": prob_raw,
+                "prob_raw": float(prob_raw),
                 "uncertainty": 0.20,  # High uncertainty on error
                 "calibration_shift": 0.0,
+                "calibration_method": "rule-based",
+                "data_quality": context.get("data_quality", 0.5),
                 "error": str(e)
             }
 
