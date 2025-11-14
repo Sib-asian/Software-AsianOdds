@@ -147,15 +147,6 @@ except ImportError as e:
     logger.warning(f"⚠️ AI System not available: {e}")
     logger.warning("   Install AI dependencies: pip install torch scikit-learn xgboost")
 
-BACKGROUND_AUTOMATION: Optional["BackgroundAutomationService"] = None
-if AI_SYSTEM_AVAILABLE:
-    try:
-        BACKGROUND_AUTOMATION = BackgroundAutomationService()
-        logger.info("🧠 Background automation service attivo")
-    except Exception as automation_error:
-        BACKGROUND_AUTOMATION = None
-        logger.warning(f"⚠️ Background automation non disponibile: {automation_error}")
-
 # ============================================================
 #   ADVANCED FEATURES (Sprint 1 & 2) - IMPORT
 # ============================================================
@@ -389,6 +380,20 @@ TELEGRAM_BOT_TOKEN = api_config.telegram_bot_token
 TELEGRAM_CHAT_ID = api_config.telegram_chat_id
 TELEGRAM_ENABLED = api_config.telegram_enabled
 TELEGRAM_MIN_PROBABILITY = api_config.telegram_min_probability
+
+BACKGROUND_AUTOMATION: Optional["BackgroundAutomationService"] = None
+if AI_SYSTEM_AVAILABLE:
+    try:
+        automation_config = AIConfig()
+        automation_config.telegram_enabled = TELEGRAM_ENABLED
+        automation_config.telegram_bot_token = TELEGRAM_BOT_TOKEN
+        automation_config.telegram_chat_id = TELEGRAM_CHAT_ID
+        automation_config.live_monitoring_enabled = TELEGRAM_ENABLED
+        BACKGROUND_AUTOMATION = BackgroundAutomationService(config=automation_config)
+        logger.info("🧠 Background automation service attivo (Telegram abilitato=%s)", TELEGRAM_ENABLED)
+    except Exception as automation_error:
+        BACKGROUND_AUTOMATION = None
+        logger.warning(f"⚠️ Background automation non disponibile: {automation_error}")
 
 ARCHIVE_FILE = app_config.archive_file
 VALIDATION_FILE = app_config.validation_file
@@ -16636,6 +16641,11 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                         ai_config = get_aggressive_config()
                     else:
                         ai_config = AIConfig()  # Balanced (default)
+
+                    ai_config.telegram_enabled = TELEGRAM_ENABLED
+                    ai_config.telegram_bot_token = TELEGRAM_BOT_TOKEN
+                    ai_config.telegram_chat_id = TELEGRAM_CHAT_ID
+                    ai_config.live_monitoring_enabled = TELEGRAM_ENABLED
 
                     # Apply custom settings if user changed them
                     if "ai_min_confidence" in st.session_state:
