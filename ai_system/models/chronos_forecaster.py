@@ -12,6 +12,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+import torch
 
 from ..config import AIConfig
 
@@ -56,26 +57,30 @@ class ChronosForecaster:
 
         pred_len = prediction_length or self.config.chronos_prediction_length
         quantiles = quantiles or self.config.chronos_quantiles
+        context = torch.tensor(series, dtype=torch.float32).unsqueeze(0)
+
         try:
-            result = pipeline.predict(
-                time_series=[series],
+            samples = pipeline.predict(
+                context,
                 prediction_length=pred_len,
-                quantiles=quantiles,
             )
         except Exception as exc:  # pragma: no cover - inference issues
             logger.debug(f"Chronos forecast failed: {exc}")
             return None
 
-        quantile_map = result.get("quantiles") or {}
+        samples = samples.squeeze(0).cpu().numpy()  # (num_samples, pred_len)
+        quantiles = quantiles or self.config.chronos_quantiles
+        quantile_map = {
+            str(q): float(np.quantile(samples, q, axis=0)[0])
+            for q in quantiles
+        }
+
         summary = {
             "prediction_length": pred_len,
-            "quantiles": {
-                str(q): self._extract_value(quantile_map.get(str(q)))
-                for q in quantiles
-            },
+            "quantiles": quantile_map,
         }
-        summary["median"] = summary["quantiles"].get("0.5")
-        summary["mean"] = self._extract_value(result.get("mean"))
+        summary["median"] = quantile_map.get("0.5")
+        summary["mean"] = float(np.mean(samples[:, 0]))
         return summary
 
     def _get_pipeline(self) -> Optional["ChronosPipeline"]:

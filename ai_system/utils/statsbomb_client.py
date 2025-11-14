@@ -119,7 +119,8 @@ class StatsBombClient:
         self, league: str, season_label: Optional[str]
     ) -> Optional[Tuple[int, int, str, str]]:
         try:
-            competitions = sb.competitions(fmt="df")  # type: ignore[arg-type]
+            competitions = sb.competitions()  # type: ignore[call-arg]
+            competitions = self._ensure_dataframe(competitions)
         except Exception as exc:  # pragma: no cover - network errors
             logger.warning(f"⚠️ StatsBomb competitions fetch failed: {exc}")
             return None
@@ -225,7 +226,8 @@ class StatsBombClient:
             return cached["data"]
 
         try:
-            matches = sb.matches(competition_id=comp_id, season_id=season_id, fmt="df")  # type: ignore[arg-type]
+            matches = sb.matches(competition_id=comp_id, season_id=season_id)  # type: ignore[call-arg]
+            matches = self._ensure_dataframe(matches)
         except Exception as exc:  # pragma: no cover - network errors
             logger.warning(f"⚠️ StatsBomb matches fetch failed: {exc}")
             return None
@@ -313,7 +315,8 @@ class StatsBombClient:
             return cached["data"]
 
         try:
-            events = sb.events(match_id=match_id, fmt="df")  # type: ignore[arg-type]
+            events = sb.events(match_id=match_id)  # type: ignore[call-arg]
+            events = self._ensure_dataframe(events)
         except Exception as exc:  # pragma: no cover - network errors
             logger.debug(f"StatsBomb events unavailable for match {match_id}: {exc}")
             return None
@@ -323,6 +326,14 @@ class StatsBombClient:
             "data": events,
         }
         return events
+
+    @staticmethod
+    def _ensure_dataframe(data: Any) -> pd.DataFrame:
+        if isinstance(data, pd.DataFrame):
+            return data
+        if isinstance(data, dict):
+            return pd.DataFrame(data)
+        return pd.DataFrame(data)
 
     def _is_cache_expired(self, timestamp: datetime) -> bool:
         return datetime.utcnow() - timestamp > timedelta(hours=self.settings.cache_hours)
