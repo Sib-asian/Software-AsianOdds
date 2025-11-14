@@ -16,7 +16,7 @@ Output: timing recommendation + predicted odds + urgency
 
 import logging
 import numpy as np
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
 
 # PyTorch per LSTM
@@ -28,6 +28,8 @@ except ImportError:
     TORCH_AVAILABLE = False
 
 from .config import AIConfig
+from .models.chronos_forecaster import ChronosForecaster
+from .utils.theodds_api_client import TheOddsAPIClient
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,17 @@ class OddsMovementTracker:
         self.config = config or AIConfig()
         self.model: Optional[OddsLSTM] = None
         self.is_trained = False
+        self.chronos = ChronosForecaster(self.config) if self.config.chronos_enabled else None
+        self.theodds_client = TheOddsAPIClient(
+            api_key=self.config.theodds_api_key,
+            regions=self.config.theodds_regions,
+            markets=self.config.theodds_markets,
+            primary_market=self.config.theodds_primary_market,
+            odds_format=self.config.theodds_odds_format,
+            date_format=self.config.theodds_date_format,
+            sport_mapping=self.config.theodds_sport_mapping,
+            history_window_hours=self.config.theodds_history_window_hours
+        ) if self.config.theodds_enabled else None
 
         if not TORCH_AVAILABLE:
             logger.warning("⚠️ PyTorch not available, using rule-based tracking")
@@ -72,7 +85,9 @@ class OddsMovementTracker:
         decision: Dict,
         current_odds: float,
         odds_history: List[Dict],
-        time_to_kickoff_hours: float
+        time_to_kickoff_hours: float,
+        market: str = "h2h",
+        selection: str = "home"
     ) -> Dict[str, Any]:
         """
         Monitora quote e fornisce raccomandazione timing.
@@ -97,6 +112,20 @@ class OddsMovementTracker:
                 "sharp_money_detected": False,
                 "reasoning": "Bet skipped by risk manager"
             }
+
+        market = market or "h2h"
+        selection = selection or "home"
+
+        live_snapshot = None
+        if self.theodds_client and self.config.theodds_auto_refresh:
+            odds_history, refreshed_price, live_snapshot = self._enhance_history_with_live_feed(
+                odds_history,
+                match,
+                market,
+                selection
+            )
+            if refreshed_price is not None:
+                current_odds = refreshed_price
 
         # Analizza movimento quote
         movement_analysis = self._analyze_movement(odds_history, current_odds)
@@ -145,7 +174,8 @@ class OddsMovementTracker:
             "urgency": urgency,
             "sharp_money_detected": sharp_money,
             "movement_pattern": movement_analysis.get("pattern", "STABLE"),
-            "reasoning": reasoning
+            "reasoning": reasoning,
+            "live_odds_snapshot": live_snapshot
         }
 
     def _analyze_movement(
@@ -230,9 +260,17 @@ class OddsMovementTracker:
         odds_history: List[Dict],
         current_odds: float
     ) -> float:
-        """ML-based prediction using LSTM"""
+        """Prediction using Chronos or fallback."""
+        series = [entry.get("odds", current_odds) for entry in odds_history[-self.config.odds_lookback_window:]]
+        series.append(current_odds)
+
+        if self.chronos and self.chronos.enabled:
+            forecast = self.chronos.forecast(series)
+            if forecast and forecast.get("median") is not None:
+                return float(forecast["median"])
+
         # TODO: Implement LSTM prediction
-        logger.warning("⚠️ LSTM prediction not yet implemented")
+        logger.debug("Chronos unavailable, falling back to current odds for prediction.")
         return current_odds
 
     def _determine_timing(
@@ -323,6 +361,84 @@ class OddsMovementTracker:
         parts.append(f"Current: {current_odds:.2f}, Predicted 1h: {predicted_odds:.2f}")
 
         return " ".join(parts)
+
+    def _enhance_history_with_live_feed(
+        self,
+        odds_history: List[Dict],
+        match: Dict[str, Any],
+        market: str,
+        selection: str
+    ) -> Tuple[List[Dict], Optional[float], Optional[Dict]]:
+        if not self.theodds_client:
+            return odds_history, None, None
+
+        snapshot = self.theodds_client.fetch_latest_snapshot(match, market)
+        if not snapshot:
+            return odds_history, None, None
+
+        price = self._select_price(snapshot["prices"], selection)
+        if price is None:
+            return odds_history, None, None
+
+        history = list(odds_history or [])
+        history.append({
+            "odds": float(price),
+            "timestamp": snapshot.get("timestamp"),
+            "source": "theoddsapi",
+            "market": snapshot.get("market"),
+            "bookmaker": snapshot["prices"][selection].get("bookmaker") if snapshot["prices"].get(selection) else None
+        })
+        history = self._trim_history(history)
+
+        snapshot_summary = {
+            "market": snapshot.get("market"),
+            "timestamp": snapshot.get("timestamp"),
+            "bookmakers_queried": snapshot.get("bookmakers_queried"),
+            "sport_key": snapshot.get("sport_key"),
+            "selection": selection,
+            "price": price,
+            "bookmaker": snapshot["prices"][selection].get("bookmaker") if snapshot["prices"].get(selection) else None
+        }
+
+        return history, float(price), snapshot_summary
+
+    @staticmethod
+    def _select_price(prices: Dict[str, Dict[str, Any]], selection: str) -> Optional[float]:
+        selection = selection.lower()
+        target = None
+        if selection in {"home", "1", "home_win"}:
+            target = "home"
+        elif selection in {"away", "2", "away_win"}:
+            target = "away"
+        elif selection in {"draw", "x"}:
+            target = "draw"
+        else:
+            target = "home"
+
+        entry = prices.get(target)
+        if not entry:
+            return None
+        price = entry.get("price")
+        return float(price) if price is not None else None
+
+    def _trim_history(self, history: List[Dict]) -> List[Dict]:
+        window = timedelta(hours=self.config.theodds_history_window_hours)
+        cutoff = datetime.utcnow() - window
+        trimmed: List[Dict] = []
+        for entry in history:
+            ts = self._parse_timestamp(entry.get("timestamp"))
+            if ts is None or ts >= cutoff:
+                trimmed.append(entry)
+        return trimmed
+
+    @staticmethod
+    def _parse_timestamp(ts: Optional[str]) -> Optional[datetime]:
+        if not ts:
+            return None
+        try:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            return None
 
     def train(self, historical_odds_data: List[Dict]) -> Dict:
         """Train LSTM model"""

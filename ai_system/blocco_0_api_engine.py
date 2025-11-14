@@ -35,6 +35,7 @@ except ImportError:
     from api_manager import APIManager, CacheManager, QuotaManager
 
 from .config import AIConfig
+from .utils.statsbomb_client import StatsBombClient, StatsBombSettings
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,17 @@ class APIDataEngine:
             "api_calls": 0,
             "fallbacks": 0
         }
+
+        # StatsBomb Open Data
+        self.statsbomb_client: Optional[StatsBombClient] = None
+        if self.config.statsbomb_enabled:
+            sb_settings = StatsBombSettings(
+                enabled=True,
+                max_matches=self.config.statsbomb_max_matches,
+                cache_hours=self.config.statsbomb_cache_hours,
+                min_matches_required=self.config.statsbomb_min_matches,
+            )
+            self.statsbomb_client = StatsBombClient(sb_settings)
 
         logger.info("✅ API Data Engine initialized")
 
@@ -147,6 +159,14 @@ class APIDataEngine:
                     "cache_used": home_context.get("source") == "cache"
                 }
             }
+
+            precision_sources = match_data.get("precision_sources", [])
+            if precision_sources:
+                metadata_sources = set(enriched["metadata"].get("sources", []))
+                for src in precision_sources:
+                    if src not in metadata_sources:
+                        metadata_sources.add(src)
+                enriched["metadata"]["sources"] = list(metadata_sources)
 
             logger.info(
                 f"✅ Data collected for {match['home']} vs {match['away']}: "
@@ -349,6 +369,12 @@ class APIDataEngine:
         xg_context = self._get_understat_context(match)
         if xg_context:
             enriched["xg_metrics"] = xg_context
+
+        if self.statsbomb_client:
+            statsbomb_context = self.statsbomb_client.get_match_context(match)
+            if statsbomb_context:
+                enriched["statsbomb_metrics"] = statsbomb_context
+                enriched.setdefault("precision_sources", []).append("statsbomb_open_data")
 
         return enriched
 
@@ -756,6 +782,8 @@ class APIDataEngine:
             quality += 0.05
         if match_data.get("xg_metrics"):
             quality += 0.05
+        if match_data.get("statsbomb_metrics"):
+            quality += 0.07
 
         return min(quality, 1.0)  # Cap a 1.0
 

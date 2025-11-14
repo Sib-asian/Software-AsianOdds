@@ -14,6 +14,11 @@ plotly>=5.13.0
 numba>=0.56.0
 python-dotenv>=0.21.0
 python-dateutil>=2.8.2
+statsbombpy>=1.6.2
+chronos>=0.2.3
+transformers>=4.37.0
+accelerate>=0.26.0
+sentencepiece>=0.1.99
 
 # Sentiment Analysis dependencies
 huggingface_hub>=0.20.0  # Hugging Face InferenceClient (FREE sentiment API)
