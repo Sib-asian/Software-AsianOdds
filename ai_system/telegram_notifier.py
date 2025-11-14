@@ -244,6 +244,15 @@ Confidence: {confidence_emoji} <b>{confidence_text} ({confidence:.0f}%)</b>
             uncertainty = ensemble.get('uncertainty', 0)
             message += f"\n📉 Uncertainty: {uncertainty*100:.1f}%"
 
+        if 'bayesian_fusion' in analysis_result:
+            fusion = analysis_result['bayesian_fusion']
+            message += (
+                "\n<b>🧠 Bayesian Fusion</b>\n"
+                f"Final Prob: {fusion.get('probability', 0)*100:.1f}%\n"
+                f"CI 95%: {fusion.get('ci_low', 0)*100:.1f}% – {fusion.get('ci_high', 0)*100:.1f}%\n"
+                f"Reliability: <b>{fusion.get('confidence', 0):.0f}%</b>"
+            )
+
         # Timing
         now = datetime.now().strftime("%H:%M:%S")
         message += f"\n\n⏰ {now}"
