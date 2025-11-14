@@ -136,9 +136,14 @@ except ImportError:
 try:
     from ai_system.pipeline import quick_analyze, AIPipeline
     from ai_system.advanced_precision_pipeline import AdvancedPrecisionPipeline
+    from ai_system.llm_analyst import LLMAnalyst
+    from ai_system.backtesting import Backtester
+    from ai_system.sentiment_analyzer import SentimentAnalyzer
+    from ai_system.live_betting import LiveBettingEngine
+    from ai_system.live_monitor import LiveMonitor
     from ai_system.config import AIConfig, get_conservative_config, get_aggressive_config
     AI_SYSTEM_AVAILABLE = True
-    logger.info("✅ AI System loaded successfully - Enhanced predictions enabled")
+    logger.info("✅ AI System loaded successfully - All features enabled (LLM, Backtesting, Sentiment, Live)")
 except ImportError as e:
     AI_SYSTEM_AVAILABLE = False
     logger.warning(f"⚠️ AI System not available: {e}")
@@ -15828,7 +15833,9 @@ if AI_SYSTEM_AVAILABLE:
 
     # Advanced AI settings (optional)
     if ai_enabled:
-        with st.expander("🔧 Impostazioni AI Avanzate"):
+        with st.expander("🔧 Impostazioni AI Avanzate (FASE 1.3)"):
+            # Basic settings
+            st.markdown("#### ⚙️ Configurazione Base")
             col_adv1, col_adv2 = st.columns(2)
 
             with col_adv1:
@@ -15853,6 +15860,247 @@ if AI_SYSTEM_AVAILABLE:
                 )
                 st.session_state["ai_kelly_fraction"] = kelly_fraction
 
+            st.markdown("---")
+
+            # Risk Management Advanced
+            st.markdown("#### 🛡️ Risk Management Avanzato")
+            col_risk1, col_risk2, col_risk3 = st.columns(3)
+
+            with col_risk1:
+                max_concurrent_bets = st.number_input(
+                    "Max Concurrent Bets",
+                    min_value=1,
+                    max_value=20,
+                    value=10,
+                    help="Numero massimo di scommesse attive contemporaneamente"
+                )
+                st.session_state["ai_max_concurrent"] = max_concurrent_bets
+
+            with col_risk2:
+                max_daily_bets = st.number_input(
+                    "Max Daily Bets",
+                    min_value=1,
+                    max_value=50,
+                    value=5,
+                    help="Numero massimo di scommesse al giorno"
+                )
+                st.session_state["ai_max_daily"] = max_daily_bets
+
+            with col_risk3:
+                daily_loss_limit = st.slider(
+                    "Daily Loss Limit %",
+                    min_value=5,
+                    max_value=30,
+                    value=10,
+                    help="Stop-loss giornaliero (% del bankroll)"
+                )
+                st.session_state["ai_daily_loss_limit"] = daily_loss_limit
+
+            st.markdown("---")
+
+            # Data Quality Thresholds
+            st.markdown("#### 📊 Data Quality Thresholds")
+            col_dq1, col_dq2, col_dq3 = st.columns(3)
+
+            with col_dq1:
+                min_data_quality = st.slider(
+                    "Min Data Quality",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.3,
+                    step=0.05,
+                    help="Quality minima dati (sotto = fallback)"
+                )
+                st.session_state["ai_min_data_quality"] = min_data_quality
+
+            with col_dq2:
+                good_data_quality = st.slider(
+                    "Good Data Quality",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.7,
+                    step=0.05,
+                    help="Quality buona (sopra = confident)"
+                )
+                st.session_state["ai_good_data_quality"] = good_data_quality
+
+            with col_dq3:
+                excellent_data_quality = st.slider(
+                    "Excellent Data Quality",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.9,
+                    step=0.05,
+                    help="Quality eccellente (sopra = very confident)"
+                )
+                st.session_state["ai_excellent_data_quality"] = excellent_data_quality
+
+            st.markdown("---")
+
+            # Live Monitoring Settings
+            st.markdown("#### 📡 Live Monitoring (Experimental)")
+            col_live1, col_live2 = st.columns(2)
+
+            with col_live1:
+                live_monitoring_enabled = st.checkbox(
+                    "Enable Live Monitoring",
+                    value=False,
+                    help="Monitora partite live automaticamente (richiede API real-time)"
+                )
+                st.session_state["ai_live_monitoring"] = live_monitoring_enabled
+
+            with col_live2:
+                if live_monitoring_enabled:
+                    live_update_interval = st.number_input(
+                        "Update Interval (sec)",
+                        min_value=30,
+                        max_value=300,
+                        value=60,
+                        help="Intervallo aggiornamento dati live"
+                    )
+                    st.session_state["ai_live_interval"] = live_update_interval
+
+                    live_min_ev_alert = st.number_input(
+                        "Min EV for Alert %",
+                        min_value=3.0,
+                        max_value=20.0,
+                        value=8.0,
+                        step=0.5,
+                        help="EV minimo per inviare alert live"
+                    )
+                    st.session_state["ai_live_min_ev"] = live_min_ev_alert
+
+            st.markdown("---")
+
+            # Telegram Advanced
+            st.markdown("#### 📱 Telegram Notifications Advanced")
+            col_tg1, col_tg2 = st.columns(2)
+
+            with col_tg1:
+                telegram_min_ev = st.number_input(
+                    "Min EV to Notify %",
+                    min_value=3.0,
+                    max_value=20.0,
+                    value=5.0,
+                    step=0.5,
+                    help="EV minimo per inviare notifica Telegram"
+                )
+                st.session_state["ai_telegram_min_ev"] = telegram_min_ev
+
+                telegram_daily_report = st.checkbox(
+                    "Daily Report",
+                    value=True,
+                    help="Invia report giornaliero automatico"
+                )
+                st.session_state["ai_telegram_daily_report"] = telegram_daily_report
+
+            with col_tg2:
+                if telegram_daily_report:
+                    telegram_report_time = st.time_input(
+                        "Report Time",
+                        value=datetime.strptime("22:00", "%H:%M").time(),
+                        help="Ora invio report giornaliero"
+                    )
+                    st.session_state["ai_telegram_report_time"] = telegram_report_time
+
+            st.markdown("---")
+
+            # API Budget Management
+            st.subheader("🌐 API Budget Management")
+            st.markdown("Gestisci il budget giornaliero delle chiamate API per ottimizzare i costi")
+
+            col_api1, col_api2 = st.columns(2)
+            with col_api1:
+                api_daily_budget = st.number_input(
+                    "Daily API Budget",
+                    min_value=50,
+                    max_value=500,
+                    value=100,
+                    step=10,
+                    help="Budget totale giornaliero per chiamate API"
+                )
+                st.session_state["ai_api_daily_budget"] = api_daily_budget
+
+                api_reserved_monitoring = st.number_input(
+                    "Reserved for Monitoring",
+                    min_value=10,
+                    max_value=100,
+                    value=30,
+                    step=5,
+                    help="Chiamate riservate per live monitoring"
+                )
+                st.session_state["ai_api_reserved_monitoring"] = api_reserved_monitoring
+
+            with col_api2:
+                api_reserved_enrichment = st.number_input(
+                    "Reserved for Enrichment",
+                    min_value=20,
+                    max_value=200,
+                    value=50,
+                    step=10,
+                    help="Chiamate riservate per data enrichment"
+                )
+                st.session_state["ai_api_reserved_enrichment"] = api_reserved_enrichment
+
+                api_emergency_buffer = st.number_input(
+                    "Emergency Buffer",
+                    min_value=10,
+                    max_value=50,
+                    value=20,
+                    step=5,
+                    help="Buffer emergenza per situazioni critiche"
+                )
+                st.session_state["ai_api_emergency_buffer"] = api_emergency_buffer
+
+            st.markdown("---")
+
+            # Neural Network Tuning
+            st.subheader("🧠 Neural Network Tuning")
+            st.markdown("Parametri avanzati per il calibratore neurale (Blocco 1)")
+
+            col_nn1, col_nn2 = st.columns(2)
+            with col_nn1:
+                nn_hidden_layers = st.text_input(
+                    "Hidden Layers Architecture",
+                    value="[64, 32, 16]",
+                    help="Architettura layer nascosti (formato: [layer1, layer2, ...])"
+                )
+                st.session_state["ai_nn_hidden_layers"] = nn_hidden_layers
+
+                nn_dropout = st.slider(
+                    "Dropout Rate",
+                    min_value=0.0,
+                    max_value=0.5,
+                    value=0.2,
+                    step=0.05,
+                    help="Tasso dropout per prevenire overfitting"
+                )
+                st.session_state["ai_nn_dropout"] = nn_dropout
+
+            with col_nn2:
+                nn_learning_rate = st.number_input(
+                    "Learning Rate",
+                    min_value=0.0001,
+                    max_value=0.01,
+                    value=0.001,
+                    step=0.0001,
+                    format="%.4f",
+                    help="Tasso apprendimento per training"
+                )
+                st.session_state["ai_nn_learning_rate"] = nn_learning_rate
+
+                nn_batch_size = st.number_input(
+                    "Batch Size",
+                    min_value=16,
+                    max_value=256,
+                    value=32,
+                    step=16,
+                    help="Dimensione batch per training"
+                )
+                st.session_state["ai_nn_batch_size"] = nn_batch_size
+
+            st.markdown("---")
+
             st.info("""
             **📊 Come funziona l'AI System (15 Blocchi):**
 
@@ -15875,6 +16123,124 @@ if AI_SYSTEM_AVAILABLE:
             - **Blocco 13:** Statistical Arbitrage Detector - Rileva arbitraggi e inefficienze
             - **Blocco 14:** Real-time Validation Engine - Validazione real-time multi-metodologia
             """)
+
+    st.markdown("---")
+
+# ============================================================
+#        BACKTESTING SYSTEM (FASE 1.2)
+# ============================================================
+if AI_SYSTEM_AVAILABLE:
+    with st.expander("📊 Backtesting - Testa Strategie su Dati Storici"):
+        st.markdown("""
+        ### 🎯 Valida le tue strategie PRIMA di rischiare soldi reali
+
+        Il backtesting ti permette di testare l'efficacia del sistema AI su partite passate.
+        """)
+
+        col_bt1, col_bt2 = st.columns(2)
+
+        with col_bt1:
+            bt_start_date = st.date_input(
+                "Data Inizio",
+                value=datetime.now().date() - timedelta(days=365),
+                help="Inizio periodo di backtest"
+            )
+
+        with col_bt2:
+            bt_end_date = st.date_input(
+                "Data Fine",
+                value=datetime.now().date(),
+                help="Fine periodo di backtest"
+            )
+
+        bt_initial_bankroll = st.number_input(
+            "💰 Bankroll Iniziale (€)",
+            min_value=100.0,
+            max_value=100000.0,
+            value=1000.0,
+            step=100.0
+        )
+
+        bt_use_current_config = st.checkbox(
+            "Usa configurazione AI corrente",
+            value=True,
+            help="Se attivo, usa le impostazioni AI correnti per il backtest"
+        )
+
+        if st.button("🚀 Esegui Backtest"):
+            with st.spinner("⏳ Esecuzione backtest in corso..."):
+                try:
+                    # Initialize backtester
+                    backtester = Backtester('data/historical.csv')  # Will use mock data if file not found
+
+                    # Define strategy function
+                    def ai_strategy(match_data, analysis):
+                        """Strategy: Bet when AI confidence > threshold and EV > threshold"""
+                        if analysis.get('confidence', {}).get('confidence_score', 0) > 70 and \
+                           analysis.get('value', {}).get('expected_value', 0) > 0.05:
+                            return {
+                                'bet': True,
+                                'stake': analysis.get('kelly', {}).get('optimal_stake', 10)
+                            }
+                        return {'bet': False}
+
+                    # Run backtest
+                    report = backtester.run_backtest(
+                        strategy=ai_strategy,
+                        start_date=bt_start_date.strftime("%Y-%m-%d"),
+                        end_date=bt_end_date.strftime("%Y-%m-%d"),
+                        initial_bankroll=bt_initial_bankroll
+                    )
+
+                    # Display results
+                    st.success("✅ Backtest completato!")
+
+                    # Key metrics
+                    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+
+                    with col_m1:
+                        st.metric(
+                            "💰 ROI",
+                            f"{report['roi']:.1%}",
+                            delta=f"{report['profit']:+.2f}€"
+                        )
+
+                    with col_m2:
+                        st.metric(
+                            "🎯 Win Rate",
+                            f"{report['win_rate']:.1%}",
+                            delta=f"{report['total_bets']} bets"
+                        )
+
+                    with col_m3:
+                        st.metric(
+                            "📈 Sharpe Ratio",
+                            f"{report['sharpe_ratio']:.2f}",
+                            help="Risk-adjusted returns"
+                        )
+
+                    with col_m4:
+                        st.metric(
+                            "📉 Max Drawdown",
+                            f"{report['max_drawdown']:.1%}",
+                            delta_color="inverse"
+                        )
+
+                    # Final bankroll
+                    st.info(f"""
+                    **💼 Risultati Finali:**
+                    - Bankroll Iniziale: €{bt_initial_bankroll:.2f}
+                    - Bankroll Finale: €{report['final_bankroll']:.2f}
+                    - Profitto/Perdita: €{report['profit']:+.2f}
+                    """)
+
+                    # Show equity curve if available
+                    if 'equity_curve' in report and len(report['equity_curve']) > 0:
+                        st.line_chart(report['equity_curve'], use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"❌ Errore backtest: {str(e)}")
+                    st.info("💡 Tip: Il sistema usa dati mock se non trova file storico. Carica un CSV con le partite passate per backtest reali.")
 
     st.markdown("---")
 
@@ -17081,6 +17447,24 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                         logger.warning(f"⚠️ Advanced Analysis error: {e}")
                         ai_result['advanced_analysis'] = None
 
+                    # Generate LLM Explanation (FASE 1.1)
+                    try:
+                        llm_analyst = LLMAnalyst(provider="mock")  # Use mock for free, or "openai" with API key
+
+                        match_context = {
+                            'home_team': home_team,
+                            'away_team': away_team,
+                            'league': league_type,
+                            'odds': validated["odds_1"]
+                        }
+
+                        explanation = llm_analyst.explain_prediction(match_context, ai_result)
+                        ai_result['llm_explanation'] = explanation
+                        logger.info(f"✅ LLM Explanation generated")
+                    except Exception as e:
+                        logger.warning(f"⚠️ LLM Explanation error: {e}")
+                        ai_result['llm_explanation'] = None
+
             except Exception as e:
                 logger.error(f"❌ AI Analysis error: {e}")
                 st.warning(f"⚠️ AI Analysis error: {str(e)}")
@@ -17236,6 +17620,31 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
             with col_timing2:
                 priority_emoji = "🔥" if priority == "HIGH" else ("⚡" if priority == "MEDIUM" else "❄️")
                 st.info(f"{priority_emoji} **Priority:** {priority}")
+
+            # LLM Explanation (FASE 1.1)
+            if ai_result.get('llm_explanation'):
+                st.markdown("---")
+                st.markdown("### 💬 Spiegazione AI")
+                explanation = ai_result['llm_explanation']
+
+                # Display explanation in a nice info box
+                st.info(explanation)
+
+                # Optional: Add expandable details
+                with st.expander("🔍 Dettagli Analisi Approfondita"):
+                    st.markdown(f"""
+                    **Perché questa raccomandazione?**
+
+                    L'AI ha analizzato {home_team} vs {away_team} considerando:
+
+                    - **15 blocchi AI** (pipeline principale + avanzata)
+                    - **Probabilità calibrata**: {prob_calibrated:.1%}
+                    - **Expected Value**: {ev_val:+.1%}
+                    - **Confidence**: {conf_val:.0f}/100
+                    - **Value Score**: {value_val:.0f}/100
+
+                    La decisione finale è: **{decision}**
+                    """)
 
             # Detailed AI Analysis Expander
             with st.expander("🔍 Dettagli Analisi AI Completa (15 Blocchi)"):
