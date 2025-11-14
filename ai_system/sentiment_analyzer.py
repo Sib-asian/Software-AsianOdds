@@ -23,6 +23,7 @@ import logging
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 import re
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,23 @@ class SentimentAnalyzer:
         # API clients (optional)
         self.twitter_client = None
         self.reddit_client = None
+
+        # Hugging Face InferenceClient setup (FREE - no key required, but better with one)
+        self.hf_api_key = self.config.get('huggingface_api_key') or os.getenv('HUGGINGFACE_API_KEY')
+        self.hf_model = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+        self.hf_client = None
+
+        # Try to initialize InferenceClient
+        try:
+            from huggingface_hub import InferenceClient
+            self.hf_client = InferenceClient(token=self.hf_api_key)
+            if self.hf_api_key:
+                logger.info("   ✓ Hugging Face client initialized with API key (higher rate limits)")
+            else:
+                logger.info("   ✓ Hugging Face client initialized (free tier - no key needed)")
+        except ImportError:
+            logger.warning("   ⚠️  huggingface_hub not installed. Sentiment analysis will use fallback mode.")
+            logger.warning("      Install with: pip install huggingface_hub")
 
         # Initialize if credentials provided
         self._initialize_clients()
@@ -75,6 +93,78 @@ class SentimentAnalyzer:
         ]
 
         logger.info("✅ Sentiment Analyzer initialized")
+
+    def _analyze_text_sentiment_hf(self, text: str) -> Dict:
+        """
+        Analizza sentiment di un testo usando Hugging Face InferenceClient.
+
+        Args:
+            text: Testo da analizzare
+
+        Returns:
+            Dict con label (POSITIVE/NEGATIVE/NEUTRAL) e score (0-1)
+        """
+        # If client not available, use fallback
+        if not self.hf_client:
+            return self._sentiment_fallback(text)
+
+        try:
+            # Truncate text if too long (model limit ~512 tokens)
+            if len(text) > 500:
+                text = text[:500]
+
+            # Call Hugging Face using InferenceClient
+            result = self.hf_client.text_classification(
+                text=text,
+                model=self.hf_model
+            )
+
+            # Result format: [{"label": "positive", "score": 0.95}, ...]
+            if isinstance(result, list) and len(result) > 0:
+                # Get highest score prediction
+                best = max(result, key=lambda x: x['score'])
+
+                return {
+                    'label': best['label'].upper(),
+                    'score': best['score'],
+                    'success': True
+                }
+
+        except Exception as e:
+            error_msg = str(e).lower()
+
+            if 'loading' in error_msg or '503' in error_msg:
+                logger.warning("   ⏳ Hugging Face model loading... using fallback")
+            else:
+                logger.warning(f"   ⚠️  Sentiment API error: {e}")
+
+            return self._sentiment_fallback(text)
+
+        # Fallback
+        return {'label': 'NEUTRAL', 'score': 0.5, 'success': False}
+
+    def _sentiment_fallback(self, text: str) -> Dict:
+        """
+        Fallback sentiment analysis using keyword matching.
+
+        Args:
+            text: Testo da analizzare
+
+        Returns:
+            Dict con label e score stimati
+        """
+        text_lower = text.lower()
+
+        # Count positive/negative keywords
+        pos_count = sum(1 for kw in self.morale_positive if kw in text_lower)
+        neg_count = sum(1 for kw in self.morale_negative if kw in text_lower)
+
+        if pos_count > neg_count:
+            return {'label': 'POSITIVE', 'score': 0.7, 'success': False}
+        elif neg_count > pos_count:
+            return {'label': 'NEGATIVE', 'score': 0.7, 'success': False}
+        else:
+            return {'label': 'NEUTRAL', 'score': 0.6, 'success': False}
 
     def _initialize_clients(self):
         """Initialize social media API clients if credentials exist"""
@@ -235,6 +325,9 @@ class SentimentAnalyzer:
                         if is_away:
                             injury_mentions_away += 1
 
+                        # Analyze sentiment with Hugging Face API
+                        sentiment = self._analyze_text_sentiment_hf(tweet.text)
+
                         # High engagement = more credible
                         likes = tweet.public_metrics.get('like_count', 0)
                         retweets = tweet.public_metrics.get('retweet_count', 0)
@@ -247,7 +340,9 @@ class SentimentAnalyzer:
                                 'team': team_home if is_home else team_away,
                                 'text': tweet.text[:100],
                                 'credibility': min(engagement / 100, 1.0),
-                                'timestamp': tweet.created_at
+                                'timestamp': tweet.created_at,
+                                'sentiment': sentiment.get('label', 'NEUTRAL'),
+                                'sentiment_score': sentiment.get('score', 0.5)
                             })
 
         except Exception as e:
@@ -290,6 +385,12 @@ class SentimentAnalyzer:
                     for post in subreddit.search(term, time_filter='day', limit=50):
                         # Analyze post title and body
                         text = (post.title + " " + post.selftext).lower()
+                        full_text = post.title + " " + post.selftext
+
+                        # Analyze sentiment with Hugging Face API
+                        sentiment = self._analyze_text_sentiment_hf(full_text)
+                        sentiment_label = sentiment.get('label', 'NEUTRAL')
+                        sentiment_score = sentiment.get('score', 0.5)
 
                         # Check keywords
                         if any(kw in text for kw in self.injury_keywords):
@@ -298,17 +399,23 @@ class SentimentAnalyzer:
                                 'source': 'Reddit',
                                 'text': post.title,
                                 'upvotes': post.score,
-                                'credibility': min(post.score / 100, 1.0)
+                                'credibility': min(post.score / 100, 1.0),
+                                'sentiment': sentiment_label,
+                                'sentiment_score': sentiment_score
                             })
 
-                        # Morale sentiment
-                        pos_count = sum(1 for kw in self.morale_positive if kw in text)
-                        neg_count = sum(1 for kw in self.morale_negative if kw in text)
-
+                        # Morale sentiment from API
                         if team_home.lower() in text:
-                            morale_score_home += (pos_count - neg_count)
+                            if sentiment_label == 'POSITIVE':
+                                morale_score_home += sentiment_score * 10
+                            elif sentiment_label == 'NEGATIVE':
+                                morale_score_home -= sentiment_score * 10
+
                         if team_away.lower() in text:
-                            morale_score_away += (pos_count - neg_count)
+                            if sentiment_label == 'POSITIVE':
+                                morale_score_away += sentiment_score * 10
+                            elif sentiment_label == 'NEGATIVE':
+                                morale_score_away -= sentiment_score * 10
 
         except Exception as e:
             logger.warning(f"   ⚠️  Reddit analysis failed: {e}")
@@ -325,14 +432,81 @@ class SentimentAnalyzer:
         team_away: str,
         hours_before: int
     ) -> Dict:
-        """Analyze news articles (via web scraping or RSS)"""
+        """Analyze news articles (via Google News RSS - FREE)"""
         logger.info("   📰 Analyzing news...")
 
-        # Mock implementation (would use news API or scraping)
+        signals = []
+        news_sentiment_home = 0
+        news_sentiment_away = 0
+
+        try:
+            # Google News RSS (free, no API key needed)
+            import feedparser
+
+            # Search queries for both teams
+            queries = [
+                f"{team_home} football",
+                f"{team_away} football"
+            ]
+
+            for query in queries:
+                # Google News RSS URL
+                rss_url = f"https://news.google.com/rss/search?q={query.replace(' ', '+')}&hl=en&gl=US&ceid=US:en"
+
+                # Parse RSS feed
+                feed = feedparser.parse(rss_url)
+
+                # Analyze recent articles (last 48h)
+                for entry in feed.entries[:10]:  # Limit to 10 articles per team
+                    title = entry.get('title', '')
+                    description = entry.get('summary', '')
+                    full_text = title + " " + description
+
+                    # Analyze sentiment with Hugging Face
+                    sentiment = self._analyze_text_sentiment_hf(full_text)
+                    sentiment_label = sentiment.get('label', 'NEUTRAL')
+                    sentiment_score = sentiment.get('score', 0.5)
+
+                    # Check if about team home or away
+                    text_lower = full_text.lower()
+                    is_home = team_home.lower() in text_lower
+                    is_away = team_away.lower() in text_lower
+
+                    # Accumulate sentiment scores
+                    if is_home:
+                        if sentiment_label == 'POSITIVE':
+                            news_sentiment_home += sentiment_score
+                        elif sentiment_label == 'NEGATIVE':
+                            news_sentiment_home -= sentiment_score
+
+                    if is_away:
+                        if sentiment_label == 'POSITIVE':
+                            news_sentiment_away += sentiment_score
+                        elif sentiment_label == 'NEGATIVE':
+                            news_sentiment_away -= sentiment_score
+
+                    # Check for injury news
+                    if any(kw in text_lower for kw in self.injury_keywords):
+                        signals.append({
+                            'type': 'INJURY_NEWS',
+                            'source': 'Google News',
+                            'team': team_home if is_home else (team_away if is_away else 'Unknown'),
+                            'text': title[:100],
+                            'link': entry.get('link', ''),
+                            'sentiment': sentiment_label,
+                            'sentiment_score': sentiment_score,
+                            'credibility': 0.8  # News generally more credible than social
+                        })
+
+        except ImportError:
+            logger.warning("   ⚠️  feedparser not installed. Install with: pip install feedparser")
+        except Exception as e:
+            logger.warning(f"   ⚠️  News analysis failed: {e}")
+
         return {
-            'news_sentiment_home': 0,
-            'news_sentiment_away': 0,
-            'signals': []
+            'news_sentiment_home': news_sentiment_home,
+            'news_sentiment_away': news_sentiment_away,
+            'signals': signals
         }
 
     def _mock_sentiment_analysis(self, result: Dict) -> Dict:
@@ -398,7 +572,14 @@ class SentimentAnalyzer:
 
     def _merge_news_data(self, result: Dict, news_data: Dict) -> Dict:
         """Merge news analysis into result"""
+        # Add news sentiment to morale
+        result['team_morale_home'] += news_data.get('news_sentiment_home', 0) * 5
+        result['team_morale_away'] += news_data.get('news_sentiment_away', 0) * 5
+
+        # Add signals
         result['signals'].extend(news_data['signals'])
+        result['total_data_points'] += len(news_data['signals'])
+
         return result
 
     def _calculate_overall_sentiment(
