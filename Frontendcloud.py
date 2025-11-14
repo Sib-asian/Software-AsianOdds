@@ -1,6 +1,7 @@
 
 import math
 import logging
+import ast
 from typing import Dict, Any, List, Tuple, Optional, Union, Callable
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass
@@ -146,6 +147,111 @@ except ImportError as e:
     AI_SYSTEM_AVAILABLE = False
     logger.warning(f"⚠️ AI System not available: {e}")
     logger.warning("   Install AI dependencies: pip install torch scikit-learn xgboost")
+
+if AI_SYSTEM_AVAILABLE:
+    def _ensure_ai_background_features() -> Dict[str, Dict[str, Any]]:
+        """Garantisce che le feature AI critiche siano sempre attive e sincronizzate."""
+        features = st.session_state.get("ai_background_features")
+        if features is None:
+            features = {}
+
+        # --- Data Quality Thresholds ---
+        data_quality_defaults = {
+            "min": 0.30,
+            "good": 0.70,
+            "excellent": 0.90,
+        }
+        dq_settings = features.setdefault("data_quality", data_quality_defaults.copy())
+        for key, value in data_quality_defaults.items():
+            dq_settings.setdefault(key, value)
+
+        # --- Telegram Advanced Notifications ---
+        default_report_time = datetime.strptime("22:00", "%H:%M").time()
+        telegram_defaults = {
+            "min_ev": 5.0,
+            "daily_report": True,
+            "report_time": default_report_time,
+            "min_confidence": 60.0,
+            "rate_limit_seconds": 3,
+            "always_on": True,
+        }
+        telegram_settings = features.setdefault("telegram_advanced", telegram_defaults.copy())
+        for key, value in telegram_defaults.items():
+            telegram_settings.setdefault(key, value)
+
+        report_time_value = telegram_settings.get("report_time", default_report_time)
+        if isinstance(report_time_value, str):
+            try:
+                telegram_settings["report_time"] = datetime.strptime(report_time_value, "%H:%M").time()
+            except ValueError:
+                telegram_settings["report_time"] = default_report_time
+
+        # --- Neural Network Tuning ---
+        nn_defaults = {
+            "hidden_layers": [64, 32, 16],
+            "dropout": 0.2,
+            "learning_rate": 0.001,
+            "batch_size": 32,
+        }
+        nn_settings = features.setdefault("neural_network", nn_defaults.copy())
+        for key, value in nn_defaults.items():
+            nn_settings.setdefault(key, value)
+
+        hidden_layers_value = nn_settings.get("hidden_layers", nn_defaults["hidden_layers"])
+        if isinstance(hidden_layers_value, str):
+            try:
+                parsed_layers = ast.literal_eval(hidden_layers_value)
+                if isinstance(parsed_layers, (list, tuple)):
+                    nn_settings["hidden_layers"] = [int(layer) for layer in parsed_layers]
+                else:
+                    nn_settings["hidden_layers"] = nn_defaults["hidden_layers"]
+            except (ValueError, SyntaxError):
+                nn_settings["hidden_layers"] = nn_defaults["hidden_layers"]
+
+        st.session_state["ai_background_features"] = features
+
+        # Mirror legacy keys for backward compatibility
+        st.session_state["ai_min_data_quality"] = dq_settings["min"]
+        st.session_state["ai_good_data_quality"] = dq_settings["good"]
+        st.session_state["ai_excellent_data_quality"] = dq_settings["excellent"]
+
+        st.session_state["ai_telegram_min_ev"] = telegram_settings["min_ev"]
+        st.session_state["ai_telegram_daily_report"] = telegram_settings["daily_report"]
+        st.session_state["ai_telegram_report_time"] = telegram_settings["report_time"]
+
+        st.session_state["ai_nn_hidden_layers"] = nn_settings["hidden_layers"]
+        st.session_state["ai_nn_dropout"] = nn_settings["dropout"]
+        st.session_state["ai_nn_learning_rate"] = nn_settings["learning_rate"]
+        st.session_state["ai_nn_batch_size"] = nn_settings["batch_size"]
+
+        return features
+
+    def _apply_ai_background_features(ai_config: AIConfig, features: Optional[Dict[str, Dict[str, Any]]] = None) -> AIConfig:
+        """Propaga le impostazioni sempre attive dentro la configurazione AI."""
+        settings = features or _ensure_ai_background_features()
+
+        dq_settings = settings["data_quality"]
+        ai_config.min_data_quality = dq_settings["min"]
+        ai_config.good_data_quality = dq_settings["good"]
+        ai_config.excellent_data_quality = dq_settings["excellent"]
+
+        telegram_settings = settings["telegram_advanced"]
+        ai_config.telegram_enabled = telegram_settings["always_on"]
+        ai_config.telegram_min_ev = telegram_settings["min_ev"]
+        ai_config.telegram_min_confidence = telegram_settings["min_confidence"]
+        ai_config.telegram_daily_report_enabled = telegram_settings["daily_report"]
+        ai_config.telegram_daily_report_time = telegram_settings["report_time"].strftime("%H:%M")
+        ai_config.telegram_rate_limit_seconds = telegram_settings["rate_limit_seconds"]
+        ai_config.live_monitoring_enabled = telegram_settings["always_on"]
+        ai_config.live_min_ev_alert = min(ai_config.live_min_ev_alert, telegram_settings["min_ev"])
+
+        nn_settings = settings["neural_network"]
+        ai_config.calibrator_hidden_layers = list(nn_settings["hidden_layers"])
+        ai_config.calibrator_dropout = nn_settings["dropout"]
+        ai_config.calibrator_learning_rate = nn_settings["learning_rate"]
+        ai_config.calibrator_batch_size = nn_settings["batch_size"]
+
+        return ai_config
 
 # ============================================================
 #   ADVANCED FEATURES (Sprint 1 & 2) - IMPORT
@@ -15352,53 +15458,17 @@ if AI_SYSTEM_AVAILABLE:
         st.session_state["ai_bankroll"] = ai_bankroll
 
     # Advanced AI settings (optional)
-    if ai_enabled:
+    background_ai_settings: Optional[Dict[str, Dict[str, Any]]] = None
+
+    if ai_enabled and AI_SYSTEM_AVAILABLE:
+        background_ai_settings = _ensure_ai_background_features()
         with st.expander("🔧 Impostazioni AI Avanzate (FASE 1.3)"):
             st.info(
                 "⚙️ Configurazione base, gestione del rischio e automazioni live operano ora in background "
                 "tramite i blocchi AI dedicati (Kelly Optimizer, Risk Manager, Odds Tracker e Live Monitor)."
             )
 
-            st.markdown("---")
-
-            # Data Quality Thresholds
-            st.markdown("#### 📊 Data Quality Thresholds")
-            col_dq1, col_dq2, col_dq3 = st.columns(3)
-
-            with col_dq1:
-                min_data_quality = st.slider(
-                    "Min Data Quality",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=0.3,
-                    step=0.05,
-                    help="Quality minima dati (sotto = fallback)"
-                )
-                st.session_state["ai_min_data_quality"] = min_data_quality
-
-            with col_dq2:
-                good_data_quality = st.slider(
-                    "Good Data Quality",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=0.7,
-                    step=0.05,
-                    help="Quality buona (sopra = confident)"
-                )
-                st.session_state["ai_good_data_quality"] = good_data_quality
-
-            with col_dq3:
-                excellent_data_quality = st.slider(
-                    "Excellent Data Quality",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=0.9,
-                    step=0.05,
-                    help="Quality eccellente (sopra = very confident)"
-                )
-                st.session_state["ai_excellent_data_quality"] = excellent_data_quality
-
-            st.markdown("---")
+            st.success("📊 Data Quality Thresholds, Telegram Advanced e Neural Tuning operano ora solo in background.")
 
             # Sentiment Analysis Settings
             st.markdown("#### 📱 Sentiment Analysis (Social Media Intelligence)")
@@ -15420,86 +15490,6 @@ if AI_SYSTEM_AVAILABLE:
 
                 **Funziona in Mock Mode** (dati simulati) se non hai API keys.
                 """)
-
-            st.markdown("---")
-
-            # Telegram Advanced
-            st.markdown("#### 📱 Telegram Notifications Advanced")
-            col_tg1, col_tg2 = st.columns(2)
-
-            with col_tg1:
-                telegram_min_ev = st.number_input(
-                    "Min EV to Notify %",
-                    min_value=3.0,
-                    max_value=20.0,
-                    value=5.0,
-                    step=0.5,
-                    help="EV minimo per inviare notifica Telegram"
-                )
-                st.session_state["ai_telegram_min_ev"] = telegram_min_ev
-
-                telegram_daily_report = st.checkbox(
-                    "Daily Report",
-                    value=True,
-                    help="Invia report giornaliero automatico"
-                )
-                st.session_state["ai_telegram_daily_report"] = telegram_daily_report
-
-            with col_tg2:
-                if telegram_daily_report:
-                    telegram_report_time = st.time_input(
-                        "Report Time",
-                        value=datetime.strptime("22:00", "%H:%M").time(),
-                        help="Ora invio report giornaliero"
-                    )
-                    st.session_state["ai_telegram_report_time"] = telegram_report_time
-
-            st.markdown("---")
-
-            # Neural Network Tuning
-            st.subheader("🧠 Neural Network Tuning")
-            st.markdown("Parametri avanzati per il calibratore neurale (Blocco 1)")
-
-            col_nn1, col_nn2 = st.columns(2)
-            with col_nn1:
-                nn_hidden_layers = st.text_input(
-                    "Hidden Layers Architecture",
-                    value="[64, 32, 16]",
-                    help="Architettura layer nascosti (formato: [layer1, layer2, ...])"
-                )
-                st.session_state["ai_nn_hidden_layers"] = nn_hidden_layers
-
-                nn_dropout = st.slider(
-                    "Dropout Rate",
-                    min_value=0.0,
-                    max_value=0.5,
-                    value=0.2,
-                    step=0.05,
-                    help="Tasso dropout per prevenire overfitting"
-                )
-                st.session_state["ai_nn_dropout"] = nn_dropout
-
-            with col_nn2:
-                nn_learning_rate = st.number_input(
-                    "Learning Rate",
-                    min_value=0.0001,
-                    max_value=0.01,
-                    value=0.001,
-                    step=0.0001,
-                    format="%.4f",
-                    help="Tasso apprendimento per training"
-                )
-                st.session_state["ai_nn_learning_rate"] = nn_learning_rate
-
-                nn_batch_size = st.number_input(
-                    "Batch Size",
-                    min_value=16,
-                    max_value=256,
-                    value=32,
-                    step=16,
-                    help="Dimensione batch per training"
-                )
-                st.session_state["ai_nn_batch_size"] = nn_batch_size
 
             st.markdown("---")
 
@@ -15563,8 +15553,7 @@ if "is_cup_auto" not in st.session_state:
     st.session_state["is_cup_auto"] = False
 if "is_end_season_auto" not in st.session_state:
     st.session_state["is_end_season_auto"] = False
-if "auto_mode_selection" not in st.session_state:
-    st.session_state["auto_mode_selection"] = "✋ Manuale"
+st.session_state["auto_mode_selection"] = "🌐 Auto + API (Ibrido)"
 if "preview_cache" not in st.session_state:
     st.session_state["preview_cache"] = {}  # Cache per preview auto-detection
 
@@ -15874,13 +15863,9 @@ if ADVANCED_FEATURES_AVAILABLE:
                 "🌐 Auto + API (Ibrido)"
             ]
 
-            # Default: Auto DB se disponibile, altrimenti Manuale
-            default_idx = 1 if AUTO_DETECTION_AVAILABLE else 0
-
             mode_selection = st.selectbox(
                 "Modalità Auto-Detection",
                 options=mode_options,
-                index=default_idx,
                 key="auto_mode_selection",
                 help="""
                 **✋ Manuale**: Imposti tutti i parametri manualmente
@@ -16646,6 +16631,8 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                     ai_config.telegram_bot_token = TELEGRAM_BOT_TOKEN
                     ai_config.telegram_chat_id = TELEGRAM_CHAT_ID
                     ai_config.live_monitoring_enabled = TELEGRAM_ENABLED
+
+                    ai_config = _apply_ai_background_features(ai_config, background_ai_settings)
 
                     # Apply custom settings if user changed them
                     if "ai_min_confidence" in st.session_state:
