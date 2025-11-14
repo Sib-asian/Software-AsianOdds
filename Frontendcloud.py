@@ -17333,6 +17333,31 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
             with col_dc3:
                 st.metric("12", f"{dc_data.get('DC Casa o Trasferta', 0)*100:.1f}%")
 
+        # Asian Handicap
+        if 'asian_handicap' in ris:
+            st.subheader("🎯 Asian Handicap")
+            ah_data = ris['asian_handicap']
+
+            # Filtra e ordina per probabilità (mostra linee con prob >= 20%)
+            relevant_ah = [(k, v) for k, v in ah_data.items() if v >= 0.20]
+            relevant_ah.sort(key=lambda x: x[1], reverse=True)
+
+            if relevant_ah:
+                # Mostra fino a 9 linee (3 righe x 3 colonne)
+                num_to_show = min(len(relevant_ah), 9)
+
+                # Dividi in righe da 3 colonne
+                for i in range(0, num_to_show, 3):
+                    cols = st.columns(3)
+                    for j in range(3):
+                        idx = i + j
+                        if idx < num_to_show:
+                            ah_line, prob = relevant_ah[idx]
+                            with cols[j]:
+                                st.metric(ah_line, f"{prob*100:.1f}%")
+            else:
+                st.info("Nessuna linea Asian Handicap con probabilità >= 20%")
+
         # Combo avanzate
         if 'combo_book' in ris:
             st.subheader("🔀 Combo Avanzate")
