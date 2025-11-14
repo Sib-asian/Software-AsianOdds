@@ -137,17 +137,24 @@ try:
     from ai_system.pipeline import quick_analyze, AIPipeline
     from ai_system.advanced_precision_pipeline import AdvancedPrecisionPipeline
     from ai_system.llm_analyst import LLMAnalyst
-    from ai_system.backtesting import Backtester
     from ai_system.sentiment_analyzer import SentimentAnalyzer
-    from ai_system.live_betting import LiveBettingEngine
-    from ai_system.live_monitor import LiveMonitor
     from ai_system.config import AIConfig, get_conservative_config, get_aggressive_config
+    from ai_system.background_services import BackgroundAutomationService
     AI_SYSTEM_AVAILABLE = True
     logger.info("✅ AI System loaded successfully - All features enabled (LLM, Backtesting, Sentiment, Live)")
 except ImportError as e:
     AI_SYSTEM_AVAILABLE = False
     logger.warning(f"⚠️ AI System not available: {e}")
     logger.warning("   Install AI dependencies: pip install torch scikit-learn xgboost")
+
+BACKGROUND_AUTOMATION: Optional["BackgroundAutomationService"] = None
+if AI_SYSTEM_AVAILABLE:
+    try:
+        BACKGROUND_AUTOMATION = BackgroundAutomationService()
+        logger.info("🧠 Background automation service attivo")
+    except Exception as automation_error:
+        BACKGROUND_AUTOMATION = None
+        logger.warning(f"⚠️ Background automation non disponibile: {automation_error}")
 
 # ============================================================
 #   ADVANCED FEATURES (Sprint 1 & 2) - IMPORT
@@ -15342,67 +15349,10 @@ if AI_SYSTEM_AVAILABLE:
     # Advanced AI settings (optional)
     if ai_enabled:
         with st.expander("🔧 Impostazioni AI Avanzate (FASE 1.3)"):
-            # Basic settings
-            st.markdown("#### ⚙️ Configurazione Base")
-            col_adv1, col_adv2 = st.columns(2)
-
-            with col_adv1:
-                min_confidence = st.slider(
-                    "Min Confidence to Bet",
-                    min_value=30,
-                    max_value=90,
-                    value=60 if ai_preset == "Balanced" else (70 if ai_preset == "Conservative" else 50),
-                    step=5,
-                    help="Confidence minima (0-100) per autorizzare una scommessa"
-                )
-                st.session_state["ai_min_confidence"] = min_confidence
-
-            with col_adv2:
-                kelly_fraction = st.slider(
-                    "Kelly Fraction",
-                    min_value=0.10,
-                    max_value=0.50,
-                    value=0.25 if ai_preset == "Balanced" else (0.15 if ai_preset == "Conservative" else 0.35),
-                    step=0.05,
-                    help="Frazione del Kelly Criterion (più basso = più conservativo)"
-                )
-                st.session_state["ai_kelly_fraction"] = kelly_fraction
-
-            st.markdown("---")
-
-            # Risk Management Advanced
-            st.markdown("#### 🛡️ Risk Management Avanzato")
-            col_risk1, col_risk2, col_risk3 = st.columns(3)
-
-            with col_risk1:
-                max_concurrent_bets = st.number_input(
-                    "Max Concurrent Bets",
-                    min_value=1,
-                    max_value=20,
-                    value=10,
-                    help="Numero massimo di scommesse attive contemporaneamente"
-                )
-                st.session_state["ai_max_concurrent"] = max_concurrent_bets
-
-            with col_risk2:
-                max_daily_bets = st.number_input(
-                    "Max Daily Bets",
-                    min_value=1,
-                    max_value=50,
-                    value=5,
-                    help="Numero massimo di scommesse al giorno"
-                )
-                st.session_state["ai_max_daily"] = max_daily_bets
-
-            with col_risk3:
-                daily_loss_limit = st.slider(
-                    "Daily Loss Limit %",
-                    min_value=5,
-                    max_value=30,
-                    value=10,
-                    help="Stop-loss giornaliero (% del bankroll)"
-                )
-                st.session_state["ai_daily_loss_limit"] = daily_loss_limit
+            st.info(
+                "⚙️ Configurazione base, gestione del rischio e automazioni live operano ora in background "
+                "tramite i blocchi AI dedicati (Kelly Optimizer, Risk Manager, Odds Tracker e Live Monitor)."
+            )
 
             st.markdown("---")
 
@@ -15468,41 +15418,6 @@ if AI_SYSTEM_AVAILABLE:
 
             st.markdown("---")
 
-            # Live Monitoring Settings
-            st.markdown("#### 📡 Live Monitoring (Experimental)")
-            col_live1, col_live2 = st.columns(2)
-
-            with col_live1:
-                live_monitoring_enabled = st.checkbox(
-                    "Enable Live Monitoring",
-                    value=False,
-                    help="Monitora partite live automaticamente (richiede API real-time)"
-                )
-                st.session_state["ai_live_monitoring"] = live_monitoring_enabled
-
-            with col_live2:
-                if live_monitoring_enabled:
-                    live_update_interval = st.number_input(
-                        "Update Interval (sec)",
-                        min_value=30,
-                        max_value=300,
-                        value=60,
-                        help="Intervallo aggiornamento dati live"
-                    )
-                    st.session_state["ai_live_interval"] = live_update_interval
-
-                    live_min_ev_alert = st.number_input(
-                        "Min EV for Alert %",
-                        min_value=3.0,
-                        max_value=20.0,
-                        value=8.0,
-                        step=0.5,
-                        help="EV minimo per inviare alert live"
-                    )
-                    st.session_state["ai_live_min_ev"] = live_min_ev_alert
-
-            st.markdown("---")
-
             # Telegram Advanced
             st.markdown("#### 📱 Telegram Notifications Advanced")
             col_tg1, col_tg2 = st.columns(2)
@@ -15533,55 +15448,6 @@ if AI_SYSTEM_AVAILABLE:
                         help="Ora invio report giornaliero"
                     )
                     st.session_state["ai_telegram_report_time"] = telegram_report_time
-
-            st.markdown("---")
-
-            # API Budget Management
-            st.subheader("🌐 API Budget Management")
-            st.markdown("Gestisci il budget giornaliero delle chiamate API per ottimizzare i costi")
-
-            col_api1, col_api2 = st.columns(2)
-            with col_api1:
-                api_daily_budget = st.number_input(
-                    "Daily API Budget",
-                    min_value=50,
-                    max_value=500,
-                    value=100,
-                    step=10,
-                    help="Budget totale giornaliero per chiamate API"
-                )
-                st.session_state["ai_api_daily_budget"] = api_daily_budget
-
-                api_reserved_monitoring = st.number_input(
-                    "Reserved for Monitoring",
-                    min_value=10,
-                    max_value=100,
-                    value=30,
-                    step=5,
-                    help="Chiamate riservate per live monitoring"
-                )
-                st.session_state["ai_api_reserved_monitoring"] = api_reserved_monitoring
-
-            with col_api2:
-                api_reserved_enrichment = st.number_input(
-                    "Reserved for Enrichment",
-                    min_value=20,
-                    max_value=200,
-                    value=50,
-                    step=10,
-                    help="Chiamate riservate per data enrichment"
-                )
-                st.session_state["ai_api_reserved_enrichment"] = api_reserved_enrichment
-
-                api_emergency_buffer = st.number_input(
-                    "Emergency Buffer",
-                    min_value=10,
-                    max_value=50,
-                    value=20,
-                    step=5,
-                    help="Buffer emergenza per situazioni critiche"
-                )
-                st.session_state["ai_api_emergency_buffer"] = api_emergency_buffer
 
             st.markdown("---")
 
@@ -15653,458 +15519,6 @@ if AI_SYSTEM_AVAILABLE:
             - **Blocco 12:** Multi-Model Consensus - Validazione consensus tra modelli
             - **Blocco 13:** Statistical Arbitrage Detector - Rileva arbitraggi e inefficienze
             - **Blocco 14:** Real-time Validation Engine - Validazione real-time multi-metodologia
-            """)
-
-    st.markdown("---")
-
-# ============================================================
-#        BACKTESTING SYSTEM (FASE 1.2)
-# ============================================================
-if AI_SYSTEM_AVAILABLE:
-    with st.expander("📊 Backtesting - Testa Strategie su Dati Storici"):
-        st.markdown("""
-        ### 🎯 Valida le tue strategie PRIMA di rischiare soldi reali
-
-        Il backtesting ti permette di testare l'efficacia del sistema AI su partite passate.
-        """)
-
-        col_bt1, col_bt2 = st.columns(2)
-
-        with col_bt1:
-            bt_start_date = st.date_input(
-                "Data Inizio",
-                value=datetime.now().date() - timedelta(days=365),
-                help="Inizio periodo di backtest"
-            )
-
-        with col_bt2:
-            bt_end_date = st.date_input(
-                "Data Fine",
-                value=datetime.now().date(),
-                help="Fine periodo di backtest"
-            )
-
-        bt_initial_bankroll = st.number_input(
-            "💰 Bankroll Iniziale (€)",
-            min_value=100.0,
-            max_value=100000.0,
-            value=1000.0,
-            step=100.0
-        )
-
-        bt_use_current_config = st.checkbox(
-            "Usa configurazione AI corrente",
-            value=True,
-            help="Se attivo, usa le impostazioni AI correnti per il backtest"
-        )
-
-        if st.button("🚀 Esegui Backtest"):
-            with st.spinner("⏳ Esecuzione backtest in corso..."):
-                try:
-                    # Initialize backtester
-                    backtester = Backtester('data/historical.csv')  # Will use mock data if file not found
-
-                    # Define strategy function
-                    def ai_strategy(match_data, analysis):
-                        """Strategy: Bet when AI confidence > threshold and EV > threshold"""
-                        if analysis.get('confidence', {}).get('confidence_score', 0) > 70 and \
-                           analysis.get('value', {}).get('expected_value', 0) > 0.05:
-                            return {
-                                'bet': True,
-                                'stake': analysis.get('kelly', {}).get('optimal_stake', 10)
-                            }
-                        return {'bet': False}
-
-                    # Run backtest
-                    report = backtester.run_backtest(
-                        strategy=ai_strategy,
-                        start_date=bt_start_date.strftime("%Y-%m-%d"),
-                        end_date=bt_end_date.strftime("%Y-%m-%d"),
-                        initial_bankroll=bt_initial_bankroll
-                    )
-
-                    # Display results
-                    st.success("✅ Backtest completato!")
-
-                    # Key metrics
-                    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-
-                    with col_m1:
-                        st.metric(
-                            "💰 ROI",
-                            f"{report['roi']:.1%}",
-                            delta=f"{report['profit']:+.2f}€"
-                        )
-
-                    with col_m2:
-                        st.metric(
-                            "🎯 Win Rate",
-                            f"{report['win_rate']:.1%}",
-                            delta=f"{report['total_bets']} bets"
-                        )
-
-                    with col_m3:
-                        st.metric(
-                            "📈 Sharpe Ratio",
-                            f"{report['sharpe_ratio']:.2f}",
-                            help="Risk-adjusted returns"
-                        )
-
-                    with col_m4:
-                        st.metric(
-                            "📉 Max Drawdown",
-                            f"{report['max_drawdown']:.1%}",
-                            delta_color="inverse"
-                        )
-
-                    # Final bankroll
-                    st.info(f"""
-                    **💼 Risultati Finali:**
-                    - Bankroll Iniziale: €{bt_initial_bankroll:.2f}
-                    - Bankroll Finale: €{report['final_bankroll']:.2f}
-                    - Profitto/Perdita: €{report['profit']:+.2f}
-                    """)
-
-                    # Show equity curve if available
-                    if 'equity_curve' in report and len(report['equity_curve']) > 0:
-                        st.line_chart(report['equity_curve'], use_container_width=True)
-
-                except Exception as e:
-                    st.error(f"❌ Errore backtest: {str(e)}")
-                    st.info("💡 Tip: Il sistema usa dati mock se non trova file storico. Carica un CSV con le partite passate per backtest reali.")
-
-    st.markdown("---")
-
-# ============================================================
-#        LIVE BETTING ENGINE (FASE 3.1)
-# ============================================================
-if AI_SYSTEM_AVAILABLE:
-    with st.expander("⚡ Live Betting - Predizioni Real-Time Durante le Partite"):
-        st.markdown("""
-        ### ⚡ Live Betting Engine - ROI +15-20% vs Pre-match +5-8%
-
-        Aggiorna le probabilità in tempo reale durante le partite in corso,
-        considerando score, xG live, momentum, eventi (goal, red cards).
-        """)
-
-        st.info("""
-        **📊 Cosa analizza il Live Engine:**
-        - ⚽ Score attuale e differenza gol
-        - 📈 xG live (Expected Goals in tempo reale)
-        - 💨 Momentum (shots, dangerous attacks ultimi 10 minuti)
-        - 🔴 Eventi critici (red cards, injuries, substitutions)
-        - ⏱️ Tempo rimanente (time decay)
-        """)
-
-        # Live match simulation
-        st.markdown("### 🎮 Demo Live Match Simulator")
-
-        col_live1, col_live2 = st.columns(2)
-
-        with col_live1:
-            demo_home_team = st.text_input("Home Team (Live)", value="Inter", key="live_home")
-            demo_away_team = st.text_input("Away Team (Live)", value="Napoli", key="live_away")
-            demo_prematch_prob = st.slider("Pre-match Probability Home Win", 0.0, 1.0, 0.65, 0.01, key="live_prematch")
-
-        with col_live2:
-            demo_minute = st.slider("Current Minute", 0, 90, 35, 1, key="live_minute")
-            demo_score_h = st.number_input("Score Home", 0, 10, 0, 1, key="live_score_h")
-            demo_score_a = st.number_input("Score Away", 0, 10, 0, 1, key="live_score_a")
-
-        col_live3, col_live4 = st.columns(2)
-
-        with col_live3:
-            demo_xg_h = st.number_input("xG Home", 0.0, 5.0, 1.2, 0.1, key="live_xg_h")
-            demo_xg_a = st.number_input("xG Away", 0.0, 5.0, 0.4, 0.1, key="live_xg_a")
-
-        with col_live4:
-            demo_shots_h = st.number_input("Recent Shots Home", 0, 20, 6, 1, key="live_shots_h")
-            demo_shots_a = st.number_input("Recent Shots Away", 0, 20, 1, 1, key="live_shots_a")
-
-        if st.button("🔄 Calculate Live Probability", key="btn_live_calc"):
-            try:
-                from ai_system.live_betting import LiveBettingEngine
-
-                engine = LiveBettingEngine()
-                live_match = engine.start_monitoring("demo_match", demo_prematch_prob)
-
-                # Update with current state
-                live_match.update({
-                    'minute': demo_minute,
-                    'score_home': demo_score_h,
-                    'score_away': demo_score_a,
-                    'xg_home': demo_xg_h,
-                    'xg_away': demo_xg_a,
-                })
-                live_match.recent_shots_home = demo_shots_h
-                live_match.recent_shots_away = demo_shots_a
-
-                # Recalculate
-                live_result = engine.recalculate_probability(live_match)
-
-                st.success("✅ Live Probability Updated!")
-
-                # Display results
-                col_r1, col_r2, col_r3 = st.columns(3)
-
-                with col_r1:
-                    prob_change = live_result['probability_home_win'] - demo_prematch_prob
-                    st.metric(
-                        "🎯 Live Probability Home Win",
-                        f"{live_result['probability_home_win']:.1%}",
-                        delta=f"{prob_change:+.1%}",
-                        delta_color="normal"
-                    )
-
-                with col_r2:
-                    st.metric(
-                        "⚽ Over 1.5 Goals",
-                        f"{live_result['over_1.5_goals']:.1%}"
-                    )
-
-                with col_r3:
-                    st.metric(
-                        "⚽⚽ Over 2.5 Goals",
-                        f"{live_result['over_2.5_goals']:.1%}"
-                    )
-
-                # Timing recommendation
-                timing = live_result.get('timing', 'WAIT')
-                if timing == 'BET_NOW':
-                    st.success("🔥 **BET NOW** - Probability spike detected! Odds likely to drop.")
-                elif timing == 'WAIT':
-                    st.info("⏰ **WAIT** - Monitor the situation, no clear edge yet.")
-                else:
-                    st.warning("👀 **WATCH** - Interesting situation developing.")
-
-                # Show adjustments
-                with st.expander("🔍 View Adjustment Breakdown"):
-                    adj = live_result['adjustments']
-                    st.markdown(f"""
-                    **Adjustment Factors Applied:**
-                    - **Score Adjustment:** {adj['score']:.3f}x
-                    - **xG Adjustment:** {adj['xg']:.3f}x
-                    - **Momentum Adjustment:** {adj['momentum']:.3f}x
-                    - **Red Cards Adjustment:** {adj['red_cards']:.3f}x
-
-                    **Combined Effect:** {adj['score'] * adj['xg'] * adj['momentum'] * adj['red_cards']:.3f}x
-
-                    **Pre-match → Live:**
-                    {demo_prematch_prob:.1%} → {live_result['probability_home_win']:.1%}
-                    """)
-
-                # Sample betting recommendation
-                st.markdown("---")
-                st.markdown("### 💰 Live Betting Recommendation")
-
-                current_odds = st.number_input("Current Live Odds", 1.01, 10.0, 2.10, 0.01, key="live_odds")
-                fair_odds = 1 / live_result['probability_home_win']
-                ev = (current_odds / fair_odds) - 1
-
-                if ev > 0.05:
-                    st.success(f"""
-                    🎯 **STRONG VALUE DETECTED!**
-                    - Fair Odds: {fair_odds:.2f}
-                    - Market Odds: {current_odds:.2f}
-                    - Expected Value: **{ev:+.1%}**
-                    - **Action: BET on {demo_home_team}**
-                    """)
-                elif ev > 0:
-                    st.info(f"""
-                    ✅ **Small Value Found**
-                    - Fair Odds: {fair_odds:.2f}
-                    - Market Odds: {current_odds:.2f}
-                    - Expected Value: {ev:+.1%}
-                    - **Action: Consider small bet**
-                    """)
-                else:
-                    st.warning(f"""
-                    ❌ **No Value**
-                    - Fair Odds: {fair_odds:.2f}
-                    - Market Odds: {current_odds:.2f}
-                    - Expected Value: {ev:+.1%}
-                    - **Action: SKIP**
-                    """)
-
-            except Exception as e:
-                st.error(f"❌ Live Betting error: {str(e)}")
-                logger.error(f"Live betting error: {e}")
-
-    st.markdown("---")
-
-# ============================================================
-#        LIVE MONITOR (FASE 3.2)
-# ============================================================
-if AI_SYSTEM_AVAILABLE:
-    with st.expander("📡 Live Monitor - Auto-Monitoring con Alert Telegram"):
-        st.markdown("""
-        ### 📡 Live Monitor - Never Miss an Opportunity
-
-        Monitora automaticamente partite live in corso e invia alert Telegram
-        quando rileva opportunità di valore.
-        """)
-
-        st.info("""
-        **🔔 Cosa fa il Live Monitor:**
-        - 🔄 Aggiorna probabilità ogni 60 secondi per tutte le partite monitorate
-        - 🎯 Rileva opportunità di valore automaticamente
-        - 📱 Invia notifiche Telegram quando EV > soglia
-        - 🚫 Evita spam con de-duplication intelligente
-        - 📊 Log completo di tutti gli alert inviati
-        """)
-
-        # Initialize session state for monitor
-        if "monitor_matches" not in st.session_state:
-            st.session_state["monitor_matches"] = []
-
-        if "monitor_alerts" not in st.session_state:
-            st.session_state["monitor_alerts"] = []
-
-        if "monitor_running" not in st.session_state:
-            st.session_state["monitor_running"] = False
-
-        # Monitor controls
-        st.markdown("### 🎛️ Monitor Controls")
-
-        col_mon1, col_mon2, col_mon3 = st.columns(3)
-
-        with col_mon1:
-            monitor_running = st.session_state.get("monitor_running", False)
-            if monitor_running:
-                st.success("🟢 **RUNNING**")
-            else:
-                st.error("🔴 **STOPPED**")
-
-        with col_mon2:
-            num_matches = len(st.session_state.get("monitor_matches", []))
-            st.metric("Matches Tracked", num_matches)
-
-        with col_mon3:
-            num_alerts = len(st.session_state.get("monitor_alerts", []))
-            st.metric("Alerts Sent Today", num_alerts)
-
-        # Add match to monitor
-        st.markdown("### ➕ Add Match to Monitor")
-
-        col_add1, col_add2 = st.columns(2)
-
-        with col_add1:
-            mon_home = st.text_input("Home Team", value="Inter", key="mon_home")
-            mon_away = st.text_input("Away Team", value="Napoli", key="mon_away")
-
-        with col_add2:
-            mon_league = st.text_input("League", value="Serie A", key="mon_league")
-            mon_prob = st.slider("Pre-match Prob", 0.0, 1.0, 0.65, 0.01, key="mon_prob")
-            mon_odds = st.number_input("Current Odds", 1.01, 10.0, 2.10, 0.01, key="mon_odds")
-
-        if st.button("➕ Add to Monitor List", key="btn_add_monitor"):
-            match_id = f"{mon_home}_{mon_away}_{datetime.now().strftime('%Y%m%d')}"
-
-            # Check if already exists
-            existing = [m for m in st.session_state["monitor_matches"] if m['id'] == match_id]
-            if existing:
-                st.warning("⚠️ This match is already in the monitor list")
-            else:
-                new_match = {
-                    'id': match_id,
-                    'home': mon_home,
-                    'away': mon_away,
-                    'league': mon_league,
-                    'pre_match_prob': mon_prob,
-                    'current_odds': mon_odds,
-                    'added_at': datetime.now().strftime("%H:%M:%S")
-                }
-                st.session_state["monitor_matches"].append(new_match)
-                st.success(f"✅ Added {mon_home} vs {mon_away} to monitor list!")
-                st.rerun()
-
-        # Show monitored matches
-        if st.session_state["monitor_matches"]:
-            st.markdown("### 📋 Monitored Matches")
-
-            for i, match in enumerate(st.session_state["monitor_matches"]):
-                col_m1, col_m2, col_m3 = st.columns([3, 2, 1])
-
-                with col_m1:
-                    st.write(f"**{match['home']} vs {match['away']}**")
-                    st.caption(f"{match['league']} - Added: {match['added_at']}")
-
-                with col_m2:
-                    st.write(f"Prob: {match['pre_match_prob']:.1%}")
-                    st.caption(f"Odds: {match['current_odds']:.2f}")
-
-                with col_m3:
-                    if st.button("🗑️ Remove", key=f"btn_remove_{i}"):
-                        st.session_state["monitor_matches"].pop(i)
-                        st.success(f"Removed {match['home']} vs {match['away']}")
-                        st.rerun()
-
-                st.markdown("---")
-
-        # Start/Stop monitor
-        st.markdown("### ▶️ Monitor Control")
-
-        col_ctrl1, col_ctrl2 = st.columns(2)
-
-        with col_ctrl1:
-            if st.button("▶️ START MONITOR", key="btn_start_monitor", type="primary"):
-                if not st.session_state["monitor_matches"]:
-                    st.warning("⚠️ Add at least one match to monitor first!")
-                else:
-                    st.session_state["monitor_running"] = True
-                    st.success("✅ Live Monitor STARTED!")
-
-                    # Simulate first alert
-                    if st.session_state["monitor_matches"]:
-                        match = st.session_state["monitor_matches"][0]
-                        alert = {
-                            'time': datetime.now().strftime("%H:%M:%S"),
-                            'match': f"{match['home']} vs {match['away']}",
-                            'message': f"EV +12.5% detected! Current odds: {match['current_odds']:.2f}",
-                            'type': 'VALUE'
-                        }
-                        st.session_state["monitor_alerts"].append(alert)
-
-                    st.rerun()
-
-        with col_ctrl2:
-            if st.button("⏸️ STOP MONITOR", key="btn_stop_monitor"):
-                st.session_state["monitor_running"] = False
-                st.info("⏸️ Live Monitor STOPPED")
-                st.rerun()
-
-        # Alert log
-        if st.session_state["monitor_alerts"]:
-            st.markdown("### 📜 Alert Log (Last 10)")
-
-            for alert in reversed(st.session_state["monitor_alerts"][-10:]):
-                if alert['type'] == 'VALUE':
-                    st.success(f"🔔 **{alert['time']}** - {alert['match']}: {alert['message']}")
-                elif alert['type'] == 'GOAL':
-                    st.warning(f"⚽ **{alert['time']}** - {alert['match']}: {alert['message']}")
-                elif alert['type'] == 'RED_CARD':
-                    st.error(f"🔴 **{alert['time']}** - {alert['match']}: {alert['message']}")
-                else:
-                    st.info(f"ℹ️ **{alert['time']}** - {alert['match']}: {alert['message']}")
-
-        # Configuration
-        with st.expander("⚙️ Monitor Settings"):
-            st.markdown("""
-            **Settings disponibili in Advanced AI Configuration:**
-            - Update Interval (default: 60s)
-            - Min EV for Alert (default: 8%)
-            - Telegram notifications enabled
-            - Daily report time
-            """)
-
-            st.info("""
-            **💡 Nota:**
-            Il Live Monitor richiede:
-            - API real-time per dati live (API-Football, The Odds API, etc.)
-            - Telegram Bot configurato per notifiche
-            - Server always-on per monitoring continuo
-
-            In modalità demo, il monitor simula il comportamento.
             """)
 
     st.markdown("---")
@@ -17276,6 +16690,42 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                     )
 
                     logger.info(f"✅ AI Analysis completed: {ai_result['final_decision']['action']}")
+
+                    background_summary = None
+                    if BACKGROUND_AUTOMATION:
+                        try:
+                            validated_data = validated  # type: ignore[name-defined]
+                        except NameError:
+                            validated_data = {}
+
+                        match_payload = {
+                            "home": home_team,
+                            "away": away_team,
+                            "league": league_type,
+                            "date": match_date_input.strftime("%Y-%m-%d"),
+                            "time": match_time_input.strftime("%H:%M"),
+                            "match_datetime": match_datetime_combined,
+                            "importance": validated_data.get("importance_score", 0.5),
+                            "odds": ai_result.get("summary", {}).get(
+                                "odds",
+                                validated_data.get("odds_1", 0.0)
+                            ),
+                            "odds_history": odds_history,
+                        }
+
+                        background_summary = BACKGROUND_AUTOMATION.handle_analysis(
+                            match=match_payload,
+                            ai_result=ai_result,
+                            bankroll=ai_bankroll_value,
+                            ai_config=ai_config,
+                            time_to_kickoff_hours=time_to_kickoff_hours
+                        )
+
+                        if background_summary:
+                            logger.info(
+                                "🛰️ Background automation: %s",
+                                background_summary
+                            )
 
                     # Run Advanced Precision Pipeline (Blocks 7-14)
                     try:
