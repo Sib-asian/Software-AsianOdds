@@ -419,8 +419,8 @@ if __name__ == "__main__":
 
     # Initialize (use mock credentials for testing)
     notifier = TelegramNotifier(
-        bot_token="8530766126:AAHs1ZoLwrwvT7JuPyn_9ymNVyddPtUXi-g",
-        chat_id="-1003278011521",
+        bot_token="YOUR_TELEGRAM_BOT_TOKEN",
+        chat_id="YOUR_CHAT_ID",
         min_ev=5.0,
         min_confidence=60.0
     )

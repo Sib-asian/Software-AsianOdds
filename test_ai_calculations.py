@@ -42,6 +42,7 @@ def test_mercati_base():
     odds_over25 = 1.75
     odds_under25 = 2.10
     odds_btts = 1.65
+    total_line = 2.5
 
     print(f"\nQuote test:")
     print(f"  1X2: {odds_home} / {odds_draw} / {odds_away}")
@@ -50,9 +51,10 @@ def test_mercati_base():
 
     try:
         result = risultato_completo_improved(
-            odds_home=odds_home,
-            odds_draw=odds_draw,
-            odds_away=odds_away,
+            odds_1=odds_home,
+            odds_x=odds_draw,
+            odds_2=odds_away,
+            total=total_line,
             odds_over25=odds_over25,
             odds_under25=odds_under25,
             odds_btts=odds_btts,
@@ -62,9 +64,9 @@ def test_mercati_base():
         )
 
         # Verifica probabilità 1X2
-        prob_home = result['prob_home']
-        prob_draw = result['prob_draw']
-        prob_away = result['prob_away']
+        prob_home = result['p_home']
+        prob_draw = result['p_draw']
+        prob_away = result['p_away']
 
         print(f"\nProbabilità 1X2 calcolate:")
         print(f"  Home: {prob_home:.4f}")
@@ -78,8 +80,8 @@ def test_mercati_base():
         print(f"  ✓ Somma probabilità 1X2 corretta")
 
         # Verifica probabilità Over/Under
-        prob_over25 = result.get('prob_over25')
-        prob_under25 = result.get('prob_under25')
+        prob_over25 = result.get('over_25')
+        prob_under25 = result.get('under_25')
 
         if prob_over25 is not None and prob_under25 is not None:
             print(f"\nProbabilità Over/Under 2.5:")
@@ -93,8 +95,8 @@ def test_mercati_base():
             print(f"  ✓ Somma probabilità Over/Under corretta")
 
         # Verifica probabilità GG/NG
-        prob_btts = result.get('prob_btts')
-        prob_no_btts = result.get('prob_no_btts')
+        prob_btts = result.get('btts')
+        prob_no_btts = 1 - prob_btts if prob_btts is not None else None
 
         if prob_btts is not None and prob_no_btts is not None:
             print(f"\nProbabilità GG/NG:")
@@ -304,9 +306,10 @@ def test_rispetto_valori_manuali():
         # Test 3: Calcolo con valori manuali
         print(f"\n--- Test calcolo con valori manuali ---")
         result = risultato_completo_improved(
-            odds_home=odds_home,
-            odds_draw=odds_draw,
-            odds_away=odds_away,
+            odds_1=odds_home,
+            odds_x=odds_draw,
+            odds_2=odds_away,
+            total=total_corrente,
             spread_apertura=spread_apertura,
             total_apertura=total_apertura,
             spread_corrente=spread_corrente,
@@ -317,8 +320,8 @@ def test_rispetto_valori_manuali():
         )
 
         # Verifica che i lambda rispettino i vincoli total
-        lambda_h = result.get('lambda_h')
-        lambda_a = result.get('lambda_a')
+        lambda_h = result.get('lambda_home')
+        lambda_a = result.get('lambda_away')
 
         if lambda_h is not None and lambda_a is not None:
             total_calc = lambda_h + lambda_a
@@ -341,7 +344,7 @@ def test_rispetto_valori_manuali():
             print(f"  ✓ Spread calcolato nel range valido")
 
         # Verifica movement factor
-        movement_info = result.get('movement_factor')
+        movement_info = result.get('market_movement')
         if movement_info:
             print(f"\n  Movement factor:")
             print(f"    Magnitude: {movement_info.get('movement_magnitude')}")

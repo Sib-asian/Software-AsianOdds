@@ -229,8 +229,8 @@ class APIConfig:
     openweather_api_key: str = "01afa2183566fcf16d98b5a33c91eae1"
     football_data_api_key: str = "ca816dc8504543768e8adfaf128ecffc"
     thesportsdb_api_key: str = "3"  # Pubblica, gratuita
-    telegram_bot_token: str = "8530766126:AAHs1ZoLwrwvT7JuPyn_9ymNVyddPtUXi-g"
-    telegram_chat_id: str = "-1003278011521"
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
     telegram_enabled: bool = True
     telegram_min_probability: float = 50.0
 
@@ -16858,8 +16858,8 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 xa_against_home=validated.get("xa_against_home"),
                 xa_for_away=validated.get("xa_for_away"),
                 xa_against_away=validated.get("xa_against_away"),
-                boost_home=boost_home,
-                boost_away=boost_away,
+                manual_boost_home=boost_home,
+                manual_boost_away=boost_away,
                 league=league_type,
                 partite_giocate_home=partite_giocate_home,
                 partite_giocate_away=partite_giocate_away,
