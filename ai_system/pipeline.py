@@ -730,6 +730,7 @@ def quick_analyze(
     prob_dixon_coles: float,
     odds: float,
     bankroll: float = 1000.0,
+    config: Optional[AIConfig] = None,
     **kwargs
 ) -> Dict:
     """
@@ -742,12 +743,13 @@ def quick_analyze(
         prob_dixon_coles: Probabilità Dixon-Coles
         odds: Quote attuali
         bankroll: Bankroll (default 1000)
+        config: Configurazione AI opzionale (per usare preset o feature sempre attive)
         **kwargs: Altri parametri opzionali
 
     Returns:
         Risultato completo analisi
     """
-    pipeline = AIPipeline()
+    pipeline = AIPipeline(config=config)
 
     match = {
         "home": home_team,
