@@ -15468,30 +15468,7 @@ if AI_SYSTEM_AVAILABLE:
                 "tramite i blocchi AI dedicati (Kelly Optimizer, Risk Manager, Odds Tracker e Live Monitor)."
             )
 
-            st.markdown("---")
-
-            # Data Quality Thresholds
-            st.markdown("#### 📊 Data Quality Thresholds")
-            st.caption("Gestiti automaticamente dal Data Quality Engine; nessun intervento manuale necessario.")
-
-            dq_settings = background_ai_settings["data_quality"]
-            col_dq1, col_dq2, col_dq3 = st.columns(3)
-
-            with col_dq1:
-                st.metric("Min Data Quality", f"{dq_settings['min']:.2f}")
-                st.caption("Sotto questa soglia il sistema passa in fallback.")
-
-            with col_dq2:
-                st.metric("Good Data Quality", f"{dq_settings['good']:.2f}")
-                st.caption("Valore target per suggerimenti confident.")
-
-            with col_dq3:
-                st.metric("Excellent Data Quality", f"{dq_settings['excellent']:.2f}")
-                st.caption("Trigger per priorità alta e massima stake.")
-
-            st.success("📊 Thresholds applicati 24/7 nei blocchi 0-5.")
-
-            st.markdown("---")
+            st.success("📊 Data Quality Thresholds, Telegram Advanced e Neural Tuning operano ora solo in background.")
 
             # Sentiment Analysis Settings
             st.markdown("#### 📱 Sentiment Analysis (Social Media Intelligence)")
@@ -15513,47 +15490,6 @@ if AI_SYSTEM_AVAILABLE:
 
                 **Funziona in Mock Mode** (dati simulati) se non hai API keys.
                 """)
-
-            st.markdown("---")
-
-            # Telegram Advanced
-            st.markdown("#### 📱 Telegram Notifications Advanced (Always On)")
-            st.caption("Gestito dal Background Automation Service: alert live, report giornalieri e rate limiting automatico.")
-
-            telegram_settings = background_ai_settings["telegram_advanced"]
-            col_tg1, col_tg2 = st.columns(2)
-
-            with col_tg1:
-                st.metric("Min EV to Notify", f"{telegram_settings['min_ev']:.1f}%")
-                st.metric("Min Confidence", f"{telegram_settings['min_confidence']:.0f}/100")
-
-            with col_tg2:
-                st.metric("Daily Report", "✅ Attivo" if telegram_settings["daily_report"] else "❌ Off")
-                st.metric("Report Time", telegram_settings["report_time"].strftime("%H:%M"))
-                st.caption(f"Rate limit: {telegram_settings['rate_limit_seconds']}s tra messaggi")
-
-            st.success("📱 Advanced Telegram sempre operativo (live monitor + report).")
-
-            st.markdown("---")
-
-            # Neural Network Tuning
-            st.subheader("🧠 Neural Network Tuning (Auto)")
-            st.markdown("Parametri del calibratore neurale applicati automaticamente nel Blocco 1.")
-
-            nn_settings = background_ai_settings["neural_network"]
-            col_nn1, col_nn2 = st.columns(2)
-
-            with col_nn1:
-                st.code(f"layers = {nn_settings['hidden_layers']}", language="python")
-                st.caption("Architettura fissa ottimizzata per stabilità del calibratore.")
-                st.metric("Dropout Rate", f"{nn_settings['dropout']:.2f}")
-
-            with col_nn2:
-                st.metric("Learning Rate", f"{nn_settings['learning_rate']:.4f}")
-                st.metric("Batch Size", f"{nn_settings['batch_size']}")
-                st.caption("Valori convalidati su dataset storico (evita drift).")
-
-            st.success("🧠 Neural Tuning sempre attivo nei blocchi AI.")
 
             st.markdown("---")
 
