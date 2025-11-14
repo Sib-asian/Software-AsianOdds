@@ -87,11 +87,11 @@ class RiskManager:
         league = match_info.get("league", "")
         home_team = match_info.get("home", "")
 
-        league_exposure = self._calculate_league_exposure(active_bets, league, portfolio_state)
+        league_exposure = max(0.0, self._calculate_league_exposure(active_bets, league, portfolio_state))
         if league_exposure > self.config.max_same_league_exposure:
             red_flags.append(f"League exposure too high ({league_exposure:.1%})")
 
-        team_exposure = self._calculate_team_exposure(active_bets, home_team, portfolio_state)
+        team_exposure = max(0.0, self._calculate_team_exposure(active_bets, home_team, portfolio_state))
         if team_exposure > self.config.max_same_team_exposure:
             red_flags.append(f"Team exposure too high ({team_exposure:.1%})")
 

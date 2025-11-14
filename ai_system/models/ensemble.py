@@ -55,6 +55,9 @@ class EnsembleMetaModel:
 
         logger.info("🚀 Initializing Ensemble Meta-Model...")
 
+        # Track model failures for diagnostics
+        self.model_failures = {'dixon_coles': 0, 'xgboost': 0, 'lstm': 0}
+
         # Initialize sub-models
         self.xgboost = XGBoostPredictor(config=self.config.get('xgboost'))
         self.lstm = LSTMPredictor(config=self.config.get('lstm'))
@@ -115,7 +118,8 @@ class EnsembleMetaModel:
         try:
             predictions['xgboost'] = self.xgboost.predict(match_data, api_context)
         except Exception as e:
-            logger.warning(f"XGBoost prediction failed: {e}")
+            self.model_failures['xgboost'] += 1
+            logger.warning(f"XGBoost prediction failed ({self.model_failures['xgboost']} times): {e}")
             # Fallback to Dixon-Coles
             predictions['xgboost'] = prob_dixon_coles
 
@@ -128,7 +132,8 @@ class EnsembleMetaModel:
                 predictions['lstm'] = (predictions['dixon_coles'] + predictions['xgboost']) / 2.0
                 logger.debug("LSTM: No match history, using average of DC and XGB")
         except Exception as e:
-            logger.warning(f"LSTM prediction failed: {e}")
+            self.model_failures['lstm'] += 1
+            logger.warning(f"LSTM prediction failed ({self.model_failures['lstm']} times): {e}")
             predictions['lstm'] = prob_dixon_coles
 
         # ========================================
@@ -189,13 +194,17 @@ class EnsembleMetaModel:
             }
         }
 
-        # Save to history
+        # Save to history (keep only last 1000 to prevent unbounded growth)
         self.prediction_history.append({
             'match': f"{match_data.get('home')} vs {match_data.get('away')}",
             'ensemble_prob': ensemble_prob,
             'predictions': predictions,
             'weights': weights
         })
+
+        # Limit history size to prevent memory leak
+        if len(self.prediction_history) > 1000:
+            self.prediction_history = self.prediction_history[-1000:]
 
         logger.debug(f"Ensemble prediction: {ensemble_prob:.3f} (uncertainty: {uncertainty:.3f})")
 
@@ -215,9 +224,9 @@ class EnsembleMetaModel:
         - Data quality
         - Weight distribution (pesi bilanciati = high confidence)
         """
-        confidence = 70.0  # Base
+        confidence = 40.0  # Base (adjusted from 70 to prevent overflow: 40+15+15+10+15=95 max)
 
-        # Factor 1: Model agreement (30 points)
+        # Factor 1: Model agreement (15 points max)
         # Low uncertainty (all models agree) = high confidence
         agreement_factor = max(0, 1.0 - uncertainty * 5)  # uncertainty ~0.2 = neutral
         confidence += agreement_factor * 15
@@ -448,8 +457,10 @@ if __name__ == "__main__":
     print(f"   Spread: {result['breakdown']['summary']['range']:.1%}")
 
     print(f"\n🤖 Models Status:")
-    for model, status in result['metadata']['models_used']:
-        print(f"   {model}: {'✓ Trained' if result['metadata'].get(f'{model}_trained') else '✗ Rule-based'}")
+    for model in result['metadata']['models_used']:
+        trained_key = f'{model}_trained'
+        is_trained = result['metadata'].get(trained_key, False)
+        print(f"   {model}: {'✓ Trained' if is_trained else '✗ Rule-based'}")
 
     print(f"\n{'=' * 70}")
     print("✅ Ensemble Meta-Model test passed!")

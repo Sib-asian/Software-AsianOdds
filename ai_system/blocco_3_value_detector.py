@@ -282,18 +282,26 @@ class ValueDetector:
             return False
 
         # Check: odds dropping + volume increasing = sharp money
-        odds_values = [o["odds"] for o in odds_history]
+        # Safe extraction with filtering
+        odds_values = [o.get("odds", 0) for o in odds_history if "odds" in o]
+        if len(odds_values) < 3:
+            return False
+
         odds_first = odds_values[0]
         odds_last = odds_values[-1]
+        if odds_first == 0:
+            return False
         odds_drop = (odds_last - odds_first) / odds_first
 
         if odds_drop < self.config.sharp_money_threshold:
             # Odds dropped significantly
             if len(volume_history) >= 2:
-                volume_values = [v["volume"] for v in volume_history]
-                volume_increase = volume_values[-1] / np.mean(volume_values)
-                if volume_increase > self.config.volume_sharp_threshold:
-                    return True
+                volume_values = [v.get("volume", 0) for v in volume_history if "volume" in v]
+                volume_mean = np.mean(volume_values)
+                if volume_mean > 0:
+                    volume_increase = volume_values[-1] / volume_mean
+                    if volume_increase > self.config.volume_sharp_threshold:
+                        return True
 
         return False
 
