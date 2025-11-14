@@ -135,6 +135,7 @@ except ImportError:
 # ============================================================
 try:
     from ai_system.pipeline import quick_analyze, AIPipeline
+    from ai_system.advanced_precision_pipeline import AdvancedPrecisionPipeline
     from ai_system.config import AIConfig, get_conservative_config, get_aggressive_config
     AI_SYSTEM_AVAILABLE = True
     logger.info("✅ AI System loaded successfully - Enhanced predictions enabled")
@@ -15853,14 +15854,26 @@ if AI_SYSTEM_AVAILABLE:
                 st.session_state["ai_kelly_fraction"] = kelly_fraction
 
             st.info("""
-            **📊 Come funziona l'AI System:**
+            **📊 Come funziona l'AI System (15 Blocchi):**
+
+            **🎯 Pipeline Principale (Blocchi 0-6):**
+            - **Blocco 0:** API Engine per dati live (form, injuries, xG, lineup quality)
             - **Blocco 1:** Calibra le probabilità Dixon-Coles con Neural Network
             - **Blocco 2:** Calcola confidence score basato su data quality e model agreement
             - **Blocco 3:** Rileva value TRUE vs TRAP usando XGBoost e sharp money
             - **Blocco 4:** Ottimizza stake con Smart Kelly Criterion (dinamico)
             - **Blocco 5:** Risk management con portfolio limits e stop-loss
             - **Blocco 6:** Analizza odds movement per timing ottimale (BET NOW / WAIT)
-            - **Blocco 7:** API Engine per dati live (form, injuries, xG, lineup quality)
+
+            **🚀 Pipeline Avanzata (Blocchi 7-14):**
+            - **Blocco 7:** Bayesian Uncertainty Quantification - Quantifica incertezza con intervalli di credibilità
+            - **Blocco 8:** Monte Carlo Simulator - Simula migliaia di scenari per robustezza
+            - **Blocco 9:** Advanced Anomaly Detection - Rileva anomalie multi-metodo
+            - **Blocco 10:** Market Consistency Validator - Valida coerenza tra mercati correlati
+            - **Blocco 11:** Adaptive Calibration - Calibrazione auto-adattiva da risultati
+            - **Blocco 12:** Multi-Model Consensus - Validazione consensus tra modelli
+            - **Blocco 13:** Statistical Arbitrage Detector - Rileva arbitraggi e inefficienze
+            - **Blocco 14:** Real-time Validation Engine - Validazione real-time multi-metodologia
             """)
 
     st.markdown("---")
@@ -17018,6 +17031,56 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
 
                     logger.info(f"✅ AI Analysis completed: {ai_result['final_decision']['action']}")
 
+                    # Run Advanced Precision Pipeline (Blocks 7-14)
+                    try:
+                        advanced_pipeline = AdvancedPrecisionPipeline(config=ai_config)
+
+                        # Prepare data for advanced analysis
+                        prediction_data = {
+                            'probability': ai_result['calibrated']['prob_calibrated'],
+                            'confidence': ai_result['confidence']['confidence_score'] / 100,
+                            'odds': validated["odds_1"],
+                            'market_data': {
+                                'odds_1': validated["odds_1"],
+                                'odds_x': validated.get("odds_x", 0),
+                                'odds_2': validated.get("odds_2", 0),
+                            },
+                            'models_predictions': {
+                                'dixon_coles': ris["p_home"],
+                                'calibrated': ai_result['calibrated']['prob_calibrated']
+                            }
+                        }
+
+                        advanced_result = advanced_pipeline.process_prediction(prediction_data)
+
+                        # Add advanced analysis to ai_result
+                        ai_result['advanced_analysis'] = {
+                            'credible_interval_95': advanced_result.credible_interval_95,
+                            'uncertainty_level': advanced_result.uncertainty_level,
+                            'reliability_index': advanced_result.reliability_index,
+                            'robustness_score': advanced_result.robustness_score,
+                            'monte_carlo_percentile_5': advanced_result.monte_carlo_percentile_5,
+                            'monte_carlo_percentile_95': advanced_result.monte_carlo_percentile_95,
+                            'anomaly_detected': advanced_result.anomaly_detected,
+                            'anomaly_severity': advanced_result.anomaly_severity,
+                            'consistency_score': advanced_result.consistency_score,
+                            'validation_passed': advanced_result.validation_passed,
+                            'calibrated_probability': advanced_result.calibrated_probability,
+                            'consensus_reached': advanced_result.consensus_reached,
+                            'agreement_score': advanced_result.agreement_score,
+                            'outlier_models': advanced_result.outlier_models,
+                            'arbitrage_opportunities': advanced_result.arbitrage_opportunities,
+                            'expected_value_pct': advanced_result.expected_value_pct,
+                            'validation_score': advanced_result.validation_score,
+                            'recommendation': advanced_result.recommendation,
+                            'reasoning': advanced_result.reasoning,
+                        }
+
+                        logger.info(f"✅ Advanced Analysis completed: {advanced_result.recommendation}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Advanced Analysis error: {e}")
+                        ai_result['advanced_analysis'] = None
+
             except Exception as e:
                 logger.error(f"❌ AI Analysis error: {e}")
                 st.warning(f"⚠️ AI Analysis error: {str(e)}")
@@ -17175,8 +17238,9 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 st.info(f"{priority_emoji} **Priority:** {priority}")
 
             # Detailed AI Analysis Expander
-            with st.expander("🔍 Dettagli Analisi AI Completa (7 Blocchi)"):
+            with st.expander("🔍 Dettagli Analisi AI Completa (15 Blocchi)"):
                 st.markdown("### 📊 Breakdown per Blocco AI")
+                st.markdown("#### 🎯 Pipeline Principale (Blocchi 0-6)")
 
                 # Blocco 1: Calibration
                 st.markdown("**[BLOCCO 1] 🔬 Probability Calibrator**")
@@ -17269,8 +17333,76 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                     if api.get('enriched_context'):
                         st.write("- Enriched Context Available: ✅")
 
+                # Pipeline Avanzata (Blocchi 7-14)
+                if 'advanced_analysis' in ai_result and ai_result['advanced_analysis']:
+                    st.markdown("---")
+                    st.markdown("#### 🚀 Pipeline Avanzata (Blocchi 7-14)")
+                    adv = ai_result['advanced_analysis']
+
+                    # Blocco 7: Bayesian Uncertainty
+                    st.markdown("**[BLOCCO 7] 📊 Bayesian Uncertainty Quantification**")
+                    st.write(f"- Intervallo Credibilità 95%: `{adv.get('credible_interval_95', (0, 0))[0]:.1%} - {adv.get('credible_interval_95', (0, 0))[1]:.1%}`")
+                    st.write(f"- Livello Incertezza: `{adv.get('uncertainty_level', 'N/A')}`")
+                    st.write(f"- Reliability Index: `{adv.get('reliability_index', 0):.0f}/100`")
+                    st.markdown("---")
+
+                    # Blocco 8: Monte Carlo
+                    st.markdown("**[BLOCCO 8] 🎲 Monte Carlo Simulator**")
+                    st.write(f"- Robustness Score: `{adv.get('robustness_score', 0):.0f}/100`")
+                    st.write(f"- Percentile 5%: `{adv.get('monte_carlo_percentile_5', 0):.2%}`")
+                    st.write(f"- Percentile 95%: `{adv.get('monte_carlo_percentile_95', 0):.2%}`")
+                    st.markdown("---")
+
+                    # Blocco 9: Anomaly Detection
+                    st.markdown("**[BLOCCO 9] 🚨 Advanced Anomaly Detection**")
+                    st.write(f"- Anomalia Rilevata: `{'Sì' if adv.get('anomaly_detected') else 'No'}`")
+                    st.write(f"- Severità: `{adv.get('anomaly_severity', 'NONE')}`")
+                    if adv.get('anomaly_detected'):
+                        st.warning("⚠️ Anomalia rilevata nel mercato!")
+                    st.markdown("---")
+
+                    # Blocco 10: Market Consistency
+                    st.markdown("**[BLOCCO 10] ⚖️ Market Consistency Validator**")
+                    st.write(f"- Consistency Score: `{adv.get('consistency_score', 0):.0f}/100`")
+                    st.write(f"- Validation Passed: `{'✅ Sì' if adv.get('validation_passed') else '❌ No'}`")
+                    st.markdown("---")
+
+                    # Blocco 11: Adaptive Calibration
+                    st.markdown("**[BLOCCO 11] 🎯 Adaptive Calibration**")
+                    st.write(f"- Probabilità Calibrata: `{adv.get('calibrated_probability', 0):.2%}`")
+                    st.markdown("---")
+
+                    # Blocco 12: Consensus Validator
+                    st.markdown("**[BLOCCO 12] 🤝 Multi-Model Consensus**")
+                    st.write(f"- Consensus Raggiunto: `{'✅ Sì' if adv.get('consensus_reached') else '❌ No'}`")
+                    st.write(f"- Agreement Score: `{adv.get('agreement_score', 0):.0f}/100`")
+                    if adv.get('outlier_models'):
+                        st.write(f"- Modelli Outlier: `{', '.join(adv.get('outlier_models', []))}`")
+                    st.markdown("---")
+
+                    # Blocco 13: Arbitrage Detector
+                    st.markdown("**[BLOCCO 13] 💰 Statistical Arbitrage Detector**")
+                    st.write(f"- Expected Value: `{adv.get('expected_value_pct', 0):+.1f}%`")
+                    if adv.get('arbitrage_opportunities'):
+                        st.success(f"✅ {len(adv.get('arbitrage_opportunities', []))} opportunità rilevate!")
+                    else:
+                        st.write("- Nessuna opportunità di arbitraggio")
+                    st.markdown("---")
+
+                    # Blocco 14: Real-time Validation
+                    st.markdown("**[BLOCCO 14] ✅ Real-time Validation Engine**")
+                    st.write(f"- Validation Score: `{adv.get('validation_score', 0):.0f}/100`")
+                    st.write(f"- Raccomandazione Finale: `{adv.get('recommendation', 'N/A')}`")
+                    if adv.get('reasoning'):
+                        st.write("- **Reasoning:**")
+                        for reason in adv.get('reasoning', [])[:3]:
+                            st.write(f"  - {reason}")
+                else:
+                    st.markdown("---")
+                    st.info("ℹ️ **Pipeline Avanzata:** Attiva l'analisi avanzata per vedere i blocchi 7-14")
+
                 st.markdown("---")
-                st.caption("💡 **Nota:** L'AI System combina 7 blocchi ML per decisioni ottimali. Ogni blocco contribuisce all'analisi finale.")
+                st.caption("💡 **Nota:** L'AI System combina 15 blocchi ML per decisioni ottimali. Ogni blocco contribuisce all'analisi finale.")
 
         st.markdown("---")
 
