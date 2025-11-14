@@ -12640,12 +12640,18 @@ def format_analysis_for_telegram(
     quality_score: float,
     market_conf: float,
     value_bets: List[Dict[str, Any]] = None,
+    min_prob_threshold: float = 50.0,
 ) -> str:
     """
     Formatta analisi completa per messaggio Telegram.
-    
+
+    Args:
+        min_prob_threshold: Soglia minima probabilità (%) per mostrare mercati
+
     Usa HTML per formattazione (grassetto, corsivo, etc.)
     """
+    # Converti soglia da percentuale a frazione (es. 60% -> 0.60)
+    threshold = min_prob_threshold / 100.0
     # Header
     message = f"⚽ <b>ANALISI COMPLETATA</b>\n\n"
     message += f"🏆 <b>{match_name}</b>\n"
@@ -12668,63 +12674,86 @@ def format_analysis_for_telegram(
     message += f"⚖️ Pareggio: <b>{ris['p_draw']*100:.1f}%</b> (quota: {odds_x:.2f})\n"
     message += f"✈️ Trasferta: <b>{ris['p_away']*100:.1f}%</b> (quota: {odds_2:.2f})\n\n"
     
-    # Over/Under e BTTS
-    message += f"⚽ <b>Mercati Speciali</b>\n"
-    message += f"Over 2.5: {ris['over_25']*100:.1f}%\n"
-    message += f"Under 2.5: {ris['under_25']*100:.1f}%\n"
-    message += f"BTTS: {ris['btts']*100:.1f}%\n"
-    message += f"GG + Over 2.5: {ris['gg_over25']*100:.1f}%\n\n"
+    # Over/Under e BTTS (filtra con soglia)
+    specials = []
+    if ris.get('over_25', 0) >= threshold:
+        specials.append(f"Over 2.5: {ris['over_25']*100:.1f}%")
+    if ris.get('under_25', 0) >= threshold:
+        specials.append(f"Under 2.5: {ris['under_25']*100:.1f}%")
+    if ris.get('btts', 0) >= threshold:
+        specials.append(f"BTTS: {ris['btts']*100:.1f}%")
+    if ris.get('gg_over25', 0) >= threshold:
+        specials.append(f"GG + Over 2.5: {ris['gg_over25']*100:.1f}%")
 
-    # Pari/Dispari FT
-    message += f"🎲 <b>Pari/Dispari (FT)</b>\n"
-    message += f"Pari: {ris['even_ft']*100:.1f}%\n"
-    message += f"Dispari: {ris['odd_ft']*100:.1f}%\n\n"
+    if specials:
+        message += f"⚽ <b>Mercati Speciali</b>\n"
+        message += "\n".join(specials) + "\n\n"
 
-    # Clean Sheet
-    message += f"🛡️ <b>Porta Inviolata</b>\n"
-    message += f"CS Casa: {ris['cs_home']*100:.1f}%\n"
-    message += f"CS Trasferta: {ris['cs_away']*100:.1f}%\n\n"
+    # Pari/Dispari FT (filtra con soglia)
+    pari_dispari = []
+    if ris.get('even_ft', 0) >= threshold:
+        pari_dispari.append(f"Pari: {ris['even_ft']*100:.1f}%")
+    if ris.get('odd_ft', 0) >= threshold:
+        pari_dispari.append(f"Dispari: {ris['odd_ft']*100:.1f}%")
 
-    # Over/Under Half Time (se disponibili)
-    if 'over_05_ht' in ris or 'over_15_ht' in ris:
+    if pari_dispari:
+        message += f"🎲 <b>Pari/Dispari (FT)</b>\n"
+        message += "\n".join(pari_dispari) + "\n\n"
+
+    # Clean Sheet (filtra con soglia)
+    clean_sheet = []
+    if ris.get('cs_home', 0) >= threshold:
+        clean_sheet.append(f"CS Casa: {ris['cs_home']*100:.1f}%")
+    if ris.get('cs_away', 0) >= threshold:
+        clean_sheet.append(f"CS Trasferta: {ris['cs_away']*100:.1f}%")
+
+    if clean_sheet:
+        message += f"🛡️ <b>Porta Inviolata</b>\n"
+        message += "\n".join(clean_sheet) + "\n\n"
+
+    # Over/Under Half Time (filtra con soglia)
+    ht_markets = []
+    if 'over_05_ht' in ris and ris['over_05_ht'] >= threshold:
+        ht_markets.append(f"Over 0.5 HT: {ris['over_05_ht']*100:.1f}%")
+    if 'over_05_ht' in ris and (1 - ris['over_05_ht']) >= threshold:
+        ht_markets.append(f"Under 0.5 HT: {(1 - ris['over_05_ht'])*100:.1f}%")
+    if 'over_15_ht' in ris and ris['over_15_ht'] >= threshold:
+        ht_markets.append(f"Over 1.5 HT: {ris['over_15_ht']*100:.1f}%")
+    if 'over_15_ht' in ris and (1 - ris['over_15_ht']) >= threshold:
+        ht_markets.append(f"Under 1.5 HT: {(1 - ris['over_15_ht'])*100:.1f}%")
+    if 'even_ht' in ris and ris['even_ht'] >= threshold:
+        ht_markets.append(f"Pari HT: {ris['even_ht']*100:.1f}%")
+    if 'odd_ht' in ris and ris['odd_ht'] >= threshold:
+        ht_markets.append(f"Dispari HT: {ris['odd_ht']*100:.1f}%")
+
+    if ht_markets:
         message += f"⏱️ <b>Primo Tempo (HT)</b>\n"
-        if 'over_05_ht' in ris:
-            message += f"Over 0.5 HT: {ris['over_05_ht']*100:.1f}%\n"
-            message += f"Under 0.5 HT: {(1 - ris['over_05_ht'])*100:.1f}%\n"
-        if 'over_15_ht' in ris:
-            message += f"Over 1.5 HT: {ris['over_15_ht']*100:.1f}%\n"
-            message += f"Under 1.5 HT: {(1 - ris['over_15_ht'])*100:.1f}%\n"
-        # Pari/Dispari HT
-        if 'even_ht' in ris and 'odd_ht' in ris:
-            message += f"Pari HT: {ris['even_ht']*100:.1f}%\n"
-            message += f"Dispari HT: {ris['odd_ht']*100:.1f}%\n"
-        message += "\n"
+        message += "\n".join(ht_markets) + "\n\n"
 
-    # Mercati Combinati HT + FT (se disponibili)
-    has_combined = any(key in ris for key in ['over_05ht_over_05ft', 'over_05ht_over_15ft',
-                                                'over_05ht_over_25ft', 'over_15ht_over_25ft',
-                                                'over_05ht_over_35ft'])
-    if has_combined:
+    # Mercati Combinati HT + FT (filtra con soglia)
+    combined_ht_ft = []
+    if 'over_05ht_over_05ft' in ris and ris['over_05ht_over_05ft'] >= threshold:
+        combined_ht_ft.append(f"Over 0.5 HT + Over 0.5 FT: {ris['over_05ht_over_05ft']*100:.1f}%")
+    if 'over_05ht_over_15ft' in ris and ris['over_05ht_over_15ft'] >= threshold:
+        combined_ht_ft.append(f"Over 0.5 HT + Over 1.5 FT: {ris['over_05ht_over_15ft']*100:.1f}%")
+    if 'over_05ht_over_25ft' in ris and ris['over_05ht_over_25ft'] >= threshold:
+        combined_ht_ft.append(f"Over 0.5 HT + Over 2.5 FT: {ris['over_05ht_over_25ft']*100:.1f}%")
+    if 'over_15ht_over_25ft' in ris and ris['over_15ht_over_25ft'] >= threshold:
+        combined_ht_ft.append(f"Over 1.5 HT + Over 2.5 FT: {ris['over_15ht_over_25ft']*100:.1f}%")
+    if 'over_05ht_over_35ft' in ris and ris['over_05ht_over_35ft'] >= threshold:
+        combined_ht_ft.append(f"Over 0.5 HT + Over 3.5 FT: {ris['over_05ht_over_35ft']*100:.1f}%")
+
+    if combined_ht_ft:
         message += f"🔗 <b>Combinati HT + FT</b>\n"
-        if 'over_05ht_over_05ft' in ris:
-            message += f"Over 0.5 HT + Over 0.5 FT: {ris['over_05ht_over_05ft']*100:.1f}%\n"
-        if 'over_05ht_over_15ft' in ris:
-            message += f"Over 0.5 HT + Over 1.5 FT: {ris['over_05ht_over_15ft']*100:.1f}%\n"
-        if 'over_05ht_over_25ft' in ris:
-            message += f"Over 0.5 HT + Over 2.5 FT: {ris['over_05ht_over_25ft']*100:.1f}%\n"
-        if 'over_15ht_over_25ft' in ris:
-            message += f"Over 1.5 HT + Over 2.5 FT: {ris['over_15ht_over_25ft']*100:.1f}%\n"
-        if 'over_05ht_over_35ft' in ris:
-            message += f"Over 0.5 HT + Over 3.5 FT: {ris['over_05ht_over_35ft']*100:.1f}%\n"
-        message += "\n"
+        message += "\n".join(combined_ht_ft) + "\n\n"
 
-    # Asian Handicap (top lines)
+    # Asian Handicap (filtra con soglia)
     if 'asian_handicap' in ris:
         ah = ris['asian_handicap']
-        message += f"🎯 <b>Asian Handicap</b>\n"
-        # Mostra le linee più rilevanti (prob >= 40%)
-        relevant_ah = [(k, v) for k, v in ah.items() if v >= 0.40]
+        # Filtra con soglia utente
+        relevant_ah = [(k, v) for k, v in ah.items() if v >= threshold]
         if relevant_ah:
+            message += f"🎯 <b>Asian Handicap</b>\n"
             # Ordina per probabilità decrescente
             relevant_ah.sort(key=lambda x: x[1], reverse=True)
             for ah_line, prob in relevant_ah[:6]:  # Max 6 linee
@@ -12765,104 +12794,116 @@ def format_analysis_for_telegram(
             elif ' & Multigol' in combo_key and any(dc in combo_key for dc in ['1X', 'X2', '12']):
                 dc_multigol[combo_key] = prob
 
-        # Mostra Esito + Over/Under
-        if esito_over or esito_under:
+        # Mostra Esito + Over/Under (filtra con soglia)
+        esito_ou_lines = []
+        # Ordina e mostra Over
+        for combo_key in sorted(esito_over.keys()):
+            prob = esito_over[combo_key]
+            if prob >= threshold:  # Usa soglia utente
+                esito_ou_lines.append(f"{combo_key}: {prob*100:.1f}%")
+
+        # Ordina e mostra Under
+        for combo_key in sorted(esito_under.keys()):
+            prob = esito_under[combo_key]
+            if prob >= threshold:  # Usa soglia utente
+                esito_ou_lines.append(f"{combo_key}: {prob*100:.1f}%")
+
+        if esito_ou_lines:
             message += f"🎲 <b>Esito + Over/Under</b>\n"
+            message += "\n".join(esito_ou_lines) + "\n\n"
 
-            # Ordina e mostra Over
-            if esito_over:
-                for combo_key in sorted(esito_over.keys()):
-                    prob = esito_over[combo_key]
-                    if prob >= 0.10:  # Mostra solo prob >= 10%
-                        message += f"{combo_key}: {prob*100:.1f}%\n"
+        # Mostra Double Chance + Over/Under (filtra con soglia)
+        dc_ou_lines = []
+        # Ordina e mostra Over
+        for combo_key in sorted(dc_over.keys()):
+            prob = dc_over[combo_key]
+            if prob >= threshold:  # Usa soglia utente
+                dc_ou_lines.append(f"{combo_key}: {prob*100:.1f}%")
 
-            # Ordina e mostra Under
-            if esito_under:
-                for combo_key in sorted(esito_under.keys()):
-                    prob = esito_under[combo_key]
-                    if prob >= 0.10:
-                        message += f"{combo_key}: {prob*100:.1f}%\n"
+        # Ordina e mostra Under
+        for combo_key in sorted(dc_under.keys()):
+            prob = dc_under[combo_key]
+            if prob >= threshold:  # Usa soglia utente
+                dc_ou_lines.append(f"{combo_key}: {prob*100:.1f}%")
 
-            message += "\n"
-
-        # Mostra Double Chance + Over/Under
-        if dc_over or dc_under:
+        if dc_ou_lines:
             message += f"🎯 <b>Double Chance + Over/Under</b>\n"
+            message += "\n".join(dc_ou_lines) + "\n\n"
 
-            # Ordina e mostra Over
-            if dc_over:
-                for combo_key in sorted(dc_over.keys()):
-                    prob = dc_over[combo_key]
-                    if prob >= 0.10:
-                        message += f"{combo_key}: {prob*100:.1f}%\n"
+        # Mostra Esito + Multigol (filtra con soglia)
+        esito_mg_lines = []
+        # Ordina per esito (1, 2) e poi per range
+        sorted_esito_mg = sorted(esito_multigol.items(),
+                                key=lambda x: (x[0].split(' &')[0], x[0]))
 
-            # Ordina e mostra Under
-            if dc_under:
-                for combo_key in sorted(dc_under.keys()):
-                    prob = dc_under[combo_key]
-                    if prob >= 0.10:
-                        message += f"{combo_key}: {prob*100:.1f}%\n"
+        for combo_key, prob in sorted_esito_mg:
+            if prob >= threshold:  # Usa soglia utente
+                esito_mg_lines.append(f"{combo_key}: {prob*100:.1f}%")
 
-            message += "\n"
-
-        # Mostra Esito + Multigol
-        if esito_multigol:
+        if esito_mg_lines:
             message += f"🎰 <b>Esito + Multigol</b>\n"
+            message += "\n".join(esito_mg_lines) + "\n\n"
 
-            # Ordina per esito (1, 2) e poi per range
-            sorted_esito_mg = sorted(esito_multigol.items(),
-                                    key=lambda x: (x[0].split(' &')[0], x[0]))
+        # Mostra Double Chance + Multigol (filtra con soglia)
+        dc_mg_lines = []
+        # Ordina per DC (1X, X2, 12) e poi per range
+        sorted_dc_mg = sorted(dc_multigol.items(),
+                             key=lambda x: (x[0].split(' &')[0], x[0]))
 
-            for combo_key, prob in sorted_esito_mg:
-                if prob >= 0.05:  # Mostra solo prob >= 5%
-                    message += f"{combo_key}: {prob*100:.1f}%\n"
+        for combo_key, prob in sorted_dc_mg:
+            if prob >= threshold:  # Usa soglia utente
+                dc_mg_lines.append(f"{combo_key}: {prob*100:.1f}%")
 
-            message += "\n"
-
-        # Mostra Double Chance + Multigol
-        if dc_multigol:
+        if dc_mg_lines:
             message += f"🎲 <b>Double Chance + Multigol</b>\n"
+            message += "\n".join(dc_mg_lines) + "\n\n"
 
-            # Ordina per DC (1X, X2, 12) e poi per range
-            sorted_dc_mg = sorted(dc_multigol.items(),
-                                 key=lambda x: (x[0].split(' &')[0], x[0]))
-
-            for combo_key, prob in sorted_dc_mg:
-                if prob >= 0.05:  # Mostra solo prob >= 5%
-                    message += f"{combo_key}: {prob*100:.1f}%\n"
-
-            message += "\n"
-
-    # HT/FT (Halftime/Fulltime)
+    # HT/FT (Halftime/Fulltime) (filtra con soglia)
     if 'ht_ft' in ris:
         ht_ft = ris['ht_ft']
-        message += f"⏱️🏁 <b>HT/FT (Halftime/Fulltime)</b>\n"
-        # Mostra le top 5 combinazioni più probabili
-        sorted_ht_ft = sorted(ht_ft.items(), key=lambda x: x[1], reverse=True)
-        for combo, prob in sorted_ht_ft[:5]:  # Top 5
-            if prob >= 0.05:  # Mostra solo se >= 5%
+        # Filtra con soglia utente
+        filtered_ht_ft = [(combo, prob) for combo, prob in ht_ft.items() if prob >= threshold]
+        if filtered_ht_ft:
+            message += f"⏱️🏁 <b>HT/FT (Halftime/Fulltime)</b>\n"
+            # Ordina per probabilità decrescente
+            filtered_ht_ft.sort(key=lambda x: x[1], reverse=True)
+            for combo, prob in filtered_ht_ft[:5]:  # Top 5
                 message += f"{combo}: {prob*100:.1f}%\n"
-        message += "\n"
+            message += "\n"
 
-    # Value Bets
+    # Value Bets (filtra con soglia)
     if value_bets:
-        message += f"💎 <b>Value Bets Identificate</b>\n"
+        # Filtra value bets con soglia
+        filtered_vb = []
         for bet in value_bets[:5]:  # Max 5 value bets
-            esito = bet.get("Esito", "")
-            prob = bet.get("Prob %", bet.get("Prob Modello %", ""))
-            edge = bet.get("Edge %", "0")
-            ev = bet.get("EV %", "0")
-            rec = bet.get("Rec", "")
-            prob_str = f"{prob}%" if prob and "%" not in str(prob) else prob
-            message += f"• {esito}: Prob {prob_str}, Edge {edge}%, EV {ev}% ({rec})\n"
-        message += "\n"
-    
-    # Top 4 risultati esatti più probabili
+            # Estrai probabilità come numero
+            prob_val = bet.get("Prob %", bet.get("Prob Modello %", ""))
+            try:
+                prob_num = float(str(prob_val).replace("%", "")) / 100.0 if prob_val else 0
+            except:
+                prob_num = 0
+
+            if prob_num >= threshold:
+                esito = bet.get("Esito", "")
+                edge = bet.get("Edge %", "0")
+                ev = bet.get("EV %", "0")
+                rec = bet.get("Rec", "")
+                prob_str = f"{prob_val}%" if prob_val and "%" not in str(prob_val) else prob_val
+                filtered_vb.append(f"• {esito}: Prob {prob_str}, Edge {edge}%, EV {ev}% ({rec})")
+
+        if filtered_vb:
+            message += f"💎 <b>Value Bets Identificate</b>\n"
+            message += "\n".join(filtered_vb) + "\n\n"
+
+    # Top 4 risultati esatti più probabili (filtra con soglia)
     if "top10" in ris and len(ris["top10"]) > 0:
-        message += f"🏅 <b>Top 4 Risultati Esatti</b>\n"
-        for i, (h, a, p) in enumerate(ris["top10"][:4], 1):
-            message += f"{i}. {h}-{a}: {p:.1f}%\n"
-        message += "\n"
+        # Filtra risultati con soglia (converti prob da % a frazione)
+        filtered_scores = [(h, a, p) for h, a, p in ris["top10"] if (p / 100.0) >= threshold]
+        if filtered_scores:
+            message += f"🏅 <b>Top Risultati Esatti</b>\n"
+            for i, (h, a, p) in enumerate(filtered_scores[:4], 1):  # Max 4
+                message += f"{i}. {h}-{a}: {p:.1f}%\n"
+            message += "\n"
     
     # Aggiustamenti applicati
     adjustments = []
@@ -16958,7 +16999,7 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
 
             if max_prob >= TELEGRAM_MIN_PROBABILITY:
                 try:
-                    # Formatta messaggio con tutti i mercati
+                    # Formatta messaggio con tutti i mercati (filtra con soglia utente)
                     telegram_message = format_analysis_for_telegram(
                         match_name=match_name,
                         ris=ris,
@@ -16967,7 +17008,8 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                         odds_2=validated['odds_2'],
                         quality_score=validated['quality_score'],
                         market_conf=validated['market_confidence'],
-                        value_bets=None  # Opzionale: lista value bets
+                        value_bets=None,  # Opzionale: lista value bets
+                        min_prob_threshold=TELEGRAM_MIN_PROBABILITY  # Usa soglia configurata
                     )
 
                     # Invia notifica
