@@ -89,24 +89,24 @@ class AIConfig:
     api_reserved_enrichment: int = 50  # Per data collection
     api_emergency_buffer: int = 20  # Riserva
 
-      # Cache settings
-      api_cache_ttl: int = 86400  # 24 hours
-      api_cache_max_entries: int = 10000
+    # Cache settings
+    api_cache_ttl: int = 86400  # 24 hours
+    api_cache_max_entries: int = 10000
 
-      # Match importance thresholds
-      high_importance_threshold: float = 0.75  # Usa API premium
-      medium_importance_threshold: float = 0.50  # Solo free API
+    # Match importance thresholds
+    high_importance_threshold: float = 0.75  # Usa API premium
+    medium_importance_threshold: float = 0.50  # Solo free API
 
-      # Data quality thresholds
-      min_data_quality: float = 0.30  # Below this = fallback
-      good_data_quality: float = 0.70  # Above this = confident
-      excellent_data_quality: float = 0.90  # Above this = very confident
+    # Data quality thresholds
+    min_data_quality: float = 0.30  # Below this = fallback
+    good_data_quality: float = 0.70  # Above this = confident
+    excellent_data_quality: float = 0.90  # Above this = very confident
 
-      # StatsBomb Open Data
-      statsbomb_enabled: bool = True
-      statsbomb_max_matches: int = 5
-      statsbomb_cache_hours: int = 6
-      statsbomb_min_matches: int = 2
+    # StatsBomb Open Data
+    statsbomb_enabled: bool = True
+    statsbomb_max_matches: int = 5
+    statsbomb_cache_hours: int = 6
+    statsbomb_min_matches: int = 2
 
     # ============================================================
     # BLOCCO 1: PROBABILITY CALIBRATOR
@@ -281,36 +281,36 @@ class AIConfig:
     urgency_medium_time_hours: float = 6.0 # 2-6h = MEDIUM
     # >6h = LOW
 
-      # Volume analysis
-      volume_spike_threshold: float = 2.0  # Volume 2× media = spike
-      volume_sharp_threshold: float = 3.0  # Volume 3× media = sharp money
+    # Volume analysis
+    volume_spike_threshold: float = 2.0  # Volume 2× media = spike
+    volume_sharp_threshold: float = 3.0  # Volume 3× media = sharp money
 
-      # Chronos forecasting (time-series transformer)
-      chronos_enabled: bool = True
-      chronos_model_name: str = "amazon/chronos-t5-small"
-      chronos_prediction_length: int = 1
-      chronos_quantiles: List[float] = field(default_factory=lambda: [0.1, 0.5, 0.9])
-      chronos_device: str = "cpu"
+    # Chronos forecasting (time-series transformer)
+    chronos_enabled: bool = True
+    chronos_model_name: str = "amazon/chronos-t5-small"
+    chronos_prediction_length: int = 1
+    chronos_quantiles: List[float] = field(default_factory=lambda: [0.1, 0.5, 0.9])
+    chronos_device: str = "cpu"
 
-      # TheOddsAPI integration
-      theodds_enabled: bool = True
-      theodds_api_key: str = ""
-      theodds_regions: str = "eu"
-      theodds_markets: List[str] = field(default_factory=lambda: ["h2h"])
-      theodds_primary_market: str = "h2h"
-      theodds_odds_format: str = "decimal"
-      theodds_date_format: str = "iso"
-      theodds_auto_refresh: bool = True
-      theodds_history_window_hours: int = 6
-      theodds_sport_mapping: Dict[str, str] = field(default_factory=lambda: {
-          "serie a": "soccer_italy_serie_a",
-          "premier league": "soccer_epl",
-          "la liga": "soccer_spain_la_liga",
-          "bundesliga": "soccer_germany_bundesliga",
-          "ligue 1": "soccer_france_ligue_one",
-          "champions league": "soccer_uefa_champs_league",
-          "europa league": "soccer_uefa_europa_league",
-      })
+    # TheOddsAPI integration
+    theodds_enabled: bool = True
+    theodds_api_key: str = ""
+    theodds_regions: str = "eu"
+    theodds_markets: List[str] = field(default_factory=lambda: ["h2h"])
+    theodds_primary_market: str = "h2h"
+    theodds_odds_format: str = "decimal"
+    theodds_date_format: str = "iso"
+    theodds_auto_refresh: bool = True
+    theodds_history_window_hours: int = 6
+    theodds_sport_mapping: Dict[str, str] = field(default_factory=lambda: {
+        "serie a": "soccer_italy_serie_a",
+        "premier league": "soccer_epl",
+        "la liga": "soccer_spain_la_liga",
+        "bundesliga": "soccer_germany_bundesliga",
+        "ligue 1": "soccer_france_ligue_one",
+        "champions league": "soccer_uefa_champs_league",
+        "europa league": "soccer_uefa_europa_league",
+    })
 
     # ============================================================
     # TRAINING & VALIDATION

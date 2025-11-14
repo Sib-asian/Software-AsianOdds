@@ -34,7 +34,8 @@ class TheOddsAPIClient:
         primary_market: str = "h2h",
         odds_format: str = "decimal",
         date_format: str = "iso",
-        sport_mapping: Optional[Dict[str, str]] = None
+        sport_mapping: Optional[Dict[str, str]] = None,
+        history_window_hours: int = 6
     ):
         self.api_key = api_key
         self.enabled = bool(api_key)
@@ -44,6 +45,7 @@ class TheOddsAPIClient:
         self.odds_format = odds_format
         self.date_format = date_format
         self.sport_mapping = sport_mapping or {}
+        self.history_window_hours = history_window_hours
 
         if not self.enabled:
             logger.warning("⚠️ THEODDS_API_KEY non configurata - skipping live odds refresh.")
