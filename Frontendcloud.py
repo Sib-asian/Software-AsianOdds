@@ -7731,7 +7731,12 @@ def max_goals_adattivo(lh: float, la: float) -> int:
     
     return result
 
-def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
+def build_score_matrix(
+     lh: float,
+     la: float,
+     rho: float,
+     max_goals: Optional[int] = None
+ ) -> List[List[float]]:
     """
     Costruisce matrice score con normalizzazione e precisione numerica massima.
     
@@ -7763,7 +7768,21 @@ def build_score_matrix(lh: float, la: float, rho: float) -> List[List[float]]:
         lh = max(0.3, lh)
         la = max(0.3, la)
     
-    mg = max_goals_adattivo(lh, la)
+    # Compatibilità retroattiva: consenti specifica esplicita di max_goals
+    if max_goals is not None:
+        if isinstance(max_goals, (int, float)):
+            max_goals_int = int(max_goals)
+        else:
+            max_goals_int = -1
+        if max_goals_int < 5 or max_goals_int > 30:
+            logger.warning(
+                f"max_goals={max_goals} fuori range [5, 30], uso versione adattiva"
+            )
+            max_goals = None
+        else:
+            max_goals = max_goals_int
+
+    mg = max_goals if max_goals is not None else max_goals_adattivo(lh, la)
     if mg < 0:
         logger.warning(f"mg < 0: {mg}, uso valore default")
         mg = 10
@@ -13547,10 +13566,10 @@ def calculate_confidence_intervals(
 # ============================================================
 
 def risultato_completo_improved(
-    odds_1: float,
-    odds_x: float,
-    odds_2: float,
-    total: float,
+    odds_1: Optional[float] = None,
+    odds_x: Optional[float] = None,
+    odds_2: Optional[float] = None,
+    total: Optional[float] = None,
     odds_over25: float = None,
     odds_under25: float = None,
     odds_btts: float = None,
@@ -13591,8 +13610,50 @@ def risultato_completo_improved(
     
     ⚠️ VALIDAZIONE INPUT: Tutti gli input vengono validati prima dell'uso
     """
+    # ✅ COMPATIBILITÀ RETROATTIVA
+    # Supporto vecchi nomi parametri (odds_home/odds_draw/odds_away, goal_line, ecc.)
+    if odds_1 is None:
+        odds_1 = (
+            kwargs.get("odds_home")
+            or kwargs.get("odds1")
+            or kwargs.get("quote_home")
+        )
+    if odds_x is None:
+        odds_x = kwargs.get("odds_draw") or kwargs.get("oddsx")
+    if odds_2 is None:
+        odds_2 = (
+            kwargs.get("odds_away")
+            or kwargs.get("odds2")
+            or kwargs.get("quote_away")
+        )
+
+    if total is None:
+        for key in ("goal_line", "total_line", "linea_goal", "goal_total"):
+            legacy_total = kwargs.get(key)
+            if legacy_total is not None:
+                total = legacy_total
+                break
+
     # ⚠️ VALIDAZIONE INPUT ROBUSTA: Valida tutti gli input critici
     try:
+        missing_odds = []
+        if odds_1 is None:
+            missing_odds.append("odds_1/odds_home")
+        if odds_x is None:
+            missing_odds.append("odds_x/odds_draw")
+        if odds_2 is None:
+            missing_odds.append("odds_2/odds_away")
+        if missing_odds:
+            raise ValueError(f"Parametri mancanti: {', '.join(missing_odds)}")
+
+        DEFAULT_TOTAL = 2.5
+        if total is None:
+            logger.warning(
+                "Parametro 'total' non fornito - uso valore di default 2.5. "
+                "Passa goal_line/total per risultati più accurati."
+            )
+            total = DEFAULT_TOTAL
+
         # Valida quote obbligatorie
         if not isinstance(odds_1, (int, float)) or odds_1 <= 1.0:
             raise ValueError(f"odds_1 deve essere > 1.0, ricevuto: {odds_1}")
@@ -14914,7 +14975,7 @@ def risultato_completo_improved(
             logger.warning(f"⚠️ Errore calcolo football_data_metrics: {e}")
             pass  # Non bloccare se fallisce
     
-    return {
+    result = {
         "lambda_home": lh,
         "lambda_away": la,
         "rho": rho,
@@ -14981,6 +15042,20 @@ def risultato_completo_improved(
         "cover_0_3": cover_0_3,
         "market_calibration_stats": market_calibration_stats,
     }
+
+    # ✅ COMPATIBILITÀ LEGACY: Mantieni vecchi nomi chiave usati dagli script di test
+    result["prob_home"] = result.get("p_home")
+    result["prob_draw"] = result.get("p_draw")
+    result["prob_away"] = result.get("p_away")
+    if "over_25" in result:
+        result["prob_over25"] = result["over_25"]
+    if "under_25" in result:
+        result["prob_under25"] = result["under_25"]
+    if "btts" in result:
+        result["prob_btts"] = result["btts"]
+        result["prob_no_btts"] = 1 - result["btts"]
+
+    return result
 
 # ============================================================
 #   VALUE BETS PREPARATION
