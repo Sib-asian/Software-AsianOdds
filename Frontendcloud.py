@@ -2848,7 +2848,8 @@ def detect_value_bets(
         # Verifica se supera soglia value
         if ev_decimal >= threshold:
             # Calcola anche "implied probability" dalle quote per confronto
-            implied_prob = 1.0 / odds
+            # Protect against division by zero
+            implied_prob = 1.0 / max(odds, 1e-10)
             edge_pct = (prob_model - implied_prob) * 100
 
             value_bet = {
@@ -13262,7 +13263,7 @@ def analyze_market_correlations(
                 }
     
     # Correlazione BTTS vs Over/Under
-    if odds_btts and odds_over25:
+    if odds_btts and odds_over25 and odds_btts > 1.0 and odds_over25 > 1.0:
         p_btts = 1 / odds_btts
         p_over = 1 / odds_over25
         
@@ -15248,7 +15249,7 @@ def check_coerenza_quote_improved(
             quality_score -= 15
     
     # 4. Check BTTS coerenza
-    if odds_btts and odds_over25:
+    if odds_btts and odds_over25 and odds_btts > 1.0 and odds_over25 > 1.0:
         p_btts = 1/odds_btts
         p_over = 1/odds_over25
         # BTTS e Over dovrebbero essere correlati
