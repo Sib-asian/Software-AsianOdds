@@ -361,7 +361,7 @@ class AIConfig:
 
         # Valida che i pesi sommino a 1.0
         weight_sum = sum(self.confidence_weights.values())
-        if abs(weight_sum - 1.0) > 0.001:
+        if abs(weight_sum - 1.0) > 1e-6:  # More reasonable precision tolerance
             raise ValueError(
                 f"Confidence weights must sum to 1.0, got {weight_sum}. "
                 f"Weights: {self.confidence_weights}"

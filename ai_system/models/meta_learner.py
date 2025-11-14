@@ -141,7 +141,11 @@ class MetaLearner:
 
         # Ensure weights sum to 1.0 (numerical stability)
         total = sum(weights.values())
-        weights = {k: v/total for k, v in weights.items()}
+        if total == 0:
+            logger.warning("All model weights are zero, using equal weights")
+            weights = {k: 1.0/len(weights) for k in weights.keys()}
+        else:
+            weights = {k: v/total for k, v in weights.items()}
 
         logger.debug(f"Meta-Learner weights: {weights}")
 
@@ -179,7 +183,8 @@ class MetaLearner:
         # Model agreement (how much models agree)
         pred_values = list(predictions.values())
         if len(pred_values) > 1:
-            features['model_agreement'] = 1.0 - np.std(pred_values)  # Low std = high agreement
+            # Clip std to [0, 1] to prevent negative agreement
+            features['model_agreement'] = max(0.0, 1.0 - min(np.std(pred_values), 1.0))
         else:
             features['model_agreement'] = 0.5
 

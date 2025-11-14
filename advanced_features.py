@@ -281,7 +281,7 @@ def build_constrained_optimizer(
 
     except Exception as e:
         logger.error(f"Errore ottimizzazione constrained: {e}")
-        if len(x0) >= 2:
+        if x0 is not None and isinstance(x0, (list, np.ndarray)) and len(x0) >= 2:
             return apply_physical_constraints_to_lambda(x0[0], x0[1], total_target)
         else:
             return 1.5, 1.5  # Fallback to reasonable defaults
@@ -314,8 +314,9 @@ def neumaier_sum(values: np.ndarray) -> float:
             # Fallback: controlla se è iterabile o scalare
             try:
                 if hasattr(values, '__iter__') and not isinstance(values, (str, bytes)):
-                    # È iterabile (list, tuple, etc.)
-                    return float(sum(values))
+                    # È iterabile (list, tuple, etc.) - convert to float first
+                    float_values = [float(v) for v in values]
+                    return float(sum(float_values))
                 else:
                     # È uno scalare (int, float, etc.)
                     return float(values)
@@ -366,7 +367,7 @@ def precise_probability_sum(probs: np.ndarray, expected_total: float = 1.0) -> n
     # Somma con alta precisione
     total = neumaier_sum(probs)
 
-    if abs(total) < 1e-12:
+    if abs(total) < 1e-10:  # More reasonable tolerance for numerical stability
         logger.warning("Somma probabilità troppo piccola, ritorno uniforme")
         # FIX BUG: Protezione divisione per zero se probs è vuoto
         if len(probs) == 0:
@@ -490,7 +491,11 @@ def load_calibration_map(csv_path: str = "storico_analisi.csv") -> Dict:
 
             for i in range(len(bins) - 1):
                 bin_low, bin_high = bins[i], bins[i+1]
-                mask = (df[prob_col] >= bin_low) & (df[prob_col] < bin_high)
+                # Last bin should include upper bound to catch probabilities of exactly 1.0
+                if i == len(bins) - 2:  # Last bin
+                    mask = (df[prob_col] >= bin_low) & (df[prob_col] <= bin_high)
+                else:
+                    mask = (df[prob_col] >= bin_low) & (df[prob_col] < bin_high)
 
                 n_samples = mask.sum()
                 if n_samples >= 10:  # Almeno 10 campioni per bin

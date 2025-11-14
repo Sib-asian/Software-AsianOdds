@@ -15,6 +15,7 @@ Utilizzo:
     context = api.get_team_context("Inter", "Serie A")
 """
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -224,15 +225,17 @@ class CacheManager:
                 result = cursor.fetchone()
                 count = result[0] if result else 0
                 if count > 1000:  # Max 1000 entries
-                    logger.info(f"🧹 Cache size ({count}) exceeded limit, cleaning oldest 10%")
+                    # Delete 20% instead of 10% to provide buffer for race conditions
+                    cleanup_count = max(100, int(count * 0.20))
+                    logger.info(f"🧹 Cache size ({count}) exceeded limit, cleaning oldest {cleanup_count}")
                     cursor.execute("""
                         DELETE FROM team_cache
                         WHERE rowid IN (
                             SELECT rowid FROM team_cache
                             ORDER BY timestamp ASC
-                            LIMIT 100
+                            LIMIT ?
                         )
-                    """)
+                    """, (cleanup_count,))
 
                 logger.info(f"💾 Cached: {team} ({league})")
 
@@ -363,11 +366,13 @@ class CacheManager:
             Prediction dict se trovato e valido, None altrimenti
         """
         try:
-            # Genera cache key unica
-            cache_key = f"{home_team.lower()}_{away_team.lower()}_{match_date}"
+            # Genera cache key unica usando hash MD5 per evitare collisioni
+            cache_key_parts = [home_team.lower(), away_team.lower(), match_date]
             if odds_1 and odds_x and odds_2:
                 # Include quote nella key se fornite (per invalidare se cambiano)
-                cache_key += f"_{odds_1:.2f}_{odds_x:.2f}_{odds_2:.2f}"
+                cache_key_parts.extend([f"{odds_1:.2f}", f"{odds_x:.2f}", f"{odds_2:.2f}"])
+
+            cache_key = hashlib.md5('|'.join(cache_key_parts).encode()).hexdigest()
 
             with sqlite3.connect(self.db_path, timeout=10.0) as conn:
                 cursor = conn.cursor()
@@ -489,30 +494,29 @@ class CacheManager:
     def get_stats(self) -> Dict:
         """Get cache statistics for today"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            today = datetime.now().strftime("%Y-%m-%d")
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                today = datetime.now().strftime("%Y-%m-%d")
 
-            cursor.execute("""
-                SELECT hits, misses FROM cache_stats WHERE date = ?
-            """, (today,))
+                cursor.execute("""
+                    SELECT hits, misses FROM cache_stats WHERE date = ?
+                """, (today,))
 
-            result = cursor.fetchone()
-            conn.close()
+                result = cursor.fetchone()
 
-            if not result:
-                return {"hits": 0, "misses": 0, "total": 0, "hit_rate": 0.0}
+                if not result:
+                    return {"hits": 0, "misses": 0, "total": 0, "hit_rate": 0.0}
 
-            hits, misses = result
-            total = hits + misses
-            hit_rate = (hits / total * 100) if total > 0 else 0.0
+                hits, misses = result
+                total = hits + misses
+                hit_rate = (hits / total * 100) if total > 0 else 0.0
 
-            return {
-                "hits": hits,
-                "misses": misses,
-                "total": total,
-                "hit_rate": hit_rate
-            }
+                return {
+                    "hits": hits,
+                    "misses": misses,
+                    "total": total,
+                    "hit_rate": hit_rate
+                }
 
         except Exception as e:
             logger.error(f"❌ Error getting cache stats: {e}")
@@ -521,28 +525,27 @@ class CacheManager:
     def cleanup_old(self, days: int = 7):
         """Remove cache entries older than N days"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
 
-            cutoff = int(time.time()) - (days * 86400)
-            cursor.execute("DELETE FROM team_cache WHERE timestamp < ?", (cutoff,))
-            deleted_team = cursor.rowcount
+                cutoff = int(time.time()) - (days * 86400)
+                cursor.execute("DELETE FROM team_cache WHERE timestamp < ?", (cutoff,))
+                deleted_team = cursor.rowcount
 
-            cursor.execute("DELETE FROM over_markets_cache WHERE timestamp < ?", (cutoff,))
-            deleted_over_markets = cursor.rowcount
+                cursor.execute("DELETE FROM over_markets_cache WHERE timestamp < ?", (cutoff,))
+                deleted_over_markets = cursor.rowcount
 
-            cursor.execute("DELETE FROM predictions_cache WHERE timestamp < ?", (cutoff,))
-            deleted_predictions = cursor.rowcount
+                cursor.execute("DELETE FROM predictions_cache WHERE timestamp < ?", (cutoff,))
+                deleted_predictions = cursor.rowcount
 
-            conn.commit()
-            conn.close()
+                conn.commit()
 
-            logger.info(
-                f"🧹 Cleaned {deleted_team} team cache entries, "
-                f"{deleted_over_markets} over markets cache entries e "
-                f"{deleted_predictions} predictions cache entries "
-                f"older than {days} day(s)"
-            )
+                logger.info(
+                    f"🧹 Cleaned {deleted_team} team cache entries, "
+                    f"{deleted_over_markets} over markets cache entries e "
+                    f"{deleted_predictions} predictions cache entries "
+                    f"older than {days} day(s)"
+                )
 
         except Exception as e:
             logger.error(f"❌ Cache cleanup error: {e}")

@@ -112,10 +112,15 @@ class ConfidenceScorer:
         odds_history = additional_context.get("odds_history") or []
 
         if len(odds_history) >= 3:
-            # Calculate volatility
-            odds_values = [o["odds"] for o in odds_history]
-            odds_std = np.std(odds_values)
-            odds_stability = 1.0 - min(odds_std / 0.50, 1.0)
+            # Use only last 50 odds for efficiency
+            recent_odds_history = odds_history[-50:]
+            # Safe extraction with filtering
+            odds_values = [o.get("odds", 0) for o in recent_odds_history if "odds" in o]
+            if len(odds_values) >= 3:
+                odds_std = np.std(odds_values)
+                odds_stability = 1.0 - min(odds_std / 0.50, 1.0)
+            else:
+                odds_stability = 0.5
         else:
             odds_stability = 0.5  # Unknown
 
@@ -283,9 +288,13 @@ class ConfidenceScorer:
         # 3. Odds stability (20%)
         odds_history = additional_context.get("odds_history") or []
         if len(odds_history) >= 3:
-            odds_values = [o["odds"] for o in odds_history]
-            odds_std = np.std(odds_values)
-            odds_stability = (1.0 - min(odds_std / 0.50, 1.0)) * 100
+            # Safe extraction with filtering for malformed data
+            odds_values = [o.get("odds", 0) for o in odds_history if "odds" in o]
+            if len(odds_values) >= 3:
+                odds_std = np.std(odds_values)
+                odds_stability = (1.0 - min(odds_std / 0.50, 1.0)) * 100
+            else:
+                odds_stability = 50.0
         else:
             odds_stability = 50.0
         score += odds_stability * weights["odds_stability"]
