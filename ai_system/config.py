@@ -66,6 +66,20 @@ class AIConfig:
     telegram_daily_report_time: str = "22:00"  # HH:MM format
 
     # ============================================================
+    # SENTIMENT ANALYSIS - HUGGING FACE API
+    # ============================================================
+
+    # Hugging Face API (FREE - optional key for better rate limits)
+    # Get free API key at: https://huggingface.co/settings/tokens
+    huggingface_api_key: str = ""  # Set via env var HUGGINGFACE_API_KEY
+    huggingface_model: str = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+
+    # Enable sentiment analysis from social media & news
+    sentiment_enabled: bool = True
+    sentiment_sources: List[str] = field(default_factory=lambda: ['news', 'twitter', 'reddit'])
+    sentiment_hours_before_match: int = 48  # Hours to analyze before match
+
+    # ============================================================
     # BLOCCO 0: API DATA ENGINE
     # ============================================================
 

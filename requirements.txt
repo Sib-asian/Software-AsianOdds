@@ -15,6 +15,10 @@ numba>=0.56.0
 python-dotenv>=0.21.0
 python-dateutil>=2.8.2
 
+# Sentiment Analysis dependencies
+huggingface_hub>=0.20.0  # Hugging Face InferenceClient (FREE sentiment API)
+feedparser>=6.0.10  # Google News RSS parsing (FREE)
+
 # AI System dependencies (Blocks 0-6)
 torch>=2.0.0
 xgboost>=1.7.0
