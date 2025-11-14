@@ -16,10 +16,14 @@ Utilizza:
 """
 
 import logging
+import os
+import re
 import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 import json
+
+import requests
 
 # Imports from existing system
 try:
@@ -59,6 +63,11 @@ class APIDataEngine:
         self.api_manager = APIManager()
         self.cache = self.api_manager.cache
         self.quota = self.api_manager.quota
+
+        # External data helpers
+        self.weather_api_key = os.getenv("OPENWEATHER_API_KEY")
+        self._weather_cache: Dict[str, Dict[str, Any]] = {}
+        self._xg_cache: Dict[str, Dict[str, Any]] = {}
 
         # Statistics
         self.stats = {
@@ -111,6 +120,8 @@ class APIDataEngine:
             match_data = {}
             if importance >= self.config.high_importance_threshold:
                 match_data = self._get_match_specific_data(match)
+
+            match_data = self._enrich_precision_signals(match, match_data)
 
             # Calculate data quality score
             quality_score = self._calculate_data_quality(
@@ -324,6 +335,374 @@ class APIDataEngine:
 
         return match_data
 
+    def _enrich_precision_signals(self, match: Dict, match_data: Optional[Dict]) -> Dict:
+        """
+        Aggiunge al contesto dati che aumentano la precisione dei calcoli
+        (meteo, xG gratuiti, rumor/contesto extra).
+        """
+        enriched = dict(match_data) if match_data else {}
+
+        weather_context = self._get_weather_context(match)
+        if weather_context:
+            enriched["weather"] = weather_context
+
+        xg_context = self._get_understat_context(match)
+        if xg_context:
+            enriched["xg_metrics"] = xg_context
+
+        return enriched
+
+    def _get_weather_context(self, match: Dict) -> Optional[Dict[str, Any]]:
+        """Recupera e normalizza dati meteo rilevanti per il match."""
+        if not self.weather_api_key:
+            return None
+
+        match_dt = self._parse_match_datetime(match)
+        if match_dt is None:
+            match_dt = datetime.utcnow()
+
+        city = match.get("city") or self._infer_city_from_match(match)
+        if not city:
+            return None
+
+        cache_key = f"weather:{city.lower()}:{match_dt.date().isoformat()}"
+        cached = self._weather_cache.get(cache_key)
+        if cached and (datetime.utcnow() - cached["timestamp"]) < timedelta(hours=3):
+            return cached["data"]
+
+        try:
+            params = {
+                "q": city,
+                "appid": self.weather_api_key,
+                "units": "metric",
+                "lang": "it"
+            }
+            response = requests.get(
+                "https://api.openweathermap.org/data/2.5/forecast",
+                params=params,
+                timeout=10
+            )
+            response.raise_for_status()
+            forecasts = response.json().get("list", [])
+            if not forecasts:
+                return None
+
+            closest = None
+            min_diff = float("inf")
+            for forecast in forecasts:
+                dt_ts = forecast.get("dt")
+                if dt_ts is None:
+                    continue
+                forecast_dt = datetime.fromtimestamp(dt_ts)
+                diff = abs((forecast_dt - match_dt).total_seconds())
+                if diff < min_diff:
+                    min_diff = diff
+                    closest = forecast
+
+            if not closest:
+                return None
+
+            main = closest.get("main", {})
+            weather = (closest.get("weather") or [{}])[0]
+            wind = closest.get("wind", {})
+            rain = closest.get("rain", {})
+
+            weather_data = {
+                "city": city,
+                "match_time": match_dt.isoformat(),
+                "forecast_time": datetime.fromtimestamp(closest.get("dt", match_dt.timestamp())).isoformat(),
+                "temperature": main.get("temp", 20.0),
+                "feels_like": main.get("feels_like", 20.0),
+                "humidity": main.get("humidity", 50.0),
+                "rain_mm": rain.get("3h", 0.0),
+                "wind_speed_kmh": wind.get("speed", 0.0) * 3.6,
+                "description": weather.get("description", "clear"),
+                "condition": weather.get("main", "Clear")
+            }
+
+            penalty = self._calculate_weather_penalty(weather_data)
+            weather_data["over_penalty"] = penalty["total_penalty"]
+            weather_data["impact_flags"] = penalty["flags"]
+            weather_data["recommendation"] = penalty["recommendation"]
+
+            context = {
+                "provider": "openweather",
+                "data": weather_data
+            }
+
+            self._weather_cache[cache_key] = {
+                "timestamp": datetime.utcnow(),
+                "data": context
+            }
+
+            return context
+
+        except requests.RequestException as exc:
+            logger.warning(f"⚠️ Weather fetch failed for {city}: {exc}")
+            return None
+
+    def _parse_match_datetime(self, match: Dict) -> Optional[datetime]:
+        """Tenta di costruire un datetime usando date/time disponibili nel match."""
+        date_str = match.get("date") or match.get("match_date")
+        time_str = match.get("time") or match.get("match_time") or "00:00"
+        if not date_str:
+            return None
+        try:
+            return datetime.fromisoformat(f"{date_str} {time_str}".strip())
+        except ValueError:
+            try:
+                return datetime.strptime(f"{date_str} {time_str}".strip(), "%Y-%m-%d %H:%M")
+            except ValueError:
+                return None
+
+    def _infer_city_from_match(self, match: Dict) -> Optional[str]:
+        """Deduce la città usando venue, city o nome squadra di casa."""
+        if match.get("venue_city"):
+            return match["venue_city"]
+        if match.get("city"):
+            return match["city"]
+        home_team = match.get("home")
+        if home_team:
+            return self._infer_city_from_team(home_team)
+        return None
+
+    def _infer_city_from_team(self, team_name: str) -> str:
+        """Mapping veloce team -> città (copiato dalle integrazioni Frontendcloud)."""
+        mapping = {
+            # Premier League
+            "liverpool": "Liverpool",
+            "manchester city": "Manchester",
+            "manchester united": "Manchester",
+            "chelsea": "London",
+            "arsenal": "London",
+            "tottenham": "London",
+            "west ham": "London",
+            "crystal palace": "London",
+            "fulham": "London",
+            "newcastle": "Newcastle",
+            "everton": "Liverpool",
+            "aston villa": "Birmingham",
+            "wolverhampton": "Wolverhampton",
+            "wolves": "Wolverhampton",
+            "leicester": "Leicester",
+            "leeds": "Leeds",
+            "southampton": "Southampton",
+            "brighton": "Brighton",
+            # Serie A
+            "inter": "Milan",
+            "internazionale": "Milan",
+            "milan": "Milan",
+            "ac milan": "Milan",
+            "juventus": "Turin",
+            "roma": "Rome",
+            "lazio": "Rome",
+            "napoli": "Naples",
+            "ssc napoli": "Naples",
+            "atalanta": "Bergamo",
+            "fiorentina": "Florence",
+            "torino": "Turin",
+            "udinese": "Udine",
+            # La Liga
+            "barcelona": "Barcelona",
+            "real madrid": "Madrid",
+            "atletico": "Madrid",
+            "sevilla": "Seville",
+            "valencia": "Valencia",
+            "real sociedad": "San Sebastian",
+            "villarreal": "Villarreal",
+            # Bundesliga
+            "bayern": "Munich",
+            "bayern munich": "Munich",
+            "borussia dortmund": "Dortmund",
+            "dortmund": "Dortmund",
+            "rb leipzig": "Leipzig",
+            "leipzig": "Leipzig",
+            "bayer leverkusen": "Leverkusen",
+            # Ligue 1
+            "psg": "Paris",
+            "paris saint germain": "Paris",
+            "marseille": "Marseille",
+            "lyon": "Lyon",
+            "lille": "Lille",
+        }
+
+        key = team_name.lower()
+        for token, city in mapping.items():
+            if token in key:
+                return city
+
+        parts = team_name.split()
+        return parts[0].title() if parts else "Unknown"
+
+    def _calculate_weather_penalty(self, weather: Dict[str, Any]) -> Dict[str, Any]:
+        """Replica la logica additiva: max -20% su probabilità Over."""
+        penalty = 0.0
+        flags = []
+
+        rain = weather.get("rain_mm", 0.0)
+        if rain > 5.0:
+            penalty += 0.15
+            flags.append(f"heavy_rain_{rain:.1f}mm")
+        elif rain > 2.0:
+            penalty += 0.08
+            flags.append(f"moderate_rain_{rain:.1f}mm")
+
+        wind = weather.get("wind_speed_kmh", 0.0)
+        if wind > 30:
+            penalty += 0.10
+            flags.append(f"strong_wind_{wind:.1f}kmh")
+        elif wind > 20:
+            penalty += 0.05
+            flags.append(f"wind_{wind:.1f}kmh")
+
+        temp = weather.get("temperature", 20.0)
+        if temp > 30:
+            penalty += 0.08
+            flags.append(f"hot_{temp:.1f}c")
+        elif temp < 5:
+            penalty += 0.05
+            flags.append(f"cold_{temp:.1f}c")
+
+        penalty = min(penalty, 0.20)
+        recommendation = "neutral"
+        if penalty >= 0.15:
+            recommendation = "prefer_under_or_lower_line"
+        elif penalty >= 0.08:
+            recommendation = "monitor_under_trend"
+
+        return {
+            "total_penalty": penalty,
+            "flags": flags,
+            "recommendation": recommendation
+        }
+
+    def _get_understat_context(self, match: Dict) -> Optional[Dict[str, Any]]:
+        """Scarica xG gratuiti da Understat e li allinea al match."""
+        home = match.get("home")
+        away = match.get("away")
+        if not home or not away:
+            return None
+
+        season = match.get("season") or self._infer_season_from_match(match)
+
+        home_xg = self._fetch_understat_team_xg(home, season)
+        away_xg = self._fetch_understat_team_xg(away, season)
+        if not home_xg or not away_xg:
+            return None
+
+        return {
+            "season": season,
+            "home_team": home,
+            "away_team": away,
+            "home": home_xg,
+            "away": away_xg,
+            "home_advantage_xg": round(
+                home_xg["xg_per_match"] - away_xg["xga_per_match"], 2
+            ),
+            "away_pressure_xg": round(
+                away_xg["xg_per_match"] - home_xg["xga_per_match"], 2
+            ),
+            "source": "understat"
+        }
+
+    def _fetch_understat_team_xg(self, team_name: str, season: str) -> Optional[Dict[str, Any]]:
+        """Replica integrazione Understat (scraping leggero)."""
+        slug = self._normalize_team_slug(team_name)
+        cache_key = f"understat:{slug}:{season}"
+        cached = self._xg_cache.get(cache_key)
+        if cached and (datetime.utcnow() - cached["timestamp"]) < timedelta(hours=12):
+            return cached["data"]
+
+        url = f"https://understat.com/team/{slug}/{season}"
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; AI-System/1.0)"}
+
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                logger.debug(f"Understat returned {resp.status_code} for {team_name}")
+                return None
+
+            match_data = re.search(r"var teamsData\s*=\s*JSON\.parse\('(.+?)'\)", resp.text)
+            if not match_data:
+                logger.debug(f"Understat data not found for {team_name}")
+                return None
+
+            data_str = match_data.group(1).encode().decode('unicode_escape')
+            teams_data = json.loads(data_str)
+            if not isinstance(teams_data, dict):
+                return None
+
+            # teamsData keyed by team id; take first entry
+            team_entries = next(iter(teams_data.values()), {})
+            if not team_entries:
+                return None
+
+            total_xg = 0.0
+            total_xga = 0.0
+            matches = 0
+            for match_info in team_entries:
+                try:
+                    total_xg += float(match_info.get("xG", 0.0))
+                    total_xga += float(match_info.get("xGA", 0.0))
+                    matches += 1
+                except (TypeError, ValueError):
+                    continue
+
+            if matches == 0:
+                return None
+
+            result = {
+                "matches_played": matches,
+                "xg_total": round(total_xg, 2),
+                "xga_total": round(total_xga, 2),
+                "xg_per_match": round(total_xg / matches, 2),
+                "xga_per_match": round(total_xga / matches, 2),
+                "xg_diff_per_match": round((total_xg - total_xga) / matches, 2),
+                "source": "understat.com"
+            }
+
+            self._xg_cache[cache_key] = {
+                "timestamp": datetime.utcnow(),
+                "data": result
+            }
+
+            return result
+
+        except (requests.RequestException, json.JSONDecodeError) as exc:
+            logger.warning(f"⚠️ Understat fetch failed for {team_name}: {exc}")
+            return None
+
+    def _normalize_team_slug(self, team_name: str) -> str:
+        """Converte il nome squadra nel formato usato da Understat."""
+        slug = team_name.lower().replace(" ", "_")
+        manual = {
+            "manchester_united": "Manchester_United",
+            "manchester_city": "Manchester_City",
+            "west_ham": "West_Ham",
+            "newcastle_united": "Newcastle_United",
+            "real_madrid": "Real_Madrid",
+            "atletico_madrid": "Atletico_Madrid",
+            "real_betis": "Betis",
+            "bayern_munich": "Bayern_Munich",
+            "borussia_dortmund": "Borussia_Dortmund",
+            "rb_leipzig": "RB_Leipzig",
+            "bayer_leverkusen": "Bayer_Leverkusen",
+            "psg": "Paris_Saint_Germain",
+            "paris_saint_germain": "Paris_Saint_Germain",
+        }
+        return manual.get(slug, slug.title().replace(" ", "_"))
+
+    def _infer_season_from_match(self, match: Dict) -> str:
+        """Ritorna stagione Understat (anno) basata sulla data match."""
+        match_dt = self._parse_match_datetime(match)
+        if not match_dt:
+            return str(datetime.utcnow().year)
+        year = match_dt.year
+        # Stagioni europee partono in estate → se mese < luglio usa anno-1
+        if match_dt.month < 7:
+            year -= 1
+        return str(year)
+
     def _calculate_data_quality(
         self,
         home_context: Dict,
@@ -371,6 +750,12 @@ class APIDataEngine:
             (home_optional + away_optional) / (len(optional_fields) * 2) * 0.10
         )
         quality += completeness
+
+        # Precision boosters
+        if match_data.get("weather"):
+            quality += 0.05
+        if match_data.get("xg_metrics"):
+            quality += 0.05
 
         return min(quality, 1.0)  # Cap a 1.0
 

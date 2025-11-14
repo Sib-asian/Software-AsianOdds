@@ -113,22 +113,11 @@ try:
     print("=" * 80)
 
     if result.recommendation == "BET":
-        # Calcola stake in base a confidence
-        if result.confidence_score >= 85:
-            stake_multiplier = 1.0
-            stake_type = "normale"
-        elif result.confidence_score >= 75:
-            stake_multiplier = 0.75
-            stake_type = "moderato"
-        else:
-            stake_multiplier = 0.5
-            stake_type = "conservativo"
-
         print(f"\n✅ PROCEDI CON LA BET!")
-        print(f"  • Tipo Stake: {stake_type} ({stake_multiplier*100:.0f}%)")
         print(f"  • Probabilità da usare: {result.recommended_probability:.4f}")
         print(f"  • Expected Value: {result.expected_value_pct:.2f}%")
         print(f"  • Confidence: {result.confidence_score:.1f}/100")
+        print(f"  • Nota: applica le tue regole di bankroll esterne (nessun stake automatico)")
 
     elif result.recommendation == "SKIP":
         print(f"\n❌ SKIP QUESTA OPPORTUNITÀ")
@@ -363,7 +352,6 @@ def analyze_match_with_advanced_ai(match_data, existing_prediction):
             "probability": advanced_result.recommended_probability,
             "confidence": advanced_result.confidence_score,
             "expected_value": advanced_result.expected_value_pct,
-            "stake_multiplier": calculate_stake_multiplier(advanced_result),
             "reasoning": advanced_result.reasoning
         }
     elif advanced_result.recommendation == "SKIP":
@@ -378,16 +366,6 @@ def analyze_match_with_advanced_ai(match_data, existing_prediction):
             "details": advanced_result
         }
 
-def calculate_stake_multiplier(result):
-    '''Calcola moltiplicatore stake basato su confidence'''
-    if result.confidence_score >= 85:
-        return 1.0  # Stake pieno
-    elif result.confidence_score >= 75:
-        return 0.75  # 75% dello stake
-    elif result.confidence_score >= 65:
-        return 0.5   # 50% dello stake
-    else:
-        return 0.25  # 25% dello stake
 """)
 
 print()
