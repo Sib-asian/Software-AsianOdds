@@ -12741,8 +12741,8 @@ def format_analysis_for_telegram(
     if 'asian_handicap' in ris:
         ah = ris['asian_handicap']
         message += f"🎯 <b>Asian Handicap</b>\n"
-        # Mostra le linee più rilevanti (prob >= 40%)
-        relevant_ah = [(k, v) for k, v in ah.items() if v >= 0.40]
+        # Mostra le linee più rilevanti (prob >= 25%)
+        relevant_ah = [(k, v) for k, v in ah.items() if v >= 0.25]
         if relevant_ah:
             # Ordina per probabilità decrescente
             relevant_ah.sort(key=lambda x: x[1], reverse=True)
@@ -12995,7 +12995,7 @@ def format_multiple_matches_for_telegram(
         # Asian Handicap (top 2 lines compatto)
         if 'asian_handicap' in ris:
             ah = ris['asian_handicap']
-            relevant_ah = [(k, v) for k, v in ah.items() if v >= 0.45]
+            relevant_ah = [(k, v) for k, v in ah.items() if v >= 0.25]
             if relevant_ah:
                 relevant_ah.sort(key=lambda x: x[1], reverse=True)
                 ah_str = ' | '.join([f"{k}: {v*100:.1f}%" for k, v in relevant_ah[:2]])
