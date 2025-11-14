@@ -15563,8 +15563,7 @@ if "is_cup_auto" not in st.session_state:
     st.session_state["is_cup_auto"] = False
 if "is_end_season_auto" not in st.session_state:
     st.session_state["is_end_season_auto"] = False
-if "auto_mode_selection" not in st.session_state:
-    st.session_state["auto_mode_selection"] = "✋ Manuale"
+st.session_state["auto_mode_selection"] = "🌐 Auto + API (Ibrido)"
 if "preview_cache" not in st.session_state:
     st.session_state["preview_cache"] = {}  # Cache per preview auto-detection
 
@@ -15874,13 +15873,9 @@ if ADVANCED_FEATURES_AVAILABLE:
                 "🌐 Auto + API (Ibrido)"
             ]
 
-            # Default: Auto DB se disponibile, altrimenti Manuale
-            default_idx = 1 if AUTO_DETECTION_AVAILABLE else 0
-
             mode_selection = st.selectbox(
                 "Modalità Auto-Detection",
                 options=mode_options,
-                index=default_idx,
                 key="auto_mode_selection",
                 help="""
                 **✋ Manuale**: Imposti tutti i parametri manualmente
