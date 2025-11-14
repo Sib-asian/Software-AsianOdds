@@ -17,7 +17,7 @@ Output: timing recommendation + predicted odds + urgency
 import logging
 import numpy as np
 from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # PyTorch per LSTM
 try:
@@ -423,10 +423,12 @@ class OddsMovementTracker:
 
     def _trim_history(self, history: List[Dict]) -> List[Dict]:
         window = timedelta(hours=self.config.theodds_history_window_hours)
-        cutoff = datetime.utcnow() - window
+        cutoff = datetime.utcnow().replace(tzinfo=timezone.utc) - window
         trimmed: List[Dict] = []
         for entry in history:
             ts = self._parse_timestamp(entry.get("timestamp"))
+            if ts is not None and ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
             if ts is None or ts >= cutoff:
                 trimmed.append(entry)
         return trimmed

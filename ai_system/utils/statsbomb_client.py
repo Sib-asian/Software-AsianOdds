@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -247,6 +247,10 @@ class StatsBombClient:
         target = _normalize_name(team_name)
         results: List[Dict[str, Any]] = []
 
+        target_match_dt = None
+        if match_date:
+            target_match_dt = match_date if match_date.tzinfo is None else match_date.astimezone(timezone.utc).replace(tzinfo=None)
+
         for _, row in matches_df.iterrows():
             home_name = _normalize_name(
                 _safe_get(row.get("home_team"), "home_team_name", "name")
@@ -258,7 +262,9 @@ class StatsBombClient:
                 continue
 
             match_dt = self._parse_datetime(row.get("match_date"))
-            if match_date and match_dt and match_dt > match_date:
+            if match_dt and match_dt.tzinfo is not None:
+                match_dt = match_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            if target_match_dt and match_dt and match_dt > target_match_dt:
                 # Usa solo match già giocati rispetto alla data richiesta
                 continue
 
