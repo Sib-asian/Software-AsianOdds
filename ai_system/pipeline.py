@@ -12,6 +12,7 @@ BLOCCO 3 (Value Detector) →
 BLOCCO 4 (Smart Kelly Optimizer) →
 BLOCCO 5 (Risk Manager) →
 BLOCCO 6 (Odds Movement Tracker) →
+BLOCCO 7 (Bayesian Uncertainty Layer) →
 DECISIONE FINALE
 
 Usage:
@@ -20,7 +21,7 @@ Usage:
 """
 
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 import json
 from pathlib import Path
@@ -33,6 +34,7 @@ from .blocco_3_value_detector import ValueDetector
 from .blocco_4_kelly import SmartKellyOptimizer
 from .blocco_5_risk_manager import RiskManager
 from .blocco_6_odds_tracker import OddsMovementTracker
+from .blocco_7_bayesian_uncertainty import BayesianUncertaintyQuantifier, BayesianResult
 from .models.ensemble import EnsembleMetaModel
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,7 @@ class AIPipeline:
         self.kelly_optimizer = SmartKellyOptimizer(self.config)
         self.risk_manager = RiskManager(self.config)
         self.odds_tracker = OddsMovementTracker(self.config)
+        self.bayesian_quantifier = BayesianUncertaintyQuantifier()
 
         # Initialize Ensemble Meta-Model (if enabled)
         self.ensemble = None
@@ -351,6 +354,31 @@ class AIPipeline:
                 logger.info("   ✓ Sharp money detected!")
 
             # ========================================
+            # BLOCCO 7: Bayesian Uncertainty Layer
+            # ========================================
+            logger.info("\n🧠 BLOCCO 7: Quantifying Bayesian uncertainty...")
+
+            bayesian_data = self._run_bayesian_layer(
+                calibrated_probability=calibrated_result["prob_calibrated"],
+                prob_to_use=prob_to_use,
+                ensemble_result=ensemble_result,
+                odds_data=odds_data
+            )
+
+            bayesian_summary = bayesian_data["ensemble"]
+
+            logger.info(
+                f"   ✓ Bayesian adjusted probability: "
+                f"{bayesian_data['adjusted_probability']:.1%} "
+                f"(uncertainty: {bayesian_summary['uncertainty_level']})"
+            )
+            logger.info(
+                f"   ✓ 95% credible interval: "
+                f"{bayesian_summary['credible_interval_95'][0]:.1%} - "
+                f"{bayesian_summary['credible_interval_95'][1]:.1%}"
+            )
+
+            # ========================================
             # FINAL RESULT
             # ========================================
             analysis_time = (datetime.now() - analysis_start).total_seconds()
@@ -368,6 +396,7 @@ class AIPipeline:
                 "kelly": kelly_result,
                 "risk_decision": risk_decision,
                 "timing": timing_result,
+                "bayesian": bayesian_data,
 
                 # Final decision (easy access)
                 "final_decision": {
@@ -375,18 +404,25 @@ class AIPipeline:
                     "stake": risk_decision["final_stake"],
                     "timing": timing_result["timing_recommendation"],
                     "priority": risk_decision["priority"],
-                    "urgency": timing_result["urgency"]
+                    "urgency": timing_result["urgency"],
+                    "uncertainty": bayesian_summary["uncertainty_level"],
+                    "bayesian_probability": bayesian_data["adjusted_probability"],
+                    "credible_interval_95": bayesian_summary["credible_interval_95"]
                 },
 
                 # Summary
                 "summary": {
-                    "probability": calibrated_result["prob_calibrated"],
+                    "probability": bayesian_data["adjusted_probability"],
+                    "probability_calibrated": calibrated_result["prob_calibrated"],
                     "confidence": confidence_result["confidence_score"],
                     "value_score": value_result["value_score"],
                     "expected_value": value_result["expected_value"],
                     "stake": risk_decision["final_stake"],
                     "odds": odds_data.get("odds_current", 2.0),
                     "potential_profit": risk_decision["final_stake"] * (odds_data.get("odds_current", 2.0) - 1),
+                    "bayesian_uncertainty": bayesian_summary["uncertainty_level"],
+                    "bayesian_confidence": bayesian_summary["confidence_score"],
+                    "bayesian_interval_95": bayesian_summary["credible_interval_95"],
                 },
 
                 # Metadata
@@ -447,6 +483,121 @@ class AIPipeline:
             "odds_tracker": "trained" if self.odds_tracker.is_trained else "rule_based",
         }
 
+    def _run_bayesian_layer(
+        self,
+        calibrated_probability: float,
+        prob_to_use: float,
+        ensemble_result: Optional[Dict[str, Any]],
+        odds_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute Bayesian uncertainty block and return serialized outputs."""
+        historical_winrate = odds_data.get("similar_bets_winrate")
+        historical_count = odds_data.get("similar_bets_count")
+        has_historical = (
+            historical_winrate is not None
+            and isinstance(historical_count, (int, float))
+            and historical_count > 0
+        )
+
+        if has_historical:
+            single_result = self.bayesian_quantifier.calculate_posterior(
+                calibrated_probability,
+                historical_success_rate=float(historical_winrate),
+                n_historical=int(historical_count)
+            )
+        else:
+            single_result = self.bayesian_quantifier.calculate_posterior(
+                calibrated_probability
+            )
+
+        predictions, reliabilities = self._prepare_bayesian_inputs(
+            ensemble_result,
+            prob_to_use,
+            calibrated_probability
+        )
+
+        ensemble_analysis = self.bayesian_quantifier.bayesian_ensemble(
+            predictions,
+            model_reliabilities=reliabilities
+        )
+
+        adjusted_probability = self.bayesian_quantifier.get_adjusted_probability(
+            calibrated_probability,
+            ensemble_analysis,
+            use_conservative=True
+        )
+
+        return {
+            "single": self._serialize_bayesian_result(single_result),
+            "ensemble": self._serialize_bayesian_result(ensemble_analysis),
+            "adjusted_probability": adjusted_probability,
+            "inputs": {
+                "predictions": predictions,
+                "model_reliabilities": reliabilities
+            }
+        }
+
+    def _prepare_bayesian_inputs(
+        self,
+        ensemble_result: Optional[Dict[str, Any]],
+        prob_to_use: float,
+        calibrated_probability: float
+    ) -> Tuple[List[float], Optional[List[float]]]:
+        """Collect predictions/reliabilities to feed the Bayesian layer."""
+        predictions: List[float] = []
+        reliabilities: Optional[List[float]] = None
+
+        if ensemble_result and ensemble_result.get("model_predictions"):
+            model_weights = ensemble_result.get("model_weights", {})
+            weights_available = True
+            reliabilities = []
+
+            for model, prediction in ensemble_result["model_predictions"].items():
+                if prediction is None:
+                    continue
+                predictions.append(float(max(0.0, min(1.0, prediction))))
+
+                if model_weights and model in model_weights:
+                    reliabilities.append(float(max(0.0, model_weights[model])))
+                else:
+                    weights_available = False
+
+            if not weights_available or not reliabilities or sum(reliabilities) == 0:
+                reliabilities = None
+        else:
+            predictions.extend([
+                float(max(0.0, min(1.0, prob_to_use))),
+                float(max(0.0, min(1.0, calibrated_probability)))
+            ])
+
+        if not predictions:
+            predictions = [float(max(0.0, min(1.0, calibrated_probability)))]
+
+        if reliabilities is not None and len(reliabilities) != len(predictions):
+            reliabilities = None
+
+        return predictions, reliabilities
+
+    def _serialize_bayesian_result(self, result: BayesianResult) -> Dict[str, Any]:
+        """Convert BayesianResult dataclass into a JSON-friendly dict."""
+        return {
+            "mean": float(result.mean),
+            "median": float(result.median),
+            "mode": float(result.mode),
+            "std": float(result.std),
+            "credible_interval_95": (
+                float(result.credible_interval_95[0]),
+                float(result.credible_interval_95[1])
+            ),
+            "credible_interval_99": (
+                float(result.credible_interval_99[0]),
+                float(result.credible_interval_99[1])
+            ),
+            "uncertainty_level": result.uncertainty_level,
+            "confidence_score": float(result.confidence_score),
+            "reliability_index": float(result.reliability_index)
+        }
+
     def _print_summary(self, result: Dict):
         """Print colorful summary"""
         summary = result["summary"]
@@ -458,7 +609,27 @@ class AIPipeline:
         logger.info(f"Match: {result['match']['home']} vs {result['match']['away']}")
         logger.info(f"League: {result['match'].get('league', 'N/A')}")
         logger.info(f"")
-        logger.info(f"Probability: {summary['probability']:.1%}")
+
+        calibrated_prob = summary.get("probability_calibrated")
+        if calibrated_prob is not None:
+            logger.info(f"Probability (calibrated): {calibrated_prob:.1%}")
+
+        bayesian_prob = summary.get("probability")
+        bayesian_interval = summary.get("bayesian_interval_95")
+        bayesian_uncertainty = summary.get("bayesian_uncertainty")
+        if bayesian_prob is not None:
+            if bayesian_interval:
+                logger.info(
+                    f"Probability (bayesian adj): {bayesian_prob:.1%} "
+                    f"[{bayesian_uncertainty} | CI95 "
+                    f"{bayesian_interval[0]:.1%}-{bayesian_interval[1]:.1%}]"
+                )
+            else:
+                logger.info(
+                    f"Probability (bayesian adj): {bayesian_prob:.1%} "
+                    f"(uncertainty: {bayesian_uncertainty})"
+                )
+
         logger.info(f"Confidence: {summary['confidence']:.0f}/100")
         logger.info(f"Value Score: {summary['value_score']:.0f}/100")
         logger.info(f"Expected Value: {summary['expected_value']:+.1%}")
@@ -480,6 +651,15 @@ class AIPipeline:
         logger.info(f"STAKE: €{decision['stake']:.2f}")
         logger.info(f"TIMING: {decision['timing']}")
         logger.info(f"PRIORITY: {decision['priority']}")
+        if decision.get("uncertainty") is not None:
+            bayes_prob = decision.get("bayesian_probability")
+            if bayes_prob is not None:
+                logger.info(
+                    f"UNCERTAINTY: {decision['uncertainty']} "
+                    f"(Bayesian prob: {bayes_prob:.1%})"
+                )
+            else:
+                logger.info(f"UNCERTAINTY: {decision['uncertainty']}")
         logger.info(f"{'─'*70}")
 
         if decision["action"] == "BET":
