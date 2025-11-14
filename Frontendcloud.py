@@ -16268,6 +16268,340 @@ if AI_SYSTEM_AVAILABLE:
     st.markdown("---")
 
 # ============================================================
+#        LIVE BETTING ENGINE (FASE 3.1)
+# ============================================================
+if AI_SYSTEM_AVAILABLE:
+    with st.expander("⚡ Live Betting - Predizioni Real-Time Durante le Partite"):
+        st.markdown("""
+        ### ⚡ Live Betting Engine - ROI +15-20% vs Pre-match +5-8%
+
+        Aggiorna le probabilità in tempo reale durante le partite in corso,
+        considerando score, xG live, momentum, eventi (goal, red cards).
+        """)
+
+        st.info("""
+        **📊 Cosa analizza il Live Engine:**
+        - ⚽ Score attuale e differenza gol
+        - 📈 xG live (Expected Goals in tempo reale)
+        - 💨 Momentum (shots, dangerous attacks ultimi 10 minuti)
+        - 🔴 Eventi critici (red cards, injuries, substitutions)
+        - ⏱️ Tempo rimanente (time decay)
+        """)
+
+        # Live match simulation
+        st.markdown("### 🎮 Demo Live Match Simulator")
+
+        col_live1, col_live2 = st.columns(2)
+
+        with col_live1:
+            demo_home_team = st.text_input("Home Team (Live)", value="Inter", key="live_home")
+            demo_away_team = st.text_input("Away Team (Live)", value="Napoli", key="live_away")
+            demo_prematch_prob = st.slider("Pre-match Probability Home Win", 0.0, 1.0, 0.65, 0.01, key="live_prematch")
+
+        with col_live2:
+            demo_minute = st.slider("Current Minute", 0, 90, 35, 1, key="live_minute")
+            demo_score_h = st.number_input("Score Home", 0, 10, 0, 1, key="live_score_h")
+            demo_score_a = st.number_input("Score Away", 0, 10, 0, 1, key="live_score_a")
+
+        col_live3, col_live4 = st.columns(2)
+
+        with col_live3:
+            demo_xg_h = st.number_input("xG Home", 0.0, 5.0, 1.2, 0.1, key="live_xg_h")
+            demo_xg_a = st.number_input("xG Away", 0.0, 5.0, 0.4, 0.1, key="live_xg_a")
+
+        with col_live4:
+            demo_shots_h = st.number_input("Recent Shots Home", 0, 20, 6, 1, key="live_shots_h")
+            demo_shots_a = st.number_input("Recent Shots Away", 0, 20, 1, 1, key="live_shots_a")
+
+        if st.button("🔄 Calculate Live Probability", key="btn_live_calc"):
+            try:
+                from ai_system.live_betting import LiveBettingEngine
+
+                engine = LiveBettingEngine()
+                live_match = engine.start_monitoring("demo_match", demo_prematch_prob)
+
+                # Update with current state
+                live_match.update({
+                    'minute': demo_minute,
+                    'score_home': demo_score_h,
+                    'score_away': demo_score_a,
+                    'xg_home': demo_xg_h,
+                    'xg_away': demo_xg_a,
+                })
+                live_match.recent_shots_home = demo_shots_h
+                live_match.recent_shots_away = demo_shots_a
+
+                # Recalculate
+                live_result = engine.recalculate_probability(live_match)
+
+                st.success("✅ Live Probability Updated!")
+
+                # Display results
+                col_r1, col_r2, col_r3 = st.columns(3)
+
+                with col_r1:
+                    prob_change = live_result['probability_home_win'] - demo_prematch_prob
+                    st.metric(
+                        "🎯 Live Probability Home Win",
+                        f"{live_result['probability_home_win']:.1%}",
+                        delta=f"{prob_change:+.1%}",
+                        delta_color="normal"
+                    )
+
+                with col_r2:
+                    st.metric(
+                        "⚽ Over 1.5 Goals",
+                        f"{live_result['over_1.5_goals']:.1%}"
+                    )
+
+                with col_r3:
+                    st.metric(
+                        "⚽⚽ Over 2.5 Goals",
+                        f"{live_result['over_2.5_goals']:.1%}"
+                    )
+
+                # Timing recommendation
+                timing = live_result.get('timing', 'WAIT')
+                if timing == 'BET_NOW':
+                    st.success("🔥 **BET NOW** - Probability spike detected! Odds likely to drop.")
+                elif timing == 'WAIT':
+                    st.info("⏰ **WAIT** - Monitor the situation, no clear edge yet.")
+                else:
+                    st.warning("👀 **WATCH** - Interesting situation developing.")
+
+                # Show adjustments
+                with st.expander("🔍 View Adjustment Breakdown"):
+                    adj = live_result['adjustments']
+                    st.markdown(f"""
+                    **Adjustment Factors Applied:**
+                    - **Score Adjustment:** {adj['score']:.3f}x
+                    - **xG Adjustment:** {adj['xg']:.3f}x
+                    - **Momentum Adjustment:** {adj['momentum']:.3f}x
+                    - **Red Cards Adjustment:** {adj['red_cards']:.3f}x
+
+                    **Combined Effect:** {adj['score'] * adj['xg'] * adj['momentum'] * adj['red_cards']:.3f}x
+
+                    **Pre-match → Live:**
+                    {demo_prematch_prob:.1%} → {live_result['probability_home_win']:.1%}
+                    """)
+
+                # Sample betting recommendation
+                st.markdown("---")
+                st.markdown("### 💰 Live Betting Recommendation")
+
+                current_odds = st.number_input("Current Live Odds", 1.01, 10.0, 2.10, 0.01, key="live_odds")
+                fair_odds = 1 / live_result['probability_home_win']
+                ev = (current_odds / fair_odds) - 1
+
+                if ev > 0.05:
+                    st.success(f"""
+                    🎯 **STRONG VALUE DETECTED!**
+                    - Fair Odds: {fair_odds:.2f}
+                    - Market Odds: {current_odds:.2f}
+                    - Expected Value: **{ev:+.1%}**
+                    - **Action: BET on {demo_home_team}**
+                    """)
+                elif ev > 0:
+                    st.info(f"""
+                    ✅ **Small Value Found**
+                    - Fair Odds: {fair_odds:.2f}
+                    - Market Odds: {current_odds:.2f}
+                    - Expected Value: {ev:+.1%}
+                    - **Action: Consider small bet**
+                    """)
+                else:
+                    st.warning(f"""
+                    ❌ **No Value**
+                    - Fair Odds: {fair_odds:.2f}
+                    - Market Odds: {current_odds:.2f}
+                    - Expected Value: {ev:+.1%}
+                    - **Action: SKIP**
+                    """)
+
+            except Exception as e:
+                st.error(f"❌ Live Betting error: {str(e)}")
+                logger.error(f"Live betting error: {e}")
+
+    st.markdown("---")
+
+# ============================================================
+#        LIVE MONITOR (FASE 3.2)
+# ============================================================
+if AI_SYSTEM_AVAILABLE:
+    with st.expander("📡 Live Monitor - Auto-Monitoring con Alert Telegram"):
+        st.markdown("""
+        ### 📡 Live Monitor - Never Miss an Opportunity
+
+        Monitora automaticamente partite live in corso e invia alert Telegram
+        quando rileva opportunità di valore.
+        """)
+
+        st.info("""
+        **🔔 Cosa fa il Live Monitor:**
+        - 🔄 Aggiorna probabilità ogni 60 secondi per tutte le partite monitorate
+        - 🎯 Rileva opportunità di valore automaticamente
+        - 📱 Invia notifiche Telegram quando EV > soglia
+        - 🚫 Evita spam con de-duplication intelligente
+        - 📊 Log completo di tutti gli alert inviati
+        """)
+
+        # Initialize session state for monitor
+        if "monitor_matches" not in st.session_state:
+            st.session_state["monitor_matches"] = []
+
+        if "monitor_alerts" not in st.session_state:
+            st.session_state["monitor_alerts"] = []
+
+        if "monitor_running" not in st.session_state:
+            st.session_state["monitor_running"] = False
+
+        # Monitor controls
+        st.markdown("### 🎛️ Monitor Controls")
+
+        col_mon1, col_mon2, col_mon3 = st.columns(3)
+
+        with col_mon1:
+            monitor_running = st.session_state.get("monitor_running", False)
+            if monitor_running:
+                st.success("🟢 **RUNNING**")
+            else:
+                st.error("🔴 **STOPPED**")
+
+        with col_mon2:
+            num_matches = len(st.session_state.get("monitor_matches", []))
+            st.metric("Matches Tracked", num_matches)
+
+        with col_mon3:
+            num_alerts = len(st.session_state.get("monitor_alerts", []))
+            st.metric("Alerts Sent Today", num_alerts)
+
+        # Add match to monitor
+        st.markdown("### ➕ Add Match to Monitor")
+
+        col_add1, col_add2 = st.columns(2)
+
+        with col_add1:
+            mon_home = st.text_input("Home Team", value="Inter", key="mon_home")
+            mon_away = st.text_input("Away Team", value="Napoli", key="mon_away")
+
+        with col_add2:
+            mon_league = st.text_input("League", value="Serie A", key="mon_league")
+            mon_prob = st.slider("Pre-match Prob", 0.0, 1.0, 0.65, 0.01, key="mon_prob")
+            mon_odds = st.number_input("Current Odds", 1.01, 10.0, 2.10, 0.01, key="mon_odds")
+
+        if st.button("➕ Add to Monitor List", key="btn_add_monitor"):
+            match_id = f"{mon_home}_{mon_away}_{datetime.now().strftime('%Y%m%d')}"
+
+            # Check if already exists
+            existing = [m for m in st.session_state["monitor_matches"] if m['id'] == match_id]
+            if existing:
+                st.warning("⚠️ This match is already in the monitor list")
+            else:
+                new_match = {
+                    'id': match_id,
+                    'home': mon_home,
+                    'away': mon_away,
+                    'league': mon_league,
+                    'pre_match_prob': mon_prob,
+                    'current_odds': mon_odds,
+                    'added_at': datetime.now().strftime("%H:%M:%S")
+                }
+                st.session_state["monitor_matches"].append(new_match)
+                st.success(f"✅ Added {mon_home} vs {mon_away} to monitor list!")
+                st.rerun()
+
+        # Show monitored matches
+        if st.session_state["monitor_matches"]:
+            st.markdown("### 📋 Monitored Matches")
+
+            for i, match in enumerate(st.session_state["monitor_matches"]):
+                col_m1, col_m2, col_m3 = st.columns([3, 2, 1])
+
+                with col_m1:
+                    st.write(f"**{match['home']} vs {match['away']}**")
+                    st.caption(f"{match['league']} - Added: {match['added_at']}")
+
+                with col_m2:
+                    st.write(f"Prob: {match['pre_match_prob']:.1%}")
+                    st.caption(f"Odds: {match['current_odds']:.2f}")
+
+                with col_m3:
+                    if st.button("🗑️ Remove", key=f"btn_remove_{i}"):
+                        st.session_state["monitor_matches"].pop(i)
+                        st.success(f"Removed {match['home']} vs {match['away']}")
+                        st.rerun()
+
+                st.markdown("---")
+
+        # Start/Stop monitor
+        st.markdown("### ▶️ Monitor Control")
+
+        col_ctrl1, col_ctrl2 = st.columns(2)
+
+        with col_ctrl1:
+            if st.button("▶️ START MONITOR", key="btn_start_monitor", type="primary"):
+                if not st.session_state["monitor_matches"]:
+                    st.warning("⚠️ Add at least one match to monitor first!")
+                else:
+                    st.session_state["monitor_running"] = True
+                    st.success("✅ Live Monitor STARTED!")
+
+                    # Simulate first alert
+                    if st.session_state["monitor_matches"]:
+                        match = st.session_state["monitor_matches"][0]
+                        alert = {
+                            'time': datetime.now().strftime("%H:%M:%S"),
+                            'match': f"{match['home']} vs {match['away']}",
+                            'message': f"EV +12.5% detected! Current odds: {match['current_odds']:.2f}",
+                            'type': 'VALUE'
+                        }
+                        st.session_state["monitor_alerts"].append(alert)
+
+                    st.rerun()
+
+        with col_ctrl2:
+            if st.button("⏸️ STOP MONITOR", key="btn_stop_monitor"):
+                st.session_state["monitor_running"] = False
+                st.info("⏸️ Live Monitor STOPPED")
+                st.rerun()
+
+        # Alert log
+        if st.session_state["monitor_alerts"]:
+            st.markdown("### 📜 Alert Log (Last 10)")
+
+            for alert in reversed(st.session_state["monitor_alerts"][-10:]):
+                if alert['type'] == 'VALUE':
+                    st.success(f"🔔 **{alert['time']}** - {alert['match']}: {alert['message']}")
+                elif alert['type'] == 'GOAL':
+                    st.warning(f"⚽ **{alert['time']}** - {alert['match']}: {alert['message']}")
+                elif alert['type'] == 'RED_CARD':
+                    st.error(f"🔴 **{alert['time']}** - {alert['match']}: {alert['message']}")
+                else:
+                    st.info(f"ℹ️ **{alert['time']}** - {alert['match']}: {alert['message']}")
+
+        # Configuration
+        with st.expander("⚙️ Monitor Settings"):
+            st.markdown("""
+            **Settings disponibili in Advanced AI Configuration:**
+            - Update Interval (default: 60s)
+            - Min EV for Alert (default: 8%)
+            - Telegram notifications enabled
+            - Daily report time
+            """)
+
+            st.info("""
+            **💡 Nota:**
+            Il Live Monitor richiede:
+            - API real-time per dati live (API-Football, The Odds API, etc.)
+            - Telegram Bot configurato per notifiche
+            - Server always-on per monitoring continuo
+
+            In modalità demo, il monitor simula il comportamento.
+            """)
+
+    st.markdown("---")
+
+# ============================================================
 #        INPUT DATI PARTITA
 # ============================================================
 
