@@ -35,6 +35,7 @@ except ImportError:
     from api_manager import APIManager, CacheManager, QuotaManager
 
 from .config import AIConfig
+from .utils.statsbomb_client import StatsBombClient, StatsBombSettings
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,17 @@ class APIDataEngine:
             "api_calls": 0,
             "fallbacks": 0
         }
+
+        # StatsBomb Open Data
+        self.statsbomb_client: Optional[StatsBombClient] = None
+        if self.config.statsbomb_enabled:
+            sb_settings = StatsBombSettings(
+                enabled=True,
+                max_matches=self.config.statsbomb_max_matches,
+                cache_hours=self.config.statsbomb_cache_hours,
+                min_matches_required=self.config.statsbomb_min_matches,
+            )
+            self.statsbomb_client = StatsBombClient(sb_settings)
 
         logger.info("✅ API Data Engine initialized")
 
@@ -147,6 +159,14 @@ class APIDataEngine:
                     "cache_used": home_context.get("source") == "cache"
                 }
             }
+
+            precision_sources = match_data.get("precision_sources", [])
+            if precision_sources:
+                metadata_sources = set(enriched["metadata"].get("sources", []))
+                for src in precision_sources:
+                    if src not in metadata_sources:
+                        metadata_sources.add(src)
+                enriched["metadata"]["sources"] = list(metadata_sources)
 
             logger.info(
                 f"✅ Data collected for {match['home']} vs {match['away']}: "
@@ -350,6 +370,12 @@ class APIDataEngine:
         if xg_context:
             enriched["xg_metrics"] = xg_context
 
+        if self.statsbomb_client:
+            statsbomb_context = self.statsbomb_client.get_match_context(match)
+            if statsbomb_context:
+                enriched["statsbomb_metrics"] = statsbomb_context
+                enriched.setdefault("precision_sources", []).append("statsbomb_open_data")
+
         return enriched
 
     def _get_weather_context(self, match: Dict) -> Optional[Dict[str, Any]]:
@@ -444,16 +470,34 @@ class APIDataEngine:
     def _parse_match_datetime(self, match: Dict) -> Optional[datetime]:
         """Tenta di costruire un datetime usando date/time disponibili nel match."""
         date_str = match.get("date") or match.get("match_date")
-        time_str = match.get("time") or match.get("match_time") or "00:00"
         if not date_str:
             return None
-        try:
-            return datetime.fromisoformat(f"{date_str} {time_str}".strip())
-        except ValueError:
+
+        def _from_iso(value: str) -> Optional[datetime]:
+            value = value.strip()
+            if value.endswith("Z"):
+                value = value[:-1] + "+00:00"
             try:
-                return datetime.strptime(f"{date_str} {time_str}".strip(), "%Y-%m-%d %H:%M")
+                return datetime.fromisoformat(value)
             except ValueError:
                 return None
+
+        dt = _from_iso(date_str)
+        if dt:
+            return dt
+
+        time_str = match.get("time") or match.get("match_time") or "00:00"
+        combined = f"{date_str} {time_str}".strip()
+        dt = _from_iso(combined)
+        if dt:
+            return dt
+
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(combined, fmt)
+            except ValueError:
+                continue
+        return None
 
     def _infer_city_from_match(self, match: Dict) -> Optional[str]:
         """Deduce la città usando venue, city o nome squadra di casa."""
@@ -756,6 +800,8 @@ class APIDataEngine:
             quality += 0.05
         if match_data.get("xg_metrics"):
             quality += 0.05
+        if match_data.get("statsbomb_metrics"):
+            quality += 0.07
 
         return min(quality, 1.0)  # Cap a 1.0
 

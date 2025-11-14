@@ -571,7 +571,7 @@ class ProbabilityCalibrator:
             raise FileNotFoundError(f"Model file not found: {filepath}")
 
         # Load checkpoint
-        checkpoint = torch.load(filepath)
+        checkpoint = torch.load(filepath, weights_only=False)
 
         # Restore scaler
         self.scaler = checkpoint["scaler"]

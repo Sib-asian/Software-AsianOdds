@@ -67,6 +67,7 @@ class AIPipeline:
         self.risk_manager = RiskManager(self.config)
         self.odds_tracker = OddsMovementTracker(self.config)
         self.bayesian_quantifier = BayesianUncertaintyQuantifier()
+        self._auto_load_calibrator()
 
         # Initialize Ensemble Meta-Model (if enabled)
         self.ensemble = None
@@ -142,6 +143,8 @@ class AIPipeline:
                 f"   ✓ API calls: {api_context['metadata']['api_calls_used']}"
             )
 
+            statsbomb_metrics = self._extract_statsbomb_metrics(api_context)
+
             # ========================================
             # ENSEMBLE META-MODEL (optional)
             # ========================================
@@ -188,6 +191,9 @@ class AIPipeline:
             # ========================================
             logger.info("\n🎯 BLOCCO 1: Calibrating probability...")
 
+            sb_home = statsbomb_metrics.get("home", {})
+            sb_away = statsbomb_metrics.get("away", {})
+
             calibration_context = {
                 "league": match.get("league"),
                 "market": odds_data.get("market", "1x2"),
@@ -203,6 +209,14 @@ class AIPipeline:
                     "xga_away_last5": api_context["match_data"].get("xga_away", 6.0),
                     "lineup_quality_home": api_context["match_data"].get("lineup_home", 0.85),
                     "lineup_quality_away": api_context["match_data"].get("lineup_away", 0.85),
+                    "statsbomb_home_xg": sb_home.get("avg_xg_per_match"),
+                    "statsbomb_home_xga": sb_home.get("avg_xga_per_match"),
+                    "statsbomb_home_shots": sb_home.get("avg_shots_per_match"),
+                    "statsbomb_home_pressures": sb_home.get("pressures_per_match"),
+                    "statsbomb_away_xg": sb_away.get("avg_xg_per_match"),
+                    "statsbomb_away_xga": sb_away.get("avg_xga_per_match"),
+                    "statsbomb_away_shots": sb_away.get("avg_shots_per_match"),
+                    "statsbomb_away_pressures": sb_away.get("pressures_per_match"),
                 }
             }
 
@@ -231,7 +245,8 @@ class AIPipeline:
                 "league_quality": self._get_league_quality(match.get("league", "")),
                 "market_liquidity": 0.8,  # Default
                 "red_flags": [],
-                "green_flags": []
+                "green_flags": [],
+                "precision_sources": api_context["match_data"].get("precision_sources", [])
             }
 
             confidence_result = self.confidence_scorer.score(
@@ -261,7 +276,15 @@ class AIPipeline:
             # Merge calibrated prob into value result for detector
             value_detector_input = {
                 **calibrated_result,
-                "data_quality": api_context["metadata"]["data_quality"]
+                "data_quality": api_context["metadata"]["data_quality"],
+                "statsbomb_home_xg": sb_home.get("avg_xg_per_match"),
+                "statsbomb_home_xga": sb_home.get("avg_xga_per_match"),
+                "statsbomb_home_shots": sb_home.get("avg_shots_per_match"),
+                "statsbomb_home_pressures": sb_home.get("pressures_per_match"),
+                "statsbomb_away_xg": sb_away.get("avg_xg_per_match"),
+                "statsbomb_away_xga": sb_away.get("avg_xga_per_match"),
+                "statsbomb_away_shots": sb_away.get("avg_shots_per_match"),
+                "statsbomb_away_pressures": sb_away.get("pressures_per_match"),
             }
 
             value_result = self.value_detector.detect(
@@ -342,7 +365,9 @@ class AIPipeline:
                 risk_decision,
                 odds_data.get("odds_current", 2.0),
                 odds_data.get("odds_history", []),
-                odds_data.get("time_to_kickoff_hours", 24.0)
+                odds_data.get("time_to_kickoff_hours", 24.0),
+                odds_data.get("market", "h2h"),
+                odds_data.get("selection", "home")
             )
 
             logger.info(
@@ -456,6 +481,18 @@ class AIPipeline:
         except Exception as e:
             logger.error(f"❌ Error in pipeline analysis: {e}", exc_info=True)
             raise
+
+    def _extract_statsbomb_metrics(self, api_context: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        """Safely extract StatsBomb metrics from API context."""
+        if not api_context:
+            return {"home": {}, "away": {}}
+
+        match_data = api_context.get("match_data", {})
+        statsbomb = match_data.get("statsbomb_metrics", {}) or {}
+        return {
+            "home": statsbomb.get("home") or {},
+            "away": statsbomb.get("away") or {}
+        }
 
     def _get_league_quality(self, league: str) -> float:
         """Map league to quality score"""
@@ -697,6 +734,19 @@ class AIPipeline:
             logger.warning("   ⚠️  Value Detector model not found")
 
         logger.info("✅ Model loading completed")
+
+    def _auto_load_calibrator(self):
+        """Load calibrator if a trained model is available."""
+        calibrator_path = self.config.models_dir / "calibrator.pth"
+        if not calibrator_path.exists():
+            logger.warning("⚠️  Calibrator model not found at %s (using fallback)", calibrator_path)
+            return
+
+        try:
+            self.calibrator.load(calibrator_path)
+            logger.info("✅ Calibrator loaded from %s", calibrator_path)
+        except Exception as exc:
+            logger.warning(f"⚠️  Unable to load calibrator from {calibrator_path}: {exc}")
 
     def save_analysis(self, filepath: str):
         """Save last analysis to file"""
