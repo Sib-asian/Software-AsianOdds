@@ -350,6 +350,15 @@ class CacheManager:
         except Exception as e:
             logger.error(f"❌ Over markets cache set error: {e}")
 
+    def _build_prediction_cache_key(self, home_team: str, away_team: str, match_date: str,
+                                     odds_1: Optional[float] = None, odds_x: Optional[float] = None,
+                                     odds_2: Optional[float] = None) -> str:
+        """Create a deterministic cache key (uses hashing for consistent length)."""
+        cache_key_parts = [home_team.lower(), away_team.lower(), match_date]
+        if odds_1 is not None and odds_x is not None and odds_2 is not None:
+            cache_key_parts.extend([f"{odds_1:.2f}", f"{odds_x:.2f}", f"{odds_2:.2f}"])
+        return hashlib.md5('|'.join(cache_key_parts).encode()).hexdigest()
+
     def get_prediction(self, home_team: str, away_team: str, match_date: str,
                        odds_1: float = None, odds_x: float = None, odds_2: float = None) -> Optional[Dict]:
         """Get cached complete prediction if not expired
@@ -366,13 +375,10 @@ class CacheManager:
             Prediction dict se trovato e valido, None altrimenti
         """
         try:
-            # Genera cache key unica usando hash MD5 per evitare collisioni
-            cache_key_parts = [home_team.lower(), away_team.lower(), match_date]
-            if odds_1 and odds_x and odds_2:
-                # Include quote nella key se fornite (per invalidare se cambiano)
-                cache_key_parts.extend([f"{odds_1:.2f}", f"{odds_x:.2f}", f"{odds_2:.2f}"])
-
-            cache_key = hashlib.md5('|'.join(cache_key_parts).encode()).hexdigest()
+            # Genera cache key unica (hash MD5 per evitare collisioni e uniformare get/set)
+            cache_key = self._build_prediction_cache_key(
+                home_team, away_team, match_date, odds_1, odds_x, odds_2
+            )
 
             with sqlite3.connect(self.db_path, timeout=10.0) as conn:
                 cursor = conn.cursor()
@@ -426,10 +432,10 @@ class CacheManager:
             odds_2: Quote trasferta (opzionale)
         """
         try:
-            # Genera cache key unica
-            cache_key = f"{home_team.lower()}_{away_team.lower()}_{match_date}"
-            if odds_1 and odds_x and odds_2:
-                cache_key += f"_{odds_1:.2f}_{odds_x:.2f}_{odds_2:.2f}"
+            # Genera cache key unica (stessa logica del get)
+            cache_key = self._build_prediction_cache_key(
+                home_team, away_team, match_date, odds_1, odds_x, odds_2
+            )
 
             with sqlite3.connect(self.db_path, timeout=10.0) as conn:
                 cursor = conn.cursor()
