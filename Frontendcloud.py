@@ -15937,6 +15937,29 @@ if AI_SYSTEM_AVAILABLE:
 
             st.markdown("---")
 
+            # Sentiment Analysis Settings
+            st.markdown("#### 📱 Sentiment Analysis (Social Media Intelligence)")
+            sentiment_enabled = st.checkbox(
+                "Enable Sentiment Analysis",
+                value=False,
+                help="Monitora social media e news per rilevare insider info (injuries, lineup leaks, team morale)"
+            )
+            st.session_state["ai_sentiment_enabled"] = sentiment_enabled
+
+            if sentiment_enabled:
+                st.info("""
+                **🚨 Cosa rileva il Sentiment Analyzer:**
+                - 🏥 Rumor infortuni prima degli annunci ufficiali
+                - 📋 Leak formazioni anticipate
+                - 💪 Morale squadra e motivazione giocatori
+                - 📰 Pressione media e ambiente
+                - 🎯 Fiducia tifosi
+
+                **Funziona in Mock Mode** (dati simulati) se non hai API keys.
+                """)
+
+            st.markdown("---")
+
             # Live Monitoring Settings
             st.markdown("#### 📡 Live Monitoring (Experimental)")
             col_live1, col_live2 = st.columns(2)
@@ -17379,6 +17402,21 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                     # Prepare odds history (if available from session state)
                     odds_history = st.session_state.get("odds_history", [])
 
+                    # Run Sentiment Analysis (FASE 2) if enabled
+                    sentiment_result = None
+                    if st.session_state.get("ai_sentiment_enabled", False):
+                        try:
+                            sentiment_analyzer = SentimentAnalyzer()
+                            sentiment_result = sentiment_analyzer.analyze_match_sentiment(
+                                team_home=home_team,
+                                team_away=away_team,
+                                hours_before=48
+                            )
+                            logger.info(f"✅ Sentiment Analysis completed: {len(sentiment_result['signals'])} signals detected")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Sentiment Analysis error: {e}")
+                            sentiment_result = None
+
                     # Run AI analysis using quick_analyze for simplicity
                     # We'll analyze the home win (1) as primary bet
                     ai_result = quick_analyze(
@@ -17464,6 +17502,9 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                     except Exception as e:
                         logger.warning(f"⚠️ LLM Explanation error: {e}")
                         ai_result['llm_explanation'] = None
+
+                    # Store Sentiment Analysis result (FASE 2)
+                    ai_result['sentiment_analysis'] = sentiment_result
 
             except Exception as e:
                 logger.error(f"❌ AI Analysis error: {e}")
@@ -17620,6 +17661,82 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
             with col_timing2:
                 priority_emoji = "🔥" if priority == "HIGH" else ("⚡" if priority == "MEDIUM" else "❄️")
                 st.info(f"{priority_emoji} **Priority:** {priority}")
+
+            # Sentiment Analysis Display (FASE 2)
+            if ai_result.get('sentiment_analysis'):
+                st.markdown("---")
+                st.markdown("### 📱 Social Sentiment Analysis")
+
+                sentiment = ai_result['sentiment_analysis']
+
+                # Check if significant signals detected
+                num_signals = len(sentiment.get('signals', []))
+                has_insider_info = num_signals > 0
+
+                if has_insider_info:
+                    st.warning(f"🚨 **{num_signals} INSIDER SIGNALS DETECTED!**")
+
+                # Display sentiment scores
+                col_sent1, col_sent2 = st.columns(2)
+
+                with col_sent1:
+                    sentiment_home = sentiment.get('overall_sentiment_home', 0)
+                    emoji_home = "📈" if sentiment_home > 0 else ("📉" if sentiment_home < 0 else "➡️")
+                    st.metric(
+                        f"Home ({home_team})",
+                        f"Sentiment: {sentiment_home:+.2f}",
+                        delta=f"Morale: {sentiment.get('team_morale_home', 0):+.0f}",
+                        delta_color="normal" if sentiment_home >= 0 else "inverse"
+                    )
+                    st.caption(f"Fan Confidence: {sentiment.get('fan_confidence_home', 50):.0f}%")
+
+                with col_sent2:
+                    sentiment_away = sentiment.get('overall_sentiment_away', 0)
+                    emoji_away = "📈" if sentiment_away > 0 else ("📉" if sentiment_away < 0 else "➡️")
+                    st.metric(
+                        f"Away ({away_team})",
+                        f"Sentiment: {sentiment_away:+.2f}",
+                        delta=f"Morale: {sentiment.get('team_morale_away', 0):+.0f}",
+                        delta_color="normal" if sentiment_away >= 0 else "inverse"
+                    )
+                    st.caption(f"Fan Confidence: {sentiment.get('fan_confidence_away', 50):.0f}%")
+
+                # Display detected signals
+                if sentiment.get('signals'):
+                    with st.expander(f"🔍 View {num_signals} Detected Signals", expanded=has_insider_info):
+                        for i, signal in enumerate(sentiment['signals'][:10], 1):
+                            signal_type = signal.get('type', 'UNKNOWN')
+                            signal_team = signal.get('team', 'Unknown')
+                            signal_text = signal.get('text', 'No details')
+                            signal_credibility = signal.get('credibility', 0.5)
+
+                            # Emoji based on signal type
+                            if 'INJURY' in signal_type:
+                                signal_emoji = "🏥"
+                            elif 'LINEUP' in signal_type:
+                                signal_emoji = "📋"
+                            elif 'MORALE' in signal_type:
+                                signal_emoji = "💪"
+                            else:
+                                signal_emoji = "ℹ️"
+
+                            credibility_stars = "⭐" * int(signal_credibility * 5)
+
+                            st.markdown(f"""
+                            **{signal_emoji} Signal #{i}** - {signal_type}
+                            **Team:** {signal_team}
+                            **Credibility:** {credibility_stars} ({signal_credibility:.1%})
+                            **Info:** {signal_text}
+                            """)
+                            st.markdown("---")
+
+                # Edge detection alert
+                sentiment_diff = abs(sentiment_home - sentiment_away)
+                if sentiment_diff > 0.5 and has_insider_info:
+                    if sentiment_home > sentiment_away:
+                        st.success(f"🎯 **EDGE DETECTED:** Sentiment strongly favors {home_team}. Odds may not be adjusted yet!")
+                    else:
+                        st.info(f"🎯 **EDGE DETECTED:** Sentiment favors {away_team}. Consider opposite side or wait for odds adjustment.")
 
             # LLM Explanation (FASE 1.1)
             if ai_result.get('llm_explanation'):
