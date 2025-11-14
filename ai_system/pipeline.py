@@ -67,6 +67,7 @@ class AIPipeline:
         self.risk_manager = RiskManager(self.config)
         self.odds_tracker = OddsMovementTracker(self.config)
         self.bayesian_quantifier = BayesianUncertaintyQuantifier()
+        self._auto_load_calibrator()
 
         # Initialize Ensemble Meta-Model (if enabled)
         self.ensemble = None
@@ -733,6 +734,19 @@ class AIPipeline:
             logger.warning("   ⚠️  Value Detector model not found")
 
         logger.info("✅ Model loading completed")
+
+    def _auto_load_calibrator(self):
+        """Load calibrator if a trained model is available."""
+        calibrator_path = self.config.models_dir / "calibrator.pth"
+        if not calibrator_path.exists():
+            logger.warning("⚠️  Calibrator model not found at %s (using fallback)", calibrator_path)
+            return
+
+        try:
+            self.calibrator.load(calibrator_path)
+            logger.info("✅ Calibrator loaded from %s", calibrator_path)
+        except Exception as exc:
+            logger.warning(f"⚠️  Unable to load calibrator from {calibrator_path}: {exc}")
 
     def save_analysis(self, filepath: str):
         """Save last analysis to file"""
