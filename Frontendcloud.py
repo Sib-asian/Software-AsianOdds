@@ -454,10 +454,17 @@ class ModelConfig:
     CALIBRATION_MAX_SAMPLES_MARKET: int = 2000  # Campioni massimi da utilizzare per calibrazione mercati
     CALIBRATION_MARKET_BLEND: float = 0.6  # Peso verso calibrazione rispetto al valore raw (0=no calibrazione, 1=solo calibrazione)
 
+
+DEFAULT_ARCHIVE_DIR = os.getenv("ANALYSIS_ARCHIVE_DIR", "data")
+DEFAULT_ARCHIVE_FILE = os.getenv(
+    "ANALYSIS_ARCHIVE_FILE",
+    os.path.join(DEFAULT_ARCHIVE_DIR, "storico_analisi.csv")
+)
+
 @dataclass
 class AppConfig:
     """Configurazione applicazione"""
-    archive_file: str = "storico_analisi.csv"
+    archive_file: str = DEFAULT_ARCHIVE_FILE
     validation_file: str = "validation_metrics.csv"
     portfolio_file: str = "portfolio_scommesse.csv"
     odds_history_file: str = "odds_history.csv"
@@ -472,6 +479,12 @@ class AppConfig:
 api_config = APIConfig()
 model_config = ModelConfig()
 app_config = AppConfig()
+try:
+    archive_dir = os.path.dirname(app_config.archive_file)
+    os.makedirs(archive_dir or ".", exist_ok=True)
+    logger.info(f"🗂️ Archivio analisi: {app_config.archive_file}")
+except Exception as archive_dir_error:
+    logger.warning(f"⚠️ Impossibile creare directory archivio ({app_config.archive_file}): {archive_dir_error}")
 
 if model_config.ENABLE_HIGH_PRECISION and not MPMATH_AVAILABLE:
     logger.warning("High precision attivata ma mpmath non disponibile - fallback a precisione standard")
