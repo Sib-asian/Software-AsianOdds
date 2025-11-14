@@ -17793,32 +17793,35 @@ telegram_prob_threshold: {telegram_prob_threshold}
 
         # INVIO TELEGRAM
         if telegram_enabled and telegram_token and telegram_chat_id:
-            if all_markets:
-                with st.spinner("Invio automatico su Telegram..."):
-                    auto_success, auto_error, auto_sent, auto_total = _dispatch_telegram(telegram_message)
+            with st.spinner("Invio automatico su Telegram..."):
+                auto_success, auto_error, auto_sent, auto_total = _dispatch_telegram(telegram_message)
 
-                if auto_success:
-                    chunk_label = "messaggio" if auto_sent == 1 else "messaggi"
-                    st.success(f"✅ Notifica Telegram inviata automaticamente ({auto_sent} {chunk_label}).")
+            if auto_success:
+                chunk_label = "messaggio" if auto_sent == 1 else "messaggi"
+                st.success(f"✅ Notifica Telegram inviata automaticamente ({auto_sent} {chunk_label}).")
+            else:
+                st.error("❌ Errore invio Telegram automatico")
+                st.code(auto_error.get("error_message", "Errore sconosciuto"))
+                st.warning("💡 Controlla che il bot sia amministratore del canale e abbia permessi di scrittura")
+
+            if st.button("📤 Reinvia su Telegram", use_container_width=True):
+                with st.spinner("Reinvio su Telegram..."):
+                    resend_success, resend_error, resend_sent, resend_total = _dispatch_telegram(telegram_message)
+
+                if resend_success:
+                    chunk_label = "messaggio" if resend_sent == 1 else "messaggi"
+                    st.success(f"✅ Messaggio reinviato su Telegram ({resend_sent} {chunk_label}).")
                 else:
-                    st.error("❌ Errore invio Telegram automatico")
-                    st.code(auto_error.get("error_message", "Errore sconosciuto"))
+                    st.error("❌ Errore reinvio Telegram")
+                    st.code(resend_error.get("error_message", "Errore sconosciuto"))
                     st.warning("💡 Controlla che il bot sia amministratore del canale e abbia permessi di scrittura")
 
-                if st.button("📤 Reinvia su Telegram", use_container_width=True):
-                    with st.spinner("Reinvio su Telegram..."):
-                        resend_success, resend_error, resend_sent, resend_total = _dispatch_telegram(telegram_message)
-
-                    if resend_success:
-                        chunk_label = "messaggio" if resend_sent == 1 else "messaggi"
-                        st.success(f"✅ Messaggio reinviato su Telegram ({resend_sent} {chunk_label}).")
-                    else:
-                        st.error("❌ Errore reinvio Telegram")
-                        st.code(resend_error.get("error_message", "Errore sconosciuto"))
-                        st.warning("💡 Controlla che il bot sia amministratore del canale e abbia permessi di scrittura")
-            else:
-                st.warning(f"⚠️ Nessun mercato con probabilità ≥ {telegram_prob_threshold:.0f}% da inviare")
-                st.caption("💡 Abbassa la soglia (es: 45-50%) per vedere più mercati")
+            if not all_markets:
+                st.warning(
+                    f"⚠️ Nessun mercato con probabilità ≥ {telegram_prob_threshold:.0f}% disponibile; "
+                    "report inviato comunque con risultati esatti e value bet."
+                )
+                st.caption("💡 Abbassa la soglia (es: 45-50%) per vedere più mercati nei mercati principali")
         else:
             st.warning("⚠️ Configura Telegram per abilitare l'invio:")
             if not telegram_enabled:
