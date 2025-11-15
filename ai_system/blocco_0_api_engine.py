@@ -253,6 +253,7 @@ class APIDataEngine:
                 self.stats["cache_hits"] += 1
                 return {
                     "source": "cache",
+                    "provider": "cache",
                     "data": cached,
                     "api_calls_used": 0
                 }
@@ -293,6 +294,7 @@ class APIDataEngine:
             self.stats["fallbacks"] += 1
             return {
                 "source": "fallback",
+                "provider": "fallback",
                 "data": self._get_fallback_team_data(team, league),
                 "api_calls_used": 0
             }
@@ -923,6 +925,7 @@ class APIDataEngine:
         return {
             "home_context": {
                 "source": "fallback",
+                "provider": "fallback",
                 "data": self._get_fallback_team_data(
                     match.get("home", "Unknown"),
                     match.get("league", "Unknown")
@@ -931,6 +934,7 @@ class APIDataEngine:
             },
             "away_context": {
                 "source": "fallback",
+                "provider": "fallback",
                 "data": self._get_fallback_team_data(
                     match.get("away", "Unknown"),
                     match.get("league", "Unknown")
