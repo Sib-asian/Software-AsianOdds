@@ -639,6 +639,179 @@ API_CACHE = TTLCache(max_size=API_CACHE_MAX_ENTRIES, ttl_seconds=CACHE_EXPIRY)
 _FOOTBALL_DATA_MATCH_CACHE = TTLCache(max_size=200, ttl_seconds=1800)  # 30 min TTL
 
 # ============================================================
+#   API CHECKLIST HELPERS
+# ============================================================
+API_CHECK_PROVIDERS = [
+    ("API-Football", "Statistiche, H2H, infortuni e fatigue"),
+    ("Football-Data", "Forma e standings Football-Data.org"),
+    ("TheSportsDB", "Stadio e informazioni club"),
+    ("StatsBomb", "xG avanzati (open data)"),
+    ("OpenWeather", "Condizioni meteo match"),
+    ("Auto-Detection", "API Manager & auto features"),
+    ("Telegram", "Alert push post-analisi"),
+]
+
+API_STATUS_ICONS = {
+    "success": "✅",
+    "warning": "⚠️",
+    "error": "❌",
+    "skipped": "⏭️",
+}
+API_STATUS_DEFAULT_MESSAGE = "Non utilizzata in questa analisi"
+
+
+def _api_check_session_ready() -> bool:
+    """Verifica se session_state di Streamlit è disponibile (evita errori nei test)."""
+    try:
+        _ = st.session_state  # type: ignore[assignment]
+        return True
+    except Exception:
+        return False
+
+
+def reset_api_checklist():
+    """Inizializza (o resetta) la checklist delle API per una nuova analisi."""
+    if not _api_check_session_ready():
+        return
+    st.session_state["api_check_results"] = {
+        provider: {
+            "status": "skipped",
+            "message": API_STATUS_DEFAULT_MESSAGE,
+            "updated_at": datetime.now().isoformat(),
+        }
+        for provider, _ in API_CHECK_PROVIDERS
+    }
+
+
+def update_api_check(provider: str, status: str, message: str):
+    """Aggiorna lo stato di una specifica API nella checklist."""
+    if not _api_check_session_ready():
+        return
+    if "api_check_results" not in st.session_state:
+        reset_api_checklist()
+    st.session_state["api_check_results"][provider] = {
+        "status": status,
+        "message": message,
+        "updated_at": datetime.now().isoformat(),
+    }
+
+
+def summarize_apifootball_sources(
+    advanced_data: Optional[Dict[str, Any]],
+    fatigue_home: Optional[Dict[str, Any]],
+    fatigue_away: Optional[Dict[str, Any]],
+):
+    """Determina lo stato di API-Football combinando statistiche avanzate e fatigue."""
+    if not _api_check_session_ready():
+        return
+
+    if advanced_data is None:
+        update_api_check("API-Football", "warning", "Dati avanzati non disponibili per questa analisi")
+        return
+
+    if not advanced_data.get("data_available"):
+        update_api_check("API-Football", "warning", "API-Football non ha fornito dati per questa partita")
+        return
+
+    apifootball_blocks = [
+        advanced_data.get("home_team_stats"),
+        advanced_data.get("away_team_stats"),
+        advanced_data.get("h2h_data"),
+        advanced_data.get("home_injuries"),
+        advanced_data.get("away_injuries"),
+    ]
+    fatigue_available = any(
+        (
+            fatigue_home and fatigue_home.get("data_available"),
+            fatigue_away and fatigue_away.get("data_available"),
+        )
+    )
+
+    if any(block for block in apifootball_blocks if block):
+        message = "Statistiche, H2H e infortuni aggiornati"
+        if fatigue_available:
+            message += " + fatigue calcolata"
+        update_api_check("API-Football", "success", message)
+    else:
+        update_api_check("API-Football", "warning", "API-Football non ha restituito dati utili")
+
+
+def summarize_additional_api_sources(additional_data: Optional[Dict[str, Any]]):
+    """Aggiorna lo stato delle API aggiuntive usando i dati calcolati dall'analisi."""
+    if not _api_check_session_ready():
+        return
+
+    additional_data = additional_data or {}
+
+    # Football-Data
+    football_data_org = additional_data.get("football_data_org") or {}
+    football_data_metrics = additional_data.get("football_data_metrics") or {}
+    if not FOOTBALL_DATA_API_KEY:
+        update_api_check("Football-Data", "warning", "Chiave Football-Data.org non configurata")
+    elif football_data_org.get("available") or football_data_metrics.get("available"):
+        form_snippet = football_data_metrics.get("recent_form")
+        msg = "Forma Football-Data aggiornata"
+        if form_snippet:
+            msg += f" ({form_snippet})"
+        update_api_check("Football-Data", "success", msg)
+    else:
+        update_api_check("Football-Data", "warning", "Dati Football-Data non disponibili per questa partita")
+
+    # TheSportsDB
+    thesportsdb_info = additional_data.get("thesportsdb") or {}
+    if thesportsdb_info.get("available"):
+        stadium = thesportsdb_info.get("stadium") or thesportsdb_info.get("name") or "stadio non disponibile"
+        update_api_check("TheSportsDB", "success", f"Stadio rilevato: {stadium}")
+    else:
+        update_api_check("TheSportsDB", "warning", "Informazioni stadio non disponibili (TheSportsDB)")
+
+    # StatsBomb
+    statsbomb_info = additional_data.get("statsbomb") or {}
+    if statsbomb_info.get("available"):
+        matches_used = statsbomb_info.get("matches_used")
+        msg = "Metriche xG StatsBomb aggiornate"
+        if isinstance(matches_used, (int, float)) and matches_used > 0:
+            msg = f"xG calcolati su {int(matches_used)} partite"
+        update_api_check("StatsBomb", "success", msg)
+    else:
+        update_api_check("StatsBomb", "warning", "StatsBomb non disponibile per questa squadra")
+
+    # OpenWeather
+    weather_info = additional_data.get("weather")
+    if weather_info and weather_info.get("available"):
+        temp = weather_info.get("temperature")
+        desc = weather_info.get("description") or weather_info.get("conditions") or ""
+        if isinstance(temp, (int, float)):
+            msg = f"{temp:.1f}°C {desc}".strip()
+        else:
+            msg = desc or "Meteo rilevato"
+        update_api_check("OpenWeather", "success", msg)
+    else:
+        if OPENWEATHER_API_KEY:
+            update_api_check("OpenWeather", "warning", "Meteo non disponibile per questa città")
+        else:
+            update_api_check("OpenWeather", "warning", "Chiave OpenWeather non configurata")
+
+
+def render_api_checklist():
+    """Renderizza la checklist delle API in Streamlit."""
+    if not _api_check_session_ready():
+        return
+    results = st.session_state.get("api_check_results")
+    if not results:
+        return
+
+    st.markdown("### 📡 Checklist API post-analisi")
+    for provider, _ in API_CHECK_PROVIDERS:
+        record = results.get(provider)
+        if not record:
+            continue
+        icon = API_STATUS_ICONS.get(record.get("status"), "ℹ️")
+        message = record.get("message") or API_STATUS_DEFAULT_MESSAGE
+        st.markdown(f"- {icon} **{provider}** — {message}")
+
+
+# ============================================================
 #   OTTIMIZZAZIONE: PRE-CALCOLO FATTORIALI (MIGLIORAMENTO)
 # ============================================================
 
@@ -16325,6 +16498,15 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
     telegram_chat_id = st.session_state.get("telegram_chat_id", "")
     telegram_prob_threshold = float(st.session_state.get("telegram_prob_threshold", TELEGRAM_MIN_PROBABILITY))
 
+    reset_api_checklist()
+
+    if not (auto_mode and AUTO_DETECTION_AVAILABLE):
+        auto_reason = "Modalità manuale" if not auto_mode else "Modulo Auto-Detection non disponibile"
+        update_api_check("Auto-Detection", "skipped", auto_reason)
+
+    if not (telegram_enabled and telegram_token and telegram_chat_id):
+        update_api_check("Telegram", "skipped", "Telegram disattivato o credenziali mancanti")
+
     # Leggi dati dal form
     match_name = f"{home_team} vs {away_team}"
     odds_over25_val = odds_over25 if odds_over25 > 0 else None
@@ -16373,6 +16555,7 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
     advanced_data = None
     fatigue_home_data = None
     fatigue_away_data = None
+    advanced_data_error = False
 
     if home_team.strip() and away_team.strip():
         with st.spinner("Recupero dati avanzati dalle API (fatigue, infortuni, metriche)..."):
@@ -16384,7 +16567,9 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                     match_datetime_iso,
                 )
             except Exception as api_err:
+                advanced_data_error = True
                 logger.warning(f"Impossibile recuperare dati avanzati API: {api_err}")
+                update_api_check("API-Football", "error", f"Errore dati avanzati: {api_err}")
                 advanced_data = None
 
             try:
@@ -16406,6 +16591,11 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
             except Exception as api_err:
                 logger.warning(f"Impossibile recuperare fatigue trasferta: {api_err}")
                 fatigue_away_data = None
+
+        if not advanced_data_error:
+            summarize_apifootball_sources(advanced_data, fatigue_home_data, fatigue_away_data)
+    else:
+        update_api_check("API-Football", "skipped", "Inserisci entrambe le squadre per utilizzare API-Football")
 
     # Validazione xG/xA
     validation_warnings_xg = []
@@ -16539,9 +16729,33 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 use_precision_math_final = auto_features['use_precision_math']
 
                 logger.info(f"🤖 Auto-detection applicata: {home_team} vs {away_team}")
+                if use_api:
+                    if auto_features.get("api_used"):
+                        api_calls = auto_features.get("api_calls_count", 0)
+                        update_api_check(
+                            "Auto-Detection",
+                            "success",
+                            f"API Manager attivo ({api_calls} chiamate)"
+                        )
+                    else:
+                        update_api_check(
+                            "Auto-Detection",
+                            "warning",
+                            "API Manager non utilizzato: fallback su database locale"
+                        )
+                else:
+                    update_api_check(
+                        "Auto-Detection",
+                        "skipped",
+                        "Auto-detection in modalità database (nessuna chiamata API)"
+                    )
 
             except Exception as e:
                 logger.warning(f"⚠️ Auto-detection fallita: {e}, uso valori manuali")
+                if use_api:
+                    update_api_check("Auto-Detection", "error", f"Errore auto-detection: {e}")
+                else:
+                    update_api_check("Auto-Detection", "warning", "Auto-detection locale non disponibile, uso valori manuali")
                 # Fallback a manual
                 motivation_home_final = st.session_state.get('motivation_home', 'Normale')
                 motivation_away_final = st.session_state.get('motivation_away', 'Normale')
@@ -16620,6 +16834,7 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 apply_calibration_enabled=apply_calibration_final,
                 use_precision_math=use_precision_math_final,
             )
+        summarize_additional_api_sources(ris.get("additional_api_data"))
 
         # ============================================================
         #   AI SYSTEM ANALYSIS (if enabled)
@@ -16818,7 +17033,7 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
         # ============================================================
         #   TELEGRAM NOTIFICATION (if enabled)
         # ============================================================
-        if TELEGRAM_ENABLED and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        if telegram_enabled and telegram_token and telegram_chat_id:
             # Verifica se almeno una probabilità supera la soglia minima
             max_prob = max(ris['p_home'], ris['p_draw'], ris['p_away']) * 100
 
@@ -16847,15 +17062,25 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                     if telegram_result.get('success'):
                         st.info(f"📱 Notifica Telegram inviata con successo!")
                         logger.info(f"📱 Telegram notification sent for {match_name}")
+                        update_api_check("Telegram", "success", "Notifica inviata con successo")
                     else:
                         st.warning(f"⚠️ Errore invio Telegram: {telegram_result.get('error_message', 'Unknown')}")
                         logger.warning(f"⚠️ Telegram error: {telegram_result.get('error_message')}")
+                        update_api_check(
+                            "Telegram",
+                            "warning",
+                            f"Errore invio: {telegram_result.get('error_message', 'sconosciuto')}"
+                        )
 
                 except Exception as e:
                     st.warning(f"⚠️ Errore notifica Telegram: {str(e)}")
                     logger.error(f"❌ Telegram notification error: {e}")
+                    update_api_check("Telegram", "error", f"Errore invio: {e}")
             else:
                 logger.info(f"ℹ️  Telegram notification skipped: max probability {max_prob:.1f}% < {TELEGRAM_MIN_PROBABILITY}%")
+                update_api_check("Telegram", "skipped", "Probabilità sotto soglia, notifica non inviata")
+
+        render_api_checklist()
 
         # === VISUALIZZAZIONE RISULTATI ===
         st.markdown("---")
