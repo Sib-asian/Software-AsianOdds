@@ -4,6 +4,9 @@ primary_region = "ams"
 [build]
   dockerfile = "Dockerfile"
 
+[env]
+  PORT = "8501"
+
 [http_service]
   internal_port = 8501
   force_https = true
@@ -11,3 +14,14 @@ primary_region = "ams"
   auto_start_machines = true
   min_machines_running = 1
   processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "15s"
+    method = "GET"
+    timeout = "10s"
+    path = "/_stcore/health"
+
+[metrics]
+  port = 8501
+  path = "/_stcore/health"

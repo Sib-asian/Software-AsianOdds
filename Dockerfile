@@ -9,7 +9,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Streamlit defaults to 8501; Fly.io injects PORT
-ENV PORT=8501
+# Expose Streamlit default port
+EXPOSE 8501
 
-CMD ["streamlit", "run", "Frontendcloud.py", "--server.port", "${PORT}", "--server.address", "0.0.0.0"]
+# Use shell form to allow environment variable expansion
+CMD streamlit run Frontendcloud.py --server.port=${PORT:-8501} --server.address=0.0.0.0 --server.headless=true --server.enableCORS=false --server.enableXsrfProtection=false
