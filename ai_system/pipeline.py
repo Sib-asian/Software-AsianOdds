@@ -408,14 +408,23 @@ class AIPipeline:
             # ========================================
             logger.info("\n🧠 BLOCCO 7: Quantifying Bayesian uncertainty...")
 
-            bayesian_data = self._run_bayesian_layer(
-                calibrated_probability=calibrated_result["prob_calibrated"],
-                prob_to_use=prob_to_use,
-                ensemble_result=ensemble_result,
-                odds_data=odds_data
-            )
+              bayesian_data = self._run_bayesian_layer(
+                  calibrated_probability=calibrated_result["prob_calibrated"],
+                  prob_to_use=prob_to_use,
+                  ensemble_result=ensemble_result,
+                  odds_data=odds_data
+              )
 
-            bayesian_summary = bayesian_data["ensemble"]
+              bayesian_summary = bayesian_data["ensemble"]
+
+              api_audit = self._build_api_audit(
+                  match=match,
+                  api_context=api_context,
+                  calibration_context=calibration_context,
+                  confidence_context=confidence_context,
+                  value_input=value_detector_input,
+                  sentiment_result=sentiment_result
+              )
 
             logger.info(
                 f"   ✓ Bayesian adjusted probability: "
@@ -446,11 +455,12 @@ class AIPipeline:
                 "kelly": kelly_result,
                 "risk_decision": risk_decision,
                 "timing": timing_result,
-                  "bayesian": bayesian_data,
-                  "sentiment": {
-                      "analysis": sentiment_result,
-                      "adjustment_reasons": sentiment_adjust_reasons
-                  },
+                "api_audit": api_audit,
+                "bayesian": bayesian_data,
+                "sentiment": {
+                    "analysis": sentiment_result,
+                    "adjustment_reasons": sentiment_adjust_reasons
+                },
 
                 # Final decision (easy access)
                 "final_decision": {
@@ -719,6 +729,62 @@ class AIPipeline:
         logger.info(f"Value Score: {summary['value_score']:.0f}/100")
         logger.info(f"Expected Value: {summary['expected_value']:+.1%}")
 
+        api_audit = result.get("api_audit")
+        if api_audit:
+            totals = api_audit.get("totals", {})
+            sources = totals.get("sources") or []
+            quality = totals.get("data_quality")
+            quality_str = f"{quality:.0%}" if isinstance(quality, (int, float)) else "n/a"
+            logger.info("")
+            logger.info("🧾 API CALLS CHECK:")
+            logger.info(
+                f"   Calls: {totals.get('api_calls', 0)} | Quality: {quality_str} "
+                f"| Cache: {totals.get('cache_used', False)}"
+            )
+            if sources:
+                logger.info(f"   Sources: {', '.join(sources)}")
+
+            teams = api_audit.get("teams", {})
+            for side in ("home", "away"):
+                team_info = teams.get(side)
+                if not team_info:
+                    continue
+                fields = ", ".join(team_info.get("available_fields") or [])
+                logger.info(
+                    f"   {side.title()}: {team_info.get('team') or 'N/A'} "
+                    f"[{team_info.get('source') or '?'} → {team_info.get('provider') or '?'}] "
+                    f"fields: {fields or 'n/a'}"
+                )
+
+            block_usage = api_audit.get("block_usage", {})
+            calibrator_usage = block_usage.get("probability_calibrator", {})
+            value_usage = block_usage.get("value_detector", {})
+            logger.info(
+                "   Calibratore dati: %s (missing: %s) | Value detector: %s (missing: %s)",
+                len(calibrator_usage.get("used") or []),
+                len(calibrator_usage.get("missing") or []),
+                len(value_usage.get("used") or []),
+                len(value_usage.get("missing") or []),
+            )
+
+            confidence_usage = block_usage.get("confidence_scorer")
+            if confidence_usage:
+                logger.info(
+                    "   Confidence signals: used=%s missing=%s",
+                    confidence_usage.get("used"),
+                    confidence_usage.get("missing"),
+                )
+
+            sentiment_info = block_usage.get("sentiment_analyzer", {})
+            if sentiment_info.get("enabled"):
+                logger.info(
+                    "   Sentiment analyzer attivo → eseguito: %s",
+                    sentiment_info.get("executed"),
+                )
+
+            for note in api_audit.get("notes", []):
+                logger.warning("   ⚠️ %s", note)
+
         # Show ensemble breakdown if available
         if result.get("ensemble"):
             ensemble = result["ensemble"]
@@ -750,6 +816,174 @@ class AIPipeline:
         if decision["action"] == "BET":
             logger.info(f"💰 Potential profit: €{summary['potential_profit']:.2f}")
         logger.info(f"{'═'*70}\n")
+
+    def _build_api_audit(
+        self,
+        match: Dict[str, Any],
+        api_context: Dict[str, Any],
+        calibration_context: Dict[str, Any],
+        confidence_context: Dict[str, Any],
+        value_input: Dict[str, Any],
+        sentiment_result: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Produce a compact report about API calls and their usage downstream."""
+        api_context = api_context or {}
+        metadata = api_context.get("metadata") or {}
+        totals = {
+            "api_calls": metadata.get("api_calls_used", 0),
+            "data_quality": metadata.get("data_quality"),
+            "sources": metadata.get("sources", []),
+            "cache_used": metadata.get("cache_used", False),
+            "timestamp": metadata.get("timestamp"),
+        }
+
+        teams = {
+            "home": self._summarize_team_context(match.get("home"), api_context.get("home_context")),
+            "away": self._summarize_team_context(match.get("away"), api_context.get("away_context")),
+        }
+
+        match_signals = self._summarize_match_signals(api_context.get("match_data") or {})
+
+        calibrator_inputs = self._summarize_input_keys(
+            calibration_context.get("api_context") or {}
+        )
+
+        confidence_inputs = self._summarize_input_keys(
+            {
+                "precision_sources": confidence_context.get("precision_sources"),
+                "red_flags": confidence_context.get("red_flags"),
+                "green_flags": confidence_context.get("green_flags"),
+            },
+            interesting_keys=["precision_sources", "red_flags", "green_flags"]
+        )
+
+        statsbomb_keys = [key for key in value_input.keys() if key.startswith("statsbomb_")]
+        value_inputs = self._summarize_input_keys(
+            value_input,
+            interesting_keys=statsbomb_keys or None
+        )
+
+        block_usage = {
+            "probability_calibrator": calibrator_inputs,
+            "confidence_scorer": confidence_inputs,
+            "value_detector": value_inputs,
+            "sentiment_analyzer": {
+                "enabled": bool(self.config.sentiment_enabled),
+                "executed": bool(sentiment_result)
+            }
+        }
+
+        status = "ok"
+        notes: List[str] = []
+        if totals["api_calls"] == 0 and not totals.get("cache_used"):
+            status = "warning"
+            notes.append("Nessuna chiamata API registrata e cache assente.")
+        data_quality = totals.get("data_quality")
+        if isinstance(data_quality, (int, float)) and data_quality < 0.4:
+            status = "warning"
+            notes.append("Qualità dati bassa (<40%).")
+
+        return {
+            "status": status,
+            "notes": notes,
+            "totals": totals,
+            "teams": teams,
+            "match_signals": match_signals,
+            "block_usage": block_usage
+        }
+
+    def _summarize_team_context(
+        self,
+        team_name: Optional[str],
+        context: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        context = context or {}
+        data = context.get("data") or {}
+        return {
+            "team": team_name,
+            "source": context.get("source"),
+            "provider": context.get("provider"),
+            "api_calls_used": context.get("api_calls_used", 0),
+            "available_fields": self._list_non_empty_keys(data)
+        }
+
+    def _summarize_match_signals(self, match_data: Dict[str, Any]) -> Dict[str, Any]:
+        injuries = match_data.get("injuries") or {}
+        suspensions = match_data.get("suspensions") or {}
+        weather = match_data.get("weather") or {}
+        xg_metrics = match_data.get("xg_metrics") or {}
+        statsbomb = match_data.get("statsbomb_metrics") or {}
+        lineup = match_data.get("lineup_prediction") or {}
+
+        def _count(items: Any) -> int:
+            return len(items) if isinstance(items, list) else 0
+
+        return {
+            "injuries": {
+                "available": bool((injuries.get("home") or []) or (injuries.get("away") or [])),
+                "home_count": _count(injuries.get("home")),
+                "away_count": _count(injuries.get("away"))
+            },
+            "suspensions": {
+                "available": bool((suspensions.get("home") or []) or (suspensions.get("away") or [])),
+                "home_count": _count(suspensions.get("home")),
+                "away_count": _count(suspensions.get("away"))
+            },
+            "weather": {
+                "available": bool(weather),
+                "provider": weather.get("provider")
+            },
+            "xg_metrics": {
+                "available": bool(xg_metrics),
+                "source": xg_metrics.get("source")
+            },
+            "statsbomb_metrics": {
+                "available": bool(statsbomb),
+                "matches_home": statsbomb.get("home", {}).get("matches"),
+                "matches_away": statsbomb.get("away", {}).get("matches")
+            },
+            "lineup_prediction": {
+                "available": bool(lineup),
+                "home_players": len(lineup.get("home", {}).get("startXI", [])) if isinstance(lineup.get("home"), dict) else 0,
+                "away_players": len(lineup.get("away", {}).get("startXI", [])) if isinstance(lineup.get("away"), dict) else 0
+            },
+            "precision_sources": match_data.get("precision_sources") or []
+        }
+
+    def _summarize_input_keys(
+        self,
+        data: Dict[str, Any],
+        interesting_keys: Optional[List[str]] = None
+    ) -> Dict[str, List[str]]:
+        keys = interesting_keys or list(data.keys())
+        used: List[str] = []
+        missing: List[str] = []
+        seen = set()
+        for key in keys:
+            if key in seen:
+                continue
+            seen.add(key)
+            value = data.get(key)
+            if self._is_value_present(value):
+                used.append(key)
+            else:
+                missing.append(key)
+        return {"used": used, "missing": missing}
+
+    def _list_non_empty_keys(self, data: Dict[str, Any]) -> List[str]:
+        if not isinstance(data, dict):
+            return []
+        return [key for key, value in data.items() if self._is_value_present(value)]
+
+    @staticmethod
+    def _is_value_present(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return value.strip() != ""
+        if isinstance(value, (list, tuple, dict, set)):
+            return bool(value)
+        return True
 
     def load_models(self, models_dir: Optional[str] = None):
         """Load all trained models"""
