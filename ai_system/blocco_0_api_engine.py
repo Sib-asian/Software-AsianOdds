@@ -375,8 +375,53 @@ class APIDataEngine:
             if statsbomb_context:
                 enriched["statsbomb_metrics"] = statsbomb_context
                 enriched.setdefault("precision_sources", []).append("statsbomb_open_data")
+                self._merge_statsbomb_signals(enriched, statsbomb_context)
 
         return enriched
+
+    def _merge_statsbomb_signals(self, enriched: Dict[str, Any], statsbomb_context: Dict[str, Any]) -> None:
+        """
+        Converte le metriche StatsBomb in segnali operativi già usati dai blocchi
+        (xG totals ultima finestra, shots, pressures) così da evitare fallback.
+        """
+        try:
+            max_window = getattr(self.config, "statsbomb_max_matches", 5)
+        except AttributeError:
+            max_window = 5
+
+        for side in ("home", "away"):
+            metrics = statsbomb_context.get(side) or {}
+            if not metrics:
+                continue
+
+            matches_used = int(metrics.get("matches") or 0)
+            window = min(matches_used or 0, max_window)
+            if window <= 0:
+                continue
+
+            avg_xg = metrics.get("avg_xg_per_match")
+            avg_xga = metrics.get("avg_xga_per_match")
+
+            if isinstance(avg_xg, (int, float)):
+                enriched[f"xg_{side}"] = round(avg_xg * window, 2)
+            if isinstance(avg_xga, (int, float)):
+                enriched[f"xga_{side}"] = round(avg_xga * window, 2)
+
+            # Pass through per-match advanced metrics for downstream blocks
+            shots = metrics.get("avg_shots_per_match")
+            shots_pct = metrics.get("shots_on_target_pct")
+            pressures = metrics.get("pressures_per_match")
+
+            if isinstance(shots, (int, float)):
+                enriched[f"shots_{side}_per_match"] = round(float(shots), 2)
+            if isinstance(shots_pct, (int, float)):
+                enriched[f"shots_on_target_pct_{side}"] = round(float(shots_pct), 3)
+            if isinstance(pressures, (int, float)):
+                enriched[f"pressures_{side}_per_match"] = round(float(pressures), 1)
+
+        # Match-level quality flag (entrambi i lati disponibili)
+        if "xg_home" in enriched and "xg_away" in enriched:
+            enriched["have_statsbomb_window"] = True
 
     def _get_weather_context(self, match: Dict) -> Optional[Dict[str, Any]]:
         """Recupera e normalizza dati meteo rilevanti per il match."""
