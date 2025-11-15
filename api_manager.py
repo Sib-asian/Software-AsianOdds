@@ -22,7 +22,7 @@ import sqlite3
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple, Any, List
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -636,14 +636,17 @@ class APIFootballProvider:
         self.api_key = api_key
         self.base_url = APIConfig.API_FOOTBALL_BASE
 
-    def _request(self, endpoint: str) -> Optional[Dict]:
+    def _request(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict]:
         """Make HTTP request to API"""
         if not self.api_key:
             logger.warning("⚠️ API-Football key not configured")
             return None
 
         try:
+            query = urllib.parse.urlencode(params or {})
             url = f"{self.base_url}/{endpoint}"
+            if query:
+                url = f"{url}?{query}"
             headers = {
                 "x-rapidapi-key": self.api_key,
                 "x-rapidapi-host": "v3.football.api-sports.io"
@@ -658,12 +661,162 @@ class APIFootballProvider:
             logger.error(f"❌ API-Football request error: {e}")
             return None
 
+    def search_team(self, team_name: str, league_hint: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Search a team by name and optionally filter by league hint."""
+        response = self._request("teams", {"search": team_name})
+        if not response or not response.get("response"):
+            return None
+
+        entries = response["response"]
+        if league_hint:
+            league_hint = league_hint.lower()
+            filtered = []
+            for entry in entries:
+                team_league = (entry.get("team") or {}).get("name", "")
+                venue_league = (entry.get("venue") or {}).get("city", "")
+                if league_hint in team_league.lower() or league_hint in venue_league.lower():
+                    filtered.append(entry)
+            if filtered:
+                entries = filtered
+
+        return entries[0]
+
     def get_team_info(self, team_name: str, league_name: str) -> Optional[Dict]:
         """Get team context (position, form, etc.)"""
-        # For free tier, we'd need league ID first
-        # Simplified: return None, use other providers
-        logger.info(f"ℹ️ API-Football requires league ID (not implemented in free tier)")
-        return None
+        entry = self.search_team(team_name, league_name)
+        if not entry:
+            return None
+
+        team = entry.get("team", {})
+        venue = entry.get("venue", {})
+        team_id = team.get("id")
+
+        form = "DDDDD"
+        if team_id:
+            form = self.get_recent_form(team_id) or form
+
+        context = {
+            "team_name": team.get("name", team_name),
+            "league": league_name or team.get("country"),
+            "stadium": venue.get("name"),
+            "description": team.get("national", False) and "National team" or None,
+            "formed_year": team.get("founded"),
+            "country": team.get("country"),
+            "style": "Possesso" if not form else self._infer_style_from_form(form),
+            "typical_position": "mid",
+            "form": form,
+            "api_football_team_id": team_id
+        }
+
+        return {
+            "data": context,
+            "api_calls_used": 2 if team_id else 1
+        }
+
+    def get_recent_form(self, team_id: int, last: int = 5) -> Optional[str]:
+        """Return last `last` fixtures form string (W/D/L)."""
+        fixtures = self._request("fixtures", {"team": team_id, "last": last})
+        if not fixtures or not fixtures.get("response"):
+            return None
+
+        results = []
+        for match in fixtures["response"]:
+            teams = match.get("teams", {})
+            if teams.get("home", {}).get("id") == team_id:
+                winner = teams["home"].get("winner")
+            elif teams.get("away", {}).get("id") == team_id:
+                winner = teams["away"].get("winner")
+            else:
+                winner = None
+
+            if winner is True:
+                results.append("W")
+            elif winner is False:
+                results.append("L")
+            else:
+                results.append("D")
+
+        return "".join(results) or None
+
+    def get_team_match_data(self, team_name: str, season: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Return injuries and basic match insights for a team."""
+        entry = self.search_team(team_name)
+        if not entry:
+            return None
+
+        team = entry.get("team", {})
+        team_id = team.get("id")
+        if not team_id:
+            return None
+
+        season = season or datetime.utcnow().year
+        injuries = self.get_injuries(team_id, season)
+        lineup = self.get_predicted_lineup(team_id, season)
+
+        return {
+            "team_id": team_id,
+            "injuries": injuries,
+            "suspensions": [inj for inj in injuries if inj.get("type", "").lower().startswith("susp")],
+            "lineup": lineup,
+            "form": self.get_recent_form(team_id) or "DDDDD"
+        }
+
+    def get_injuries(self, team_id: int, season: Optional[str]) -> List[Dict[str, Any]]:
+        """Fetch injuries/suspensions list."""
+        injuries_payload = self._request("injuries", {"team": team_id, "season": season})
+        injuries: List[Dict[str, Any]] = []
+        if not injuries_payload:
+            return injuries
+
+        for entry in injuries_payload.get("response", []):
+            player = entry.get("player", {}) or {}
+            fixture = entry.get("fixture", {}) or {}
+            league = entry.get("league", {}) or {}
+
+            injuries.append({
+                "player": player.get("name"),
+                "type": player.get("type"),
+                "reason": player.get("reason"),
+                "fixture_date": fixture.get("date"),
+                "league": league.get("name"),
+            })
+
+        return injuries
+
+    def get_predicted_lineup(self, team_id: int, season: Optional[str]) -> Dict[str, Any]:
+        """Use the next fixture lineup if available."""
+        lineup_payload = self._request("fixtures", {"team": team_id, "next": 1, "season": season})
+        if not lineup_payload or not lineup_payload.get("response"):
+            return {}
+
+        fixture = lineup_payload["response"][0]
+        lineups = fixture.get("lineups") or []
+        if not lineups:
+            return {}
+
+        lineup = lineups[0]
+        return {
+            "formation": lineup.get("formation"),
+            "coach": (lineup.get("coach") or {}).get("name"),
+            "startXI": [
+                {
+                    "number": player.get("player", {}).get("number"),
+                    "name": player.get("player", {}).get("name"),
+                    "pos": player.get("position")
+                }
+                for player in lineup.get("startXI", [])
+            ]
+        }
+
+    @staticmethod
+    def _infer_style_from_form(form: str) -> str:
+        wins = form.count("W")
+        losses = form.count("L")
+        if wins >= 3:
+            return "Aggressiva"
+        if losses >= 3:
+            return "Difensiva"
+        return "Possesso"
 
 
 class FootballDataProvider:
@@ -694,9 +847,29 @@ class FootballDataProvider:
 
     def get_team_info(self, team_name: str, league_name: str) -> Optional[Dict]:
         """Get team context from standings"""
-        # Simplified implementation
-        logger.info(f"ℹ️ Football-Data.org integration not fully implemented (free tier)")
-        return None
+        if not self.api_key:
+            return None
+
+        response = self._request("teams", {"name": team_name})
+        if not response or not response.get("teams"):
+            return None
+
+        team = response["teams"][0]
+        context = {
+            "team_name": team.get("name", team_name),
+            "league": league_name or team.get("area", {}).get("name"),
+            "stadium": team.get("venue"),
+            "description": team.get("shortName"),
+            "formed_year": team.get("founded"),
+            "country": team.get("area", {}).get("name"),
+            "style": "Possesso",
+            "typical_position": "mid"
+        }
+
+        return {
+            "data": context,
+            "api_calls_used": 1
+        }
 
 
 class TheSportsDBProvider:
@@ -840,6 +1013,41 @@ class APIManager:
                     }
             except Exception as e:
                 logger.error(f"❌ TheSportsDB error: {e}")
+
+        # Try API-Football if key available
+        api_football = self.providers.get("api-football")
+        if api_football and api_football.api_key and self.quota.can_use("api-football", calls=1):
+            logger.info(f"📡 Trying API-Football for {team}...")
+            try:
+                info = api_football.get_team_info(team, league)
+                if info:
+                    calls_used = info.get("api_calls_used", 1)
+                    self.quota.log_usage("api-football", calls=calls_used)
+                    return {
+                        "source": "api",
+                        "data": info["data"],
+                        "provider": "api-football",
+                        "api_calls_used": calls_used
+                    }
+            except Exception as exc:
+                logger.error(f"❌ API-Football error: {exc}")
+
+        # Try Football-Data.org as fallback premium source
+        football_data = self.providers.get("football-data")
+        if football_data and football_data.api_key and self.quota.can_use("football-data", calls=1):
+            logger.info(f"📡 Trying Football-Data.org for {team}...")
+            try:
+                info = football_data.get_team_info(team, league)
+                if info:
+                    self.quota.log_usage("football-data", calls=info.get("api_calls_used", 1))
+                    return {
+                        "source": "api",
+                        "data": info["data"],
+                        "provider": "football-data",
+                        "api_calls_used": info.get("api_calls_used", 1)
+                    }
+            except Exception as exc:
+                logger.error(f"❌ Football-Data error: {exc}")
 
         # Other providers not implemented in free tier
         # Would add API-Football and Football-Data.org here

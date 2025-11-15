@@ -36,6 +36,7 @@ from .blocco_5_risk_manager import RiskManager
 from .blocco_6_odds_tracker import OddsMovementTracker
 from .blocco_7_bayesian_uncertainty import BayesianUncertaintyQuantifier, BayesianResult
 from .models.ensemble import EnsembleMetaModel
+from .sentiment_analyzer import SentimentAnalyzer, adjust_prediction_with_sentiment
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,10 @@ class AIPipeline:
         self.risk_manager = RiskManager(self.config)
         self.odds_tracker = OddsMovementTracker(self.config)
         self.bayesian_quantifier = BayesianUncertaintyQuantifier()
+        self.sentiment_analyzer = (
+            SentimentAnalyzer(config={"huggingface_api_key": self.config.huggingface_api_key})
+            if self.config.sentiment_enabled else None
+        )
         self._auto_load_calibrator()
 
         # Initialize Ensemble Meta-Model (if enabled)
@@ -145,6 +150,14 @@ class AIPipeline:
 
             statsbomb_metrics = self._extract_statsbomb_metrics(api_context)
 
+            # Optional Sentiment analysis
+            sentiment_result = None
+            sentiment_adjust_reasons: List[str] = []
+            if self.config.sentiment_enabled:
+                sentiment_result = self._analyze_sentiment_safe(match)
+                if sentiment_result:
+                    api_context["sentiment"] = sentiment_result
+
             # ========================================
             # ENSEMBLE META-MODEL (optional)
             # ========================================
@@ -185,6 +198,18 @@ class AIPipeline:
             else:
                 # No ensemble, use Dixon-Coles directly
                 prob_to_use = prob_dixon_coles
+
+            if sentiment_result:
+                try:
+                    prob_to_use, sentiment_adjust_reasons = adjust_prediction_with_sentiment(
+                        prob_to_use,
+                        sentiment_result,
+                        team="home"
+                    )
+                    if sentiment_adjust_reasons:
+                        logger.info("   ✓ Sentiment adjustment applied: %s", "; ".join(sentiment_adjust_reasons))
+                except Exception as exc:
+                    logger.warning("   ⚠️ Sentiment adjustment failed: %s", exc)
 
             # ========================================
             # BLOCCO 1: Probability Calibrator
@@ -421,7 +446,11 @@ class AIPipeline:
                 "kelly": kelly_result,
                 "risk_decision": risk_decision,
                 "timing": timing_result,
-                "bayesian": bayesian_data,
+                  "bayesian": bayesian_data,
+                  "sentiment": {
+                      "analysis": sentiment_result,
+                      "adjustment_reasons": sentiment_adjust_reasons
+                  },
 
                 # Final decision (easy access)
                 "final_decision": {
@@ -447,7 +476,8 @@ class AIPipeline:
                     "potential_profit": risk_decision["final_stake"] * (odds_data.get("odds_current", 2.0) - 1),
                     "bayesian_uncertainty": bayesian_summary["uncertainty_level"],
                     "bayesian_confidence": bayesian_summary["confidence_score"],
-                    "bayesian_interval_95": bayesian_summary["credible_interval_95"],
+                      "bayesian_interval_95": bayesian_summary["credible_interval_95"],
+                      "sentiment_adjustments": sentiment_adjust_reasons
                 },
 
                 # Metadata
@@ -493,6 +523,24 @@ class AIPipeline:
             "home": statsbomb.get("home") or {},
             "away": statsbomb.get("away") or {}
         }
+
+    def _analyze_sentiment_safe(self, match: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Run sentiment analysis while swallowing runtime errors."""
+        if not self.sentiment_analyzer:
+            return None
+        home = match.get("home")
+        away = match.get("away")
+        if not home or not away:
+            return None
+        try:
+            return self.sentiment_analyzer.analyze_match_sentiment(
+                team_home=home,
+                team_away=away,
+                hours_before=self.config.sentiment_hours_before_match
+            )
+        except Exception as exc:
+            logger.debug("Sentiment analysis skipped: %s", exc)
+            return None
 
     def _get_league_quality(self, league: str) -> float:
         """Map league to quality score"""

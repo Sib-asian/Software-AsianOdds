@@ -64,6 +64,7 @@ class APIDataEngine:
         self.api_manager = APIManager()
         self.cache = self.api_manager.cache
         self.quota = self.api_manager.quota
+        self.api_football_provider = self.api_manager.providers.get("api-football")
 
         # External data helpers
         self.weather_api_key = os.getenv("OPENWEATHER_API_KEY")
@@ -348,7 +349,9 @@ class APIDataEngine:
             # - Injuries/suspensions da API-Football
             # - Lineup prediction
 
-            logger.info(f"ℹ️ Match-specific data collection not fully implemented")
+            api_football_data = self._get_api_football_match_data(match)
+            if api_football_data:
+                match_data.update(api_football_data)
 
         except Exception as e:
             logger.error(f"❌ Error getting match-specific data: {e}")
@@ -378,6 +381,49 @@ class APIDataEngine:
                 self._merge_statsbomb_signals(enriched, statsbomb_context)
 
         return enriched
+
+    def _get_api_football_match_data(self, match: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Fetch injuries/lineups using API-Football if available."""
+        if not self.api_football_provider or not getattr(self.api_football_provider, "api_key", None):
+            return None
+
+        season = match.get("season") or self._infer_season_from_match(match)
+        if season:
+            season = str(season)
+
+        try:
+            home_data = self.api_football_provider.get_team_match_data(match.get("home", ""), season)
+            away_data = self.api_football_provider.get_team_match_data(match.get("away", ""), season)
+
+            if not home_data and not away_data:
+                return None
+
+            enriched: Dict[str, Any] = {}
+            if home_data:
+                enriched.setdefault("injuries", {})["home"] = home_data.get("injuries", [])
+                enriched.setdefault("suspensions", {})["home"] = home_data.get("suspensions", [])
+                enriched.setdefault("lineup_prediction", {})["home"] = home_data.get("lineup", {})
+                enriched["form_home"] = home_data.get("form")
+            if away_data:
+                enriched.setdefault("injuries", {})["away"] = away_data.get("injuries", [])
+                enriched.setdefault("suspensions", {})["away"] = away_data.get("suspensions", [])
+                enriched.setdefault("lineup_prediction", {})["away"] = away_data.get("lineup", {})
+                enriched["form_away"] = away_data.get("form")
+
+            if "injuries" in enriched:
+                enriched["injuries"].setdefault("home", [])
+                enriched["injuries"].setdefault("away", [])
+            if "suspensions" in enriched:
+                enriched["suspensions"].setdefault("home", [])
+                enriched["suspensions"].setdefault("away", [])
+            if "lineup_prediction" in enriched:
+                enriched["lineup_prediction"].setdefault("home", {})
+                enriched["lineup_prediction"].setdefault("away", {})
+
+            return enriched
+        except Exception as exc:
+            logger.debug("API-Football match data unavailable: %s", exc)
+            return None
 
     def _merge_statsbomb_signals(self, enriched: Dict[str, Any], statsbomb_context: Dict[str, Any]) -> None:
         """
