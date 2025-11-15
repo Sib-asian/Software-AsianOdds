@@ -1,4 +1,4 @@
-app = "asianodds"
+app = "software-asianodds"
 primary_region = "ams"
 
 [build]
