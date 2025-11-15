@@ -11,13 +11,18 @@ import os
 import re
 import requests
 import json
-from copy import deepcopy  # NOTE: Being phased out, replaced with types.MappingProxyType
-from types import MappingProxyType
 import streamlit as st
 from scipy import optimize
 from scipy.stats import poisson
 import warnings
 warnings.filterwarnings('ignore')
+from copy import deepcopy  # NOTE: Being phased out, replaced with types.MappingProxyType
+from types import MappingProxyType
+
+from telegram_multi_formatter import (
+    format_multiple_matches_for_telegram,
+    split_telegram_message,
+)
 
 # ============================================================
 #   LOGGING STRUTTURATO (MIGLIORAMENTO)
@@ -12719,205 +12724,6 @@ def format_analysis_for_telegram(
     
     return message
 
-# ============================================================
-#   MULTI-MATCH TELEGRAM FORMATTING
-# ============================================================
-
-def format_multiple_matches_for_telegram(
-    analyses: List[Dict[str, Any]],
-    telegram_prob_threshold: float = 50.0
-) -> str:
-    """
-    Formatta UN messaggio Telegram con multiple partite.
-
-    Args:
-        analyses: Lista di dict con chiavi: match_name, ris, odds_1, odds_x, odds_2,
-                  quality_score, market_conf, value_bets
-        telegram_prob_threshold: Soglia minima probabilità per includere value bets
-
-    Returns:
-        Messaggio HTML formattato per Telegram
-    """
-    total_matches = len(analyses)
-
-    # Header principale
-    message = f"📊 <b>ANALISI MULTIPLA - {total_matches} PARTIT{'A' if total_matches == 1 else 'E'}</b>\n"
-    message += f"📅 {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
-    message += "━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-    # Itera su ogni partita
-    total_value_bets = 0
-    for i, analysis in enumerate(analyses, 1):
-        match_name = analysis["match_name"]
-        ris = analysis["ris"]
-        odds_1 = analysis["odds_1"]
-        odds_x = analysis["odds_x"]
-        odds_2 = analysis["odds_2"]
-        quality_score = analysis.get("quality_score", 0)
-        market_conf = analysis.get("market_conf", 0)
-        value_bets = analysis.get("value_bets", [])
-
-        # Nome partita
-        message += f"<b>{i}. ⚽ {match_name}</b>\n\n"
-
-        # Metriche qualità compatte
-        message += f"📊 Quality: {quality_score:.0f}/100 | Confidence: {market_conf:.0f}/100\n\n"
-
-        # Probabilità esito
-        message += f"🎯 <b>Probabilità:</b>\n"
-        message += f"  1️⃣ Casa: <b>{ris['p_home']*100:.1f}%</b> (q. {odds_1:.2f})\n"
-        message += f"  ❌ Pareggio: <b>{ris['p_draw']*100:.1f}%</b> (q. {odds_x:.2f})\n"
-        message += f"  2️⃣ Trasferta: <b>{ris['p_away']*100:.1f}%</b> (q. {odds_2:.2f})\n\n"
-
-        # Mercati speciali (compatto)
-        message += (
-            f"⚽ Over 2.5: {ris['over_25']*100:.1f}% | "
-            f"Under: {ris['under_25']*100:.1f}% | "
-            f"BTTS: {ris['btts']*100:.1f}% | "
-            f"GG+Over 2.5: {ris['gg_over25']*100:.1f}%\n"
-        )
-
-        # Pari/Dispari FT
-        if 'even_ft' in ris and 'odd_ft' in ris:
-            message += (
-                f"🎲 Pari: {ris['even_ft']*100:.1f}% | "
-                f"Dispari: {ris['odd_ft']*100:.1f}%\n"
-            )
-
-        # Clean Sheet
-        if 'cs_home' in ris and 'cs_away' in ris:
-            message += (
-                f"🛡️ CS Casa: {ris['cs_home']*100:.1f}% | "
-                f"CS Trasferta: {ris['cs_away']*100:.1f}%\n"
-            )
-
-        # Mercati HT e combinati (se disponibili)
-        ht_markets = []
-        if 'over_05_ht' in ris:
-            ht_markets.append(f"Over 0.5 HT: {ris['over_05_ht']*100:.1f}%")
-        if 'over_15_ht' in ris:
-            ht_markets.append(f"Over 1.5 HT: {ris['over_15_ht']*100:.1f}%")
-        if 'even_ht' in ris and 'odd_ht' in ris:
-            ht_markets.append(f"Pari HT: {ris['even_ht']*100:.1f}%")
-            ht_markets.append(f"Dispari HT: {ris['odd_ht']*100:.1f}%")
-        if ht_markets:
-            message += f"⏱️ {' | '.join(ht_markets)}\n"
-
-        combined_markets = []
-        if 'over_05ht_over_25ft' in ris:
-            combined_markets.append(f"Over 0.5 HT + Over 2.5 FT: {ris['over_05ht_over_25ft']*100:.1f}%")
-        if 'over_15ht_over_25ft' in ris:
-            combined_markets.append(f"Over 1.5 HT + Over 2.5 FT: {ris['over_15ht_over_25ft']*100:.1f}%")
-        if combined_markets:
-            message += f"🔗 {' | '.join(combined_markets)}\n"
-
-        # Asian Handicap (top 2 lines compatto)
-        if 'asian_handicap' in ris:
-            ah = ris['asian_handicap']
-            relevant_ah = [(k, v) for k, v in ah.items() if v >= 0.25]
-            if relevant_ah:
-                relevant_ah.sort(key=lambda x: x[1], reverse=True)
-                ah_str = ' | '.join([f"{k}: {v*100:.1f}%" for k, v in relevant_ah[:2]])
-                message += f"🎯 {ah_str}\n"
-
-        # HT/FT (top 3 compatto)
-        if 'ht_ft' in ris:
-            ht_ft = ris['ht_ft']
-            sorted_ht_ft = sorted(ht_ft.items(), key=lambda x: x[1], reverse=True)
-            top_ht_ft = [(combo, prob) for combo, prob in sorted_ht_ft[:3] if prob >= 0.08]
-            if top_ht_ft:
-                ht_ft_str = ' | '.join([f"{combo}: {prob*100:.1f}%" for combo, prob in top_ht_ft])
-                message += f"⏱️🏁 {ht_ft_str}\n"
-
-        message += "\n"
-
-        if "top10" in ris and len(ris["top10"]) > 0:
-            message += "🏅 Top 3 Risultati:\n"
-            for idx, (h, a, p) in enumerate(ris["top10"][:3], 1):
-                message += f"  {idx}. {h}-{a}: {p:.1f}%\n"
-            message += "\n"
-
-        # Value Bets filtrati per soglia
-        filtered_vbs = [vb for vb in value_bets if float(str(vb.get("Prob %", "0")).replace("%", "").replace(",", ".")) >= telegram_prob_threshold]
-
-        if filtered_vbs:
-            total_value_bets += len(filtered_vbs)
-            message += f"💎 <b>Value Bets ({len(filtered_vbs)}):</b>\n"
-            for vb in filtered_vbs[:3]:  # Max 3 per partita per brevità
-                esito = vb.get("Esito", "")
-                prob = vb.get("Prob %", vb.get("Prob Modello %", ""))
-                edge = vb.get("Edge %", "0")
-                ev = vb.get("EV %", "0")
-                prob_str = f"{prob}%" if prob and "%" not in str(prob) else prob
-                message += f"  • {esito}: {prob_str} | Edge {edge}% | EV {ev}%\n"
-            if len(filtered_vbs) > 3:
-                message += f"  <i>(+{len(filtered_vbs)-3} altri)</i>\n"
-        else:
-            message += f"ℹ️ Nessun value bet sopra soglia ({telegram_prob_threshold:.0f}%)\n"
-
-        message += "\n━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-    # Riepilogo finale
-    message += f"📈 <b>Riepilogo:</b>\n"
-    message += f"  • Partite analizzate: {total_matches}\n"
-    message += f"  • Value bets totali: {total_value_bets}\n"
-    message += f"  • Soglia probabilità: ≥{telegram_prob_threshold:.0f}%\n\n"
-
-    # Footer
-    message += f"🤖 <i>Analisi automatica - Modello Dixon-Coles Bayesiano</i>"
-
-    return message
-
-
-def split_telegram_message(message: str, max_length: int = 4096) -> List[str]:
-    """
-    Divide un messaggio Telegram lungo in più parti.
-
-    Telegram ha un limite di 4096 caratteri per messaggio.
-    Divide in modo intelligente cercando di spezzare su separatori.
-
-    Args:
-        message: Messaggio completo
-        max_length: Lunghezza massima per parte (default 4096)
-
-    Returns:
-        Lista di messaggi divisi
-    """
-    if len(message) <= max_length:
-        return [message]
-
-    messages = []
-    current = ""
-
-    # Dividi per separatori logici (━━━ indica fine sezione partita)
-    sections = message.split("━━━━━━━━━━━━━━━━━━━━━\n\n")
-
-    header = sections[0]  # Header principale
-    footer = ""
-    if "🤖 <i>Analisi automatica" in sections[-1]:
-        footer = "\n\n" + sections[-1].split("📈 <b>Riepilogo:</b>")[0]
-        sections[-1] = sections[-1].split("🤖 <i>Analisi automatica")[0]
-
-    current = header + "━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-    for section in sections[1:]:
-        section_with_sep = section + "━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-        # Se aggiungendo questa sezione superiamo il limite
-        if len(current) + len(section_with_sep) + len(footer) > max_length:
-            # Salva il messaggio corrente e inizia uno nuovo
-            messages.append(current.rstrip() + footer)
-            current = header + "━━━━━━━━━━━━━━━━━━━━━\n\n" + section_with_sep
-        else:
-            current += section_with_sep
-
-    # Aggiungi l'ultimo messaggio
-    if current:
-        messages.append(current.rstrip() + footer)
-
-    return messages
-
-
 def validate_odds_input(odds_1: float, odds_x: float, odds_2: float) -> Dict[str, Any]:
     """
     Valida le quote inserite manualmente per verificare che abbiano senso matematico.
@@ -15742,6 +15548,10 @@ if "is_end_season_auto" not in st.session_state:
 st.session_state["auto_mode_selection"] = "🌐 Auto + API (Ibrido)"
 if "preview_cache" not in st.session_state:
     st.session_state["preview_cache"] = {}  # Cache per preview auto-detection
+if "telegram_multi_queue" not in st.session_state:
+    st.session_state["telegram_multi_queue"] = []
+if "last_telegram_analysis" not in st.session_state:
+    st.session_state["last_telegram_analysis"] = None
 
 # === SEZIONE INPUT DATI PARTITA ===
 st.info("⚽ Inserisci manualmente i dati della partita che vuoi analizzare")
@@ -17665,6 +17475,30 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
         st.session_state["value_bets_filtered"] = filtered_value_bets
         st.session_state["value_bet_threshold_active"] = value_bet_edge_threshold
         st.session_state["value_bet_kelly_fraction_active"] = value_bet_kelly_fraction
+        value_bets_for_multi = []
+        for vb in filtered_value_bets:
+            prob_raw = vb.get("ProbRaw", 0.0) or 0.0
+            edge_raw = vb.get("EdgeRaw", 0.0) or 0.0
+            ev_raw = vb.get("EVRaw", 0.0) or 0.0
+            value_bets_for_multi.append({
+                "Esito": vb.get("Esito", ""),
+                "Prob %": f"{prob_raw*100:.1f}",
+                "Edge %": f"{edge_raw:+.1f}",
+                "EV %": f"{ev_raw:+.1f}",
+            })
+
+        st.session_state["last_telegram_analysis"] = {
+            "match_name": match_name,
+            "match_datetime": match_datetime_iso,
+            "ris": deepcopy(ris),
+            "odds_1": float(validated["odds_1"]),
+            "odds_x": float(validated["odds_x"]),
+            "odds_2": float(validated["odds_2"]),
+            "quality_score": float(quality_score or 0.0),
+            "market_conf": float(market_conf or 0.0),
+            "value_bets": value_bets_for_multi,
+            "created_at": datetime.utcnow().isoformat(),
+        }
 
         saved_in_history = save_analysis_history(
             match_name=match_name,
@@ -18087,6 +17921,72 @@ telegram_prob_threshold: {telegram_prob_threshold}
                     return False, result, sent_chunks, len(chunks)
                 sent_chunks = idx
             return True, None, sent_chunks, len(chunks)
+
+        st.markdown("### 📬 Invio Telegram Multiplo (Batch)")
+        multi_queue: List[Dict[str, Any]] = st.session_state.get("telegram_multi_queue", [])
+        current_payload = st.session_state.get("last_telegram_analysis")
+
+        col_multi_metric, col_multi_clear = st.columns([3, 2])
+        with col_multi_metric:
+            st.metric("Partite in selezione", len(multi_queue))
+        with col_multi_clear:
+            if st.button("🗑️ Svuota selezione", key="btn_clear_multi", disabled=not multi_queue):
+                st.session_state["telegram_multi_queue"] = []
+                multi_queue = []
+                st.success("Selezione Telegram svuotata")
+
+        if current_payload:
+            if st.button("➕ Aggiungi questa partita al batch Telegram", key="btn_add_multi", use_container_width=True):
+                queue = st.session_state.get("telegram_multi_queue", [])
+                key_tuple = (current_payload.get("match_name"), current_payload.get("match_datetime"))
+                existing_keys = {
+                    (item.get("match_name"), item.get("match_datetime"))
+                    for item in queue
+                }
+                if key_tuple in existing_keys:
+                    st.warning("Questa partita è già presente nella selezione Telegram.")
+                else:
+                    queue.append(deepcopy(current_payload))
+                    st.session_state["telegram_multi_queue"] = queue
+                    multi_queue = queue
+                    st.success(f"Aggiunta alla selezione (totale: {len(queue)}).")
+
+        if multi_queue:
+            st.write("Partite incluse nel batch:")
+            for idx, item in enumerate(multi_queue):
+                cols = st.columns([6, 1])
+                with cols[0]:
+                    quality = item.get("quality_score", 0.0)
+                    confidence = item.get("market_conf", 0.0)
+                    st.write(f"{idx+1}. {item.get('match_name', 'Match')} — Quality {quality:.0f}/100 | Confidence {confidence:.0f}/100")
+                with cols[1]:
+                    if st.button("❌", key=f"remove_multi_{idx}"):
+                        queue = st.session_state.get("telegram_multi_queue", [])
+                        if idx < len(queue):
+                            queue.pop(idx)
+                            st.session_state["telegram_multi_queue"] = queue
+                            st.rerun()
+
+        if multi_queue:
+            if telegram_enabled and telegram_token and telegram_chat_id:
+                if st.button("📨 Invia selezione su Telegram", key="btn_send_multi", use_container_width=True):
+                    with st.spinner("Invio multi-partita su Telegram..."):
+                        multi_message = format_multiple_matches_for_telegram(
+                            analyses=multi_queue,
+                            telegram_prob_threshold=telegram_prob_threshold
+                        )
+                        batch_success, batch_error, batch_sent, batch_total = _dispatch_telegram(multi_message)
+
+                    if batch_success:
+                        chunk_label = "messaggio" if batch_sent == 1 else "messaggi"
+                        st.success(f"✅ Batch Telegram inviato ({batch_sent} {chunk_label}).")
+                        st.session_state["telegram_multi_queue"] = []
+                    else:
+                        st.error("❌ Errore invio batch Telegram")
+                        if batch_error:
+                            st.code(batch_error.get("error_message", "Errore sconosciuto"))
+            else:
+                st.info("Configura Telegram (checkbox, bot token e chat ID) per inviare il batch multi-partita.")
 
         # INVIO TELEGRAM
         if telegram_enabled and telegram_token and telegram_chat_id:
