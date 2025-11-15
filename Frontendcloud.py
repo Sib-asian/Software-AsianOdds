@@ -17544,16 +17544,27 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 "Quota": validated.get("odds_btts", "N/A"),
                 "Tipo": "BTTS"
             })
+        # NoGol (BTTS No) - calcolato da clean_sheet_qualcuno se disponibile, altrimenti 1 - BTTS
+        prob_ng = ris.get('clean_sheet_qualcuno')
+        if prob_ng is None and 'btts' in ris:
+            prob_ng = 1 - ris['btts']
+        if prob_ng is not None and max(0.0, min(1.0, prob_ng)) * 100 >= telegram_prob_threshold:
+            all_markets.append({
+                "Esito": "NoGol (BTTS No)",
+                "Prob %": f"{max(0.0, min(1.0, prob_ng))*100:.1f}",
+                "Quota": validated.get("odds_btts", "N/A"),
+                "Tipo": "BTTS"
+            })
 
-        # Pari/Dispari FT
-        if ris.get('even_ft', 0) * 100 >= telegram_prob_threshold:
+        # Pari/Dispari FT (mostrati sempre per coprire mercati bilanciati)
+        if 'even_ft' in ris:
             all_markets.append({
                 "Esito": "Pari FT",
                 "Prob %": f"{ris['even_ft']*100:.1f}",
                 "Quota": "N/A",
                 "Tipo": "Pari/Dispari"
             })
-        if ris.get('odd_ft', 0) * 100 >= telegram_prob_threshold:
+        if 'odd_ft' in ris:
             all_markets.append({
                 "Esito": "Dispari FT",
                 "Prob %": f"{ris['odd_ft']*100:.1f}",
@@ -17561,15 +17572,15 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
                 "Tipo": "Pari/Dispari"
             })
 
-        # Pari/Dispari HT
-        if ris.get('even_ht', 0) * 100 >= telegram_prob_threshold:
+        # Pari/Dispari HT (mostrati sempre)
+        if 'even_ht' in ris:
             all_markets.append({
                 "Esito": "Pari HT",
                 "Prob %": f"{ris['even_ht']*100:.1f}",
                 "Quota": "N/A",
                 "Tipo": "Pari/Dispari HT"
             })
-        if ris.get('odd_ht', 0) * 100 >= telegram_prob_threshold:
+        if 'odd_ht' in ris:
             all_markets.append({
                 "Esito": "Dispari HT",
                 "Prob %": f"{ris['odd_ht']*100:.1f}",
