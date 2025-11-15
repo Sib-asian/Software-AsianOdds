@@ -37,7 +37,8 @@ class RiskManager:
         confidence_result: Dict,
         kelly_result: Dict,
         match_info: Dict,
-        portfolio_state: Optional[Dict] = None
+        portfolio_state: Optional[Dict] = None,
+        regime_result: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Decisione finale: scommettere o no?
@@ -116,6 +117,13 @@ class RiskManager:
 
         green_flags.extend(confidence_result.get("strength_factors", [])[:2])
 
+        if regime_result:
+            regime_label = regime_result.get("label")
+            if regime_label == "sharp_rush":
+                green_flags.append("Market regime: sharp rush (pro value)")
+            elif regime_label in {"public_hype", "chaotic"}:
+                red_flags.append(f"Market regime risk: {regime_label}")
+
         # Decision logic
         decision = "SKIP"
         final_stake = 0.0
@@ -161,6 +169,7 @@ class RiskManager:
             "green_flags": green_flags,
             "reasoning": reasoning,
             "risk_score": self._calculate_risk_score(red_flags, green_flags),
+            "market_regime": regime_result,
             "checks_passed": {
                 "min_thresholds": len([f for f in red_flags if "too low" in f.lower()]) == 0,
                 "portfolio_limits": len([f for f in red_flags if "max" in f.lower() or "exposure" in f.lower()]) == 0,

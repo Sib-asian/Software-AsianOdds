@@ -19,6 +19,7 @@ Usage:
 import logging
 import requests
 import time
+import html
 from typing import Dict, Optional, List
 from datetime import datetime
 
@@ -151,17 +152,25 @@ class TelegramNotifier:
 
     def _should_notify(self, analysis_result: Dict) -> bool:
         """Check se opportunità merita notifica"""
-        # Check action
-        if analysis_result.get('action') != 'BET':
+        final_action = analysis_result.get('action')
+        if not final_action and "final_decision" in analysis_result:
+            final_action = analysis_result["final_decision"].get("action")
+        if final_action != 'BET':
             return False
 
-        # Check EV
-        ev = analysis_result.get('ev', 0)
+        ev = analysis_result.get('ev')
+        if ev is None:
+            ev = analysis_result.get('summary', {}).get('expected_value')
+            if isinstance(ev, (int, float)):
+                ev = ev * 100  # convert to %
+        if ev is None:
+            ev = 0
         if ev < self.min_ev:
             return False
 
-        # Check confidence
-        confidence = analysis_result.get('confidence_level', 0)
+        confidence = analysis_result.get('confidence_level')
+        if confidence is None:
+            confidence = analysis_result.get('summary', {}).get('confidence', 0)
         if confidence < self.min_confidence:
             return False
 
@@ -188,13 +197,33 @@ class TelegramNotifier:
         away = match_data.get('away', 'Away Team')
         league = match_data.get('league', 'Unknown League')
 
-        action = analysis_result.get('action', 'BET')
-        market = analysis_result.get('market', '1X2')
-        stake = analysis_result.get('stake_amount', 0)
-        ev = analysis_result.get('ev', 0)
-        probability = analysis_result.get('probability', 0) * 100
-        odds = analysis_result.get('odds', 0)
-        confidence = analysis_result.get('confidence_level', 0)
+        final_decision = analysis_result.get('final_decision', {})
+        summary = analysis_result.get('summary', {})
+
+        action = analysis_result.get('action') or final_decision.get('action', 'BET')
+        market = analysis_result.get('market', final_decision.get('market', '1X2'))
+        stake = analysis_result.get('stake_amount', final_decision.get('stake', 0))
+
+        ev = analysis_result.get('ev')
+        if ev is None:
+            ev = summary.get('expected_value')
+            if isinstance(ev, (int, float)):
+                ev = ev * 100
+        if ev is None:
+            ev = 0.0
+
+        probability = analysis_result.get('probability')
+        if probability is None:
+            probability = summary.get('probability')
+        if probability is not None and probability <= 1:
+            probability *= 100
+        probability = probability or 0.0
+
+        odds = analysis_result.get('odds') or summary.get('odds', 0)
+
+        confidence = analysis_result.get('confidence_level')
+        if confidence is None:
+            confidence = summary.get('confidence', 0)
 
         # Formatta confidence
         if confidence >= 80:
@@ -224,7 +253,7 @@ Stake: <b>€{stake:.2f}</b>
 Odds: <b>{odds:.2f}</b>
 
 <b>📊 Analysis</b>
-Expected Value: <b>+{ev:.1f}%</b>
+Expected Value: <b>{ev:+.1f}%</b>
 Win Probability: <b>{probability:.1f}%</b>
 Confidence: {confidence_emoji} <b>{confidence_text} ({confidence:.0f}%)</b>
 
@@ -251,6 +280,17 @@ Confidence: {confidence_emoji} <b>{confidence_text} ({confidence:.0f}%)</b>
                 f"Final Prob: {fusion.get('probability', 0)*100:.1f}%\n"
                 f"CI 95%: {fusion.get('ci_low', 0)*100:.1f}% – {fusion.get('ci_high', 0)*100:.1f}%\n"
                 f"Reliability: <b>{fusion.get('confidence', 0):.0f}%</b>"
+            )
+
+        regime = final_decision.get("market_regime") or summary.get("market_regime")
+        if regime:
+            message += f"\n\n<b>Market Regime:</b> {regime.upper()}"
+
+        llm_playbook = analysis_result.get("llm_playbook") or summary.get("llm_playbook")
+        if isinstance(llm_playbook, dict) and llm_playbook.get("text"):
+            message += (
+                "\n\n🧠 <b>AI Playbook</b>\n"
+                f"{html.escape(llm_playbook['text'])}"
             )
 
         # Timing

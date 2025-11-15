@@ -36,7 +36,9 @@ from .blocco_5_risk_manager import RiskManager
 from .blocco_6_odds_tracker import OddsMovementTracker
 from .blocco_7_bayesian_uncertainty import BayesianUncertaintyQuantifier, BayesianResult
 from .models.ensemble import EnsembleMetaModel
+from .analysis.regime_detector import RegimeDetector
 from .sentiment_analyzer import SentimentAnalyzer, adjust_prediction_with_sentiment
+from .llm_analyst import LLMAnalyst
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +70,21 @@ class AIPipeline:
         self.risk_manager = RiskManager(self.config)
         self.odds_tracker = OddsMovementTracker(self.config)
         self.bayesian_quantifier = BayesianUncertaintyQuantifier()
+        self.regime_detector = RegimeDetector(self.config) if self.config.regime_detector_enabled else None
         self.sentiment_analyzer = (
             SentimentAnalyzer(config={"huggingface_api_key": self.config.huggingface_api_key})
             if self.config.sentiment_enabled else None
         )
+        self.llm_analyst = None
+        if self.config.llm_playbook_enabled:
+            try:
+                self.llm_analyst = LLMAnalyst(
+                    api_key=self.config.llm_api_key or None,
+                    provider=self.config.llm_playbook_provider,
+                    model=self.config.llm_playbook_model
+                )
+            except Exception as exc:
+                logger.warning("⚠️  LLM Analyst non disponibile: %s", exc)
         self._auto_load_calibrator()
 
         # Initialize Ensemble Meta-Model (if enabled)
@@ -149,6 +162,7 @@ class AIPipeline:
             )
 
             statsbomb_metrics = self._extract_statsbomb_metrics(api_context)
+            regime_result: Optional[Dict[str, Any]] = None
 
             # Optional Sentiment analysis
             sentiment_result = None
@@ -296,6 +310,7 @@ class AIPipeline:
                 "similar_bets_winrate": odds_data.get("similar_bets_winrate", 0.5),
                 "league_quality": self._get_league_quality(match.get("league", "")),
                 "market_efficiency": 0.75,  # Default
+                "market_regime": None,
             }
 
             # Merge calibrated prob into value result for detector
@@ -364,7 +379,8 @@ class AIPipeline:
                 confidence_result,
                 kelly_result,
                 match,
-                portfolio_state
+                portfolio_state,
+                regime_result=regime_result
             )
 
             logger.info(
@@ -402,6 +418,29 @@ class AIPipeline:
 
             if timing_result.get("sharp_money_detected"):
                 logger.info("   ✓ Sharp money detected!")
+
+            regime_result = None
+            if self.regime_detector:
+                try:
+                    regime_result = self.regime_detector.analyze(
+                        movement=timing_result.get("movement"),
+                        odds_history=odds_data.get("odds_history", []),
+                        odds_current=odds_data.get("odds_current", 2.0),
+                        time_to_kickoff_hours=odds_data.get("time_to_kickoff_hours", 24.0),
+                        api_context=api_context,
+                        sentiment_result=sentiment_result,
+                        value_result=value_result,
+                        volume_history=odds_data.get("volume_history")
+                    )
+                    logger.info(
+                        "   ✓ Market regime: %s (score %.2f)",
+                        regime_result.get("label"),
+                        regime_result.get("score", 0.0),
+                    )
+                except Exception as exc:
+                    logger.debug("Regime detector skipped: %s", exc)
+            if regime_result:
+                value_context["market_regime"] = regime_result.get("label")
 
             # ========================================
             # BLOCCO 7: Bayesian Uncertainty Layer
@@ -455,6 +494,7 @@ class AIPipeline:
                 "kelly": kelly_result,
                 "risk_decision": risk_decision,
                 "timing": timing_result,
+                "regime": regime_result,
                 "api_audit": api_audit,
                 "bayesian": bayesian_data,
                 "sentiment": {
@@ -471,7 +511,8 @@ class AIPipeline:
                     "urgency": timing_result["urgency"],
                     "uncertainty": bayesian_summary["uncertainty_level"],
                     "bayesian_probability": bayesian_data["adjusted_probability"],
-                    "credible_interval_95": bayesian_summary["credible_interval_95"]
+                    "credible_interval_95": bayesian_summary["credible_interval_95"],
+                    "market_regime": regime_result.get("label") if regime_result else None
                 },
 
                 # Summary
@@ -487,7 +528,8 @@ class AIPipeline:
                     "bayesian_uncertainty": bayesian_summary["uncertainty_level"],
                     "bayesian_confidence": bayesian_summary["confidence_score"],
                     "bayesian_interval_95": bayesian_summary["credible_interval_95"],
-                    "sentiment_adjustments": sentiment_adjust_reasons
+                    "sentiment_adjustments": sentiment_adjust_reasons,
+                    "market_regime": regime_result.get("label") if regime_result else None
                 },
 
                 # Metadata
@@ -499,6 +541,25 @@ class AIPipeline:
                     "ensemble_enabled": self.ensemble is not None  # NEW
                 }
             }
+
+            llm_playbook = None
+            if self.llm_analyst and self.config.llm_playbook_enabled:
+                try:
+                    llm_text = self.llm_analyst.explain_prediction(
+                        match,
+                        final_result,
+                        language=self.config.llm_playbook_language
+                    )
+                    llm_playbook = {
+                        "text": llm_text.strip(),
+                        "provider": self.config.llm_playbook_provider,
+                        "model": self.config.llm_playbook_model
+                    }
+                    final_result["summary"]["llm_playbook"] = llm_playbook
+                except Exception as exc:
+                    logger.debug("LLM playbook skipped: %s", exc)
+
+            final_result["llm_playbook"] = llm_playbook
 
             # Save to history
             self.last_analysis = final_result

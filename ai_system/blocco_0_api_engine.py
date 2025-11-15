@@ -311,20 +311,39 @@ class APIDataEngine:
         Returns:
             Dati aggiuntivi o None se non disponibili
         """
+        provider = self.api_football_provider
+        if not provider or not getattr(provider, "api_key", None):
+            return None
+
+        if not self.quota.can_use("api-football", calls=1):
+            logger.debug("API-Football quota non disponibile per %s", team)
+            return None
+
         try:
-            # Check quota
-            if not self.quota.can_use("api-football", calls=1):
-                logger.warning("⚠️ API-Football quota exhausted")
-                return None
-
-            # TODO: Implementare chiamate specifiche API-Football
-            # Per ora ritorna None (da implementare quando necessario)
-            logger.info(f"ℹ️ API-Football enrichment not yet implemented for {team}")
+            team_data = provider.get_team_match_data(team, None)
+        except Exception as exc:
+            logger.debug("API-Football enrichment error (%s): %s", team, exc)
             return None
 
-        except Exception as e:
-            logger.error(f"❌ Error enriching with API-Football: {e}")
+        if not team_data:
             return None
+
+        self.quota.log_usage("api-football", calls=1)
+        self.stats["api_calls"] += 1
+
+        data = existing_context.setdefault("data", {})
+        if team_data.get("injuries"):
+            data["injuries"] = team_data["injuries"]
+        if team_data.get("suspensions"):
+            data["suspensions"] = team_data["suspensions"]
+        if team_data.get("lineup"):
+            data["lineup_prediction"] = team_data["lineup"]
+        if team_data.get("form"):
+            data["form"] = team_data["form"]
+
+        existing_context["provider"] = "api-football"
+        existing_context["source"] = "api"
+        return data
 
     def _get_match_specific_data(self, match: Dict) -> Dict:
         """
@@ -386,16 +405,32 @@ class APIDataEngine:
 
     def _get_api_football_match_data(self, match: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Fetch injuries/lineups using API-Football if available."""
-        if not self.api_football_provider or not getattr(self.api_football_provider, "api_key", None):
+        provider = self.api_football_provider
+        if not provider or not getattr(provider, "api_key", None):
             return None
 
         season = match.get("season") or self._infer_season_from_match(match)
-        if season:
-            season = str(season)
+        season = str(season)
+
+        def _fetch(team_name: str):
+            if not team_name:
+                return None
+            if not self.quota.can_use("api-football", calls=1):
+                logger.debug("Quota API-Football insufficiente per %s", team_name)
+                return None
+            try:
+                data = provider.get_team_match_data(team_name, season)
+            except Exception as exc:
+                logger.debug("API-Football team fetch failed (%s): %s", team_name, exc)
+                return None
+            if data:
+                self.quota.log_usage("api-football", calls=1)
+                self.stats["api_calls"] += 1
+            return data
 
         try:
-            home_data = self.api_football_provider.get_team_match_data(match.get("home", ""), season)
-            away_data = self.api_football_provider.get_team_match_data(match.get("away", ""), season)
+            home_data = _fetch(match.get("home", ""))
+            away_data = _fetch(match.get("away", ""))
 
             if not home_data and not away_data:
                 return None
