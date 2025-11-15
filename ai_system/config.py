@@ -24,10 +24,11 @@ class AIConfig:
     models_dir: Path = field(default_factory=lambda: Path(__file__).parent / "models")
     cache_dir: Path = field(default_factory=lambda: Path(__file__).parent / "cache")
     logs_dir: Path = field(default_factory=lambda: Path(__file__).parent / "logs")
+    history_dir: Path = field(default_factory=lambda: Path(__file__).parent / "data")
 
     # Database paths
     api_cache_db: str = "api_cache.db"
-    predictions_db: str = "storico_analisi.csv"
+    predictions_db: str = field(default_factory=lambda: str((Path(__file__).parent / "data" / "storico_analisi.csv")))
 
     # ============================================================
     # ENSEMBLE META-MODEL
@@ -421,7 +422,7 @@ class AIConfig:
     def __post_init__(self):
         """Validazione e creazione directories"""
         # Crea directories se non esistono
-        for dir_path in [self.models_dir, self.cache_dir, self.logs_dir]:
+        for dir_path in [self.models_dir, self.cache_dir, self.logs_dir, self.history_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
 
         # Load API credentials from environment if not set

@@ -39,6 +39,7 @@ from .models.ensemble import EnsembleMetaModel
 from .analysis.regime_detector import RegimeDetector
 from .sentiment_analyzer import SentimentAnalyzer, adjust_prediction_with_sentiment
 from .llm_analyst import LLMAnalyst
+from .utils.history_store import append_analysis_to_history
 
 logger = logging.getLogger(__name__)
 
@@ -560,6 +561,9 @@ class AIPipeline:
                     logger.debug("LLM playbook skipped: %s", exc)
 
             final_result["llm_playbook"] = llm_playbook
+
+            history_path = Path(self.config.predictions_db)
+            append_analysis_to_history(final_result, history_path)
 
             # Save to history
             self.last_analysis = final_result
