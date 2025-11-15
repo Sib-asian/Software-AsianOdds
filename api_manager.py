@@ -18,6 +18,7 @@ Utilizzo:
 import hashlib
 import json
 import logging
+import os
 import sqlite3
 import time
 from datetime import datetime, timedelta
@@ -37,18 +38,27 @@ class APIConfig:
     """Configuration for API providers"""
 
     # API-Football (Free tier: 100 calls/day)
-    API_FOOTBALL_KEY = "95c43f936816cd4389a747fd2cfe061a"
+    API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY", "95c43f936816cd4389a747fd2cfe061a")
     API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
     API_FOOTBALL_QUOTA = 100  # calls/day
 
     # Football-Data.org (Free tier: 10 calls/minute)
-    FOOTBALL_DATA_KEY = ""  # User will add this
+    FOOTBALL_DATA_KEY = os.getenv("FOOTBALL_DATA_KEY", "")
     FOOTBALL_DATA_BASE = "https://api.football-data.org/v4"
     FOOTBALL_DATA_QUOTA = 10  # calls/minute
 
     # TheSportsDB (Free, unlimited)
     THESPORTSDB_KEY = "3"  # Free key
     THESPORTSDB_BASE = "https://www.thesportsdb.com/api/v1/json"
+
+    # TheOddsAPI
+    THEODDS_API_KEY = os.getenv("THEODDS_API_KEY", "")
+
+    # OpenWeatherMap
+    OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "01afa2183566fcf16d98b5a33c91eae1")
+
+    # HuggingFace
+    HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")
 
     # Cache settings
     CACHE_TTL = 86400  # 24 hours in seconds

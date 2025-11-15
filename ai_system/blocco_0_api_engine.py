@@ -67,7 +67,7 @@ class APIDataEngine:
         self.api_football_provider = self.api_manager.providers.get("api-football")
 
         # External data helpers
-        self.weather_api_key = os.getenv("OPENWEATHER_API_KEY")
+        self.weather_api_key = self.config.openweather_api_key
         self._weather_cache: Dict[str, Dict[str, Any]] = {}
         self._xg_cache: Dict[str, Dict[str, Any]] = {}
 

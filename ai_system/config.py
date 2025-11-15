@@ -312,6 +312,10 @@ class AIConfig:
         "europa league": "soccer_uefa_europa_league",
     })
 
+    # OpenWeatherMap API integration
+    openweather_enabled: bool = True
+    openweather_api_key: str = ""
+
     # ============================================================
     # TRAINING & VALIDATION
     # ============================================================
@@ -400,13 +404,17 @@ class AIConfig:
         for dir_path in [self.models_dir, self.cache_dir, self.logs_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
 
-        # Load Telegram credentials from environment if not set
+        # Load API credentials from environment if not set
         if not self.telegram_bot_token:
             self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         if not self.telegram_chat_id:
             self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
         if not self.theodds_api_key:
             self.theodds_api_key = os.getenv("THEODDS_API_KEY", "")
+        if not self.openweather_api_key:
+            self.openweather_api_key = os.getenv("OPENWEATHER_API_KEY", "01afa2183566fcf16d98b5a33c91eae1")
+        if not self.huggingface_api_key:
+            self.huggingface_api_key = os.getenv("HUGGINGFACE_API_KEY", "")
 
         # Valida che i pesi sommino a 1.0
         weight_sum = sum(self.confidence_weights.values())
