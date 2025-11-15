@@ -408,23 +408,23 @@ class AIPipeline:
             # ========================================
             logger.info("\n🧠 BLOCCO 7: Quantifying Bayesian uncertainty...")
 
-              bayesian_data = self._run_bayesian_layer(
-                  calibrated_probability=calibrated_result["prob_calibrated"],
-                  prob_to_use=prob_to_use,
-                  ensemble_result=ensemble_result,
-                  odds_data=odds_data
-              )
+            bayesian_data = self._run_bayesian_layer(
+                calibrated_probability=calibrated_result["prob_calibrated"],
+                prob_to_use=prob_to_use,
+                ensemble_result=ensemble_result,
+                odds_data=odds_data
+            )
 
-              bayesian_summary = bayesian_data["ensemble"]
+            bayesian_summary = bayesian_data["ensemble"]
 
-              api_audit = self._build_api_audit(
-                  match=match,
-                  api_context=api_context,
-                  calibration_context=calibration_context,
-                  confidence_context=confidence_context,
-                  value_input=value_detector_input,
-                  sentiment_result=sentiment_result
-              )
+            api_audit = self._build_api_audit(
+                match=match,
+                api_context=api_context,
+                calibration_context=calibration_context,
+                confidence_context=confidence_context,
+                value_input=value_detector_input,
+                sentiment_result=sentiment_result
+            )
 
             logger.info(
                 f"   ✓ Bayesian adjusted probability: "
@@ -486,8 +486,8 @@ class AIPipeline:
                     "potential_profit": risk_decision["final_stake"] * (odds_data.get("odds_current", 2.0) - 1),
                     "bayesian_uncertainty": bayesian_summary["uncertainty_level"],
                     "bayesian_confidence": bayesian_summary["confidence_score"],
-                      "bayesian_interval_95": bayesian_summary["credible_interval_95"],
-                      "sentiment_adjustments": sentiment_adjust_reasons
+                    "bayesian_interval_95": bayesian_summary["credible_interval_95"],
+                    "sentiment_adjustments": sentiment_adjust_reasons
                 },
 
                 # Metadata
