@@ -174,6 +174,7 @@ class OddsMovementTracker:
             "urgency": urgency,
             "sharp_money_detected": sharp_money,
             "movement_pattern": movement_analysis.get("pattern", "STABLE"),
+            "movement": movement_analysis,
             "reasoning": reasoning,
             "live_odds_snapshot": live_snapshot
         }

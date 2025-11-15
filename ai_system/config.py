@@ -24,10 +24,11 @@ class AIConfig:
     models_dir: Path = field(default_factory=lambda: Path(__file__).parent / "models")
     cache_dir: Path = field(default_factory=lambda: Path(__file__).parent / "cache")
     logs_dir: Path = field(default_factory=lambda: Path(__file__).parent / "logs")
+    history_dir: Path = field(default_factory=lambda: Path(__file__).parent / "data")
 
     # Database paths
     api_cache_db: str = "api_cache.db"
-    predictions_db: str = "storico_analisi.csv"
+    predictions_db: str = field(default_factory=lambda: str((Path(__file__).parent / "data" / "storico_analisi.csv")))
 
     # ============================================================
     # ENSEMBLE META-MODEL
@@ -317,6 +318,26 @@ class AIConfig:
     openweather_api_key: str = ""
 
     # ============================================================
+    # REGIME DETECTOR & MARKET STATE
+    # ============================================================
+
+    regime_detector_enabled: bool = True
+    regime_detector_model_name: str = "regime_detector.pkl"
+    regime_min_samples: int = 500
+    regime_clusters: int = 4
+
+    # ============================================================
+    # LLM PLAYBOOK / EXPLANATIONS
+    # ============================================================
+
+    llm_playbook_enabled: bool = True
+    llm_playbook_provider: str = "mock"  # openai|anthropic|mock
+    llm_playbook_model: str = "gpt-4"
+    llm_playbook_language: str = "it"
+    llm_playbook_append_to_notifications: bool = True
+    llm_api_key: str = ""
+
+    # ============================================================
     # TRAINING & VALIDATION
     # ============================================================
 
@@ -401,7 +422,7 @@ class AIConfig:
     def __post_init__(self):
         """Validazione e creazione directories"""
         # Crea directories se non esistono
-        for dir_path in [self.models_dir, self.cache_dir, self.logs_dir]:
+        for dir_path in [self.models_dir, self.cache_dir, self.logs_dir, self.history_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
 
         # Load API credentials from environment if not set
@@ -415,6 +436,8 @@ class AIConfig:
             self.openweather_api_key = os.getenv("OPENWEATHER_API_KEY", "01afa2183566fcf16d98b5a33c91eae1")
         if not self.huggingface_api_key:
             self.huggingface_api_key = os.getenv("HUGGINGFACE_API_KEY", "")
+        if not self.llm_api_key:
+            self.llm_api_key = os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", ""))
 
         # Valida che i pesi sommino a 1.0
         weight_sum = sum(self.confidence_weights.values())
