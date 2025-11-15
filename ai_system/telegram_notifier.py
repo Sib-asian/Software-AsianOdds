@@ -43,13 +43,15 @@ class TelegramNotifier:
         chat_id: str,
         min_ev: float = 5.0,
         min_confidence: float = 60.0,
-        rate_limit_seconds: int = 3
+        rate_limit_seconds: int = 3,
+        live_alerts_enabled: bool = True
     ):
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.min_ev = min_ev
         self.min_confidence = min_confidence
         self.rate_limit_seconds = rate_limit_seconds
+        self.live_alerts_enabled = live_alerts_enabled
 
         self.last_message_time = 0
         self.messages_sent = 0
@@ -114,6 +116,10 @@ class TelegramNotifier:
         Returns:
             True se inviato
         """
+        if not self.live_alerts_enabled:
+            logger.debug("Live alerts disabilitati, skip invio per %s", match_data.get('match_id', 'unknown_match'))
+            return False
+
         self._apply_rate_limit()
 
         message = self._format_live_alert(match_data, live_result, alert_type)

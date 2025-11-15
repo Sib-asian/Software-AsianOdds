@@ -127,7 +127,8 @@ class BackgroundAutomationService:
                 chat_id=chat_id,
                 min_ev=self._config.telegram_min_ev,
                 min_confidence=self._config.telegram_min_confidence,
-                rate_limit_seconds=self._config.telegram_rate_limit_seconds
+                rate_limit_seconds=self._config.telegram_rate_limit_seconds,
+                live_alerts_enabled=self._config.telegram_live_alerts_enabled
             )
         except Exception as exc:
             logger.warning("⚠️  Telegram notifier non disponibile: %s", exc)
