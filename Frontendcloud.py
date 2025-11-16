@@ -10975,20 +10975,22 @@ def calculate_market_movement_factor(
     low_thr, high_thr = _dynamic_movement_thresholds(league, volatility_score, recent_samples)
     
     # Determina pesi basati su movimento
+    # Calcola pesi continui così anche micro-movimenti (es. 0.25) influenzano subito i lambda
+    sensitivity = max(0.05, min(low_thr, high_thr))
+    movement_ratio = 0.0
+    if movement_magnitude > 0:
+        movement_ratio = min(1.0, movement_magnitude / max(sensitivity, 1e-6))
+
+    MIN_WEIGHT_CURRENT = 0.35
+    MAX_WEIGHT_CURRENT = 0.85
+    weight_corrente = MIN_WEIGHT_CURRENT + movement_ratio * (MAX_WEIGHT_CURRENT - MIN_WEIGHT_CURRENT)
+    weight_apertura = 1.0 - weight_corrente
+
     if movement_magnitude < low_thr:
-        # Mercato stabile: più peso all'apertura (più affidabile)
-        weight_apertura = 0.70
-        weight_corrente = 0.30
         movement_type = "STABLE"
     elif movement_magnitude < high_thr:
-        # Movimento medio: blend equilibrato
-        weight_apertura = 0.50
-        weight_corrente = 0.50
         movement_type = "MODERATE"
     else:
-        # Movimento alto: smart money in azione, più peso alle quote correnti
-        weight_apertura = 0.30
-        weight_corrente = 0.70
         movement_type = "HIGH_SMART_MONEY"
     
     league_key = _normalize_league_key(league)
@@ -11001,6 +11003,7 @@ def calculate_market_movement_factor(
         "movement_type": movement_type,
         "movement_spread": round(movement_spread, 3) if movement_spread > 0 else None,
         "movement_total": round(movement_total, 3) if movement_total > 0 else None,
+        "movement_ratio": round(movement_ratio, 3),
         "volatility_score": round(volatility_score, 3) if volatility_score is not None else None,
         "history_samples": recent_samples,
         "league": league_key,
@@ -11038,6 +11041,63 @@ def apply_market_movement_blend(
         lambda_h_current = max(0.1, lambda_h_current)
         lambda_a_current = max(0.1, lambda_a_current)
     
+    # Helper: costruisce lambda da spread/total specifici (apertura o corrente)
+    def _compute_lambda_from_market(spread_value, total_value, label: str):
+        if total_value is None:
+            return None, None
+
+        try:
+            total_val = float(total_value)
+        except (TypeError, ValueError):
+            logger.warning(f"total_{label} non valido: {total_value}, ignoro")
+            return None, None
+
+        if not math.isfinite(total_val):
+            logger.warning(f"total_{label} non finito: {total_value}, ignoro")
+            return None, None
+
+        total_val = _clamp_with_league_range(total_val, league, LEAGUE_TOTAL_RANGES, DEFAULT_TOTAL_RANGE)
+
+        spread_val = None
+        if spread_value is not None:
+            try:
+                spread_val = float(spread_value)
+            except (TypeError, ValueError):
+                logger.warning(f"spread_{label} non valido: {spread_value}, uso 0.0")
+                spread_val = 0.0
+
+            if not math.isfinite(spread_val):
+                logger.warning(f"spread_{label} non finito: {spread_value}, uso 0.0")
+                spread_val = 0.0
+
+            if abs(spread_val) > 5.0:
+                logger.error(f"spread_{label} troppo alto: {spread_val}, dati probabilmente corrotti - uso 0.0")
+                spread_val = 0.0
+
+            spread_val = _clamp_with_league_range(spread_val, league, LEAGUE_SPREAD_RANGES, DEFAULT_SPREAD_RANGE)
+
+        if spread_val is not None:
+            lambda_a_val = (total_val + spread_val) / 2.0
+            lambda_h_val = (total_val - spread_val) / 2.0
+        else:
+            total_ratio_den = lambda_h_current + lambda_a_current
+            if total_ratio_den <= 0 or not math.isfinite(total_ratio_den):
+                ratio_h = 0.5
+            else:
+                ratio_h = max(0.0, min(1.0, lambda_h_current / total_ratio_den))
+            lambda_h_val = total_val * ratio_h
+            lambda_a_val = total_val - lambda_h_val
+
+        if not math.isfinite(lambda_h_val) or not math.isfinite(lambda_a_val):
+            logger.warning(f"Lambda {label} non finiti (λh={lambda_h_val}, λa={lambda_a_val}), ignoro")
+            return None, None
+
+        lambda_h_val = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, lambda_h_val))
+        lambda_a_val = max(model_config.LAMBDA_SAFE_MIN, min(model_config.LAMBDA_SAFE_MAX, lambda_a_val))
+
+        logger.info(f"Lambda da mercato ({label}): λ_h={lambda_h_val:.4f}, λ_a={lambda_a_val:.4f}, total={lambda_h_val + lambda_a_val:.4f}")
+        return lambda_h_val, lambda_a_val
+
     # ⚠️ PRECISIONE: Calcola spread/total correnti se non forniti
     if spread_corrente is None:
         # ⚠️ FIX CRITICO: spread = lambda_a - lambda_h (spread > 0 favorisce Away)
@@ -11075,91 +11135,72 @@ def apply_market_movement_blend(
     
     # ⚠️ PRECISIONE MANIACALE: Calcola lambda da apertura (se disponibile) con validazione completa
     if spread_apertura is not None and total_apertura is not None:
-        # ⚠️ FIX BUG #8: Validazione preventiva spread per evitare dati corrotti
-        if isinstance(spread_apertura, (int, float)) and math.isfinite(spread_apertura):
-            if abs(spread_apertura) > 5.0:
-                logger.error(f"spread_apertura troppo alto: {spread_apertura}, dati probabilmente corrotti - uso default 0.0")
-                spread_apertura = 0.0
+        lambda_h_ap, lambda_a_ap = _compute_lambda_from_market(spread_apertura, total_apertura, "apertura")
+    else:
+        lambda_h_ap = None
+        lambda_a_ap = None
 
-        # ⚠️ VALIDAZIONE ROBUSTA: Verifica che spread_apertura e total_apertura siano validi
-        if not isinstance(spread_apertura, (int, float)) or not math.isfinite(spread_apertura):
-            logger.warning(f"spread_apertura non valido: {spread_apertura}, uso default 0.0")
-            spread_apertura = 0.0
-        if not isinstance(total_apertura, (int, float)) or not math.isfinite(total_apertura):
-            logger.warning(f"total_apertura non valido: {total_apertura}, uso default 2.5")
-            total_apertura = 2.5
-        
-        # ⚠️ VALIDAZIONE: Clamp per sicurezza (anche se dovrebbero essere già validati)
-        spread_apertura_safe = _clamp_with_league_range(spread_apertura, league, LEAGUE_SPREAD_RANGES, DEFAULT_SPREAD_RANGE)
-        total_apertura_safe = _clamp_with_league_range(total_apertura, league, LEAGUE_TOTAL_RANGES, DEFAULT_TOTAL_RANGE)
-        
-        # ⚠️ FIX CRITICO: Formula CORRETTA per calcolare lambda da spread/total
-        # Interpretazione: spread = lambda_a - lambda_h
-        # spread > 0 → Away favorita, spread < 0 → Home favorita
-        #
-        # Risolvendo il sistema:
-        # lambda_a - lambda_h = spread
-        # lambda_a + lambda_h = total
-        #
-        # Otteniamo:
-        # lambda_a = (total + spread) / 2
-        # lambda_h = (total - spread) / 2
-
-        lambda_a_ap = (total_apertura_safe + spread_apertura_safe) / 2.0
-        lambda_h_ap = (total_apertura_safe - spread_apertura_safe) / 2.0
-
-        # ⚠️ PROTEZIONE: Verifica che lambda siano finiti e positivi
-        if not math.isfinite(lambda_h_ap) or lambda_h_ap < 0.1:
-            logger.warning(f"lambda_h_ap non valido: {lambda_h_ap}, correggo a 0.3")
-            lambda_h_ap = 0.3
-        if not math.isfinite(lambda_a_ap) or lambda_a_ap < 0.1:
-            logger.warning(f"lambda_a_ap non valido: {lambda_a_ap}, correggo a 0.3")
-            lambda_a_ap = 0.3
-
-        # ⚠️ VERIFICA MATEMATICA: Spread e total devono essere ESATTAMENTE rispettati
-        spread_check = lambda_a_ap - lambda_h_ap
-        total_check = lambda_a_ap + lambda_h_ap
-
-        if abs(spread_check - spread_apertura_safe) > 1e-6:
-            logger.error(f"ERRORE CRITICO: Spread non rispettato! Calcolato {spread_check:.6f}, richiesto {spread_apertura_safe:.6f}")
-        if abs(total_check - total_apertura_safe) > 1e-6:
-            logger.error(f"ERRORE CRITICO: Total non rispettato! Calcolato {total_check:.6f}, richiesto {total_apertura_safe:.6f}")
-
-        logger.info(f"Lambda da apertura: lambda_h={lambda_h_ap:.4f}, lambda_a={lambda_a_ap:.4f}, spread={spread_check:+.4f}, total={total_check:.4f}")
-        
-        # Constraints
-        lambda_h_ap = max(0.3, min(4.5, lambda_h_ap))
-        lambda_a_ap = max(0.3, min(4.5, lambda_a_ap))
-        
-        # ⚠️ CONTROLLO: Limita effetto del blend per evitare valori estremi
-        # Il blend non può cambiare i lambda più del 40% rispetto a corrente
-        max_blend_adjustment = 1.4
-        lambda_h_ap_limited = max(
-            lambda_h_current / max_blend_adjustment,
-            min(lambda_h_current * max_blend_adjustment, lambda_h_ap)
+    # Calcola lambda dal mercato corrente (spread/total correnti)
+    lambda_h_curr_market = None
+    lambda_a_curr_market = None
+    if total_corrente is not None:
+        lambda_h_curr_market, lambda_a_curr_market = _compute_lambda_from_market(
+            spread_corrente,
+            total_corrente,
+            "corrente"
         )
-        lambda_a_ap_limited = max(
-            lambda_a_current / max_blend_adjustment,
-            min(lambda_a_current * max_blend_adjustment, lambda_a_ap)
+
+    # ⚠️ CONTROLLO: Limita effetto del blend per evitare valori estremi
+    max_blend_adjustment = 1.4
+
+    def _limit_relative(value, reference):
+        if value is None:
+            return None
+        ref_safe = reference
+        if not math.isfinite(ref_safe) or abs(ref_safe) < model_config.TOL_DIVISION_ZERO:
+            ref_safe = model_config.LAMBDA_SAFE_MIN
+        return max(
+            ref_safe / max_blend_adjustment,
+            min(ref_safe * max_blend_adjustment, value)
         )
-        
-        # Blend bayesiano
-        w_ap = movement_factor["weight_apertura"]
-        w_curr = movement_factor["weight_corrente"]
-        
-        lambda_h_blended = w_ap * lambda_h_ap_limited + w_curr * lambda_h_current
-        lambda_a_blended = w_ap * lambda_a_ap_limited + w_curr * lambda_a_current
-        
-        # ⚠️ VERIFICA FINALE: Limita variazione totale del blend
+
+    lambda_sources = []
+    if lambda_h_ap is not None and lambda_a_ap is not None:
+        lambda_sources.append((
+            movement_factor["weight_apertura"],
+            _limit_relative(lambda_h_ap, lambda_h_current),
+            _limit_relative(lambda_a_ap, lambda_a_current)
+        ))
+
+    if lambda_h_curr_market is not None and lambda_a_curr_market is not None:
+        lambda_sources.append((
+            movement_factor["weight_corrente"],
+            _limit_relative(lambda_h_curr_market, lambda_h_current),
+            _limit_relative(lambda_a_curr_market, lambda_a_current)
+        ))
+
+    if lambda_sources:
+        weight_sum = sum(w for w, _, _ in lambda_sources)
+        if weight_sum > 0:
+            lambda_h_target = sum(w * lh for w, lh, _ in lambda_sources if lh is not None) / weight_sum
+            lambda_a_target = sum(w * la for w, _, la in lambda_sources if la is not None) / weight_sum
+        else:
+            lambda_h_target = lambda_h_current
+            lambda_a_target = lambda_a_current
+
+        if not math.isfinite(lambda_h_target) or not math.isfinite(lambda_a_target):
+            lambda_h_target = lambda_h_current
+            lambda_a_target = lambda_a_current
+
         lambda_h_blended = max(
             lambda_h_current / max_blend_adjustment,
-            min(lambda_h_current * max_blend_adjustment, lambda_h_blended)
+            min(lambda_h_current * max_blend_adjustment, lambda_h_target)
         )
         lambda_a_blended = max(
             lambda_a_current / max_blend_adjustment,
-            min(lambda_a_current * max_blend_adjustment, lambda_a_blended)
+            min(lambda_a_current * max_blend_adjustment, lambda_a_target)
         )
-        
+
         return lambda_h_blended, lambda_a_blended
     
     # Se non abbiamo spread apertura ma abbiamo total apertura
