@@ -2,6 +2,7 @@
 import math
 import logging
 import ast
+import csv
 from typing import Dict, Any, List, Tuple, Optional, Union, Callable
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass
@@ -524,6 +525,39 @@ CACHE_EXPIRY = app_config.cache_expiry
 API_RETRY_MAX_ATTEMPTS = app_config.api_retry_max_attempts
 API_RETRY_DELAY = app_config.api_retry_delay
 API_TIMEOUT = app_config.api_timeout
+
+_manual_log_dir = os.path.dirname(PORTFOLIO_FILE)
+MANUAL_PRECISION_LOG_FILE = os.path.join(_manual_log_dir if _manual_log_dir else ".", "manual_precision_log.csv")
+MANUAL_PRECISION_LOG_COLUMNS = [
+    "timestamp",
+    "match_key",
+    "league",
+    "home_team",
+    "away_team",
+    "manual_confidence",
+    "spread_apertura",
+    "total_apertura",
+    "spread_corrente",
+    "total_corrente",
+    "lambda_home",
+    "lambda_away",
+    "rho",
+    "prob_home",
+    "prob_draw",
+    "prob_away",
+    "prob_home_low",
+    "prob_home_high",
+    "prob_draw_low",
+    "prob_draw_high",
+    "prob_away_low",
+    "prob_away_high",
+    "movement_magnitude",
+    "movement_type",
+    "history_samples",
+    "actual_ft_home",
+    "actual_ft_away",
+    "notes",
+]
 
 # Cache per API calls (evita rate limiting)
 import threading
@@ -1620,6 +1654,21 @@ def enforce_probability_ratio_consistency(
     lambda_a /= sqrt_corr
 
     return lambda_h, lambda_a
+
+
+def log_manual_precision_sample(entry: Dict[str, Any]) -> None:
+    try:
+        log_dir = os.path.dirname(MANUAL_PRECISION_LOG_FILE)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        file_exists = os.path.exists(MANUAL_PRECISION_LOG_FILE)
+        with open(MANUAL_PRECISION_LOG_FILE, mode="a", newline="", encoding="utf-8") as log_file:
+            writer = csv.DictWriter(log_file, fieldnames=MANUAL_PRECISION_LOG_COLUMNS)
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow({col: entry.get(col, "") for col in MANUAL_PRECISION_LOG_COLUMNS})
+    except Exception as log_error:
+        logger.warning(f"⚠️ Impossibile aggiornare manual_precision_log: {log_error}")
 
 def validate_total(total: float, name: str = "total", league: Optional[str] = None) -> float:
     """
@@ -15325,6 +15374,47 @@ def risultato_completo_improved(
         "cover_0_3": cover_0_3,
         "market_calibration_stats": market_calibration_stats,
     }
+
+    try:
+        raw_manual_values = manual_inputs_meta.get("raw_inputs", {}) if manual_inputs_meta else {}
+        if raw_manual_values and any(val is not None for val in raw_manual_values.values()):
+            intervals = probability_intervals or {}
+            p_home_interval = intervals.get("p_home", (None, None))
+            p_draw_interval = intervals.get("p_draw", (None, None))
+            p_away_interval = intervals.get("p_away", (None, None))
+            movement_history_samples = manual_inputs_meta.get("history_samples", 0) if manual_inputs_meta else 0
+            log_manual_precision_sample({
+                "timestamp": datetime.utcnow().isoformat(),
+                "match_key": manual_history_key or "",
+                "league": league,
+                "home_team": home_team or "",
+                "away_team": away_team or "",
+                "manual_confidence": (manual_confidence_snapshot or {}).get("score"),
+                "spread_apertura": raw_manual_values.get("spread_apertura"),
+                "total_apertura": raw_manual_values.get("total_apertura"),
+                "spread_corrente": raw_manual_values.get("spread_corrente"),
+                "total_corrente": raw_manual_values.get("total_corrente"),
+                "lambda_home": lh,
+                "lambda_away": la,
+                "rho": rho,
+                "prob_home": result.get("p_home"),
+                "prob_draw": result.get("p_draw"),
+                "prob_away": result.get("p_away"),
+                "prob_home_low": p_home_interval[0],
+                "prob_home_high": p_home_interval[1],
+                "prob_draw_low": p_draw_interval[0],
+                "prob_draw_high": p_draw_interval[1],
+                "prob_away_low": p_away_interval[0],
+                "prob_away_high": p_away_interval[1],
+                "movement_magnitude": movement_info.get("normalized_movement") if movement_info else None,
+                "movement_type": movement_info.get("movement_type") if movement_info else None,
+                "history_samples": movement_history_samples,
+                "actual_ft_home": "",
+                "actual_ft_away": "",
+                "notes": "manual_input_snapshot",
+            })
+    except Exception as manual_log_error:
+        logger.warning(f"⚠️ Impossibile loggare i dati manuali per analisi: {manual_log_error}")
 
     # ✅ COMPATIBILITÀ LEGACY: Mantieni vecchi nomi chiave usati dagli script di test
     result["prob_home"] = result.get("p_home")
