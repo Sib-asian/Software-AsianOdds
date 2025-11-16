@@ -2,9 +2,11 @@
 import math
 import logging
 import ast
+import csv
 from typing import Dict, Any, List, Tuple, Optional, Union, Callable
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass
+from collections import defaultdict, deque
 import pandas as pd
 import numpy as np
 import os
@@ -523,6 +525,43 @@ CACHE_EXPIRY = app_config.cache_expiry
 API_RETRY_MAX_ATTEMPTS = app_config.api_retry_max_attempts
 API_RETRY_DELAY = app_config.api_retry_delay
 API_TIMEOUT = app_config.api_timeout
+
+_manual_log_dir = os.path.dirname(PORTFOLIO_FILE)
+MANUAL_PRECISION_LOG_FILE = os.path.join(_manual_log_dir if _manual_log_dir else ".", "manual_precision_log.csv")
+MANUAL_PRECISION_LOG_COLUMNS = [
+    "timestamp",
+    "match_key",
+    "league",
+    "home_team",
+    "away_team",
+    "manual_confidence",
+    "spread_apertura",
+    "total_apertura",
+    "spread_corrente",
+    "total_corrente",
+    "lambda_home",
+    "lambda_away",
+    "rho",
+    "prob_home",
+    "prob_draw",
+    "prob_away",
+    "predicted_total",
+    "predicted_spread",
+    "prob_home_low",
+    "prob_home_high",
+    "prob_draw_low",
+    "prob_draw_high",
+    "prob_away_low",
+    "prob_away_high",
+    "movement_magnitude",
+    "movement_type",
+    "history_samples",
+    "actual_ft_home",
+    "actual_ft_away",
+    "actual_total",
+    "actual_spread",
+    "notes",
+]
 
 # Cache per API calls (evita rate limiting)
 import threading
@@ -1327,7 +1366,407 @@ def validate_lambda_value(lambda_val: float, name: str = "lambda") -> float:
     
     return lambda_val
 
-def validate_total(total: float, name: str = "total") -> float:
+DEFAULT_TOTAL_RANGE = (0.5, 6.0)
+DEFAULT_SPREAD_RANGE = (-3.0, 3.0)
+
+LEAGUE_TOTAL_RANGES = MappingProxyType({
+    "generic": DEFAULT_TOTAL_RANGE,
+    "premier_league": (0.5, 5.8),
+    "serie_a": (0.5, 5.6),
+    "la_liga": (0.5, 5.4),
+    "bundesliga": (0.5, 6.3),
+    "ligue_1": (0.5, 5.3),
+    "champions_league": (0.5, 6.2),
+    "europa_league": (0.5, 6.0),
+    "mls": (0.5, 6.4),
+})
+
+LEAGUE_SPREAD_RANGES = MappingProxyType({
+    "generic": DEFAULT_SPREAD_RANGE,
+    "premier_league": (-2.8, 2.8),
+    "serie_a": (-2.6, 2.6),
+    "la_liga": (-2.5, 2.5),
+    "bundesliga": (-2.7, 2.7),
+    "ligue_1": (-2.4, 2.4),
+    "champions_league": (-3.0, 3.0),
+    "europa_league": (-2.9, 2.9),
+    "mls": (-2.8, 2.8),
+})
+
+HIGH_VARIANCE_LEAGUES = {"bundesliga", "mls", "champions_league"}
+
+MAX_MANUAL_HISTORY_SAMPLES = 6
+MANUAL_HISTORY_ALPHA = 0.65
+MIN_TOTAL_MARGIN_FOR_SPREAD = 0.2
+
+MANUAL_LINES_HISTORY: Dict[str, Dict[str, deque]] = defaultdict(dict)
+
+
+def _normalize_league_key(league: Optional[str]) -> str:
+    if league is None:
+        return "generic"
+    if isinstance(league, str):
+        key = league.strip().lower()
+        return key or "generic"
+    return str(league).strip().lower() or "generic"
+
+
+def _get_league_range(league: Optional[str], mapping: MappingProxyType, default_range: Tuple[float, float]) -> Tuple[float, float]:
+    league_key = _normalize_league_key(league)
+    return mapping.get(league_key, mapping.get("generic", default_range))
+
+
+def _clamp_with_league_range(value: float, league: Optional[str], mapping: MappingProxyType, default_range: Tuple[float, float]) -> float:
+    min_val, max_val = _get_league_range(league, mapping, default_range)
+    return max(min_val, min(max_val, value))
+
+
+def _manual_history_bucket(match_key: str, field: str) -> deque:
+    field_cache = MANUAL_LINES_HISTORY.setdefault(match_key, {})
+    if field not in field_cache:
+        field_cache[field] = deque(maxlen=MAX_MANUAL_HISTORY_SAMPLES)
+    return field_cache[field]
+
+
+def _compute_series_volatility(series: deque) -> float:
+    if len(series) < 2:
+        return 0.0
+    diffs = [abs(series[i] - series[i - 1]) for i in range(1, len(series))]
+    return float(sum(diffs) / len(diffs))
+
+
+def smooth_manual_value(match_key: Optional[str], field: str, value: Optional[float], alpha: float = MANUAL_HISTORY_ALPHA) -> Tuple[Optional[float], Optional[float], int]:
+    if match_key is None or value is None:
+        return value, None, 0
+    history = _manual_history_bucket(match_key, field)
+    if history:
+        smoothed = alpha * value + (1 - alpha) * history[-1]
+    else:
+        smoothed = value
+    history.append(smoothed)
+    volatility = _compute_series_volatility(history)
+    return smoothed, volatility, len(history)
+
+
+def build_manual_history_key(home_team: Optional[str], away_team: Optional[str], match_datetime: Optional[str], league: Optional[str]) -> Optional[str]:
+    components = [_normalize_league_key(league)]
+    if home_team:
+        components.append(str(home_team).strip().lower())
+    if away_team:
+        components.append(str(away_team).strip().lower())
+    if match_datetime:
+        components.append(str(match_datetime))
+    if len(components) <= 1:
+        return None  # Non abbastanza informazioni
+    return "|".join(components)
+
+
+def aggregate_volatility(spread_vol: Optional[float], total_vol: Optional[float]) -> Optional[float]:
+    values = [v for v in (spread_vol, total_vol) if isinstance(v, (int, float))]
+    if not values:
+        return None
+    return float(sum(values) / len(values))
+
+
+def compute_manual_confidence(
+    spread_apertura: Optional[float],
+    total_apertura: Optional[float],
+    spread_corrente: Optional[float],
+    total_corrente: Optional[float],
+    volatility_score: Optional[float],
+) -> Dict[str, Any]:
+    confidence = 0.2  # baseline
+    details: Dict[str, Any] = {}
+
+    if spread_apertura is not None and total_apertura is not None:
+        confidence += 0.25
+        details["has_opening_pair"] = True
+    if spread_corrente is not None and total_corrente is not None:
+        confidence += 0.25
+        details["has_current_pair"] = True
+
+    if spread_apertura is not None and spread_corrente is not None:
+        spread_gap = abs(spread_apertura - spread_corrente)
+        penalty = min(0.25, spread_gap / 4.0)
+        confidence -= penalty
+        details["spread_gap"] = round(spread_gap, 3)
+
+    if total_apertura is not None and total_corrente is not None:
+        total_gap = abs(total_apertura - total_corrente)
+        penalty = min(0.2, total_gap / 5.0)
+        confidence -= penalty
+        details["total_gap"] = round(total_gap, 3)
+
+    if volatility_score is not None:
+        vol_penalty = min(0.3, volatility_score / 3.0)
+        confidence -= vol_penalty
+        details["volatility_penalty"] = round(vol_penalty, 3)
+
+    confidence = max(0.0, min(1.0, confidence))
+    details["score"] = round(confidence, 3)
+    return details
+
+
+def enforce_total_support_for_spread(total_value: Optional[float], spread_value: Optional[float]) -> Optional[float]:
+    if total_value is None or spread_value is None:
+        return total_value
+    min_total_needed = abs(spread_value) + MIN_TOTAL_MARGIN_FOR_SPREAD
+    if total_value < min_total_needed:
+        return min_total_needed
+    return total_value
+
+
+def collect_manual_consistency_warnings(validated_inputs: Dict[str, Any]) -> List[str]:
+    warnings: List[str] = []
+
+    for total_key, spread_key, label in [
+        ("total_apertura", "spread_apertura", "apertura"),
+        ("total_corrente", "spread_corrente", "corrente"),
+    ]:
+        adjusted_total = enforce_total_support_for_spread(
+            validated_inputs.get(total_key),
+            validated_inputs.get(spread_key),
+        )
+        if adjusted_total is not None and validated_inputs.get(total_key) != adjusted_total:
+            warnings.append(
+                f"Total {label} aumentato a {adjusted_total:.2f} per supportare spread {validated_inputs.get(spread_key):+.2f}"
+            )
+            validated_inputs[total_key] = round(adjusted_total, 3)
+
+    spread_apertura = validated_inputs.get("spread_apertura")
+    spread_corrente = validated_inputs.get("spread_corrente")
+    total_apertura = validated_inputs.get("total_apertura")
+    total_corrente = validated_inputs.get("total_corrente")
+
+    if spread_apertura is not None and spread_corrente is not None:
+        diff = abs(spread_apertura - spread_corrente)
+        if diff > 2.0:
+            warnings.append(f"Spread apertura/corrente differiscono di {diff:.2f} gol: verificare dati manuali.")
+
+    if total_apertura is not None and total_corrente is not None:
+        diff = abs(total_apertura - total_corrente)
+        if diff > 1.2:
+            warnings.append(f"Total apertura/corrente differiscono di {diff:.2f} gol: controlla eventuali errori di input.")
+
+    return warnings
+
+
+def compute_lambda_priors_from_xg(
+    xg_for_home: Optional[float],
+    xg_against_home: Optional[float],
+    xg_for_away: Optional[float],
+    xg_against_away: Optional[float],
+) -> Tuple[Optional[float], Optional[float], float]:
+    metrics_available = 0
+    home_values = []
+    away_values = []
+
+    for value in (xg_for_home, xg_against_away):
+        if isinstance(value, (int, float)) and math.isfinite(value) and value > 0:
+            home_values.append(value)
+            metrics_available += 1
+    for value in (xg_for_away, xg_against_home):
+        if isinstance(value, (int, float)) and math.isfinite(value) and value > 0:
+            away_values.append(value)
+            metrics_available += 1
+
+    if not home_values or not away_values:
+        return None, None, 0.0
+
+    lambda_h_prior = max(0.3, min(4.5, sum(home_values) / len(home_values)))
+    lambda_a_prior = max(0.3, min(4.5, sum(away_values) / len(away_values)))
+
+    prior_confidence = min(1.0, metrics_available / 6.0)
+    return lambda_h_prior, lambda_a_prior, prior_confidence
+
+
+def blend_lambda_with_priors(
+    lambda_market_h: float,
+    lambda_market_a: float,
+    lambda_prior_h: float,
+    lambda_prior_a: float,
+    prior_confidence: float,
+) -> Tuple[float, float]:
+    if prior_confidence <= 0.0:
+        return lambda_market_h, lambda_market_a
+
+    weight_prior = min(0.45, prior_confidence * 0.5 + 0.1)
+    weight_market = 1.0 - weight_prior
+
+    lambda_h = lambda_market_h * weight_market + lambda_prior_h * weight_prior
+    lambda_a = lambda_market_a * weight_market + lambda_prior_a * weight_prior
+
+    return lambda_h, lambda_a
+
+
+LEAGUE_RHO_BASELINE = MappingProxyType({
+    "generic": 0.05,
+    "premier_league": 0.08,
+    "serie_a": 0.06,
+    "la_liga": 0.05,
+    "bundesliga": 0.1,
+    "ligue_1": 0.04,
+    "champions_league": 0.07,
+    "europa_league": 0.06,
+    "mls": 0.12,
+})
+
+
+def adjust_rho_with_context(
+    rho: float,
+    league: Optional[str],
+    lambda_h: float,
+    lambda_a: float,
+    manual_confidence: Optional[float] = None,
+) -> float:
+    league_key = _normalize_league_key(league)
+    baseline = LEAGUE_RHO_BASELINE.get(league_key, LEAGUE_RHO_BASELINE["generic"])
+
+    spread_intensity = abs(lambda_h - lambda_a)
+    intensity_adjustment = min(0.06, spread_intensity * 0.02)
+
+    rho_adjusted = 0.6 * rho + 0.3 * baseline + (0.1 * intensity_adjustment if lambda_h > lambda_a else -0.1 * intensity_adjustment)
+
+    if manual_confidence is not None:
+        rho_adjusted *= 1.0 + (manual_confidence - 0.5) * 0.2
+
+    return max(-0.35, min(0.35, rho_adjusted))
+
+
+def enforce_probability_ratio_consistency(
+    lambda_h: float,
+    lambda_a: float,
+    p_home: float,
+    p_draw: float,
+    p_away: float,
+    max_adjustment: float = 0.25,
+) -> Tuple[float, float]:
+    if lambda_h <= 0 or lambda_a <= 0:
+        return lambda_h, lambda_a
+
+    target_ratio = max(0.2, min(5.0, (p_home + 0.5 * p_draw) / max(1e-6, p_away + 0.5 * p_draw)))
+    current_ratio = max(0.2, min(5.0, lambda_h / lambda_a))
+
+    if abs(target_ratio - current_ratio) / target_ratio < 0.05:
+        return lambda_h, lambda_a
+
+    ratio_correction = target_ratio / current_ratio
+    ratio_correction = max(1.0 - max_adjustment, min(1.0 + max_adjustment, ratio_correction))
+
+    sqrt_corr = math.sqrt(ratio_correction)
+    lambda_h *= sqrt_corr
+    lambda_a /= sqrt_corr
+
+    return lambda_h, lambda_a
+
+
+def log_manual_precision_sample(entry: Dict[str, Any]) -> None:
+    try:
+        log_dir = os.path.dirname(MANUAL_PRECISION_LOG_FILE)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        file_exists = os.path.exists(MANUAL_PRECISION_LOG_FILE)
+        with open(MANUAL_PRECISION_LOG_FILE, mode="a", newline="", encoding="utf-8") as log_file:
+            writer = csv.DictWriter(log_file, fieldnames=MANUAL_PRECISION_LOG_COLUMNS)
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow({col: entry.get(col, "") for col in MANUAL_PRECISION_LOG_COLUMNS})
+    except Exception as log_error:
+        logger.warning(f"⚠️ Impossibile aggiornare manual_precision_log: {log_error}")
+
+
+def _ensure_manual_precision_columns(df: pd.DataFrame) -> pd.DataFrame:
+    for col in MANUAL_PRECISION_LOG_COLUMNS:
+        if col not in df.columns:
+            df[col] = np.nan
+    return df[MANUAL_PRECISION_LOG_COLUMNS]
+
+
+def update_manual_precision_result(
+    match_key: str,
+    actual_ft_home: Union[int, float, str],
+    actual_ft_away: Union[int, float, str],
+) -> bool:
+    if not match_key:
+        logger.error("Match key necessario per aggiornare il log di precisione manuale")
+        return False
+    if not os.path.exists(MANUAL_PRECISION_LOG_FILE):
+        logger.warning(f"File manual_precision_log inesistente: {MANUAL_PRECISION_LOG_FILE}")
+        return False
+    try:
+        df = pd.read_csv(MANUAL_PRECISION_LOG_FILE, on_bad_lines="skip")
+        df = _ensure_manual_precision_columns(df)
+        mask = df["match_key"] == match_key
+        if not mask.any():
+            logger.warning(f"Nessuna entry nel log per match_key={match_key}")
+            return False
+        idx = df[mask].index[-1]
+        df.loc[idx, "actual_ft_home"] = int(actual_ft_home)
+        df.loc[idx, "actual_ft_away"] = int(actual_ft_away)
+        if pd.notna(df.loc[idx, "actual_ft_home"]) and pd.notna(df.loc[idx, "actual_ft_away"]):
+            df.loc[idx, "actual_total"] = df.loc[idx, "actual_ft_home"] + df.loc[idx, "actual_ft_away"]
+            df.loc[idx, "actual_spread"] = df.loc[idx, "actual_ft_home"] - df.loc[idx, "actual_ft_away"]
+        df.to_csv(MANUAL_PRECISION_LOG_FILE, index=False)
+        logger.info(f"✅ Aggiornato manual_precision_log per {match_key} con risultato {actual_ft_home}-{actual_ft_away}")
+        return True
+    except Exception as update_error:
+        logger.error(f"Impossibile aggiornare manual_precision_log: {update_error}")
+        return False
+
+
+def compute_manual_precision_metrics(window_days: int = 30) -> Dict[str, Any]:
+    if not os.path.exists(MANUAL_PRECISION_LOG_FILE):
+        return {}
+    try:
+        df = pd.read_csv(MANUAL_PRECISION_LOG_FILE, on_bad_lines="skip")
+        df = _ensure_manual_precision_columns(df)
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            cutoff = datetime.utcnow() - timedelta(days=window_days)
+            df = df[(df["timestamp"].isna()) | (df["timestamp"] >= cutoff)]
+        df = df.dropna(subset=["actual_ft_home", "actual_ft_away"])
+        if df.empty:
+            return {}
+        df["actual_ft_home"] = df["actual_ft_home"].astype(float)
+        df["actual_ft_away"] = df["actual_ft_away"].astype(float)
+        df["actual_total"] = df["actual_ft_home"] + df["actual_ft_away"]
+        df["actual_spread"] = df["actual_ft_home"] - df["actual_ft_away"]
+        df["predicted_total"] = df["predicted_total"].fillna(df["lambda_home"] + df["lambda_away"])
+        df["predicted_spread"] = df["predicted_spread"].fillna(df["lambda_home"] - df["lambda_away"])
+
+        mae_total = float(np.mean(np.abs(df["predicted_total"] - df["actual_total"])))
+        mae_spread = float(np.mean(np.abs(df["predicted_spread"] - df["actual_spread"])))
+
+        def _outcome(row):
+            if row["actual_ft_home"] > row["actual_ft_away"]:
+                return "1"
+            if row["actual_ft_home"] < row["actual_ft_away"]:
+                return "2"
+            return "X"
+
+        df["actual_outcome"] = df.apply(_outcome, axis=1)
+        df["predicted_outcome"] = df[["prob_home", "prob_draw", "prob_away"]].idxmax(axis=1)
+        df["predicted_outcome"] = df["predicted_outcome"].map({
+            "prob_home": "1",
+            "prob_draw": "X",
+            "prob_away": "2",
+        })
+        accuracy = float((df["actual_outcome"] == df["predicted_outcome"]).mean())
+        avg_confidence = float(df["manual_confidence"].dropna().mean()) if "manual_confidence" in df else None
+
+        return {
+            "samples": int(len(df)),
+            "window_days": window_days,
+            "mae_total": round(mae_total, 3),
+            "mae_spread": round(mae_spread, 3),
+            "hit_rate_1x2": round(accuracy * 100, 2),
+            "avg_manual_confidence": round(avg_confidence, 3) if avg_confidence is not None else None,
+        }
+    except Exception as metrics_error:
+        logger.warning(f"⚠️ Impossibile calcolare metriche precisione manuale: {metrics_error}")
+        return {}
+
+def validate_total(total: float, name: str = "total", league: Optional[str] = None) -> float:
     """
     Valida un total gol.
     
@@ -1346,12 +1785,12 @@ def validate_total(total: float, name: str = "total") -> float:
     except (ValueError, TypeError):
         raise ValidationError(f"{name} deve essere un numero valido")
     
-    # Clamp a range ragionevole (0.5 - 6.0 gol)
-    total = max(0.5, min(6.0, total))
+    # Clamp dinamico basato sulla lega
+    total = _clamp_with_league_range(total, league, LEAGUE_TOTAL_RANGES, DEFAULT_TOTAL_RANGE)
     
     return total
 
-def validate_spread(spread: float, name: str = "spread") -> float:
+def validate_spread(spread: float, name: str = "spread", league: Optional[str] = None) -> float:
     """
     Valida uno spread.
     
@@ -1370,8 +1809,8 @@ def validate_spread(spread: float, name: str = "spread") -> float:
     except (ValueError, TypeError):
         raise ValidationError(f"{name} deve essere un numero valido")
     
-    # Clamp a range ragionevole (-3.0 a +3.0)
-    spread = max(-3.0, min(3.0, spread))
+    # Clamp dinamico basato sulla lega
+    spread = _clamp_with_league_range(spread, league, LEAGUE_SPREAD_RANGES, DEFAULT_SPREAD_RANGE)
     
     return spread
 
@@ -1463,6 +1902,7 @@ def validate_all_inputs(
     odds_btts: float = None,
     odds_dnb_home: float = None,
     odds_dnb_away: float = None,
+    league: Optional[str] = None,
     spread_apertura: float = None,
     total_apertura: float = None,
     spread_corrente: float = None,
@@ -1498,7 +1938,7 @@ def validate_all_inputs(
     
     # Valida total (obbligatorio)
     try:
-        validated["total"] = validate_total(total, "total")
+        validated["total"] = validate_total(total, "total", league)
     except ValidationError as e:
         raise ValidationError(f"Total obbligatorio: {e}")
     
@@ -1537,10 +1977,12 @@ def validate_all_inputs(
             validated["odds_dnb_away"] = None
     
     # Valida spread e total apertura/corrente
-    validated["spread_apertura"] = validate_spread(spread_apertura, "spread_apertura") if spread_apertura is not None else None
-    validated["total_apertura"] = validate_total(total_apertura, "total_apertura") if total_apertura is not None else None
-    validated["spread_corrente"] = validate_spread(spread_corrente, "spread_corrente") if spread_corrente is not None else None
-    validated["total_corrente"] = validate_total(total_corrente, "total_corrente") if total_corrente is not None else None
+    validated["spread_apertura"] = validate_spread(spread_apertura, "spread_apertura", league) if spread_apertura is not None else None
+    validated["total_apertura"] = validate_total(total_apertura, "total_apertura", league) if total_apertura is not None else None
+    validated["spread_corrente"] = validate_spread(spread_corrente, "spread_corrente", league) if spread_corrente is not None else None
+    validated["total_corrente"] = validate_total(total_corrente, "total_corrente", league) if total_corrente is not None else None
+
+    warnings.extend(collect_manual_consistency_warnings(validated))
     
     # Valida xG (opzionali)
     validated["xg_for_home"] = validate_xg_value(xg_for_home, "xg_for_home")
@@ -10451,19 +10893,49 @@ def find_best_odds_summary(best_odds: Dict[str, List[Dict[str, Any]]]) -> Dict[s
 #   MARKET MOVEMENT INTELLIGENCE
 # ============================================================
 
+def _dynamic_movement_thresholds(
+    league: Optional[str],
+    volatility_score: Optional[float],
+    recent_samples: int,
+) -> Tuple[float, float]:
+    base_low = 0.18
+    base_high = 0.42
+
+    league_key = _normalize_league_key(league)
+    if league_key in HIGH_VARIANCE_LEAGUES:
+        base_low += 0.03
+        base_high += 0.05
+
+    if volatility_score is not None:
+        adjustment = min(0.08, volatility_score / 4.0)
+        base_low = max(0.08, base_low - adjustment)
+        base_high = max(base_low + 0.05, base_high - adjustment / 2)
+
+    if recent_samples <= 2:
+        base_low += 0.04
+        base_high += 0.04
+    elif recent_samples >= 5:
+        base_low = max(0.08, base_low - 0.02)
+
+    base_high = max(base_low + 0.05, base_high)
+    return base_low, base_high
+
+
 def calculate_market_movement_factor(
     spread_apertura: float = None,
     total_apertura: float = None,
     spread_corrente: float = None,
     total_corrente: float = None,
+    league: Optional[str] = None,
+    volatility_score: Optional[float] = None,
+    recent_samples: int = 0,
 ) -> Dict[str, Any]:
     """
     Calcola il "market movement factor" basato sul movimento tra apertura e corrente.
     
-    Strategia:
-    - Movimento basso (< 0.2): mercato stabile → più peso all'apertura (70% apertura, 30% corrente)
-    - Movimento medio (0.2-0.4): mercato in movimento → blend equilibrato (50% apertura, 50% corrente)
-    - Movimento alto (> 0.4): smart money in azione → più peso alle quote correnti (30% apertura, 70% corrente)
+    Strategia dinamica:
+    - Normalizza il movimento rispetto ai range tipici della lega (spread e total)
+    - Adatta le soglie in base alla volatilità recente e al numero di campioni manuali inseriti
     
     Returns:
         Dict con weight_apertura, weight_corrente, movement_magnitude, movement_type
@@ -10487,16 +10959,28 @@ def calculate_market_movement_factor(
     if total_apertura is not None and total_corrente is not None:
         movement_total = abs(total_corrente - total_apertura)
     
-    # Movimento combinato (media pesata: spread più importante)
-    movement_magnitude = (movement_spread * 0.6 + movement_total * 0.4) if (movement_spread > 0 or movement_total > 0) else 0.0
+    # Normalizza rispetto al range della lega
+    spread_min, spread_max = _get_league_range(league, LEAGUE_SPREAD_RANGES, DEFAULT_SPREAD_RANGE)
+    total_min, total_max = _get_league_range(league, LEAGUE_TOTAL_RANGES, DEFAULT_TOTAL_RANGE)
+    spread_norm_den = max(0.25, abs(spread_max - spread_min) / 2)
+    total_norm_den = max(0.5, abs(total_max - total_min) / 2)
+
+    normalized_spread = movement_spread / spread_norm_den if spread_norm_den else movement_spread
+    normalized_total = movement_total / total_norm_den if total_norm_den else movement_total
+
+    movement_magnitude = (
+        normalized_spread * 0.6 + normalized_total * 0.4
+    ) if (movement_spread > 0 or movement_total > 0) else 0.0
+    
+    low_thr, high_thr = _dynamic_movement_thresholds(league, volatility_score, recent_samples)
     
     # Determina pesi basati su movimento
-    if movement_magnitude < 0.2:
+    if movement_magnitude < low_thr:
         # Mercato stabile: più peso all'apertura (più affidabile)
         weight_apertura = 0.70
         weight_corrente = 0.30
         movement_type = "STABLE"
-    elif movement_magnitude < 0.4:
+    elif movement_magnitude < high_thr:
         # Movimento medio: blend equilibrato
         weight_apertura = 0.50
         weight_corrente = 0.50
@@ -10507,13 +10991,19 @@ def calculate_market_movement_factor(
         weight_corrente = 0.70
         movement_type = "HIGH_SMART_MONEY"
     
+    league_key = _normalize_league_key(league)
+
     return {
         "weight_apertura": weight_apertura,
         "weight_corrente": weight_corrente,
         "movement_magnitude": round(movement_magnitude, 3),
+        "normalized_movement": round(movement_magnitude, 3),
         "movement_type": movement_type,
         "movement_spread": round(movement_spread, 3) if movement_spread > 0 else None,
         "movement_total": round(movement_total, 3) if movement_total > 0 else None,
+        "volatility_score": round(volatility_score, 3) if volatility_score is not None else None,
+        "history_samples": recent_samples,
+        "league": league_key,
     }
 
 def apply_market_movement_blend(
@@ -10525,6 +11015,8 @@ def apply_market_movement_blend(
     spread_corrente: float = None,
     total_corrente: float = None,
     home_advantage: float = 1.30,
+    league: Optional[str] = None,
+    movement_context: Optional[Dict[str, Any]] = None,
 ) -> Tuple[float, float]:
     """
     Applica blend bayesiano tra lambda da apertura e corrente basato su market movement.
@@ -10551,7 +11043,7 @@ def apply_market_movement_blend(
         # ⚠️ FIX CRITICO: spread = lambda_a - lambda_h (spread > 0 favorisce Away)
         spread_corrente = lambda_a_current - lambda_h_current
         # ⚠️ MICRO-PRECISIONE: Valida spread calcolato con precisione
-        spread_corrente = max(-3.0, min(3.0, spread_corrente))
+        spread_corrente = _clamp_with_league_range(spread_corrente, league, LEAGUE_SPREAD_RANGES, DEFAULT_SPREAD_RANGE)
         # ⚠️ VERIFICA: Double-check che spread sia finito
         if not math.isfinite(spread_corrente):
             logger.warning(f"Spread calcolato non finito: {spread_corrente}, uso default 0.0")
@@ -10560,7 +11052,7 @@ def apply_market_movement_blend(
     if total_corrente is None:
         total_corrente = lambda_h_current + lambda_a_current
         # ⚠️ MICRO-PRECISIONE: Valida total calcolato con precisione
-        total_corrente = max(0.5, min(6.0, total_corrente))
+        total_corrente = _clamp_with_league_range(total_corrente, league, LEAGUE_TOTAL_RANGES, DEFAULT_TOTAL_RANGE)
         # ⚠️ VERIFICA: Double-check che total sia finito
         if not math.isfinite(total_corrente):
             logger.warning(f"Total calcolato non finito: {total_corrente}, uso default 2.5")
@@ -10568,7 +11060,13 @@ def apply_market_movement_blend(
     
     # Calcola market movement factor
     movement_factor = calculate_market_movement_factor(
-        spread_apertura, total_apertura, spread_corrente, total_corrente
+        spread_apertura,
+        total_apertura,
+        spread_corrente,
+        total_corrente,
+        league=league,
+        volatility_score=(movement_context or {}).get("volatility_score"),
+        recent_samples=(movement_context or {}).get("history_samples", 0),
     )
     
     # Se non abbiamo dati apertura o movimento è nullo, usa solo corrente
@@ -10592,8 +11090,8 @@ def apply_market_movement_blend(
             total_apertura = 2.5
         
         # ⚠️ VALIDAZIONE: Clamp per sicurezza (anche se dovrebbero essere già validati)
-        spread_apertura_safe = max(-3.0, min(3.0, spread_apertura))
-        total_apertura_safe = max(0.5, min(6.0, total_apertura))
+        spread_apertura_safe = _clamp_with_league_range(spread_apertura, league, LEAGUE_SPREAD_RANGES, DEFAULT_SPREAD_RANGE)
+        total_apertura_safe = _clamp_with_league_range(total_apertura, league, LEAGUE_TOTAL_RANGES, DEFAULT_TOTAL_RANGE)
         
         # ⚠️ FIX CRITICO: Formula CORRETTA per calcolare lambda da spread/total
         # Interpretazione: spread = lambda_a - lambda_h
@@ -10667,7 +11165,7 @@ def apply_market_movement_blend(
     # Se non abbiamo spread apertura ma abbiamo total apertura
     elif total_apertura is not None:
         # ⚠️ VALIDAZIONE: Verifica che total_apertura sia ragionevole
-        total_apertura_safe = max(0.5, min(6.0, total_apertura))
+        total_apertura_safe = _clamp_with_league_range(total_apertura, league, LEAGUE_TOTAL_RANGES, DEFAULT_TOTAL_RANGE)
         
         # Usa total apertura per calibrare total corrente
         lambda_total_ap = total_apertura_safe / 2.0
@@ -13563,6 +14061,17 @@ def risultato_completo_improved(
         )
         rho = estimate_rho_optimized(lh, la, px_prelim, odds_btts, None)
 
+    lambda_prior_h, lambda_prior_a, prior_confidence = compute_lambda_priors_from_xg(
+        xg_for_home,
+        xg_against_home,
+        xg_for_away,
+        xg_against_away,
+    )
+    if lambda_prior_h is not None and lambda_prior_a is not None and prior_confidence > 0:
+        lh, la = blend_lambda_with_priors(lh, la, lambda_prior_h, lambda_prior_a, prior_confidence)
+
+    rho = adjust_rho_with_context(rho, league, lh, la)
+
     # ============================================================
     # 🚀 ADVANCED FEATURES (Sprint 1 & 2) - PRIMO LIVELLO ADJUSTMENTS
     # ============================================================
@@ -13675,13 +14184,88 @@ def risultato_completo_improved(
             if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
                 lambda_adjustments_log.append(f"Stadio: lh {lh_before:.3f}→{lh:.3f}, la {la_before:.3f}→{la:.3f}, total={lh+la:.3f}")
     
+    manual_history_key = build_manual_history_key(home_team, away_team, match_datetime, league)
+    manual_inputs_meta: Dict[str, Any] = {
+        "history_key": manual_history_key,
+        "raw_inputs": {
+            "spread_apertura": spread_apertura,
+            "total_apertura": total_apertura,
+            "spread_corrente": spread_corrente,
+            "total_corrente": total_corrente,
+        },
+        "smoothed_inputs": {},
+        "volatility": {},
+        "history_samples": 0,
+        "smoothing_applied": False,
+        "league_ranges": {
+            "spread": _get_league_range(league, LEAGUE_SPREAD_RANGES, DEFAULT_SPREAD_RANGE),
+            "total": _get_league_range(league, LEAGUE_TOTAL_RANGES, DEFAULT_TOTAL_RANGE),
+        },
+    }
+    manual_confidence_snapshot: Dict[str, Any] = {}
+    manual_movement_context = {"volatility_score": None, "history_samples": 0}
+
     # 5.5. Applica Market Movement Intelligence (blend apertura/corrente)
     # ⚠️ VALIDAZIONE: Verifica che spread_corrente e total_corrente siano ragionevoli se forniti
     if spread_corrente is not None:
-        spread_corrente = max(-3.0, min(3.0, spread_corrente))  # Clamp a range ragionevole
+        spread_corrente = _clamp_with_league_range(spread_corrente, league, LEAGUE_SPREAD_RANGES, DEFAULT_SPREAD_RANGE)
     if total_corrente is not None:
-        total_corrente = max(0.5, min(6.0, total_corrente))  # Clamp a range ragionevole
-    
+        total_corrente = _clamp_with_league_range(total_corrente, league, LEAGUE_TOTAL_RANGES, DEFAULT_TOTAL_RANGE)
+
+    spread_volatility = None
+    total_volatility = None
+
+    if spread_corrente is not None:
+        spread_corrente_smoothed, spread_volatility, spread_history_len = smooth_manual_value(
+            manual_history_key, "spread_corrente", spread_corrente
+        )
+        manual_inputs_meta["smoothed_inputs"]["spread_corrente"] = (
+            round(spread_corrente_smoothed, 4) if spread_corrente_smoothed is not None else None
+        )
+        manual_inputs_meta["volatility"]["spread_corrente"] = (
+            round(spread_volatility, 4) if spread_volatility is not None else None
+        )
+        manual_inputs_meta["history_samples"] = max(manual_inputs_meta["history_samples"], spread_history_len)
+        if spread_history_len > 1 and spread_corrente_smoothed is not None:
+            manual_inputs_meta["smoothing_applied"] |= abs(spread_corrente_smoothed - spread_corrente) > 1e-6
+        spread_corrente = spread_corrente_smoothed
+
+    if total_corrente is not None:
+        total_corrente_smoothed, total_volatility, total_history_len = smooth_manual_value(
+            manual_history_key, "total_corrente", total_corrente
+        )
+        manual_inputs_meta["smoothed_inputs"]["total_corrente"] = (
+            round(total_corrente_smoothed, 4) if total_corrente_smoothed is not None else None
+        )
+        manual_inputs_meta["volatility"]["total_corrente"] = (
+            round(total_volatility, 4) if total_volatility is not None else None
+        )
+        manual_inputs_meta["history_samples"] = max(manual_inputs_meta["history_samples"], total_history_len)
+        if total_history_len > 1 and total_corrente_smoothed is not None:
+            manual_inputs_meta["smoothing_applied"] |= abs(total_corrente_smoothed - total_corrente) > 1e-6
+        total_corrente = total_corrente_smoothed
+
+    combined_volatility = aggregate_volatility(spread_volatility, total_volatility)
+    manual_inputs_meta["volatility_score"] = combined_volatility
+    manual_movement_context["volatility_score"] = combined_volatility
+    manual_movement_context["history_samples"] = manual_inputs_meta["history_samples"]
+
+    manual_confidence_snapshot = compute_manual_confidence(
+        spread_apertura=spread_apertura,
+        total_apertura=total_apertura,
+        spread_corrente=spread_corrente,
+        total_corrente=total_corrente,
+        volatility_score=combined_volatility,
+    )
+    manual_inputs_meta["confidence_snapshot"] = manual_confidence_snapshot
+    rho = adjust_rho_with_context(
+        rho,
+        league,
+        lh,
+        la,
+        manual_confidence_snapshot.get("score") if manual_confidence_snapshot else None,
+    )
+
     # Calcola spread e total correnti dai lambda (prima degli aggiustamenti finali)
     # ⚠️ FIX CRITICO: spread = lambda_a - lambda_h (spread > 0 favorisce Away)
     spread_curr_calc = spread_corrente if spread_corrente is not None else (la - lh)
@@ -13710,8 +14294,11 @@ def risultato_completo_improved(
         lh, la, total_curr_calc,
         spread_apertura, total_apertura,
         spread_curr_calc, total_curr_calc,
-        home_advantage=ha
+        home_advantage=ha,
+        league=league,
+        movement_context=manual_movement_context,
     )
+    lh, la = enforce_probability_ratio_consistency(lh, la, p1, px, p2)
     # ✅ FIX BUG #9: Rimosso capping intermedio per migliore coordinamento
     # Log modifiche
     if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
@@ -14701,7 +15288,13 @@ def risultato_completo_improved(
     
     # Calcola market movement info per output (usa spread e total correnti calcolati)
     movement_info = calculate_market_movement_factor(
-        spread_apertura, total_apertura, spread_corrente_calculated, total_corrente_calculated
+        spread_apertura,
+        total_apertura,
+        spread_corrente_calculated,
+        total_corrente_calculated,
+        league=league,
+        volatility_score=manual_movement_context.get("volatility_score"),
+        recent_samples=manual_movement_context.get("history_samples", 0),
     )
     
     # ⚠️ VALIDAZIONE FINALE: Verifica che tutte le probabilità siano coerenti e nel range [0, 1]
@@ -14794,6 +15387,19 @@ def risultato_completo_improved(
             logger.warning(f"⚠️ Errore calcolo football_data_metrics: {e}")
             pass  # Non bloccare se fallisce
     
+    probability_intervals = {}
+    try:
+        probability_intervals = calculate_confidence_intervals(
+            lh,
+            la,
+            rho,
+            n_simulations=4000 if not kwargs.get("fast_mode") else 2000,
+            confidence_level=0.9,
+        )
+    except Exception as interval_err:
+        logger.warning(f"Impossibile calcolare gli intervalli di confidenza: {interval_err}")
+        probability_intervals = {}
+
     result = {
         "lambda_home": lh,
         "lambda_away": la,
@@ -14811,6 +15417,9 @@ def risultato_completo_improved(
         "calibration_applied": calibrate_func is not None,
         "ensemble_applied": use_ensemble,
         "market_movement": movement_info,  # Info movimento mercato
+        "manual_inputs_meta": manual_inputs_meta,
+        "manual_confidence": manual_confidence_snapshot,
+        "probability_intervals": probability_intervals,
         "additional_api_data": additional_api_data,  # Dati API aggiuntive
         "over_05": over_05_ft,
         "over_15": over_15,
@@ -14860,7 +15469,58 @@ def risultato_completo_improved(
         "cover_0_2": cover_0_2,
         "cover_0_3": cover_0_3,
         "market_calibration_stats": market_calibration_stats,
+        "manual_history_key": manual_history_key,
     }
+
+    try:
+        raw_manual_values = manual_inputs_meta.get("raw_inputs", {}) if manual_inputs_meta else {}
+        if raw_manual_values and any(val is not None for val in raw_manual_values.values()):
+            intervals = probability_intervals or {}
+            p_home_interval = intervals.get("p_home", (None, None))
+            p_draw_interval = intervals.get("p_draw", (None, None))
+            p_away_interval = intervals.get("p_away", (None, None))
+            movement_history_samples = manual_inputs_meta.get("history_samples", 0) if manual_inputs_meta else 0
+            log_manual_precision_sample({
+                "timestamp": datetime.utcnow().isoformat(),
+                "match_key": manual_history_key or "",
+                "league": league,
+                "home_team": home_team or "",
+                "away_team": away_team or "",
+                "manual_confidence": (manual_confidence_snapshot or {}).get("score"),
+                "spread_apertura": raw_manual_values.get("spread_apertura"),
+                "total_apertura": raw_manual_values.get("total_apertura"),
+                "spread_corrente": raw_manual_values.get("spread_corrente"),
+                "total_corrente": raw_manual_values.get("total_corrente"),
+                "lambda_home": lh,
+                "lambda_away": la,
+                "rho": rho,
+                "prob_home": result.get("p_home"),
+                "prob_draw": result.get("p_draw"),
+                "prob_away": result.get("p_away"),
+                "predicted_total": lh + la,
+                "predicted_spread": lh - la,
+                "prob_home_low": p_home_interval[0],
+                "prob_home_high": p_home_interval[1],
+                "prob_draw_low": p_draw_interval[0],
+                "prob_draw_high": p_draw_interval[1],
+                "prob_away_low": p_away_interval[0],
+                "prob_away_high": p_away_interval[1],
+                "movement_magnitude": movement_info.get("normalized_movement") if movement_info else None,
+                "movement_type": movement_info.get("movement_type") if movement_info else None,
+                "history_samples": movement_history_samples,
+                "actual_ft_home": "",
+                "actual_ft_away": "",
+                "notes": "manual_input_snapshot",
+            })
+    except Exception as manual_log_error:
+        logger.warning(f"⚠️ Impossibile loggare i dati manuali per analisi: {manual_log_error}")
+
+    try:
+        precision_summary = compute_manual_precision_metrics(window_days=30)
+        if precision_summary:
+            result["manual_precision_metrics"] = precision_summary
+    except Exception as precision_summary_error:
+        logger.warning(f"⚠️ Impossibile calcolare le metriche di precisione manuale: {precision_summary_error}")
 
     # ✅ COMPATIBILITÀ LEGACY: Mantieni vecchi nomi chiave usati dagli script di test
     result["prob_home"] = result.get("p_home")
@@ -16618,6 +17278,7 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
             odds_1=odds_1, odds_x=odds_x, odds_2=odds_2, total=total_line,
             odds_over25=odds_over25_val, odds_under25=odds_under25_val, odds_btts=odds_btts_val,
             odds_dnb_home=odds_dnb_home_val, odds_dnb_away=odds_dnb_away_val,
+            league=league,
             spread_apertura=spread_apertura_val, total_apertura=total_apertura_val,
             spread_corrente=spread_corrente_val, total_corrente=total_corrente_val,
             xg_for_home=xg_home_media if xg_home_media > 0 else None,
