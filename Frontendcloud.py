@@ -17278,7 +17278,7 @@ if st.button("🎯 ANALIZZA PARTITA", type="primary"):
             odds_1=odds_1, odds_x=odds_x, odds_2=odds_2, total=total_line,
             odds_over25=odds_over25_val, odds_under25=odds_under25_val, odds_btts=odds_btts_val,
             odds_dnb_home=odds_dnb_home_val, odds_dnb_away=odds_dnb_away_val,
-            league=league,
+            league=league_type,
             spread_apertura=spread_apertura_val, total_apertura=total_apertura_val,
             spread_corrente=spread_corrente_val, total_corrente=total_corrente_val,
             xg_for_home=xg_home_media if xg_home_media > 0 else None,
