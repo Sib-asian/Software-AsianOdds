@@ -1512,6 +1512,115 @@ def collect_manual_consistency_warnings(validated_inputs: Dict[str, Any]) -> Lis
 
     return warnings
 
+
+def compute_lambda_priors_from_xg(
+    xg_for_home: Optional[float],
+    xg_against_home: Optional[float],
+    xg_for_away: Optional[float],
+    xg_against_away: Optional[float],
+) -> Tuple[Optional[float], Optional[float], float]:
+    metrics_available = 0
+    home_values = []
+    away_values = []
+
+    for value in (xg_for_home, xg_against_away):
+        if isinstance(value, (int, float)) and math.isfinite(value) and value > 0:
+            home_values.append(value)
+            metrics_available += 1
+    for value in (xg_for_away, xg_against_home):
+        if isinstance(value, (int, float)) and math.isfinite(value) and value > 0:
+            away_values.append(value)
+            metrics_available += 1
+
+    if not home_values or not away_values:
+        return None, None, 0.0
+
+    lambda_h_prior = max(0.3, min(4.5, sum(home_values) / len(home_values)))
+    lambda_a_prior = max(0.3, min(4.5, sum(away_values) / len(away_values)))
+
+    prior_confidence = min(1.0, metrics_available / 6.0)
+    return lambda_h_prior, lambda_a_prior, prior_confidence
+
+
+def blend_lambda_with_priors(
+    lambda_market_h: float,
+    lambda_market_a: float,
+    lambda_prior_h: float,
+    lambda_prior_a: float,
+    prior_confidence: float,
+) -> Tuple[float, float]:
+    if prior_confidence <= 0.0:
+        return lambda_market_h, lambda_market_a
+
+    weight_prior = min(0.45, prior_confidence * 0.5 + 0.1)
+    weight_market = 1.0 - weight_prior
+
+    lambda_h = lambda_market_h * weight_market + lambda_prior_h * weight_prior
+    lambda_a = lambda_market_a * weight_market + lambda_prior_a * weight_prior
+
+    return lambda_h, lambda_a
+
+
+LEAGUE_RHO_BASELINE = MappingProxyType({
+    "generic": 0.05,
+    "premier_league": 0.08,
+    "serie_a": 0.06,
+    "la_liga": 0.05,
+    "bundesliga": 0.1,
+    "ligue_1": 0.04,
+    "champions_league": 0.07,
+    "europa_league": 0.06,
+    "mls": 0.12,
+})
+
+
+def adjust_rho_with_context(
+    rho: float,
+    league: Optional[str],
+    lambda_h: float,
+    lambda_a: float,
+    manual_confidence: Optional[float] = None,
+) -> float:
+    league_key = _normalize_league_key(league)
+    baseline = LEAGUE_RHO_BASELINE.get(league_key, LEAGUE_RHO_BASELINE["generic"])
+
+    spread_intensity = abs(lambda_h - lambda_a)
+    intensity_adjustment = min(0.06, spread_intensity * 0.02)
+
+    rho_adjusted = 0.6 * rho + 0.3 * baseline + (0.1 * intensity_adjustment if lambda_h > lambda_a else -0.1 * intensity_adjustment)
+
+    if manual_confidence is not None:
+        rho_adjusted *= 1.0 + (manual_confidence - 0.5) * 0.2
+
+    return max(-0.35, min(0.35, rho_adjusted))
+
+
+def enforce_probability_ratio_consistency(
+    lambda_h: float,
+    lambda_a: float,
+    p_home: float,
+    p_draw: float,
+    p_away: float,
+    max_adjustment: float = 0.25,
+) -> Tuple[float, float]:
+    if lambda_h <= 0 or lambda_a <= 0:
+        return lambda_h, lambda_a
+
+    target_ratio = max(0.2, min(5.0, (p_home + 0.5 * p_draw) / max(1e-6, p_away + 0.5 * p_draw)))
+    current_ratio = max(0.2, min(5.0, lambda_h / lambda_a))
+
+    if abs(target_ratio - current_ratio) / target_ratio < 0.05:
+        return lambda_h, lambda_a
+
+    ratio_correction = target_ratio / current_ratio
+    ratio_correction = max(1.0 - max_adjustment, min(1.0 + max_adjustment, ratio_correction))
+
+    sqrt_corr = math.sqrt(ratio_correction)
+    lambda_h *= sqrt_corr
+    lambda_a /= sqrt_corr
+
+    return lambda_h, lambda_a
+
 def validate_total(total: float, name: str = "total", league: Optional[str] = None) -> float:
     """
     Valida un total gol.
@@ -13807,6 +13916,17 @@ def risultato_completo_improved(
         )
         rho = estimate_rho_optimized(lh, la, px_prelim, odds_btts, None)
 
+    lambda_prior_h, lambda_prior_a, prior_confidence = compute_lambda_priors_from_xg(
+        xg_for_home,
+        xg_against_home,
+        xg_for_away,
+        xg_against_away,
+    )
+    if lambda_prior_h is not None and lambda_prior_a is not None and prior_confidence > 0:
+        lh, la = blend_lambda_with_priors(lh, la, lambda_prior_h, lambda_prior_a, prior_confidence)
+
+    rho = adjust_rho_with_context(rho, league, lh, la)
+
     # ============================================================
     # 🚀 ADVANCED FEATURES (Sprint 1 & 2) - PRIMO LIVELLO ADJUSTMENTS
     # ============================================================
@@ -13993,6 +14113,13 @@ def risultato_completo_improved(
         volatility_score=combined_volatility,
     )
     manual_inputs_meta["confidence_snapshot"] = manual_confidence_snapshot
+    rho = adjust_rho_with_context(
+        rho,
+        league,
+        lh,
+        la,
+        manual_confidence_snapshot.get("score") if manual_confidence_snapshot else None,
+    )
 
     # Calcola spread e total correnti dai lambda (prima degli aggiustamenti finali)
     # ⚠️ FIX CRITICO: spread = lambda_a - lambda_h (spread > 0 favorisce Away)
@@ -14026,6 +14153,7 @@ def risultato_completo_improved(
         league=league,
         movement_context=manual_movement_context,
     )
+    lh, la = enforce_probability_ratio_consistency(lh, la, p1, px, p2)
     # ✅ FIX BUG #9: Rimosso capping intermedio per migliore coordinamento
     # Log modifiche
     if abs(lh - lh_before) > 0.01 or abs(la - la_before) > 0.01:
@@ -15114,6 +15242,19 @@ def risultato_completo_improved(
             logger.warning(f"⚠️ Errore calcolo football_data_metrics: {e}")
             pass  # Non bloccare se fallisce
     
+    probability_intervals = {}
+    try:
+        probability_intervals = calculate_confidence_intervals(
+            lh,
+            la,
+            rho,
+            n_simulations=4000 if not kwargs.get("fast_mode") else 2000,
+            confidence_level=0.9,
+        )
+    except Exception as interval_err:
+        logger.warning(f"Impossibile calcolare gli intervalli di confidenza: {interval_err}")
+        probability_intervals = {}
+
     result = {
         "lambda_home": lh,
         "lambda_away": la,
@@ -15133,6 +15274,7 @@ def risultato_completo_improved(
         "market_movement": movement_info,  # Info movimento mercato
         "manual_inputs_meta": manual_inputs_meta,
         "manual_confidence": manual_confidence_snapshot,
+        "probability_intervals": probability_intervals,
         "additional_api_data": additional_api_data,  # Dati API aggiuntive
         "over_05": over_05_ft,
         "over_15": over_15,
