@@ -545,6 +545,8 @@ MANUAL_PRECISION_LOG_COLUMNS = [
     "prob_home",
     "prob_draw",
     "prob_away",
+    "predicted_total",
+    "predicted_spread",
     "prob_home_low",
     "prob_home_high",
     "prob_draw_low",
@@ -556,6 +558,8 @@ MANUAL_PRECISION_LOG_COLUMNS = [
     "history_samples",
     "actual_ft_home",
     "actual_ft_away",
+    "actual_total",
+    "actual_spread",
     "notes",
 ]
 
@@ -1669,6 +1673,98 @@ def log_manual_precision_sample(entry: Dict[str, Any]) -> None:
             writer.writerow({col: entry.get(col, "") for col in MANUAL_PRECISION_LOG_COLUMNS})
     except Exception as log_error:
         logger.warning(f"⚠️ Impossibile aggiornare manual_precision_log: {log_error}")
+
+
+def _ensure_manual_precision_columns(df: pd.DataFrame) -> pd.DataFrame:
+    for col in MANUAL_PRECISION_LOG_COLUMNS:
+        if col not in df.columns:
+            df[col] = np.nan
+    return df[MANUAL_PRECISION_LOG_COLUMNS]
+
+
+def update_manual_precision_result(
+    match_key: str,
+    actual_ft_home: Union[int, float, str],
+    actual_ft_away: Union[int, float, str],
+) -> bool:
+    if not match_key:
+        logger.error("Match key necessario per aggiornare il log di precisione manuale")
+        return False
+    if not os.path.exists(MANUAL_PRECISION_LOG_FILE):
+        logger.warning(f"File manual_precision_log inesistente: {MANUAL_PRECISION_LOG_FILE}")
+        return False
+    try:
+        df = pd.read_csv(MANUAL_PRECISION_LOG_FILE, on_bad_lines="skip")
+        df = _ensure_manual_precision_columns(df)
+        mask = df["match_key"] == match_key
+        if not mask.any():
+            logger.warning(f"Nessuna entry nel log per match_key={match_key}")
+            return False
+        idx = df[mask].index[-1]
+        df.loc[idx, "actual_ft_home"] = int(actual_ft_home)
+        df.loc[idx, "actual_ft_away"] = int(actual_ft_away)
+        if pd.notna(df.loc[idx, "actual_ft_home"]) and pd.notna(df.loc[idx, "actual_ft_away"]):
+            df.loc[idx, "actual_total"] = df.loc[idx, "actual_ft_home"] + df.loc[idx, "actual_ft_away"]
+            df.loc[idx, "actual_spread"] = df.loc[idx, "actual_ft_home"] - df.loc[idx, "actual_ft_away"]
+        df.to_csv(MANUAL_PRECISION_LOG_FILE, index=False)
+        logger.info(f"✅ Aggiornato manual_precision_log per {match_key} con risultato {actual_ft_home}-{actual_ft_away}")
+        return True
+    except Exception as update_error:
+        logger.error(f"Impossibile aggiornare manual_precision_log: {update_error}")
+        return False
+
+
+def compute_manual_precision_metrics(window_days: int = 30) -> Dict[str, Any]:
+    if not os.path.exists(MANUAL_PRECISION_LOG_FILE):
+        return {}
+    try:
+        df = pd.read_csv(MANUAL_PRECISION_LOG_FILE, on_bad_lines="skip")
+        df = _ensure_manual_precision_columns(df)
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            cutoff = datetime.utcnow() - timedelta(days=window_days)
+            df = df[(df["timestamp"].isna()) | (df["timestamp"] >= cutoff)]
+        df = df.dropna(subset=["actual_ft_home", "actual_ft_away"])
+        if df.empty:
+            return {}
+        df["actual_ft_home"] = df["actual_ft_home"].astype(float)
+        df["actual_ft_away"] = df["actual_ft_away"].astype(float)
+        df["actual_total"] = df["actual_ft_home"] + df["actual_ft_away"]
+        df["actual_spread"] = df["actual_ft_home"] - df["actual_ft_away"]
+        df["predicted_total"] = df["predicted_total"].fillna(df["lambda_home"] + df["lambda_away"])
+        df["predicted_spread"] = df["predicted_spread"].fillna(df["lambda_home"] - df["lambda_away"])
+
+        mae_total = float(np.mean(np.abs(df["predicted_total"] - df["actual_total"])))
+        mae_spread = float(np.mean(np.abs(df["predicted_spread"] - df["actual_spread"])))
+
+        def _outcome(row):
+            if row["actual_ft_home"] > row["actual_ft_away"]:
+                return "1"
+            if row["actual_ft_home"] < row["actual_ft_away"]:
+                return "2"
+            return "X"
+
+        df["actual_outcome"] = df.apply(_outcome, axis=1)
+        df["predicted_outcome"] = df[["prob_home", "prob_draw", "prob_away"]].idxmax(axis=1)
+        df["predicted_outcome"] = df["predicted_outcome"].map({
+            "prob_home": "1",
+            "prob_draw": "X",
+            "prob_away": "2",
+        })
+        accuracy = float((df["actual_outcome"] == df["predicted_outcome"]).mean())
+        avg_confidence = float(df["manual_confidence"].dropna().mean()) if "manual_confidence" in df else None
+
+        return {
+            "samples": int(len(df)),
+            "window_days": window_days,
+            "mae_total": round(mae_total, 3),
+            "mae_spread": round(mae_spread, 3),
+            "hit_rate_1x2": round(accuracy * 100, 2),
+            "avg_manual_confidence": round(avg_confidence, 3) if avg_confidence is not None else None,
+        }
+    except Exception as metrics_error:
+        logger.warning(f"⚠️ Impossibile calcolare metriche precisione manuale: {metrics_error}")
+        return {}
 
 def validate_total(total: float, name: str = "total", league: Optional[str] = None) -> float:
     """
@@ -15373,6 +15469,7 @@ def risultato_completo_improved(
         "cover_0_2": cover_0_2,
         "cover_0_3": cover_0_3,
         "market_calibration_stats": market_calibration_stats,
+        "manual_history_key": manual_history_key,
     }
 
     try:
@@ -15400,6 +15497,8 @@ def risultato_completo_improved(
                 "prob_home": result.get("p_home"),
                 "prob_draw": result.get("p_draw"),
                 "prob_away": result.get("p_away"),
+                "predicted_total": lh + la,
+                "predicted_spread": lh - la,
                 "prob_home_low": p_home_interval[0],
                 "prob_home_high": p_home_interval[1],
                 "prob_draw_low": p_draw_interval[0],
@@ -15415,6 +15514,13 @@ def risultato_completo_improved(
             })
     except Exception as manual_log_error:
         logger.warning(f"⚠️ Impossibile loggare i dati manuali per analisi: {manual_log_error}")
+
+    try:
+        precision_summary = compute_manual_precision_metrics(window_days=30)
+        if precision_summary:
+            result["manual_precision_metrics"] = precision_summary
+    except Exception as precision_summary_error:
+        logger.warning(f"⚠️ Impossibile calcolare le metriche di precisione manuale: {precision_summary_error}")
 
     # ✅ COMPATIBILITÀ LEGACY: Mantieni vecchi nomi chiave usati dagli script di test
     result["prob_home"] = result.get("p_home")
