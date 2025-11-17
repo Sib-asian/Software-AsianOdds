@@ -1,18 +1,144 @@
-.git
-.github
+# Python
 __pycache__
 *.pyc
 *.pyo
 *.pyd
-*.log
-app.log
-data/
-*.pth
-*.csv
-*.zip
-node_modules
-venv
-.venv
-env
-.env
+.Python
+*.so
+*.egg
 *.egg-info
+dist
+build
+.venv
+venv/
+env/
+
+# Git
+.git
+.gitignore
+.github/
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Data files (pesanti)
+*.csv
+*.xlsx
+*.json
+!requirements.txt
+!team_profiles.json
+!meta_playbook.example.json
+
+# Models (pesanti)
+*.pth
+*.pkl
+*.h5
+*.model
+*.pkl.gz
+
+# Documentation (non necessaria per automazione)
+*.md
+!README.md
+
+# Tests
+tests/
+test_*.py
+
+# Scripts non necessari
+*.ps1
+*.sh
+*.bat
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Cache
+.cache/
+*.cache
+
+# Temporary
+tmp/
+temp/
+*.tmp
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.rar
+
+# Frontend (non necessario per automazione)
+Frontendcloud.py
+dashboard.py
+streamlit/
+
+# Analysis files
+analysis/
+EDGE_CASES*.csv
+manual_precision_log.csv
+PERFORMANCE_ISSUES.csv
+
+# Debug files
+debug_system.py
+DEBUG_*.txt
+DEBUG_*.md
+
+# Report files
+*_REPORT.md
+*_GUIDE.md
+*_SUMMARY.md
+*_BUGS*.md
+*_FIXES*.md
+*_VERIFICA*.md
+*_AUDIT*.md
+*_EXPLORATION*.md
+*_INVENTORY*.md
+*_RESEARCH.md
+*_ANALYSIS.md
+*_SETUP*.md
+*_DEPLOY*.md
+*_PASSO*.md
+*_QUICK*.md
+*_START*.md
+*_RAILWAY*.md
+*_AUTOMAZIONE*.md
+*_AUTENTICAZIONE*.md
+*_WORKFLOW*.md
+*_USARE.md
+*_COMPLETO.md
+*_HERE.md
+
+# Example files
+*.example.*
+example_*.py
+
+# Verification files
+verify_*.py
+
+# Integration files
+integration_*.py
+
+# Advanced features (non necessario per automazione base)
+advanced_features.py
+auto_features.py
+
+# Project zip
+project.zip

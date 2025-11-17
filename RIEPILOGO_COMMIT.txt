@@ -1,0 +1,95 @@
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║     📤 COMMIT SU GITHUB - RIEPILOGO                          ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+✅ PRIMA DI COMMITTARE:
+
+   1. ✅ .env è nel .gitignore (NON verrà committato)
+   2. ✅ logs/ è nel .gitignore (NON verrà committato)
+   3. ✅ File sensibili protetti
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 FILE DA COMMITTARE:
+
+   ✨ NUOVI FILE:
+   • automation_service_wrapper.py
+   • install_service_auto.ps1
+   • start_dashboard_remote.bat
+   • manage_service.bat
+   • verifica_tutte_chiavi.py
+   • Tutti i file .md di documentazione
+   • Script PowerShell e batch
+
+   🔧 FILE MODIFICATI:
+   • automation_24h.py (fetch partite reali + fix bug)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🚀 COME FARE COMMIT:
+
+   OPZIONE 1 - Script Automatico:
+   → Doppio-click su: commit_to_github.ps1
+   → Segui le istruzioni
+
+   OPZIONE 2 - Manuale (se Git installato):
+   → Apri PowerShell nella cartella
+   → Esegui:
+     git add .
+     git commit -m "feat: Sistema automazione 24/7 completo"
+     git push origin main
+
+   OPZIONE 3 - GitHub Desktop:
+   → Apri GitHub Desktop
+   → Vedi cambiamenti
+   → Scrivi messaggio commit
+   → Clicca "Commit to main"
+   → Clicca "Push origin"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️  IMPORTANTE:
+
+   ❌ NON committare:
+   • .env (contiene chiavi API)
+   • logs/ (file di log)
+   • __pycache__/ (cache Python)
+
+   ✅ Già protetti da .gitignore!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📝 MESSAGGIO COMMIT SUGGERITO:
+
+   feat: Sistema automazione 24/7 completo con accesso remoto
+
+   ✨ Nuove funzionalità:
+   - Automazione 24/7 con servizio Windows auto-restart
+   - Fetch partite reali da TheOddsAPI
+   - Accesso remoto dashboard Streamlit da cellulare
+   - Script di installazione e gestione servizio
+
+   🔧 Miglioramenti:
+   - Corretto errore bankroll argument
+   - Migliorata gestione errori e logging
+   - Aggiunta documentazione completa
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 DOPO IL COMMIT:
+
+   1. ✅ Verifica su GitHub che tutto sia stato pushato
+   2. ✅ Controlla che .env NON sia visibile
+   3. ✅ Verifica che tutti i file siano presenti
+   4. ✅ Tutto pronto! 🎉
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📚 GUIDA COMPLETA:
+
+   → Leggi: COMMIT_SU_GITHUB.md
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+

@@ -1,0 +1,118 @@
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║     📋 LISTA COMPLETA CHIAVI API - STATO ATTUALE            ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔴 CHIAVI MANCANTI (DA CONFIGURARE):
+
+1. THEODDS_API_KEY
+   ────────────────────────────────────────────────────────────
+   📍 Uso: Ottenere partite reali e quote aggiornate
+   🔗 Dove ottenerla: https://the-odds-api.com/
+   💰 Costo: GRATIS (500 richieste/mese)
+   ⚠️  Priorità: ALTA (per partite reali)
+   📝 Note: Senza questa, il sistema usa dati mock
+
+2. TELEGRAM_BOT_TOKEN
+   ────────────────────────────────────────────────────────────
+   📍 Uso: Inviare notifiche Telegram per opportunità
+   🔗 Dove ottenerla: https://t.me/BotFather
+   💰 Costo: GRATIS
+   ⚠️  Priorità: ALTA (per ricevere notifiche)
+   📝 Note: Attualmente usa valore di default hardcoded
+            (funziona ma meglio configurarlo)
+
+3. TELEGRAM_CHAT_ID
+   ────────────────────────────────────────────────────────────
+   📍 Uso: ID chat dove inviare notifiche
+   🔗 Dove ottenerla: https://t.me/userinfobot
+   💰 Costo: GRATIS
+   ⚠️  Priorità: ALTA (per ricevere notifiche)
+   📝 Note: Attualmente usa valore di default hardcoded
+            (funziona ma meglio configurarlo)
+
+4. HUGGINGFACE_API_KEY
+   ────────────────────────────────────────────────────────────
+   📍 Uso: Analisi sentiment (opzionale, c'è free tier)
+   🔗 Dove ottenerla: https://huggingface.co/settings/tokens
+   💰 Costo: GRATIS (con limiti)
+   ⚠️  Priorità: BASSA (opzionale)
+   📝 Note: Il sistema funziona anche senza (usa free tier)
+
+5. FOOTBALL_DATA_KEY
+   ────────────────────────────────────────────────────────────
+   📍 Uso: Dati aggiuntivi partite (opzionale)
+   🔗 Dove ottenerla: https://www.football-data.org/
+   💰 Costo: GRATIS (10 chiamate/minuto)
+   ⚠️  Priorità: BASSA (opzionale)
+   📝 Note: Non essenziale, sistema funziona senza
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ CHIAVI GIÀ CONFIGURATE (NON SERVE FAR NULLA):
+
+1. API_FOOTBALL_KEY
+   ────────────────────────────────────────────────────────────
+   ✅ Configurata: 95c43f9368... (hardcoded nel codice)
+   📍 Uso: Dati partite e statistiche
+   ⚠️  Quota: 100 chiamate/giorno (free tier)
+
+2. OPENWEATHER_API_KEY
+   ────────────────────────────────────────────────────────────
+   ✅ Configurata: 01afa21835... (hardcoded nel codice)
+   📍 Uso: Dati meteo per partite (opzionale)
+   ⚠️  Quota: Limitata (free tier)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 RIEPILOGO PRIORITÀ:
+
+🔴 PRIORITÀ ALTA (Configurare subito):
+   1. THEODDS_API_KEY        → Per partite reali
+   2. TELEGRAM_BOT_TOKEN     → Per notifiche (opzionale se già funziona)
+   3. TELEGRAM_CHAT_ID       → Per notifiche (opzionale se già funziona)
+
+🟡 PRIORITÀ BASSA (Opzionale):
+   4. HUGGINGFACE_API_KEY    → Per sentiment analysis avanzata
+   5. FOOTBALL_DATA_KEY      → Per dati aggiuntivi
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📝 FORMATO PER IL FILE .env:
+
+Crea un file chiamato `.env` nella cartella principale con:
+
+THEODDS_API_KEY=la_tua_chiave_qui
+TELEGRAM_BOT_TOKEN=il_tuo_token_qui
+TELEGRAM_CHAT_ID=il_tuo_chat_id_qui
+HUGGINGFACE_API_KEY=la_tua_chiave_qui (opzionale)
+FOOTBALL_DATA_KEY=la_tua_chiave_qui (opzionale)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 COSA FARE:
+
+1. Cerca le chiavi che hai già
+2. Ottieni quelle che mancano (link sopra)
+3. Mandami tutte le chiavi insieme
+4. Io creo il file .env con tutte configurate
+5. Riavvio il servizio e tutto funziona!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💡 NOTA IMPORTANTE:
+
+- Le chiavi Telegram (BOT_TOKEN e CHAT_ID) attualmente funzionano
+  con valori di default hardcoded, quindi se funziona già,
+  puoi anche non configurarle (ma è meglio per sicurezza)
+
+- THEODDS_API_KEY è la più importante per avere partite reali
+  invece di dati mock
+
+- Le altre chiavi sono opzionali e il sistema funziona anche senza
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+

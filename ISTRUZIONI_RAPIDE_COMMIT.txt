@@ -1,0 +1,32 @@
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║     🚀 COMMIT SU GITHUB - ISTRUZIONI RAPIDE                 ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+⚠️  Git non è installato. Ecco come fare:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⭐ METODO PIÙ FACILE - GitHub Desktop:
+
+   1. Scarica: https://desktop.github.com/
+   2. Installa e apri
+   3. File → Add Local Repository
+   4. Seleziona questa cartella
+   5. Vedi cambiamenti → Commit → Push
+   
+   ✅ FATTO in 2 minuti!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📝 MESSAGGIO COMMIT:
+
+   feat: Sistema automazione 24/7 completo con accesso remoto
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ File sensibili già protetti (.env, logs/)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+

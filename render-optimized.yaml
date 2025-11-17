@@ -1,0 +1,25 @@
+services:
+  - type: worker
+    name: automation-24h-optimized
+    env: docker
+    dockerfilePath: ./Dockerfile.optimized  # Usa Dockerfile ottimizzato
+    dockerContext: .
+    plan: free  # Free tier (può andare in sleep)
+    # Per sempre attivo, cambia in: plan: starter ($7/mese)
+    
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PYTHONPATH
+        value: "/app"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false  # Imposta manualmente su Render dashboard
+      - key: TELEGRAM_CHAT_ID
+        sync: false  # Imposta manualmente su Render dashboard
+      - key: AUTOMATION_MIN_EV
+        value: "8.0"
+      - key: AUTOMATION_MIN_CONFIDENCE
+        value: "70.0"
+      - key: AUTOMATION_UPDATE_INTERVAL
+        value: "300"
+

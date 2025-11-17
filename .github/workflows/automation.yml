@@ -1,0 +1,52 @@
+name: Automation 24/7 (Cron)
+
+on:
+  schedule:
+    # Esegue ogni 5 minuti
+    - cron: '*/5 * * * *'
+  workflow_dispatch:  # Permette esecuzione manuale
+
+jobs:
+  automation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run automation cycle
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          AUTOMATION_MIN_EV: ${{ secrets.AUTOMATION_MIN_EV || '8.0' }}
+          AUTOMATION_MIN_CONFIDENCE: ${{ secrets.AUTOMATION_MIN_CONFIDENCE || '70.0' }}
+          AUTOMATION_UPDATE_INTERVAL: ${{ secrets.AUTOMATION_UPDATE_INTERVAL || '300' }}
+        run: |
+          python automation_24h.py \
+            --telegram-token "$TELEGRAM_BOT_TOKEN" \
+            --telegram-chat-id "$TELEGRAM_CHAT_ID" \
+            --min-ev "$AUTOMATION_MIN_EV" \
+            --min-confidence "$AUTOMATION_MIN_CONFIDENCE" \
+            --update-interval "$AUTOMATION_UPDATE_INTERVAL" \
+            --single-run || true
+      
+      - name: Upload logs (if any)
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: automation-logs
+          path: automation_24h.log
+          if-no-files-found: ignore
+

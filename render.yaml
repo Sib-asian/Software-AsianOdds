@@ -1,0 +1,20 @@
+services:
+  - type: worker
+    name: automation-24h
+    env: docker
+    dockerfilePath: ./Dockerfile.automation
+    dockerContext: .
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: 1
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: AUTOMATION_MIN_EV
+        value: 8.0
+      - key: AUTOMATION_MIN_CONFIDENCE
+        value: 70.0
+      - key: AUTOMATION_UPDATE_INTERVAL
+        value: 300
+

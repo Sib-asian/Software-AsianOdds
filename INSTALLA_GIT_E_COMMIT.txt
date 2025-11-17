@@ -1,0 +1,105 @@
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║     ⚠️  GIT NON INSTALLATO - COSA FARE                      ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+❌ Git non è installato sul tuo PC.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 OPZIONI PER FARE COMMIT:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+OPZIONE 1: GitHub Desktop (PIÙ FACILE) ⭐ CONSIGLIATA
+
+   1. Scarica GitHub Desktop:
+      → https://desktop.github.com/
+      
+   2. Installa e apri GitHub Desktop
+   
+   3. Aggiungi repository:
+      → File → Add Local Repository
+      → Seleziona: C:\Users\aless\OneDrive\Desktop\Software-AsianOdds-main
+      
+   4. Vedi cambiamenti:
+      → Nella tab "Changes" vedrai tutti i file modificati
+      
+   5. Fai commit:
+      → Scrivi messaggio: "feat: Sistema automazione 24/7 completo"
+      → Clicca "Commit to main"
+      
+   6. Push su GitHub:
+      → Clicca "Push origin"
+      
+   ✅ FATTO! Tutto su GitHub!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+OPZIONE 2: Installa Git (PER TERMINALE)
+
+   1. Scarica Git:
+      → https://git-scm.com/download/win
+      
+   2. Installa (usa opzioni di default)
+   
+   3. Apri PowerShell nella cartella:
+      → Right-click sulla cartella → "Open in Terminal"
+      
+   4. Esegui comandi:
+      git add .
+      git commit -m "feat: Sistema automazione 24/7 completo"
+      git push origin main
+      
+   ✅ FATTO!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+OPZIONE 3: Usa VS Code (SE HAI VS CODE)
+
+   1. Apri VS Code nella cartella
+   
+   2. Vai alla tab "Source Control" (icona branch a sinistra)
+   
+   3. Vedi cambiamenti e fai commit
+   
+   4. Push su GitHub
+   
+   ✅ FATTO!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 MESSAGGIO COMMIT SUGGERITO:
+
+   feat: Sistema automazione 24/7 completo con accesso remoto
+
+   ✨ Nuove funzionalità:
+   - Automazione 24/7 con servizio Windows auto-restart
+   - Fetch partite reali da TheOddsAPI
+   - Accesso remoto dashboard Streamlit da cellulare
+   - Script di installazione e gestione servizio
+
+   🔧 Miglioramenti:
+   - Corretto errore bankroll argument
+   - Migliorata gestione errori e logging
+   - Aggiunta documentazione completa
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️  IMPORTANTE:
+
+   ✅ .env è già nel .gitignore (NON verrà committato)
+   ✅ logs/ è già nel .gitignore (NON verrà committato)
+   ✅ File sensibili protetti
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 CONSIGLIO:
+
+   → Usa GitHub Desktop (OPZIONE 1)
+   → È la più facile e veloce!
+   → Non serve conoscere comandi terminale
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+

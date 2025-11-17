@@ -1,13 +1,15 @@
-app = "software-asianodds"
-primary_region = "ams"
+app = "automation-24h"
+primary_region = "iad"
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = "Dockerfile.automation"
 
-[http_service]
-  internal_port = 8501
-  force_https = true
-  auto_stop_machines = false
-  auto_start_machines = true
-  min_machines_running = 1
-  processes = ["app"]
+[env]
+  PYTHONUNBUFFERED = "1"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+[processes]
+  automation = "python start_automation.py"

@@ -1,0 +1,176 @@
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║     ✅ COSA SUCCEDE ORA - GUIDA COMPLETA                     ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+🎯 RISPOSTA RAPIDA:
+
+   ❌ NO, NON DEVI TENERE NULLA APERTO!
+   
+   ✅ Il servizio gira in background completamente autonomo
+   ✅ Puoi chiudere tutto e spegnere il PC quando vuoi
+   ✅ Alla prossima accensione, si avvierà automaticamente
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔄 COSA SUCCEDE ORA (AUTOMATICAMENTE):
+
+   1. ⏰ OGNI 5 MINUTI:
+      → Il sistema cerca partite da monitorare
+      → Analizza partite pre-match (prossime 24h)
+      → Analizza partite live (in corso)
+      
+   2. 🤖 ANALISI AI:
+      → Calcola probabilità di vittoria
+      → Cerca VALUE BET (EV > 8%)
+      → Verifica confidence (deve essere > 70%)
+      → Filtra consigli basati solo su score
+      
+   3. 📱 NOTIFICHE TELEGRAM:
+      → Se trova una vera opportunità VALUE BET
+      → Ti invia notifica su Telegram con:
+         • Partita (es: Inter vs Juventus)
+         • Market consigliato (es: 1X2_HOME)
+         • Stake suggerito (es: €133.68)
+         • Odds (es: 1.90)
+         • Expected Value (es: +25.4%)
+         • Confidence (es: 82%)
+         • Analisi AI dettagliata
+      
+   4. 🔄 GESTIONE AUTOMATICA:
+      → Si riavvia automaticamente se crasha
+      → Gestisce quota API (max 100 chiamate/giorno)
+      → Reset automatico ogni giorno a mezzanotte
+      → Log dettagliati di tutte le attività
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ COSA PUOI FARE:
+
+   ✓ Chiudere tutte le finestre
+   ✓ Spegnere il monitor
+   ✓ Andare via dal PC
+   ✓ Il servizio continua a girare in background!
+   
+   ⚠️  IMPORTANTE:
+   • NON spegnere il PC (o il servizio si ferma)
+   • Se spegni il PC, si riavvierà automaticamente alla prossima accensione
+   • Il servizio gira anche se il PC va in sleep/hibernation
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔍 COME VERIFICARE CHE STIA GIRANDO:
+
+   METODO 1 - Task Manager:
+   1. Premi Ctrl+Shift+Esc
+   2. Vai alla tab "Dettagli" o "Processi"
+   3. Cerca "python.exe" o "pythonw.exe"
+   4. Se lo vedi, il servizio sta girando! ✅
+
+   METODO 2 - Log File:
+   1. Apri: Software-AsianOdds-main\logs\
+   2. Apri: automation_service_YYYYMMDD.log
+   3. Se vedi messaggi recenti (ultimi 5-10 minuti), tutto OK! ✅
+   4. Cerca messaggi tipo:
+      • "Running analysis cycle..."
+      • "Found X matches to monitor"
+      • "Cycle complete: X opportunities found"
+
+   METODO 3 - Notifiche Telegram:
+   • Se ricevi notifiche, il sistema sta funzionando! ✅
+   • Le notifiche arrivano solo per vere opportunità VALUE BET
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📱 COSA RICEVERAI SU TELEGRAM:
+
+   ⚽ AUTO-24H BETTING OPPORTUNITY ⚽
+   
+   📅 Match
+   Team A vs Team B
+   🏆 Serie A
+   
+   💰 Recommendation
+   Market: 1X2_HOME
+   Stake: €133.68
+   Odds: 1.90
+   
+   📊 Analysis
+   Expected Value: +25.4%
+   Win Probability: 66.0%
+   Confidence: 🟢 VERY HIGH (82%)
+   
+   🤖 AI Ensemble
+   Dixon-Coles: 65.0% (weight: 30%)
+   XGBoost: 71.0% (weight: 40%)
+   LSTM: 68.0% (weight: 30%)
+   
+   ⏰ Timestamp
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⏰ QUANDO RICEVERAI NOTIFICHE:
+
+   ✅ Ricevi notifica quando:
+   • EV > 8% (Expected Value positivo e significativo)
+   • Confidence > 70% (Alta fiducia nella previsione)
+   • Vero valore rilevato (probabilità > probabilità implicita)
+   • NON basato solo su score (evita "1-0 quindi gioca 1")
+   
+   ❌ NON ricevi notifica quando:
+   • EV troppo basso
+   • Confidence troppo bassa
+   • Nessuna vera opportunità trovata
+   • Raccomandazione basata solo su score
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎮 GESTIONE SERVIZIO:
+
+   PER FERMARE:
+   • Task Manager → Termina processo "python.exe"
+   • Oppure: manage_service.bat → Opzione 2 (Ferma servizio)
+   
+   PER RIAVVIARE:
+   • start_automation_now.bat
+   • Oppure: manage_service.bat → Opzione 1 (Avvia servizio)
+   
+   PER VERIFICARE STATO:
+   • manage_service.bat → Opzione 4 (Stato servizio)
+   • Oppure: Controlla log in logs\
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 MONITORAGGIO:
+
+   LOG FILE:
+   → Software-AsianOdds-main\logs\automation_service_YYYYMMDD.log
+   → Contiene tutte le attività del sistema
+   → Aggiornato ogni ciclo (ogni 5 minuti)
+   
+   COSA VEDRAI NEI LOG:
+   • Avvio sistema
+   • Partite trovate
+   • Analisi eseguite
+   • Opportunità trovate
+   • Notifiche inviate
+   • Errori (se presenti)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎉 RIEPILOGO:
+
+   ✅ NON devi tenere nulla aperto
+   ✅ Il servizio gira in background 24/7
+   ✅ Puoi chiudere tutto e andare via
+   ✅ Riceverai notifiche Telegram per opportunità
+   ✅ Il sistema si riavvierà automaticamente alla prossima accensione
+   ✅ Controlla i log per vedere le attività
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🚀 TUTTO PRONTO! Il sistema ora lavora completamente da solo!
+
+   Non devi fare nulla, solo aspettare le notifiche Telegram! 📱
+

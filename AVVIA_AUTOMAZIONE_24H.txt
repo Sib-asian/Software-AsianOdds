@@ -1,0 +1,67 @@
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║     🤖 AUTOMAZIONE 24/7 - AVVIO RAPIDO                      ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+🎯 PER FAR GIRARE IL SISTEMA 24/7 AUTOMATICAMENTE:
+
+1️⃣  INSTALLAZIONE (UNA SOLA VOLTA):
+   
+   → Right-click su "install_service.ps1"
+   → Seleziona "Run with PowerShell" (come amministratore)
+   → FATTO! Il sistema ora gira 24/7 automaticamente
+
+2️⃣  VERIFICA CHE FUNZIONI:
+   
+   → Doppio-click su "manage_service.bat"
+   → Seleziona opzione 4 (Stato servizio)
+   → Dovresti vedere "State: Running"
+
+3️⃣  VISUALIZZA LOG:
+   
+   → Doppio-click su "manage_service.bat"
+   → Seleziona opzione 5 (Visualizza log)
+   → Oppure: cartella "logs\automation_service_*.log"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ COSA FA IL SISTEMA:
+
+   ✓ Si avvia automaticamente all'avvio Windows
+   ✓ Si riavvia automaticamente se crasha
+   ✓ Monitora partite 24/7
+   ✓ Notifica Telegram per opportunità value bet
+   ✓ Gestisce errori e log dettagliati
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 FILE IMPORTANTI:
+
+   • install_service.ps1          → Installa servizio Windows
+   • uninstall_service.ps1        → Rimuove servizio Windows
+   • manage_service.bat           → Menu gestione servizio
+   • automation_service_wrapper.py → Wrapper con auto-restart
+   • README_AUTOMAZIONE_24H_COMPLETA.md → Guida completa
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🚀 COMANDI RAPIDI (PowerShell come Admin):
+
+   Avvia:    Start-ScheduledTask -TaskName "Automation24H_BettingSystem"
+   Ferma:    Stop-ScheduledTask -TaskName "Automation24H_BettingSystem"
+   Stato:    Get-ScheduledTask -TaskName "Automation24H_BettingSystem"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+❓ PROBLEMI?
+
+   → Leggi: README_AUTOMAZIONE_24H_COMPLETA.md
+   → Controlla log in: logs\automation_service_*.log
+   → Usa: manage_service.bat per gestire il servizio
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎉 DOPO L'INSTALLAZIONE, NON DEVI FARE NULLA!
+   Il sistema gira completamente da solo 24/7! 🚀
+

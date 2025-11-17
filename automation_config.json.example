@@ -1,0 +1,23 @@
+{
+  "telegram": {
+    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+    "chat_id": "YOUR_TELEGRAM_CHAT_ID"
+  },
+  "automation": {
+    "min_ev": 8.0,
+    "min_confidence": 70.0,
+    "update_interval": 300,
+    "api_budget_per_day": 100
+  },
+  "filters": {
+    "avoid_score_based_recommendations": true,
+    "require_real_value": true,
+    "min_value_margin": 0.05
+  },
+  "monitoring": {
+    "leagues": ["Serie A", "Premier League", "La Liga"],
+    "hours_before_match": 24,
+    "monitor_live": true
+  }
+}
+

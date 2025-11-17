@@ -1,0 +1,94 @@
+# Dockerfile Ottimizzato - Multi-Stage Build
+# Riduce dimensione da ~9 GB a ~500 MB - 1.5 GB
+
+# Stage 1: Build (installa dipendenze)
+FROM python:3.11-slim as builder
+
+WORKDIR /app
+
+# Installa solo build dependencies (minime)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Copia requirements
+COPY requirements.automation.txt .
+
+# Crea virtualenv e installa dipendenze
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Installa dipendenze (senza cache per ridurre dimensione)
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.automation.txt && \
+    pip cache purge
+
+# Stage 2: Runtime (solo runtime, minimale)
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copia solo virtualenv da builder (senza build tools)
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Variabili ambiente
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+# Copia SOLO file essenziali per runtime
+COPY automation_24h.py .
+COPY start_automation.py .
+COPY api_manager.py .
+
+# Copia ai_system (solo file Python essenziali)
+# Crea directory prima
+RUN mkdir -p ./ai_system/utils
+
+# Copia file essenziali
+COPY ai_system/__init__.py ./ai_system/ 2>/dev/null || true
+COPY ai_system/config.py ./ai_system/ 2>/dev/null || true
+COPY ai_system/pipeline.py ./ai_system/ 2>/dev/null || true
+COPY ai_system/telegram_notifier.py ./ai_system/ 2>/dev/null || true
+
+# Copia moduli blocco e live (se esistono)
+COPY ai_system/blocco_*.py ./ai_system/ 2>/dev/null || true
+COPY ai_system/live_*.py ./ai_system/ 2>/dev/null || true
+
+# Copia altri moduli essenziali
+COPY ai_system/backtesting.py ./ai_system/ 2>/dev/null || true
+COPY ai_system/background_services.py ./ai_system/ 2>/dev/null || true
+
+# Copia utils se necessario (solo .py)
+RUN if [ -d "ai_system/utils" ]; then \
+        find ai_system/utils -name "*.py" -exec cp --parents {} ./ \; 2>/dev/null || true; \
+    fi
+
+# Rimuovi TUTTO il resto non necessario
+RUN find ./ai_system -type f \( \
+        -name "*.md" -o \
+        -name "*.pkl" -o \
+        -name "*.pth" -o \
+        -name "*.h5" -o \
+        -name "*.model" -o \
+        -name "*.csv" -o \
+        -name "*.jsonl" -o \
+        -name "*.json" ! -name "*.example.json" \
+    \) -delete 2>/dev/null || true && \
+    find ./ai_system -type d \( \
+        -name "__pycache__" -o \
+        -name "*.egg-info" -o \
+        -name "models" -o \
+        -name "training" -o \
+        -name "data" -o \
+        -name "analysis" \
+    \) -exec rm -rf {} + 2>/dev/null || true
+
+# Pulisci tutto (cache, tmp, etc.)
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.cache /root/.pip
+
+# Comando di avvio
+CMD ["python", "start_automation.py"]
+
