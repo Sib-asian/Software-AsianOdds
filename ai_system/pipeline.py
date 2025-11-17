@@ -1132,7 +1132,8 @@ class AIPipeline:
             "total_analyses": len(self.analysis_history),
             "api_stats": self.api_engine.get_statistics(),
             "recent_analyses": self.analysis_history[-10:],  # Last 10
-            "models_status": self._get_models_status()
+            "models_status": self._get_models_status(),
+            "ensemble": self.ensemble.get_statistics() if self.ensemble else None,
         }
 
 

@@ -91,6 +91,15 @@ class FeatureStore:
                 return entry
         return None
 
+    def count_entries(self) -> int:
+        """Numero approssimativo di entry salvate (conta le righe valide)."""
+        count = 0
+        with self.filepath.open("r", encoding="utf-8") as fp:
+            for line in fp:
+                if line.strip():
+                    count += 1
+        return count
+
     # --------------------------------------------------------------------- #
     # Helpers privati
     # --------------------------------------------------------------------- #

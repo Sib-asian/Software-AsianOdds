@@ -445,6 +445,16 @@ class EnsembleMetaModel:
         """
         Ottieni statistiche ensemble.
         """
+        meta_stats = None
+        if self.adaptive_orchestrator:
+            store = self.adaptive_orchestrator.feature_store
+            meta_stats = {
+                'store_path': str(store.filepath),
+                'entries': store.count_entries(),
+                'reliability': self.adaptive_orchestrator.registry.snapshot_reliability(),
+                'exploration_rate': self.adaptive_orchestrator.meta_optimizer.exploration_rate,
+            }
+
         return {
             'total_predictions': len(self.prediction_history),
             'models_status': {
@@ -452,7 +462,8 @@ class EnsembleMetaModel:
                 'lstm_trained': self.lstm.is_trained,
                 'meta_learner_trained': self.meta_learner.is_trained
             },
-            'recent_predictions': self.prediction_history[-10:] if self.prediction_history else []
+            'recent_predictions': self.prediction_history[-10:] if self.prediction_history else [],
+            'meta': meta_stats,
         }
 
 
