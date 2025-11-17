@@ -30,19 +30,25 @@ Data: 2025-11-13
 __version__ = "2.0.0"
 __author__ = "AsianOdds AI Team"
 
-# Import main components for easy access
-from .pipeline import AIPipeline
+# Import lightweight components eagerly
 from .config import AIConfig
 
-# Advanced features (optional imports - may fail if dependencies missing)
-try:
-    from .telegram_notifier import TelegramNotifier
-    from .live_monitor import LiveMonitor
-    __all_optional__ = ['TelegramNotifier', 'LiveMonitor']
-except ImportError:
-    __all_optional__ = []
-
 __all__ = [
-    'AIPipeline',
     'AIConfig',
-] + __all_optional__
+    'AIPipeline',
+    'TelegramNotifier',
+    'LiveMonitor',
+]
+
+
+def __getattr__(name):
+    if name == "AIPipeline":
+        from .pipeline import AIPipeline
+        return AIPipeline
+    if name == "TelegramNotifier":
+        from .telegram_notifier import TelegramNotifier
+        return TelegramNotifier
+    if name == "LiveMonitor":
+        from .live_monitor import LiveMonitor
+        return LiveMonitor
+    raise AttributeError(f"module 'ai_system' has no attribute '{name}'")

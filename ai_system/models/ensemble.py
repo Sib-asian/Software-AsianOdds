@@ -258,6 +258,15 @@ class EnsembleMetaModel:
 
         return result
 
+    def register_outcome(self, match_id: str, actual_outcome: float, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Propaga l'esito reale al meta layer per aggiornare affidabilità e feature store.
+        """
+        if not self.adaptive_orchestrator:
+            logger.warning("Adaptive orchestrator non disponibile: impossibile registrare outcome")
+            return False
+        return self.adaptive_orchestrator.register_outcome(match_id, actual_outcome, metadata)
+
     def _register_models_with_orchestrator(self):
         if not self.adaptive_orchestrator:
             return

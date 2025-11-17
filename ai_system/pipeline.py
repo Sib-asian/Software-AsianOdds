@@ -1117,6 +1117,15 @@ class AIPipeline:
 
         logger.info(f"💾 Analysis saved to {filepath}")
 
+    def register_outcome(self, match_id: str, actual_outcome: float, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Registra l'esito reale di un match nel meta layer (se disponibile).
+        """
+        if self.ensemble and hasattr(self.ensemble, "register_outcome"):
+            return self.ensemble.register_outcome(match_id, actual_outcome, metadata)
+        logger.warning("Ensemble non disponibile: impossibile registrare outcome.")
+        return False
+
     def get_statistics(self) -> Dict:
         """Get pipeline statistics"""
         return {

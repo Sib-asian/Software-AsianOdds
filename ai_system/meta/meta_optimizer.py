@@ -5,17 +5,19 @@ contestuali (reliability, exploration) per ottenere i pesi finali.
 
 from __future__ import annotations
 
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, TYPE_CHECKING
 import numpy as np
 
-from ..models.meta_learner import MetaLearner
 from .model_registry import ModelRegistry
+
+if TYPE_CHECKING:
+    from ..models.meta_learner import MetaLearner
 
 
 class MetaOptimizer:
     def __init__(
         self,
-        meta_learner: MetaLearner,
+        meta_learner: "MetaLearner",
         registry: ModelRegistry,
         exploration_rate: float = 0.08,
         min_weight: float = 0.02,

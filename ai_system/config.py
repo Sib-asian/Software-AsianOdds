@@ -30,25 +30,25 @@ class AIConfig:
     api_cache_db: str = "api_cache.db"
     predictions_db: str = field(default_factory=lambda: str((Path(__file__).parent / "data" / "storico_analisi.csv")))
 
-      # ============================================================
-      # ENSEMBLE META-MODEL
-      # ============================================================
+    # ============================================================
+    # ENSEMBLE META-MODEL
+    # ============================================================
 
-      # Enable ensemble (combines Dixon-Coles + XGBoost + LSTM)
-      use_ensemble: bool = True  # Set False to use only Dixon-Coles
+    # Enable ensemble (combines Dixon-Coles + XGBoost + LSTM)
+    use_ensemble: bool = True  # Set False to use only Dixon-Coles
 
-      # Load trained models on startup
-      ensemble_load_models: bool = True
+    # Load trained models on startup
+    ensemble_load_models: bool = True
 
-      # Ensemble models directory
-      ensemble_models_dir: str = "ai_system/models"
+    # Ensemble models directory
+    ensemble_models_dir: str = "ai_system/models"
 
-      # Meta-adaptive layer configuration
-      meta_store_filename: str = "meta_feature_store.jsonl"
-      meta_store_max_entries: int = 50000
-      meta_exploration_rate: float = 0.08
-      meta_reliability_decay: float = 0.9
-      meta_bootstrap_window: int = 1000
+    # Meta-adaptive layer configuration
+    meta_store_filename: str = "meta_feature_store.jsonl"
+    meta_store_max_entries: int = 50000
+    meta_exploration_rate: float = 0.08
+    meta_reliability_decay: float = 0.9
+    meta_bootstrap_window: int = 1000
 
     # ============================================================
     # LIVE MONITORING & NOTIFICATIONS
