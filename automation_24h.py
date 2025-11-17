@@ -47,6 +47,17 @@ except ImportError as e:
     logger.error(f"❌ Import error: {e}")
     AI_SYSTEM_AVAILABLE = False
 
+# Import nuovi moduli
+try:
+    from betting_results_tracker import BettingResultsTracker
+    from match_filters import MatchFilters
+    from bankroll_manager import BankrollManager
+    from automated_reports import AutomatedReports
+    NEW_MODULES_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"⚠️  Nuovi moduli non disponibili: {e}")
+    NEW_MODULES_AVAILABLE = False
+
 
 class Automation24H:
     """
@@ -82,6 +93,8 @@ class Automation24H:
         self.notified_opportunities: Set[str] = set()  # Evita duplicati
         self.api_usage_today = 0
         self.last_api_reset = datetime.now().date()
+        self.last_daily_report = datetime.now().date()
+        self.last_weekly_report = datetime.now() - timedelta(days=7)
         
         # Inizializza componenti
         self._init_components(telegram_token, telegram_chat_id)
@@ -126,6 +139,45 @@ class Automation24H:
         except Exception as e:
             logger.error(f"❌ API Manager error: {e}")
             self.api_manager = None
+        
+        # Nuovi moduli (se disponibili)
+        if NEW_MODULES_AVAILABLE:
+            try:
+                self.results_tracker = BettingResultsTracker()
+                logger.info("✅ Results Tracker initialized")
+            except Exception as e:
+                logger.warning(f"⚠️  Results Tracker error: {e}")
+                self.results_tracker = None
+            
+            try:
+                self.match_filters = MatchFilters()
+                logger.info("✅ Match Filters initialized")
+            except Exception as e:
+                logger.warning(f"⚠️  Match Filters error: {e}")
+                self.match_filters = None
+            
+            try:
+                self.bankroll_manager = BankrollManager(initial_bankroll=1000.0)
+                logger.info("✅ Bankroll Manager initialized")
+            except Exception as e:
+                logger.warning(f"⚠️  Bankroll Manager error: {e}")
+                self.bankroll_manager = None
+            
+            # Automated Reports (richiede notifier)
+            if self.notifier and self.results_tracker:
+                try:
+                    self.automated_reports = AutomatedReports(self.notifier, self.results_tracker)
+                    logger.info("✅ Automated Reports initialized")
+                except Exception as e:
+                    logger.warning(f"⚠️  Automated Reports error: {e}")
+                    self.automated_reports = None
+            else:
+                self.automated_reports = None
+        else:
+            self.results_tracker = None
+            self.match_filters = None
+            self.bankroll_manager = None
+            self.automated_reports = None
     
     def start(self, single_run: bool = False):
         """
@@ -179,6 +231,16 @@ class Automation24H:
         
         if not matches:
             logger.info("   No matches to monitor, skipping cycle")
+            return
+        
+        # 1.5. Applica filtri (se disponibili)
+        if self.match_filters:
+            filtered_matches = [m for m in matches if self.match_filters.should_analyze_match(m)]
+            logger.info(f"   After filters: {len(filtered_matches)} matches")
+            matches = filtered_matches
+        
+        if not matches:
+            logger.info("   No matches after filters, skipping cycle")
             return
         
         # 2. Analizza ogni partita
@@ -273,7 +335,8 @@ class Automation24H:
             # Converti eventi TheOddsAPI in formato interno
             matches = []
             now = datetime.now()
-            max_future = now + timedelta(hours=24)  # Solo prossime 24h
+            max_future = now + timedelta(hours=24)  # Prossime 24h
+            min_past = now - timedelta(hours=2)  # Partite iniziate nelle ultime 2h (live)
             
             for event in events:
                 try:
@@ -286,9 +349,21 @@ class Automation24H:
                     commence_time = datetime.fromisoformat(commence_time_str.replace("Z", "+00:00"))
                     commence_time_local = commence_time.replace(tzinfo=None)  # Rimuovi timezone per confronto
                     
-                    # Filtra: solo partite nelle prossime 24h
-                    if commence_time_local < now or commence_time_local > max_future:
-                        continue
+                    # Determina se è live o pre-match
+                    is_live = commence_time_local < now
+                    is_prematch = commence_time_local >= now
+                    
+                    # Filtra:
+                    # - Pre-match: partite nelle prossime 24h
+                    # - Live: partite iniziate nelle ultime 2h (per evitare partite già finite)
+                    if is_prematch:
+                        if commence_time_local > max_future:
+                            continue  # Troppo in futuro
+                    elif is_live:
+                        if commence_time_local < min_past:
+                            continue  # Troppo tempo fa (probabilmente finita)
+                    else:
+                        continue  # Non dovrebbe succedere
                     
                     # Estrai quote migliori da tutti i bookmaker
                     bookmakers = event.get("bookmakers", [])
@@ -330,7 +405,9 @@ class Automation24H:
                             'odds_1': best_odds["home"],
                             'odds_x': best_odds["draw"],
                             'odds_2': best_odds["away"],
-                            'sport_key': event.get("sport_key", "soccer")
+                            'sport_key': event.get("sport_key", "soccer"),
+                            'is_live': is_live,  # Flag per distinguere live/pre-match
+                            'match_status': 'LIVE' if is_live else 'PRE-MATCH'
                         }
                         matches.append(match)
                 
@@ -382,14 +459,30 @@ class Automation24H:
         
         try:
             # Prepara dati match
+            match_date = match.get('date')
+            is_live = match.get('is_live', False)
+            match_status = match.get('match_status', 'PRE-MATCH')
+            
+            # Normalizza match_date: converte datetime a stringa ISO se necessario
+            if match_date is not None:
+                if isinstance(match_date, datetime):
+                    match_date_str = match_date.isoformat()
+                else:
+                    match_date_str = str(match_date)
+            else:
+                match_date_str = None
+            
             match_data = {
                 'home': match.get('home'),
                 'away': match.get('away'),
                 'league': match.get('league'),
-                'match_date': match.get('date'),
+                'date': match_date_str,  # Usa 'date' invece di 'match_date' per compatibilità
+                'match_date': match_date_str,  # Mantieni anche 'match_date' per retrocompatibilità
                 'odds_1': match.get('odds_1'),
                 'odds_x': match.get('odds_x'),
-                'odds_2': match.get('odds_2')
+                'odds_2': match.get('odds_2'),
+                'is_live': is_live,
+                'match_status': match_status
             }
             
             # Prepara odds data
@@ -403,9 +496,38 @@ class Automation24H:
             }
             
             # Analizza con AI Pipeline
-            bankroll = 1000.0  # Bankroll di default
+            # Usa bankroll manager se disponibile
+            if self.bankroll_manager:
+                bankroll = self.bankroll_manager.get_current_bankroll()
+            else:
+                bankroll = 1000.0  # Bankroll di default
+            
             prob_dixon_coles = 0.33  # Default: probabilità uniforme (verrà calcolata dalla pipeline)
             ai_result = self.ai_pipeline.analyze(match_data, prob_dixon_coles, odds_data, bankroll)
+            
+            # Ricalcola stake usando bankroll manager se disponibile
+            if self.bankroll_manager and ai_result.get('final_decision', {}).get('action') == 'BET':
+                final_decision = ai_result.get('final_decision', {})
+                ev = ai_result.get('summary', {}).get('expected_value', 0)
+                odds = final_decision.get('odds', 0)
+                
+                if ev > 0 and odds > 1.0:
+                    # Calcola stake ottimale (25% di Kelly)
+                    optimal_stake = self.bankroll_manager.calculate_stake(
+                        bankroll=bankroll,
+                        kelly_fraction=0.25,
+                        ev=ev * 100 if ev < 1.0 else ev,  # Converti a percentuale se necessario
+                        odds=odds
+                    )
+                    final_decision['stake'] = optimal_stake
+                    ai_result['final_decision'] = final_decision
+            
+            # Verifica filtro market (se disponibile)
+            if self.match_filters:
+                market = ai_result.get('final_decision', {}).get('market', '')
+                if market and not self.match_filters.should_analyze_market(market):
+                    logger.debug(f"   Market {market} filtered out")
+                    return None
             
             # Verifica se è una vera opportunità VALUE BET
             if not self._is_real_value_opportunity(ai_result, match):
@@ -545,13 +667,26 @@ class Automation24H:
             logger.debug(f"   Opportunity {match_id} already notified, skipping")
             return
         
+        # Salva opportunità nel tracker (se disponibile)
+        if self.results_tracker:
+            try:
+                self.results_tracker.save_opportunity(opportunity)
+                logger.debug(f"   Opportunity saved to tracker: {match_id}")
+            except Exception as e:
+                logger.warning(f"⚠️  Error saving opportunity to tracker: {e}")
+        
         # Notifica Telegram
         if self.notifier:
             try:
+                # Determina tipo opportunità (PRE-MATCH o LIVE)
+                match_data = opportunity.get('match_data', {})
+                match_status = match_data.get('match_status', 'PRE-MATCH')
+                opportunity_type = f"AUTO-24H {match_status}"
+                
                 success = self.notifier.send_betting_opportunity(
                     opportunity['match_data'],
                     opportunity['ai_result'],
-                    opportunity_type="AUTO-24H"
+                    opportunity_type=opportunity_type
                 )
                 
                 if success:
@@ -572,6 +707,26 @@ class Automation24H:
             self.last_api_reset = today
             self.notified_opportunities.clear()  # Reset notifiche
             logger.info("🔄 New day: API usage reset")
+            
+            # Invia report giornaliero (se disponibile)
+            if self.automated_reports and today > self.last_daily_report:
+                try:
+                    self.automated_reports.send_daily_report()
+                    self.last_daily_report = today
+                    logger.info("✅ Daily report sent")
+                except Exception as e:
+                    logger.warning(f"⚠️  Error sending daily report: {e}")
+            
+            # Invia report settimanale (se disponibile)
+            if self.automated_reports:
+                days_since_weekly = (datetime.now() - self.last_weekly_report).days
+                if days_since_weekly >= 7:
+                    try:
+                        self.automated_reports.send_weekly_report()
+                        self.last_weekly_report = datetime.now()
+                        logger.info("✅ Weekly report sent")
+                    except Exception as e:
+                        logger.warning(f"⚠️  Error sending weekly report: {e}")
     
     def _signal_handler(self, signum, frame):
         """Gestisce segnali di shutdown"""
