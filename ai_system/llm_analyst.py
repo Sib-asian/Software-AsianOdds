@@ -20,58 +20,44 @@ import logging
 from typing import Dict, List, Optional, Any
 import json
 
+from .utils.llm_client import LLMClient
+
 logger = logging.getLogger(__name__)
 
 
 class LLMAnalyst:
     """
     LLM-powered analyst per spiegazioni e insights.
-
-    Usage:
-        analyst = LLMAnalyst(api_key="your-key", provider="openai")
-        explanation = analyst.explain_prediction(match_data, analysis_result)
-        answer = analyst.answer_question("Perché questa bet?", context)
     """
 
     def __init__(
         self,
         api_key: Optional[str] = None,
-        provider: str = "mock",  # "openai", "anthropic", "mock"
-        model: str = "gpt-4"
+        provider: str = "mock",
+        model: str = "gpt-4",
+        base_url: Optional[str] = None,
+        timeout: int = 30,
     ):
-        """
-        Inizializza LLM Analyst.
-
-        Args:
-            api_key: API key (not needed for mock)
-            provider: "openai", "anthropic", "mock"
-            model: Model name (e.g., "gpt-4", "claude-3-opus")
-        """
         self.api_key = api_key
-        self.provider = provider
+        self.provider = provider.lower()
         self.model = model
+        self.timeout = timeout
+        self.client: Optional[LLMClient] = None
 
-        # Initialize client
-        self.client = None
-        if provider == "openai" and api_key:
-            try:
-                import openai
-                self.client = openai.OpenAI(api_key=api_key)
-                logger.info(f"✅ OpenAI client initialized (model: {model})")
-            except ImportError:
-                logger.warning("⚠️  openai package not installed. Install with: pip install openai")
-                self.provider = "mock"
-        elif provider == "anthropic" and api_key:
-            try:
-                import anthropic
-                self.client = anthropic.Anthropic(api_key=api_key)
-                logger.info(f"✅ Anthropic client initialized (model: {model})")
-            except ImportError:
-                logger.warning("⚠️  anthropic package not installed. Install with: pip install anthropic")
-                self.provider = "mock"
-        else:
-            logger.info("🤖 Using mock LLM (rule-based responses)")
+        try:
+            self.client = LLMClient(
+                provider=self.provider,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+                timeout=timeout,
+            )
+            if self.provider == "mock":
+                logger.info("🤖 Using mock LLM (rule-based responses)")
+        except Exception as exc:
+            logger.warning("LLM client initialization failed (%s). Falling back to mock.", exc)
             self.provider = "mock"
+            self.client = LLMClient(provider="mock", model="mock", api_key=None)
 
     def explain_prediction(
         self,
@@ -339,27 +325,14 @@ Scrivi in {lang_text} in modo professionale ma comprensibile.
 
     def _call_llm(self, prompt: str) -> str:
         """Call LLM API"""
+        if not self.client:
+            return self._mock_explanation({"match": "N/A"}, "it")
         try:
-            if self.provider == "openai":
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": "Sei un esperto analista di scommesse sportive."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=1000
-                )
-                return response.choices[0].message.content
-
-            elif self.provider == "anthropic":
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=1000,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                return response.content[0].text
-
+            messages = [
+                {"role": "system", "content": "Sei un esperto analista di scommesse sportive."},
+                {"role": "user", "content": prompt},
+            ]
+            return self.client.generate_chat(messages, temperature=0.6, max_tokens=900)
         except Exception as e:
             logger.error(f"LLM API call failed: {e}")
             return self._mock_explanation({"match": "N/A"}, "it")

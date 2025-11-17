@@ -348,6 +348,8 @@ class AIConfig:
     llm_playbook_language: str = "it"
     llm_playbook_append_to_notifications: bool = True
     llm_api_key: str = ""
+    llm_api_base: str = ""
+    llm_api_timeout: int = 30
     alert_playbook_path: str = field(default_factory=lambda: str((Path(__file__).parent / "meta_playbook.json")))
 
     # ============================================================

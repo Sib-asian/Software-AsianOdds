@@ -83,7 +83,9 @@ class AIPipeline:
                 self.llm_analyst = LLMAnalyst(
                     api_key=self.config.llm_api_key or None,
                     provider=self.config.llm_playbook_provider,
-                    model=self.config.llm_playbook_model
+                    model=self.config.llm_playbook_model,
+                    base_url=self.config.llm_api_base or None,
+                    timeout=self.config.llm_api_timeout,
                 )
             except Exception as exc:
                 logger.warning("⚠️  LLM Analyst non disponibile: %s", exc)
