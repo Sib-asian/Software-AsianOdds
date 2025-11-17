@@ -43,6 +43,13 @@ class AIConfig:
     # Ensemble models directory
     ensemble_models_dir: str = "ai_system/models"
 
+    # Meta-adaptive layer configuration
+    meta_store_filename: str = "meta_feature_store.jsonl"
+    meta_store_max_entries: int = 50000
+    meta_exploration_rate: float = 0.08
+    meta_reliability_decay: float = 0.9
+    meta_bootstrap_window: int = 1000
+
     # ============================================================
     # LIVE MONITORING & NOTIFICATIONS
     # ============================================================
@@ -68,8 +75,12 @@ class AIConfig:
     telegram_daily_report_time: str = "22:00"  # HH:MM format
 
     # ============================================================
-    # SENTIMENT ANALYSIS - HUGGING FACE API
+    # OUTCOME INGESTION & SENTIMENT ANALYSIS
     # ============================================================
+
+    outcomes_db: str = field(default_factory=lambda: str((Path(__file__).parent / "data" / "match_outcomes.csv")))
+    outcome_status_db: str = field(default_factory=lambda: str((Path(__file__).parent / "data" / "outcome_status.json")))
+    outcome_ttl_hours: float = 168.0  # how often to re-apply outcomes
 
     # Hugging Face API (FREE - optional key for better rate limits)
     # Get free API key at: https://huggingface.co/settings/tokens
@@ -337,6 +348,7 @@ class AIConfig:
     llm_playbook_language: str = "it"
     llm_playbook_append_to_notifications: bool = True
     llm_api_key: str = ""
+    alert_playbook_path: str = field(default_factory=lambda: str((Path(__file__).parent / "meta_playbook.json")))
 
     # ============================================================
     # TRAINING & VALIDATION

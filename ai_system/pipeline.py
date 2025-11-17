@@ -36,6 +36,7 @@ from .blocco_5_risk_manager import RiskManager
 from .blocco_6_odds_tracker import OddsMovementTracker
 from .blocco_7_bayesian_uncertainty import BayesianUncertaintyQuantifier, BayesianResult
 from .models.ensemble import EnsembleMetaModel
+from .meta import evaluate_meta_health, summarize_meta_health
 from .analysis.regime_detector import RegimeDetector
 from .sentiment_analyzer import SentimentAnalyzer, adjust_prediction_with_sentiment
 from .llm_analyst import LLMAnalyst
@@ -93,7 +94,18 @@ class AIPipeline:
         if self.config.use_ensemble:
             try:
                 logger.info("🤖 Initializing Ensemble Meta-Model...")
-                self.ensemble = EnsembleMetaModel(config={'models_dir': self.config.ensemble_models_dir})
+                meta_store_path = Path(self.config.history_dir) / self.config.meta_store_filename
+                ensemble_config = {
+                    'models_dir': self.config.ensemble_models_dir,
+                    'meta_orchestrator': {
+                        'store_path': str(meta_store_path),
+                        'max_entries': self.config.meta_store_max_entries,
+                        'exploration_rate': self.config.meta_exploration_rate,
+                        'reliability_decay': self.config.meta_reliability_decay,
+                        'bootstrap_window': self.config.meta_bootstrap_window,
+                    }
+                }
+                self.ensemble = EnsembleMetaModel(config=ensemble_config)
 
                 # Load trained models if requested
                 if self.config.ensemble_load_models:
@@ -544,6 +556,15 @@ class AIPipeline:
             }
 
             llm_playbook = None
+            meta_health = None
+            if self.ensemble and self.ensemble.adaptive_orchestrator:
+                meta_health = evaluate_meta_health(
+                    store=self.ensemble.adaptive_orchestrator.feature_store,
+                    registry=self.ensemble.adaptive_orchestrator.registry,
+                    limit=200,
+                    exploration_rate=self.ensemble.adaptive_orchestrator.meta_optimizer.exploration_rate,
+                )
+
             if self.llm_analyst and self.config.llm_playbook_enabled:
                 try:
                     llm_text = self.llm_analyst.explain_prediction(
@@ -561,6 +582,7 @@ class AIPipeline:
                     logger.debug("LLM playbook skipped: %s", exc)
 
             final_result["llm_playbook"] = llm_playbook
+            final_result["meta_health"] = meta_health
 
             history_path = Path(self.config.predictions_db)
             append_analysis_to_history(final_result, history_path)
@@ -576,6 +598,9 @@ class AIPipeline:
 
             # Print final summary
             self._print_summary(final_result)
+
+            if meta_health:
+                logger.info("\n" + summarize_meta_health(meta_health))
 
             logger.info(f"\n{'='*70}")
             logger.info(f"✅ Analysis completed in {analysis_time:.2f}s")
@@ -1106,13 +1131,23 @@ class AIPipeline:
 
         logger.info(f"💾 Analysis saved to {filepath}")
 
+    def register_outcome(self, match_id: str, actual_outcome: float, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Registra l'esito reale di un match nel meta layer (se disponibile).
+        """
+        if self.ensemble and hasattr(self.ensemble, "register_outcome"):
+            return self.ensemble.register_outcome(match_id, actual_outcome, metadata)
+        logger.warning("Ensemble non disponibile: impossibile registrare outcome.")
+        return False
+
     def get_statistics(self) -> Dict:
         """Get pipeline statistics"""
         return {
             "total_analyses": len(self.analysis_history),
             "api_stats": self.api_engine.get_statistics(),
             "recent_analyses": self.analysis_history[-10:],  # Last 10
-            "models_status": self._get_models_status()
+            "models_status": self._get_models_status(),
+            "ensemble": self.ensemble.get_statistics() if self.ensemble else None,
         }
 
 

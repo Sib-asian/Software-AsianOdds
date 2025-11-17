@@ -24,6 +24,7 @@ from pathlib import Path
 from .xgboost_predictor import XGBoostPredictor
 from .lstm_predictor import LSTMPredictor
 from .meta_learner import MetaLearner
+from ..meta import AdaptiveOrchestrator, evaluate_meta_health
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,18 @@ class EnsembleMetaModel:
             num_models=3,  # Dixon-Coles + XGBoost + LSTM
             config=self.config.get('meta_learner')
         )
+        self.adaptive_orchestrator = None
+        try:
+            orchestrator_cfg = self.config.get('meta_orchestrator') or {}
+            self.adaptive_orchestrator = AdaptiveOrchestrator(
+                meta_learner=self.meta_learner,
+                config=orchestrator_cfg
+            )
+            self._register_models_with_orchestrator()
+            logger.info("   Adaptive orchestrator enabled")
+        except Exception as exc:
+            self.adaptive_orchestrator = None
+            logger.warning("   ⚠️  Adaptive orchestrator unavailable: %s", exc)
 
         # State
         self.model_names = ['dixon_coles', 'xgboost', 'lstm']
@@ -137,40 +150,72 @@ class EnsembleMetaModel:
             predictions['lstm'] = prob_dixon_coles
 
         # ========================================
-        # STEP 2: Calculate optimal weights via Meta-Learner
+        # STEP 2: Adaptive orchestrator (meta layer)
         # ========================================
 
-        try:
-            weights = self.meta_learner.calculate_weights(predictions, match_data, api_context)
-        except Exception as e:
-            logger.warning(f"Meta-Learner failed: {e}, using default weights")
-            weights = self.meta_learner.default_weights
-
-        # ========================================
-        # STEP 3: Calculate ensemble prediction
-        # ========================================
-
-        ensemble_prob = sum(predictions[model] * weights[model] for model in self.model_names)
-
-        # Clamp to safe range
-        ensemble_prob = np.clip(ensemble_prob, 0.01, 0.99)
-
-        # ========================================
-        # STEP 4: Calculate uncertainty and confidence
-        # ========================================
-
-        # Uncertainty: std dev of predictions (higher = models disagree)
+        orchestrator_payload = None
+        weights: Optional[Dict[str, float]] = None
+        ensemble_prob: Optional[float] = None
+        meta_confidence: Optional[float] = None
         pred_values = list(predictions.values())
-        uncertainty = float(np.std(pred_values))
+        uncertainty = float(np.std(pred_values)) if len(pred_values) > 1 else 0.0
 
-        # Confidence: based on agreement and data quality
+        if self.adaptive_orchestrator:
+            try:
+                orchestrator_payload = self.adaptive_orchestrator.blend_predictions(
+                    match=match_data,
+                    predictions=predictions,
+                    api_context=api_context,
+                    metadata={
+                        "match_history_available": bool(match_history),
+                        "model_failures": dict(self.model_failures),
+                    }
+                )
+                weights = orchestrator_payload.get("weights")
+                ensemble_prob = orchestrator_payload.get("probability")
+                meta_confidence = orchestrator_payload.get("meta_confidence")
+                uncertainty = orchestrator_payload.get("uncertainty", uncertainty)
+            except Exception as exc:
+                logger.warning("Adaptive orchestrator failed: %s", exc)
+                orchestrator_payload = None
+                weights = None
+                ensemble_prob = None
+                meta_confidence = None
+
+        # ========================================
+        # STEP 3: Fallback to classic Meta-Learner if needed
+        # ========================================
+
+        if weights is None or ensemble_prob is None:
+            try:
+                weights = self.meta_learner.calculate_weights(predictions, match_data, api_context)
+            except Exception as e:
+                logger.warning(f"Meta-Learner failed: {e}, using default weights")
+                weights = self.meta_learner.default_weights
+            ensemble_prob = sum(predictions[model] * weights[model] for model in self.model_names)
+            ensemble_prob = float(np.clip(ensemble_prob, 0.01, 0.99))
+
+        # ========================================
+        # STEP 4: Calculate confidence
+        # ========================================
+
         confidence = self._calculate_confidence(uncertainty, api_context, weights)
+        if meta_confidence is not None:
+            confidence = float((confidence + meta_confidence) / 2.0)
 
         # ========================================
         # STEP 5: Create detailed breakdown
         # ========================================
 
         breakdown = self._create_breakdown(predictions, weights, ensemble_prob)
+        if orchestrator_payload:
+            breakdown['meta'] = {
+                'match_id': orchestrator_payload.get('match_id'),
+                'reliability': orchestrator_payload.get('reliability'),
+                'context_features': orchestrator_payload.get('context_features'),
+                'diagnostics': orchestrator_payload.get('diagnostics'),
+                'store_path': orchestrator_payload.get('store_path'),
+            }
 
         # ========================================
         # STEP 6: Assemble result
@@ -183,6 +228,7 @@ class EnsembleMetaModel:
             'uncertainty': uncertainty,
             'confidence': confidence,
             'breakdown': breakdown,
+            'meta': orchestrator_payload,
 
             # Additional metadata
             'metadata': {
@@ -190,7 +236,9 @@ class EnsembleMetaModel:
                 'xgboost_trained': self.xgboost.is_trained,
                 'lstm_trained': self.lstm.is_trained,
                 'meta_learner_trained': self.meta_learner.is_trained,
-                'num_predictions_history': len(self.prediction_history)
+                'num_predictions_history': len(self.prediction_history),
+                'adaptive_enabled': self.adaptive_orchestrator is not None,
+                'adaptive_match_id': orchestrator_payload.get('match_id') if orchestrator_payload else None,
             }
         }
 
@@ -209,6 +257,40 @@ class EnsembleMetaModel:
         logger.debug(f"Ensemble prediction: {ensemble_prob:.3f} (uncertainty: {uncertainty:.3f})")
 
         return result
+
+    def register_outcome(self, match_id: str, actual_outcome: float, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Propaga l'esito reale al meta layer per aggiornare affidabilità e feature store.
+        """
+        if not self.adaptive_orchestrator:
+            logger.warning("Adaptive orchestrator non disponibile: impossibile registrare outcome")
+            return False
+        return self.adaptive_orchestrator.register_outcome(match_id, actual_outcome, metadata)
+
+    def _register_models_with_orchestrator(self):
+        if not self.adaptive_orchestrator:
+            return
+        try:
+            self.adaptive_orchestrator.register_model(
+                "dixon_coles",
+                model_type="statistical",
+                tags=["baseline", "poisson"],
+                metadata={"trained": True},
+            )
+            self.adaptive_orchestrator.register_model(
+                "xgboost",
+                model_type="gradient_boosting",
+                tags=["ml"],
+                metadata={"trained": self.xgboost.is_trained},
+            )
+            self.adaptive_orchestrator.register_model(
+                "lstm",
+                model_type="sequence_model",
+                tags=["nn", "sequence"],
+                metadata={"trained": self.lstm.is_trained},
+            )
+        except Exception as exc:
+            logger.debug("Unable to register models with adaptive orchestrator: %s", exc)
 
     def _calculate_confidence(
         self,
@@ -363,6 +445,15 @@ class EnsembleMetaModel:
         """
         Ottieni statistiche ensemble.
         """
+        meta_stats = None
+        if self.adaptive_orchestrator:
+            meta_stats = evaluate_meta_health(
+                store=self.adaptive_orchestrator.feature_store,
+                registry=self.adaptive_orchestrator.registry,
+                limit=500,
+                exploration_rate=self.adaptive_orchestrator.meta_optimizer.exploration_rate,
+            )
+
         return {
             'total_predictions': len(self.prediction_history),
             'models_status': {
@@ -370,9 +461,9 @@ class EnsembleMetaModel:
                 'lstm_trained': self.lstm.is_trained,
                 'meta_learner_trained': self.meta_learner.is_trained
             },
-            'recent_predictions': self.prediction_history[-10:] if self.prediction_history else []
+            'recent_predictions': self.prediction_history[-10:] if self.prediction_history else [],
+            'meta': meta_stats,
         }
-
 
 if __name__ == "__main__":
     # Test Ensemble Model

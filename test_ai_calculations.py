@@ -13,21 +13,25 @@ from typing import Dict, Any
 import json
 
 # Importa le funzioni necessarie da Frontendcloud.py
-from Frontendcloud import (
-    risultato_completo_improved,
-    build_score_matrix,
-    calc_match_result_from_matrix,
-    calc_over_under_from_matrix,
-    btts_probability_bivariate,
-    prob_dc_over_from_matrix,
-    prob_dc_btts_from_matrix,
-    prob_dc_multigol_from_matrix,
-    prob_esito_over_from_matrix,
-    prob_esito_btts_from_matrix,
-    prob_esito_multigol_from_matrix,
-    validate_spread,
-    validate_total,
-)
+try:
+    from Frontendcloud import (
+        risultato_completo_improved,
+        build_score_matrix,
+        calc_match_result_from_matrix,
+        calc_over_under_from_matrix,
+        bitts probability_bivariate,
+        prob_dc_over_from_matrix,
+        prob_dc_btts_from_matrix,
+        prob_dc_multigol_from_matrix,
+        prob_esito_over_from_matrix,
+        prob_esito_btts_from_matrix,
+        prob_esito_multigol_from_matrix,
+        validate_spread,
+        validate_total,
+    )
+    FRONTEND_DEPS = True
+except ModuleNotFoundError:  # e.g. bs4/streamlit missing
+    FRONTEND_DEPS = False
 
 def test_mercati_base():
     """Test calcoli mercati base: 1X2, Over/Under, GG/NG."""

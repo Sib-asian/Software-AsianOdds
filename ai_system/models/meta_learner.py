@@ -18,6 +18,12 @@ import torch.optim as optim
 from typing import Dict, List, Optional, Tuple
 import logging
 
+from ..meta.context_features import (
+    CONTEXT_FEATURE_NAMES,
+    build_context_features,
+    context_dict_to_array,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -81,18 +87,7 @@ class MetaLearner:
         self.config = config or {}
 
         # Context features definition
-        self.context_features = [
-            'league_quality',           # 0-1
-            'data_availability',        # 0-1 (API data quality)
-            'historical_matches',       # Normalized count
-            'model_agreement',          # Std dev of predictions
-            'time_to_kickoff',          # Hours (normalized)
-            'h2h_relevance',            # 0-1
-            'injuries_impact',          # 0-1
-            'form_reliability',         # 0-1
-            'is_top_league',            # 0 or 1
-            'season_progress',          # 0-1 (early vs late season)
-        ]
+        self.context_features = list(CONTEXT_FEATURE_NAMES)
         self.num_context_features = len(self.context_features)
 
         # Model names
@@ -129,15 +124,16 @@ class MetaLearner:
         Returns:
             Dict con weights per ogni modello (sum=1.0)
         """
-        # Extract context features
-        context = self._extract_context_features(predictions, match_data, api_context)
+        # Extract context features (as dict + array for downstream use)
+        context_dict = build_context_features(match_data, predictions, api_context)
+        context = context_dict_to_array(context_dict, self.context_features)
 
         if self.is_trained and self.net is not None:
             # Use trained neural network
             weights = self._predict_weights_nn(context)
         else:
             # Use rule-based weights
-            weights = self._calculate_rule_based_weights(context, predictions)
+            weights = self._calculate_rule_based_weights(context, context_dict, predictions)
 
         # Ensure weights sum to 1.0 (numerical stability)
         total = sum(weights.values())
@@ -160,68 +156,8 @@ class MetaLearner:
         """
         Estrae context features per decision making.
         """
-        features = {}
-
-        # League quality
-        league = match_data.get('league', '').lower()
-        features['league_quality'] = self._encode_league_quality(league)
-        features['is_top_league'] = 1.0 if features['league_quality'] >= 0.85 else 0.0
-
-        # Data availability
-        if api_context:
-            features['data_availability'] = api_context.get('metadata', {}).get('data_quality', 0.5)
-        else:
-            features['data_availability'] = 0.3  # Low when no API
-
-        # Historical matches count
-        if api_context:
-            h2h_count = api_context.get('match_data', {}).get('h2h', {}).get('total', 5)
-            features['historical_matches'] = min(h2h_count / 20.0, 1.0)  # Normalize
-        else:
-            features['historical_matches'] = 0.2
-
-        # Model agreement (how much models agree)
-        pred_values = list(predictions.values())
-        if len(pred_values) > 1:
-            # Clip std to [0, 1] to prevent negative agreement
-            features['model_agreement'] = max(0.0, 1.0 - min(np.std(pred_values), 1.0))
-        else:
-            features['model_agreement'] = 0.5
-
-        # Time to kickoff
-        features['time_to_kickoff'] = min(match_data.get('hours_to_kickoff', 24) / 48.0, 1.0)
-
-        # H2H relevance
-        if api_context:
-            h2h_total = api_context.get('match_data', {}).get('h2h', {}).get('total', 0)
-            features['h2h_relevance'] = min(h2h_total / 10.0, 1.0)
-        else:
-            features['h2h_relevance'] = 0.3
-
-        # Injuries impact
-        if api_context:
-            home_injuries = len(api_context.get('home_context', {}).get('data', {}).get('injuries', []))
-            away_injuries = len(api_context.get('away_context', {}).get('data', {}).get('injuries', []))
-            features['injuries_impact'] = min((home_injuries + away_injuries) / 10.0, 1.0)
-        else:
-            features['injuries_impact'] = 0.0
-
-        # Form reliability (quanto è affidabile la form recente)
-        if api_context:
-            # Se abbiamo dati, form è più affidabile
-            features['form_reliability'] = 0.8
-        else:
-            features['form_reliability'] = 0.3
-
-        # Season progress (early season vs late season)
-        # Early season: meno affidabile (pochi dati)
-        # Late season: più affidabile
-        features['season_progress'] = match_data.get('season_progress', 0.5)  # 0-1
-
-        # Convert to array in consistent order
-        feature_array = np.array([features[name] for name in self.context_features])
-
-        return feature_array
+        context_dict = build_context_features(match_data, predictions, api_context)
+        return context_dict_to_array(context_dict, self.context_features)
 
     def _predict_weights_nn(self, context: np.ndarray) -> Dict[str, float]:
         """
@@ -244,6 +180,7 @@ class MetaLearner:
     def _calculate_rule_based_weights(
         self,
         context: np.ndarray,
+        context_dict: Dict[str, float],
         predictions: Dict[str, float]
     ) -> Dict[str, float]:
         """
@@ -259,8 +196,9 @@ class MetaLearner:
         # Start with default weights
         weights = self.default_weights.copy()
 
-        # Extract context features
-        context_dict = {name: context[i] for i, name in enumerate(self.context_features)}
+        # Ensure context features dict is available
+        if not context_dict:
+            context_dict = {name: context[i] for i, name in enumerate(self.context_features)}
 
         # RULE 1: Top leagues favor Dixon-Coles
         if context_dict['is_top_league'] > 0.5:
@@ -513,24 +451,6 @@ class MetaLearner:
             # Uniform distribution
             return {name: 1.0/self.num_models for name in self.model_names}
 
-    def _encode_league_quality(self, league: str) -> float:
-        """Mappa league a quality score"""
-        scores = {
-            'serie a': 0.90,
-            'premier league': 0.95,
-            'la liga': 0.92,
-            'bundesliga': 0.90,
-            'ligue 1': 0.85,
-            'champions league': 1.00,
-            'serie b': 0.70,
-            'championship': 0.75,
-        }
-
-        for league_name, score in scores.items():
-            if league_name in league:
-                return score
-
-        return 0.75  # Default
 
 
 if __name__ == "__main__":
