@@ -347,7 +347,7 @@ class AIConfig:
     llm_playbook_model: str = "gpt-4"
     llm_playbook_language: str = "it"
     llm_playbook_append_to_notifications: bool = True
-    llm_api_key: str = ""
+    llm_api_key: str = "tlNvftSj6tYLVfSRRFvIrN8QK"
     llm_api_base: str = ""
     llm_api_timeout: int = 30
     alert_playbook_path: str = field(default_factory=lambda: str((Path(__file__).parent / "meta_playbook.json")))
@@ -452,7 +452,7 @@ class AIConfig:
         if not self.huggingface_api_key:
             self.huggingface_api_key = os.getenv("HUGGINGFACE_API_KEY", "")
         if not self.llm_api_key:
-            self.llm_api_key = os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", ""))
+            self.llm_api_key = os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", "tlNvftSj6tYLVfSRRFvIrN8QK"))
 
         # Valida che i pesi sommino a 1.0
         weight_sum = sum(self.confidence_weights.values())
