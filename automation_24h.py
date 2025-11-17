@@ -20,6 +20,7 @@ import json
 import time
 import signal
 import sys
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -68,6 +69,18 @@ try:
 except ImportError as e:
     logger.warning(f"⚠️  Sistemi AI avanzati non disponibili: {e}")
     ADVANCED_AI_AVAILABLE = False
+
+# Import nuovi sistemi avanzati 24/7
+try:
+    from odds_monitor import OddsMonitor
+    from result_tracker_auto import ResultTrackerAuto
+    from pre_match_alerter import PreMatchAlerter
+    from arbitrage_detector_auto import ArbitrageDetectorAuto
+    from news_sentiment_analyzer import NewsSentimentAnalyzer
+    ADVANCED_SYSTEMS_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"⚠️  Sistemi avanzati 24/7 non disponibili: {e}")
+    ADVANCED_SYSTEMS_AVAILABLE = False
 
 
 class Automation24H:
@@ -149,6 +162,14 @@ class Automation24H:
             self.parameter_optimizer = None
             logger.warning("⚠️  Advanced AI systems not available")
         
+        # API Manager (deve essere prima di tutto)
+        try:
+            self.api_manager = APIManager()
+            logger.info("✅ API Manager initialized")
+        except Exception as e:
+            logger.error(f"❌ API Manager error: {e}")
+            self.api_manager = None
+        
         # Telegram Notifier
         if telegram_token and telegram_chat_id:
             self.notifier = TelegramNotifier(
@@ -163,13 +184,29 @@ class Automation24H:
             self.notifier = None
             logger.warning("⚠️  Telegram not configured")
         
-        # API Manager
-        try:
-            self.api_manager = APIManager()
-            logger.info("✅ API Manager initialized")
-        except Exception as e:
-            logger.error(f"❌ API Manager error: {e}")
-            self.api_manager = None
+        # Sistemi avanzati 24/7 (dopo notifier e api_manager)
+        if ADVANCED_SYSTEMS_AVAILABLE:
+            self.odds_monitor = OddsMonitor()
+            self.result_tracker_auto = ResultTrackerAuto(api_manager=self.api_manager)
+            self.pre_match_alerter = PreMatchAlerter(notifier=self.notifier)
+            self.arbitrage_detector = ArbitrageDetectorAuto(min_profit_pct=1.0)
+            
+            # News analyzer (richiede sentiment analyzer se disponibile)
+            sentiment_analyzer = None
+            if self.ai_pipeline and hasattr(self.ai_pipeline, 'sentiment_analyzer'):
+                sentiment_analyzer = self.ai_pipeline.sentiment_analyzer
+            self.news_analyzer = NewsSentimentAnalyzer(
+                newsapi_key=os.getenv('NEWSAPI_KEY'),
+                sentiment_analyzer=sentiment_analyzer
+            )
+            logger.info("✅ Advanced 24/7 systems initialized")
+        else:
+            self.odds_monitor = None
+            self.result_tracker_auto = None
+            self.pre_match_alerter = None
+            self.arbitrage_detector = None
+            self.news_analyzer = None
+            logger.warning("⚠️  Advanced 24/7 systems not available")
         
         # Nuovi moduli (se disponibili)
         if NEW_MODULES_AVAILABLE:
@@ -256,6 +293,39 @@ class Automation24H:
         # Reset API usage se nuovo giorno
         self._reset_api_usage_if_needed()
         
+        # 🆕 NUOVO: Monitoraggio quote real-time
+        if self.odds_monitor:
+            try:
+                self._monitor_odds_movements()
+            except Exception as e:
+                logger.debug(f"⚠️  Odds monitoring error: {e}")
+        
+        # 🆕 NUOVO: Tracking risultati automatico
+        if self.result_tracker_auto:
+            try:
+                self._update_match_results()
+            except Exception as e:
+                logger.debug(f"⚠️  Result tracking error: {e}")
+        
+        # 🆕 NUOVO: Alert pre-partita
+        if self.pre_match_alerter:
+            try:
+                self.pre_match_alerter.check_and_send_alerts()
+            except Exception as e:
+                logger.debug(f"⚠️  Pre-match alert error: {e}")
+        
+        # 🆕 NUOVO: Analisi news (ogni 30 minuti)
+        if self.news_analyzer:
+            if not hasattr(self, 'last_news_check'):
+                self.last_news_check = datetime.now() - timedelta(minutes=31)
+            time_since_news = (datetime.now() - self.last_news_check).total_seconds()
+            if time_since_news > 1800:  # 30 minuti
+                try:
+                    self._check_news_alerts()
+                    self.last_news_check = datetime.now()
+                except Exception as e:
+                    logger.debug(f"⚠️  News check error: {e}")
+        
         # 1. Ottieni partite da monitorare
         matches = self._get_matches_to_monitor()
         logger.info(f"   Found {len(matches)} matches to monitor")
@@ -278,10 +348,29 @@ class Automation24H:
         opportunities_found = 0
         for match in matches:
             try:
+                # 🆕 NUOVO: Rileva arbitraggi prima di analisi normale
+                if self.arbitrage_detector:
+                    self._check_arbitrage(match)
+                
                 opportunity = self._analyze_match(match)
                 if opportunity:
                     opportunities_found += 1
                     self._handle_opportunity(opportunity)
+                    
+                    # 🆕 NUOVO: Schedula alert pre-partita
+                    if self.pre_match_alerter and match.get('date'):
+                        try:
+                            match_date = match.get('date')
+                            if isinstance(match_date, str):
+                                match_date = datetime.fromisoformat(match_date.replace('Z', '+00:00'))
+                            self.pre_match_alerter.schedule_alert(
+                                match_id=match.get('id'),
+                                match_data=opportunity.get('match_data', {}),
+                                match_date=match_date,
+                                alert_type='OPPORTUNITY'
+                            )
+                        except Exception as e:
+                            logger.debug(f"⚠️  Error scheduling pre-match alert: {e}")
             except Exception as e:
                 logger.error(f"❌ Error analyzing match {match.get('id', 'unknown')}: {e}")
                 continue
@@ -911,6 +1000,135 @@ class Automation24H:
         except Exception as e:
             logger.warning(f"⚠️  Error generating enhanced report: {e}")
             return ""
+    
+    def _monitor_odds_movements(self):
+        """Monitora movimenti quote e invia alert"""
+        if not self.odds_monitor:
+            return
+        
+        try:
+            # Ottieni partite monitorate
+            matches = list(self.monitored_matches.values())
+            
+            for match in matches:
+                match_id = match.get('id')
+                if not match_id:
+                    continue
+                
+                # Registra quote attuali
+                movements = self.odds_monitor.record_odds(
+                    match_id=match_id,
+                    odds_home=match.get('odds_1', 0),
+                    odds_draw=match.get('odds_x', 0),
+                    odds_away=match.get('odds_2', 0)
+                )
+                
+                # Invia alert per movimenti significativi
+                for movement in movements:
+                    if movement.is_sharp_money or abs(movement.movement_percent) > 5:
+                        if self.notifier:
+                            message = (
+                                f"⚡ Movimento Quote Rilevato!\n\n"
+                                f"Match: {match.get('home')} vs {match.get('away')}\n"
+                                f"Market: {movement.market.upper()}\n"
+                                f"Quote: {movement.old_odds:.2f} → {movement.new_odds:.2f}\n"
+                                f"Movimento: {movement.movement_percent:+.2f}%\n"
+                                f"{'🚨 SHARP MONEY!' if movement.is_sharp_money else ''}"
+                            )
+                            try:
+                                self.notifier._send_message(message)
+                            except:
+                                pass
+        except Exception as e:
+            logger.debug(f"⚠️  Error monitoring odds: {e}")
+    
+    def _update_match_results(self):
+        """Aggiorna risultati partite automaticamente"""
+        if not self.result_tracker_auto:
+            return
+        
+        try:
+            # Aggiungi partite da tracciare
+            for match_id, match in self.monitored_matches.items():
+                self.result_tracker_auto.add_match_to_track(
+                    match_id=match_id,
+                    home_team=match.get('home', ''),
+                    away_team=match.get('away', ''),
+                    league=match.get('league'),
+                    match_date=match.get('date')
+                )
+            
+            # Aggiorna risultati
+            updated_results = self.result_tracker_auto.update_results()
+            
+            # Aggiorna betting results tracker se partita finita
+            for result in updated_results:
+                if result.status == "FINISHED" and self.results_tracker:
+                    # Determina outcome scommessa (da implementare con logica specifica)
+                    # self.result_tracker_auto.update_betting_results(...)
+                    pass
+        except Exception as e:
+            logger.debug(f"⚠️  Error updating results: {e}")
+    
+    def _check_arbitrage(self, match: Dict):
+        """Controlla arbitraggi per una partita"""
+        if not self.arbitrage_detector:
+            return
+        
+        try:
+            # Per ora usa quote singole (da espandere con multiple bookmaker)
+            # TheOddsAPI supporta multiple bookmaker, ma per ora usiamo best odds
+            bookmaker_odds = {
+                'best': {
+                    'home': match.get('odds_1', 0),
+                    'draw': match.get('odds_x', 0),
+                    'away': match.get('odds_2', 0)
+                }
+            }
+            
+            # Rileva arbitraggio
+            arbitrage = self.arbitrage_detector.detect_arbitrage(
+                match_id=match.get('id'),
+                match_data=match,
+                bookmaker_odds=bookmaker_odds
+            )
+            
+            if arbitrage and self.notifier:
+                message = self.arbitrage_detector.format_arbitrage_message(arbitrage)
+                try:
+                    self.notifier._send_message(message)
+                    logger.info(f"💰 Arbitraggio trovato e notificato: {match.get('id')}")
+                except:
+                    pass
+        except Exception as e:
+            logger.debug(f"⚠️  Error checking arbitrage: {e}")
+    
+    def _check_news_alerts(self):
+        """Controlla news e invia alert per notizie importanti"""
+        if not self.news_analyzer:
+            return
+        
+        try:
+            # Recupera news sportive
+            news_items = self.news_analyzer.fetch_sports_news(query="football", max_results=10)
+            
+            # Filtra solo notizie importanti
+            important_news = [
+                news for news in news_items
+                if news.importance in ['HIGH', 'CRITICAL']
+            ]
+            
+            # Invia alert per notizie importanti
+            for news in important_news:
+                if self.notifier:
+                    message = self.news_analyzer.format_news_alert(news)
+                    try:
+                        self.notifier._send_message(message)
+                        logger.info(f"📰 News importante notificata: {news.title[:50]}")
+                    except:
+                        pass
+        except Exception as e:
+            logger.debug(f"⚠️  Error checking news: {e}")
     
     def _signal_handler(self, signum, frame):
         """Gestisce segnali di shutdown"""
