@@ -21,6 +21,7 @@ import logging
 import os
 import sqlite3
 import time
+from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Any, List
@@ -29,6 +30,42 @@ import urllib.parse
 import urllib.error
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ProviderHealth:
+    success: int = 0
+    failures: int = 0
+    last_error: Optional[str] = None
+    last_success_ts: Optional[str] = None
+    last_failure_ts: Optional[str] = None
+    last_latency_ms: Optional[float] = None
+
+    def mark_success(self, latency_ms: Optional[float] = None):
+        self.success += 1
+        self.last_success_ts = datetime.utcnow().isoformat()
+        if latency_ms is not None:
+            self.last_latency_ms = round(latency_ms, 2)
+        self.last_error = None
+
+    def mark_failure(self, error: str):
+        self.failures += 1
+        self.last_error = error
+        self.last_failure_ts = datetime.utcnow().isoformat()
+
+    def should_skip(self, failure_threshold: int, cooldown_seconds: int) -> bool:
+        if self.failures < failure_threshold:
+            return False
+        if not self.last_failure_ts:
+            return False
+        try:
+            last_failure = datetime.fromisoformat(self.last_failure_ts)
+        except ValueError:
+            return False
+        return (datetime.utcnow() - last_failure).total_seconds() < cooldown_seconds
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 # ============================================================
 # CONFIGURATION
@@ -818,6 +855,112 @@ class APIFootballProvider:
             ]
         }
 
+    def get_head_to_head_stats(
+        self,
+        home_team: str,
+        away_team: str,
+        last: int = 10,
+        season: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Return summarized head-to-head stats between two teams."""
+        home_entry = self.search_team(home_team)
+        away_entry = self.search_team(away_team)
+        if not home_entry or not away_entry:
+            return None
+
+        home_id = (home_entry.get("team") or {}).get("id")
+        away_id = (away_entry.get("team") or {}).get("id")
+        if not home_id or not away_id:
+            return None
+
+        params = {"h2h": f"{home_id}-{away_id}", "last": max(1, int(last))}
+        if season:
+            params["season"] = season
+
+        fixtures = self._request("fixtures/headtohead", params)
+        if not fixtures or not fixtures.get("response"):
+            return None
+
+        return self._summarize_h2h(fixtures["response"], home_id, away_id, last)
+
+    def _summarize_h2h(
+        self,
+        fixtures: List[Dict[str, Any]],
+        home_id: int,
+        away_id: int,
+        last: int
+    ) -> Dict[str, Any]:
+        total = len(fixtures)
+        if total == 0:
+            return {}
+
+        home_wins = draws = away_wins = 0
+        goals_home: List[int] = []
+        goals_away: List[int] = []
+        recent_matches: List[Dict[str, Any]] = []
+
+        for fixture in fixtures[:last]:
+            teams = fixture.get("teams", {}) or {}
+            fixture_info = fixture.get("fixture") or {}
+            goals = fixture.get("goals") or {}
+
+            goals_h = goals.get("home")
+            goals_a = goals.get("away")
+            if goals_h is None or goals_a is None:
+                continue
+
+            record = {
+                "date": fixture_info.get("date"),
+                "home": (teams.get("home") or {}).get("name"),
+                "away": (teams.get("away") or {}).get("name"),
+                "score": f"{goals_h}-{goals_a}",
+                "venue": (fixture_info.get("venue") or {}).get("name"),
+            }
+
+            if (teams.get("home") or {}).get("id") == home_id:
+                goals_home.append(goals_h)
+                goals_away.append(goals_a)
+                if goals_h > goals_a:
+                    home_wins += 1
+                    record["result"] = "H"
+                elif goals_h < goals_a:
+                    away_wins += 1
+                    record["result"] = "A"
+                else:
+                    draws += 1
+                    record["result"] = "D"
+            else:
+                goals_home.append(goals_a)
+                goals_away.append(goals_h)
+                if goals_a > goals_h:
+                    home_wins += 1
+                    record["result"] = "H"
+                elif goals_a < goals_h:
+                    away_wins += 1
+                    record["result"] = "A"
+                else:
+                    draws += 1
+                    record["result"] = "D"
+
+            recent_matches.append(record)
+
+        avg_home = sum(goals_home) / len(goals_home) if goals_home else 0.0
+        avg_away = sum(goals_away) / len(goals_away) if goals_away else 0.0
+
+        return {
+            "total_matches": total,
+            "home_wins": home_wins,
+            "draws": draws,
+            "away_wins": away_wins,
+            "home_win_pct": round(home_wins / total * 100, 1) if total else 0.0,
+            "draw_pct": round(draws / total * 100, 1) if total else 0.0,
+            "away_win_pct": round(away_wins / total * 100, 1) if total else 0.0,
+            "avg_goals_home": round(avg_home, 2),
+            "avg_goals_away": round(avg_away, 2),
+            "avg_total_goals": round(avg_home + avg_away, 2),
+            "recent_matches": recent_matches[: min(len(recent_matches), 5)],
+        }
+
     @staticmethod
     def _infer_style_from_form(form: str) -> str:
         wins = form.count("W")
@@ -939,6 +1082,9 @@ class APIManager:
             "api-football": APIFootballProvider(),
             "football-data": FootballDataProvider()
         }
+        self.provider_health = {
+            name: ProviderHealth() for name in self.providers.keys()
+        }
 
         logger.info("✅ API Manager initialized")
 
@@ -985,19 +1131,49 @@ class APIManager:
             "api_calls_used": 0
         }
 
+    def _mark_provider_success(self, provider: str, start_time: float):
+        health = self.provider_health.get(provider)
+        if not health:
+            return
+        latency_ms = (time.perf_counter() - start_time) * 1000
+        health.mark_success(latency_ms=latency_ms)
+
+    def _mark_provider_failure(self, provider: str, error: str):
+        health = self.provider_health.get(provider)
+        if not health:
+            return
+        health.mark_failure(error)
+
+    def _provider_available(self, provider: str) -> bool:
+        health = self.provider_health.get(provider)
+        if not health:
+            return True
+        failure_threshold = 3
+        cooldown_seconds = 300
+        if health.should_skip(failure_threshold, cooldown_seconds):
+            logger.debug(
+                "Skipping provider %s due to repeated failures (last_error=%s)",
+                provider,
+                health.last_error,
+            )
+            return False
+        return True
+
     def _fetch_from_apis(self, team: str, league: str) -> Optional[Dict]:
         """Try to fetch from API providers"""
 
         # Try TheSportsDB first (free, unlimited)
-        if self.quota.can_use("thesportsdb", calls=1):
+        if self._provider_available("thesportsdb") and self.quota.can_use("thesportsdb", calls=1):
             logger.info(f"📡 Trying TheSportsDB for {team}...")
 
             try:
+                start = time.perf_counter()
                 provider = self.providers["thesportsdb"]
                 team_data = provider.search_team(team)
 
                 if team_data:
                     self.quota.log_usage("thesportsdb", calls=1)
+                    self._mark_provider_success("thesportsdb", start)
 
                     # Extract useful info
                     context = {
@@ -1022,17 +1198,25 @@ class APIManager:
                         "api_calls_used": 1
                     }
             except Exception as e:
+                self._mark_provider_failure("thesportsdb", str(e))
                 logger.error(f"❌ TheSportsDB error: {e}")
 
         # Try API-Football if key available
         api_football = self.providers.get("api-football")
-        if api_football and api_football.api_key and self.quota.can_use("api-football", calls=1):
+        if (
+            api_football
+            and api_football.api_key
+            and self._provider_available("api-football")
+            and self.quota.can_use("api-football", calls=1)
+        ):
             logger.info(f"📡 Trying API-Football for {team}...")
             try:
+                start = time.perf_counter()
                 info = api_football.get_team_info(team, league)
                 if info:
                     calls_used = info.get("api_calls_used", 1)
                     self.quota.log_usage("api-football", calls=calls_used)
+                    self._mark_provider_success("api-football", start)
                     return {
                         "source": "api",
                         "data": info["data"],
@@ -1040,16 +1224,24 @@ class APIManager:
                         "api_calls_used": calls_used
                     }
             except Exception as exc:
+                self._mark_provider_failure("api-football", str(exc))
                 logger.error(f"❌ API-Football error: {exc}")
 
         # Try Football-Data.org as fallback premium source
         football_data = self.providers.get("football-data")
-        if football_data and football_data.api_key and self.quota.can_use("football-data", calls=1):
+        if (
+            football_data
+            and football_data.api_key
+            and self._provider_available("football-data")
+            and self.quota.can_use("football-data", calls=1)
+        ):
             logger.info(f"📡 Trying Football-Data.org for {team}...")
             try:
+                start = time.perf_counter()
                 info = football_data.get_team_info(team, league)
                 if info:
                     self.quota.log_usage("football-data", calls=info.get("api_calls_used", 1))
+                    self._mark_provider_success("football-data", start)
                     return {
                         "source": "api",
                         "data": info["data"],
@@ -1057,6 +1249,7 @@ class APIManager:
                         "api_calls_used": info.get("api_calls_used", 1)
                     }
             except Exception as exc:
+                self._mark_provider_failure("football-data", str(exc))
                 logger.error(f"❌ Football-Data error: {exc}")
 
         # Other providers not implemented in free tier
@@ -1112,6 +1305,10 @@ class APIManager:
                     "used": usage.get("thesportsdb", 0),
                     "note": "Unlimited (free)"
                 }
+            },
+            "provider_health": {
+                name: health.to_dict()
+                for name, health in self.provider_health.items()
             }
         }
 

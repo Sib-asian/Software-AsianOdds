@@ -15,11 +15,14 @@ Utilizza:
 - Football-Data.org (opzionale)
 """
 
+import asyncio
 import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import json
 
@@ -36,6 +39,7 @@ except ImportError:
 
 from .config import AIConfig
 from .utils.statsbomb_client import StatsBombClient, StatsBombSettings
+from .utils.theodds_api_client import TheOddsAPIClient
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +95,27 @@ class APIDataEngine:
             )
             self.statsbomb_client = StatsBombClient(sb_settings)
 
+        cache_dir = self.config.cache_dir
+        if not isinstance(cache_dir, Path):
+            cache_dir = Path(cache_dir)
+        self.odds_history_dir = cache_dir / "odds_history"
+        self.odds_history_dir.mkdir(parents=True, exist_ok=True)
+
+        self.theodds_client: Optional[TheOddsAPIClient] = None
+        if self.config.theodds_enabled and self.config.theodds_api_key:
+            self.theodds_client = TheOddsAPIClient(
+                api_key=self.config.theodds_api_key,
+                regions=self.config.theodds_regions,
+                markets=self.config.theodds_markets,
+                primary_market=self.config.theodds_primary_market,
+                odds_format=self.config.theodds_odds_format,
+                date_format=self.config.theodds_date_format,
+                sport_mapping=self.config.theodds_sport_mapping,
+                history_window_hours=self.config.theodds_history_window_hours,
+            )
+
         logger.info("✅ API Data Engine initialized")
+        self._prefetch_executor = ThreadPoolExecutor(max_workers=self.config.api_prefetch_max_workers)
 
     def collect(
         self,
@@ -364,20 +388,74 @@ class APIDataEngine:
         }
 
         try:
-            # TODO: Implementare raccolta dati match-specific
-            # - H2H history da database
-            # - Odds history da API
-            # - Injuries/suspensions da API-Football
-            # - Lineup prediction
-
             api_football_data = self._get_api_football_match_data(match)
             if api_football_data:
                 match_data.update(api_football_data)
+
+            h2h_stats = self._get_head_to_head_context(match)
+            if h2h_stats:
+                match_data["h2h"] = h2h_stats
+                match_data.setdefault("precision_sources", []).append("api_football_h2h")
+
+            odds_history, odds_snapshot = self._collect_odds_history(
+                match,
+                match.get("market", "h2h")
+            )
+            if odds_history:
+                match_data["odds_history"] = odds_history
+            if odds_snapshot:
+                match_data["odds_snapshot"] = odds_snapshot
+                match_data.setdefault("precision_sources", []).append("theoddsapi")
 
         except Exception as e:
             logger.error(f"❌ Error getting match-specific data: {e}")
 
         return match_data
+
+    def prefetch_matches(self, matches: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Prefetch contexts for upcoming matches (fills cache asynchronously).
+        """
+        if not self.config.api_prefetch_enabled:
+            return {"status": "disabled", "requested": 0}
+
+        if not matches:
+            return {"status": "empty", "requested": 0}
+
+        batch = matches[: self.config.api_prefetch_batch_size]
+
+        async def _run_prefetch():
+            sem = asyncio.Semaphore(self.config.api_prefetch_max_workers)
+            summary = {"requested": len(batch), "completed": 0, "errors": 0}
+
+            async def _worker(match: Dict[str, Any]):
+                async with sem:
+                    try:
+                        await asyncio.to_thread(self._prefetch_single_match, match)
+                        summary["completed"] += 1
+                    except Exception as exc:
+                        summary["errors"] += 1
+                        logger.debug("Prefetch failed for %s vs %s: %s", match.get("home"), match.get("away"), exc)
+
+            await asyncio.gather(*[_worker(match) for match in batch])
+            return summary
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(_run_prefetch())
+        finally:
+            loop.close()
+        logger.info("⚡ Prefetch completato: %s", result)
+        return result
+
+    def shutdown(self):
+        try:
+            self._prefetch_executor.shutdown(wait=False)
+        except Exception:
+            pass
+
+    def __del__(self):
+        self.shutdown()
 
     def _enrich_precision_signals(self, match: Dict, match_data: Optional[Dict]) -> Dict:
         """
@@ -461,6 +539,58 @@ class APIDataEngine:
         except Exception as exc:
             logger.debug("API-Football match data unavailable: %s", exc)
             return None
+
+    def _get_head_to_head_context(self, match: Dict[str, Any], last: int = 8) -> Optional[Dict[str, Any]]:
+        provider = self.api_football_provider
+        if not provider or not getattr(provider, "api_key", None):
+            return None
+
+        if not self.quota.can_use("api-football", calls=1):
+            logger.debug(
+                "Quota API-Football insufficiente per H2H %s vs %s",
+                match.get("home"),
+                match.get("away")
+            )
+            return None
+
+        try:
+            stats = provider.get_head_to_head_stats(
+                match.get("home", ""),
+                match.get("away", ""),
+                last=last,
+                season=match.get("season")
+            )
+        except Exception as exc:
+            logger.debug("API-Football H2H fetch failed: %s", exc)
+            return None
+
+        if stats:
+            self.quota.log_usage("api-football", calls=1)
+            self.stats["api_calls"] += 1
+        return stats
+
+    def _prefetch_single_match(self, match: Dict[str, Any]) -> None:
+        home = match.get("home")
+        away = match.get("away")
+        league = match.get("league", "")
+        if not home or not away:
+            return
+
+        # Fetch team contexts (which populates cache)
+        self._get_team_context(home, league, importance=self._calculate_importance(match), force_refresh=False)
+        self._get_team_context(away, league, importance=self._calculate_importance(match), force_refresh=False)
+
+        # Head-to-head to warm API-Football cache/quota permitting
+        try:
+            self._get_head_to_head_context(match)
+        except Exception:
+            pass
+
+        # Odds snapshot caching
+        try:
+            self._collect_odds_history(match, match.get("market", "h2h"))
+        except Exception:
+            pass
 
     def _merge_statsbomb_signals(self, enriched: Dict[str, Any], statsbomb_context: Dict[str, Any]) -> None:
         """
@@ -747,6 +877,57 @@ class APIDataEngine:
             "flags": flags,
             "recommendation": recommendation
         }
+
+    def _get_match_identifier(self, match: Dict[str, Any], market: Optional[str]) -> str:
+        home = (match.get("home") or "home").lower().replace(" ", "_")
+        away = (match.get("away") or "away").lower().replace(" ", "_")
+        date = (match.get("date") or match.get("match_date") or "unknown").replace(":", "-")
+        market_key = (market or "h2h").lower()
+        return f"{home}__{away}__{date}__{market_key}"
+
+    def _load_odds_history_from_cache(self, match_key: str) -> List[Dict[str, Any]]:
+        path = self.odds_history_dir / f"{match_key}.json"
+        if not path.exists():
+            return []
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.debug("Unable to read odds history cache %s: %s", match_key, exc)
+            return []
+
+    def _save_odds_history_to_cache(self, match_key: str, history: List[Dict[str, Any]]) -> None:
+        path = self.odds_history_dir / f"{match_key}.json"
+        try:
+            with path.open("w", encoding="utf-8") as f:
+                json.dump(history, f, indent=2)
+        except OSError as exc:
+            logger.debug("Unable to write odds history cache %s: %s", match_key, exc)
+
+    def _collect_odds_history(
+        self,
+        match: Dict[str, Any],
+        market: Optional[str]
+    ) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        match_key = self._get_match_identifier(match, market)
+        history = self._load_odds_history_from_cache(match_key)
+        snapshot = None
+
+        if self.theodds_client:
+            snapshot = self.theodds_client.fetch_latest_snapshot(match, market or "h2h")
+            if snapshot:
+                entry = {
+                    "timestamp": snapshot.get("timestamp"),
+                    "market": snapshot.get("market"),
+                    "prices": snapshot.get("prices"),
+                    "source": "theoddsapi"
+                }
+                if not history or history[-1].get("timestamp") != entry["timestamp"]:
+                    history.append(entry)
+                    history = history[-50:]
+                    self._save_odds_history_to_cache(match_key, history)
+
+        return history, snapshot
 
     def _get_understat_context(self, match: Dict) -> Optional[Dict[str, Any]]:
         """Scarica xG gratuiti da Understat e li allinea al match."""

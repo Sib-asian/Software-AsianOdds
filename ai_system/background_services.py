@@ -322,6 +322,16 @@ class BackgroundAutomationService:
 
         return strategy
 
+    def prefetch_upcoming_matches(self, matches: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Expose API prefetching so UI/schedulers can warm cache before analyses.
+        """
+        try:
+            return self._api_engine.prefetch_matches(matches)
+        except Exception as exc:
+            logger.warning("⚠️ Prefetch fallito: %s", exc)
+            return {"status": "error", "error": str(exc)}
+
     @staticmethod
     def _build_match_id(match: Dict[str, Any]) -> str:
         base = f"{match.get('home', 'home')}_{match.get('away', 'away')}"

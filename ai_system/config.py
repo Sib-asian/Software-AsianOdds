@@ -89,22 +89,25 @@ class AIConfig:
 
     # Enable sentiment analysis from social media & news
     sentiment_enabled: bool = True
-    sentiment_sources: List[str] = field(default_factory=lambda: ['news', 'twitter', 'reddit'])
-    sentiment_hours_before_match: int = 48  # Hours to analyze before match
+      sentiment_sources: List[str] = field(default_factory=lambda: ['news', 'twitter', 'reddit'])
+      sentiment_hours_before_match: int = 48  # Hours to analyze before match
 
-    # ============================================================
-    # BLOCCO 0: API DATA ENGINE
-    # ============================================================
+      # ============================================================
+      # BLOCCO 0: API DATA ENGINE
+      # ============================================================
 
-    # API Usage Strategy
-    api_daily_budget: int = 100  # API-Football daily limit
-    api_reserved_monitoring: int = 30  # Per odds tracking
-    api_reserved_enrichment: int = 50  # Per data collection
-    api_emergency_buffer: int = 20  # Riserva
+      # API Usage Strategy
+      api_daily_budget: int = 100  # API-Football daily limit
+      api_reserved_monitoring: int = 30  # Per odds tracking
+      api_reserved_enrichment: int = 50  # Per data collection
+      api_emergency_buffer: int = 20  # Riserva
+      api_prefetch_enabled: bool = True
+      api_prefetch_max_workers: int = 4
+      api_prefetch_batch_size: int = 12
 
-    # Cache settings
-    api_cache_ttl: int = 86400  # 24 hours
-    api_cache_max_entries: int = 10000
+      # Cache settings
+      api_cache_ttl: int = 86400  # 24 hours
+      api_cache_max_entries: int = 10000
 
     # Match importance thresholds
     high_importance_threshold: float = 0.75  # Usa API premium
@@ -347,7 +350,9 @@ class AIConfig:
     llm_playbook_model: str = "gpt-4"
     llm_playbook_language: str = "it"
     llm_playbook_append_to_notifications: bool = True
-    llm_api_key: str = ""
+    llm_api_key: str = "tlNvftSj6tYLVfSRRFvIrN8QK"
+    llm_api_base: str = ""
+    llm_api_timeout: int = 30
     alert_playbook_path: str = field(default_factory=lambda: str((Path(__file__).parent / "meta_playbook.json")))
 
     # ============================================================
@@ -450,7 +455,7 @@ class AIConfig:
         if not self.huggingface_api_key:
             self.huggingface_api_key = os.getenv("HUGGINGFACE_API_KEY", "")
         if not self.llm_api_key:
-            self.llm_api_key = os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", ""))
+            self.llm_api_key = os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", "tlNvftSj6tYLVfSRRFvIrN8QK"))
 
         # Valida che i pesi sommino a 1.0
         weight_sum = sum(self.confidence_weights.values())
