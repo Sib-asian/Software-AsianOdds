@@ -15,10 +15,12 @@ Utilizza:
 - Football-Data.org (opzionale)
 """
 
+import asyncio
 import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
@@ -113,6 +115,7 @@ class APIDataEngine:
             )
 
         logger.info("✅ API Data Engine initialized")
+        self._prefetch_executor = ThreadPoolExecutor(max_workers=self.config.api_prefetch_max_workers)
 
     def collect(
         self,
@@ -409,6 +412,51 @@ class APIDataEngine:
 
         return match_data
 
+    def prefetch_matches(self, matches: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Prefetch contexts for upcoming matches (fills cache asynchronously).
+        """
+        if not self.config.api_prefetch_enabled:
+            return {"status": "disabled", "requested": 0}
+
+        if not matches:
+            return {"status": "empty", "requested": 0}
+
+        batch = matches[: self.config.api_prefetch_batch_size]
+
+        async def _run_prefetch():
+            sem = asyncio.Semaphore(self.config.api_prefetch_max_workers)
+            summary = {"requested": len(batch), "completed": 0, "errors": 0}
+
+            async def _worker(match: Dict[str, Any]):
+                async with sem:
+                    try:
+                        await asyncio.to_thread(self._prefetch_single_match, match)
+                        summary["completed"] += 1
+                    except Exception as exc:
+                        summary["errors"] += 1
+                        logger.debug("Prefetch failed for %s vs %s: %s", match.get("home"), match.get("away"), exc)
+
+            await asyncio.gather(*[_worker(match) for match in batch])
+            return summary
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(_run_prefetch())
+        finally:
+            loop.close()
+        logger.info("⚡ Prefetch completato: %s", result)
+        return result
+
+    def shutdown(self):
+        try:
+            self._prefetch_executor.shutdown(wait=False)
+        except Exception:
+            pass
+
+    def __del__(self):
+        self.shutdown()
+
     def _enrich_precision_signals(self, match: Dict, match_data: Optional[Dict]) -> Dict:
         """
         Aggiunge al contesto dati che aumentano la precisione dei calcoli
@@ -520,6 +568,29 @@ class APIDataEngine:
             self.quota.log_usage("api-football", calls=1)
             self.stats["api_calls"] += 1
         return stats
+
+    def _prefetch_single_match(self, match: Dict[str, Any]) -> None:
+        home = match.get("home")
+        away = match.get("away")
+        league = match.get("league", "")
+        if not home or not away:
+            return
+
+        # Fetch team contexts (which populates cache)
+        self._get_team_context(home, league, importance=self._calculate_importance(match), force_refresh=False)
+        self._get_team_context(away, league, importance=self._calculate_importance(match), force_refresh=False)
+
+        # Head-to-head to warm API-Football cache/quota permitting
+        try:
+            self._get_head_to_head_context(match)
+        except Exception:
+            pass
+
+        # Odds snapshot caching
+        try:
+            self._collect_odds_history(match, match.get("market", "h2h"))
+        except Exception:
+            pass
 
     def _merge_statsbomb_signals(self, enriched: Dict[str, Any], statsbomb_context: Dict[str, Any]) -> None:
         """
