@@ -62,15 +62,19 @@ class OutcomeManager:
                 writer.writerow(["match_id", "outcome", "timestamp"])
         self.status = DataFreshnessManager(config.outcome_status_db)
         self.feature_store = FeatureStore(Path(config.history_dir) / config.meta_store_filename)
+        self.alerts: List[Dict[str, str]] = []
 
     def record_outcome(self, match_id: str, outcome: float):
         outcome = max(0.0, min(1.0, float(outcome)))
         with self.outcomes_path.open("a", newline="") as fp:
             writer = csv.writer(fp)
             writer.writerow([match_id, outcome, time.time()])
-        self._validate_match(match_id)
+        if not self._validate_match(match_id):
+            logger.warning("[OutcomeManager] outcome %s scartato: match non trovato nello store", match_id)
+            return False
         self.pipeline.register_outcome(match_id, outcome, {"source": "manual"})
         self.status.mark_processed(match_id)
+        return True
 
     def apply_pending_outcomes(self, ttl_hours: Optional[float] = None):
         """Apply outcomes from CSV that are not yet recorded in the meta store."""
@@ -82,7 +86,9 @@ class OutcomeManager:
                 if not self.status.is_stale(match_id, ttl):
                     continue
                 outcome = float(row["outcome"])
-                self._validate_match(match_id)
+                if not self._validate_match(match_id):
+                    logger.warning("[OutcomeManager] ingestione outcome saltata: %s non presente nello store", match_id)
+                    continue
                 self.pipeline.register_outcome(match_id, outcome, {"source": "ingest"})
                 self.status.mark_processed(match_id)
 
@@ -97,6 +103,7 @@ class OutcomeManager:
                     pending.append(row)
         return pending
 
-    def _validate_match(self, match_id: str):
+    def _validate_match(self, match_id: str) -> bool:
         if self.feature_store.load_entry(match_id) is None:
-            logger.warning("[OutcomeManager] match_id %s non presente nel feature store. Verificare naming o ordine di elaborazione.", match_id)
+            return False
+        return True
