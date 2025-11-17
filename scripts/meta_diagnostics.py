@@ -145,11 +145,22 @@ def main():
                     print("\n   Prime feature di contesto (medie):")
                     for feature, values in top_features:
                         print(f"      - {feature}: avg={values['avg']:.3f}")
+        health_report = evaluate_meta_health(
+            store=orchestrator.feature_store,
+            registry=orchestrator.registry,
+            limit=500,
+        )
+        if args.aggregate:
+            print("\n" + summarize_meta_health(health_report))
         if args.export_json:
             import json
 
-            Path(args.export_json).write_text(json.dumps(stats, indent=2), encoding="utf-8")
-            print(f"\n📝 Statistiche aggregate salvate in {args.export_json}")
+            payload = {
+                "meta_health": health_report,
+                "summary": stats,
+            }
+            Path(args.export_json).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            print(f"\n📝 Report completo salvato in {args.export_json}")
 
 
 if __name__ == "__main__":
