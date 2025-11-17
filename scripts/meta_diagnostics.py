@@ -91,6 +91,12 @@ def main():
         type=str,
         help="Salva le statistiche aggregate in un file JSON",
     )
+    parser.add_argument(
+        "--reliability-history",
+        type=int,
+        default=0,
+        help="Mostra la storia affidabilità degli ultimi N aggiornamenti per modello",
+    )
 
     args = parser.parse_args()
 
@@ -102,6 +108,21 @@ def main():
         register_outcome(orchestrator, match_id, float(result))
 
     show_stats(orchestrator, args.show)
+
+    if args.reliability_history and args.reliability_history > 0:
+        history = orchestrator.registry.snapshot_history(limit=args.reliability_history)
+        if history:
+            print(f"\n📉 Affidabilità (ultimi {args.reliability_history} aggiornamenti):")
+            for model, points in history.items():
+                if not points:
+                    continue
+                latest = points[-1]
+                print(f"   {model}: current={latest['reliability']:.3f}")
+                for point in points[-args.reliability_history:]:
+                    ts = point['timestamp']
+                    print(f"      - t={ts:.0f} score={point['score']:.3f} → reliability={point['reliability']:.3f}")
+        else:
+            print("\nNessuna history di affidabilità disponibile.")
 
     if args.aggregate or args.export_json:
         stats = orchestrator.feature_store.aggregate()

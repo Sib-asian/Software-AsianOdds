@@ -452,6 +452,7 @@ class EnsembleMetaModel:
                 'store_path': str(store.filepath),
                 'entries': store.count_entries(),
                 'reliability': self.adaptive_orchestrator.registry.snapshot_reliability(),
+                'reliability_history': self.adaptive_orchestrator.registry.snapshot_history(limit=50),
                 'exploration_rate': self.adaptive_orchestrator.meta_optimizer.exploration_rate,
                 'summary': store.aggregate(limit=500),
             }

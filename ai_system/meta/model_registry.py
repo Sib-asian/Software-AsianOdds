@@ -6,6 +6,7 @@ for each predictive model plugged into the adaptive layer.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 from typing import Any, Dict, List, Optional
 
 
@@ -24,6 +25,7 @@ class ModelRegistry:
     def __init__(self):
         self._models: Dict[str, ModelDescriptor] = {}
         self._reliability: Dict[str, float] = {}
+        self._history: Dict[str, List[Dict[str, float]]] = {}
 
     # ------------------------------------------------------------------ #
     # Registry management
@@ -32,6 +34,7 @@ class ModelRegistry:
     def register(self, descriptor: ModelDescriptor):
         self._models[descriptor.name] = descriptor
         self._reliability.setdefault(descriptor.name, 0.5)
+        self._history.setdefault(descriptor.name, [])
 
     def ensure(
         self,
@@ -82,6 +85,27 @@ class ModelRegistry:
         current = self._reliability.get(name, 0.5)
         updated = decay * current + (1 - decay) * score
         self._reliability[name] = round(updated, 6)
+        history = self._history.setdefault(name, [])
+        history.append({
+            "timestamp": time.time(),
+            "score": score,
+            "reliability": self._reliability[name],
+        })
+        # Keep history bounded
+        if len(history) > 500:
+            self._history[name] = history[-500:]
+
+    def get_history(self, name: str, limit: int = 50) -> List[Dict[str, float]]:
+        history = self._history.get(name, [])
+        if limit and limit > 0:
+            return history[-limit:]
+        return history
+
+    def snapshot_history(self, limit: int = 20) -> Dict[str, List[Dict[str, float]]]:
+        return {
+            name: self.get_history(name, limit=limit)
+            for name in self._models.keys()
+        }
 
 
 __all__ = ["ModelRegistry", "ModelDescriptor"]
