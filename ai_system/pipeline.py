@@ -36,6 +36,7 @@ from .blocco_5_risk_manager import RiskManager
 from .blocco_6_odds_tracker import OddsMovementTracker
 from .blocco_7_bayesian_uncertainty import BayesianUncertaintyQuantifier, BayesianResult
 from .models.ensemble import EnsembleMetaModel
+from .meta import evaluate_meta_health, summarize_meta_health
 from .analysis.regime_detector import RegimeDetector
 from .sentiment_analyzer import SentimentAnalyzer, adjust_prediction_with_sentiment
 from .llm_analyst import LLMAnalyst
@@ -555,6 +556,15 @@ class AIPipeline:
             }
 
             llm_playbook = None
+            meta_health = None
+            if self.ensemble and self.ensemble.adaptive_orchestrator:
+                meta_health = evaluate_meta_health(
+                    store=self.ensemble.adaptive_orchestrator.feature_store,
+                    registry=self.ensemble.adaptive_orchestrator.registry,
+                    limit=200,
+                    exploration_rate=self.ensemble.adaptive_orchestrator.meta_optimizer.exploration_rate,
+                )
+
             if self.llm_analyst and self.config.llm_playbook_enabled:
                 try:
                     llm_text = self.llm_analyst.explain_prediction(
@@ -572,6 +582,7 @@ class AIPipeline:
                     logger.debug("LLM playbook skipped: %s", exc)
 
             final_result["llm_playbook"] = llm_playbook
+            final_result["meta_health"] = meta_health
 
             history_path = Path(self.config.predictions_db)
             append_analysis_to_history(final_result, history_path)
@@ -587,6 +598,9 @@ class AIPipeline:
 
             # Print final summary
             self._print_summary(final_result)
+
+            if meta_health:
+                logger.info("\n" + summarize_meta_health(meta_health))
 
             logger.info(f"\n{'='*70}")
             logger.info(f"✅ Analysis completed in {analysis_time:.2f}s")
