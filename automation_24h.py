@@ -58,6 +58,17 @@ except ImportError as e:
     logger.warning(f"⚠️  Nuovi moduli non disponibili: {e}")
     NEW_MODULES_AVAILABLE = False
 
+# Import nuovi sistemi AI avanzati
+try:
+    from ai_system.multi_model_consensus import MultiModelConsensus
+    from ai_system.intelligent_alert_system import IntelligentAlertSystem, AlertLevel
+    from ai_system.pattern_analyzer_llm import PatternAnalyzerLLM
+    from ai_system.parameter_optimizer import ParameterOptimizer
+    ADVANCED_AI_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"⚠️  Sistemi AI avanzati non disponibili: {e}")
+    ADVANCED_AI_AVAILABLE = False
+
 
 class Automation24H:
     """
@@ -117,6 +128,26 @@ class Automation24H:
         else:
             self.ai_pipeline = None
             logger.warning("⚠️  AI Pipeline not available")
+        
+        # Sistemi AI avanzati
+        if ADVANCED_AI_AVAILABLE:
+            self.consensus_analyzer = MultiModelConsensus()
+            self.alert_system = IntelligentAlertSystem()
+            
+            # Pattern Analyzer con LLM (se disponibile)
+            llm_analyst = None
+            if self.ai_pipeline and hasattr(self.ai_pipeline, 'llm_analyst'):
+                llm_analyst = self.ai_pipeline.llm_analyst
+            self.pattern_analyzer = PatternAnalyzerLLM(llm_analyst=llm_analyst)
+            
+            self.parameter_optimizer = ParameterOptimizer()
+            logger.info("✅ Advanced AI systems initialized")
+        else:
+            self.consensus_analyzer = None
+            self.alert_system = None
+            self.pattern_analyzer = None
+            self.parameter_optimizer = None
+            logger.warning("⚠️  Advanced AI systems not available")
         
         # Telegram Notifier
         if telegram_token and telegram_chat_id:
@@ -505,6 +536,51 @@ class Automation24H:
             prob_dixon_coles = 0.33  # Default: probabilità uniforme (verrà calcolata dalla pipeline)
             ai_result = self.ai_pipeline.analyze(match_data, prob_dixon_coles, odds_data, bankroll)
             
+            # 🧠 NUOVO: Analisi Consensus Multi-Modello
+            consensus_result = None
+            if self.consensus_analyzer:
+                try:
+                    consensus_result = self.consensus_analyzer.analyze_consensus(
+                        predictions={},  # Le predizioni sono già in ai_result
+                        ai_results=ai_result
+                    )
+                    
+                    # Boost confidence se consensus alto
+                    should_boost, boost_amount = self.consensus_analyzer.should_boost_confidence(consensus_result)
+                    if should_boost and boost_amount != 0:
+                        current_conf = ai_result.get('summary', {}).get('confidence', 0)
+                        new_conf = max(0, min(100, current_conf + boost_amount))
+                        if 'summary' not in ai_result:
+                            ai_result['summary'] = {}
+                        ai_result['summary']['confidence'] = new_conf
+                        ai_result['summary']['confidence_boosted'] = True
+                        ai_result['summary']['consensus_boost'] = boost_amount
+                    
+                    # Aggiungi consensus result
+                    ai_result['consensus'] = consensus_result
+                except Exception as e:
+                    logger.debug(f"⚠️  Consensus analysis error: {e}")
+            
+            # 🚨 NUOVO: Calcola Alert Level Intelligente
+            alert_info = None
+            if self.alert_system:
+                try:
+                    # Raccogli dati per alert system
+                    odds_movement = None  # TODO: implementare tracking quote
+                    arbitrage = None  # TODO: implementare arbitrage detection
+                    anomaly = None  # TODO: implementare anomaly detection
+                    
+                    alert_info = self.alert_system.calculate_alert_level(
+                        ai_result=ai_result,
+                        consensus_result=consensus_result or {},
+                        odds_movement=odds_movement,
+                        arbitrage=arbitrage,
+                        anomaly=anomaly
+                    )
+                    ai_result['alert'] = alert_info
+                except Exception as e:
+                    logger.debug(f"⚠️  Alert calculation error: {e}")
+            
             # Ricalcola stake usando bankroll manager se disponibile
             if self.bankroll_manager and ai_result.get('final_decision', {}).get('action') == 'BET':
                 final_decision = ai_result.get('final_decision', {})
@@ -681,13 +757,35 @@ class Automation24H:
                 # Determina tipo opportunità (PRE-MATCH o LIVE)
                 match_data = opportunity.get('match_data', {})
                 match_status = match_data.get('match_status', 'PRE-MATCH')
-                opportunity_type = f"AUTO-24H {match_status}"
+                ai_result = opportunity.get('ai_result', {})
                 
-                success = self.notifier.send_betting_opportunity(
-                    opportunity['match_data'],
-                    opportunity['ai_result'],
-                    opportunity_type=opportunity_type
-                )
+                # 🚨 NUOVO: Usa alert system per priorità intelligente
+                alert_info = ai_result.get('alert', {})
+                alert_level = alert_info.get('alert_level', 'INFO')
+                should_notify = alert_info.get('should_notify', True)
+                
+                # Determina se notificare basandosi su alert level
+                if alert_level in ['CRITICAL', 'HIGH']:
+                    opportunity_type = f"🚨 {alert_level} - AUTO-24H {match_status}"
+                    # Usa messaggio alert personalizzato se disponibile
+                    if alert_info.get('message'):
+                        # Invia alert speciale
+                        self.notifier.send_message(alert_info['message'])
+                elif alert_level == 'MEDIUM':
+                    opportunity_type = f"⚡ {match_status} - AUTO-24H"
+                else:
+                    opportunity_type = f"AUTO-24H {match_status}"
+                
+                # Notifica solo se alert level è sufficiente
+                if should_notify or alert_level in ['CRITICAL', 'HIGH', 'MEDIUM']:
+                    success = self.notifier.send_betting_opportunity(
+                        opportunity['match_data'],
+                        opportunity['ai_result'],
+                        opportunity_type=opportunity_type
+                    )
+                else:
+                    logger.debug(f"   Alert level {alert_level} too low, skipping notification")
+                    success = False
                 
                 if success:
                     self.notified_opportunities.add(match_id)
@@ -711,9 +809,18 @@ class Automation24H:
             # Invia report giornaliero (se disponibile)
             if self.automated_reports and today > self.last_daily_report:
                 try:
-                    self.automated_reports.send_daily_report()
+                    # 🧠 NUOVO: Aggiungi analisi pattern e ottimizzazione parametri
+                    enhanced_report = self._generate_enhanced_report('daily')
+                    # Invia report (additional_content sarà aggiunto se supportato)
+                    try:
+                        self.automated_reports.send_daily_report(additional_content=enhanced_report)
+                    except TypeError:
+                        # Se non supporta additional_content, invia normale e poi invia enhanced separatamente
+                        self.automated_reports.send_daily_report()
+                        if enhanced_report and self.notifier:
+                            self.notifier.send_message(f"📊 AI Insights Daily:\n{enhanced_report}")
                     self.last_daily_report = today
-                    logger.info("✅ Daily report sent")
+                    logger.info("✅ Daily report sent (with AI insights)")
                 except Exception as e:
                     logger.warning(f"⚠️  Error sending daily report: {e}")
             
@@ -722,11 +829,88 @@ class Automation24H:
                 days_since_weekly = (datetime.now() - self.last_weekly_report).days
                 if days_since_weekly >= 7:
                     try:
-                        self.automated_reports.send_weekly_report()
+                        # 🧠 NUOVO: Aggiungi analisi pattern e ottimizzazione parametri
+                        enhanced_report = self._generate_enhanced_report('weekly')
+                        # Invia report (additional_content sarà aggiunto se supportato)
+                        try:
+                            self.automated_reports.send_weekly_report(additional_content=enhanced_report)
+                        except TypeError:
+                            # Se non supporta additional_content, invia normale e poi invia enhanced separatamente
+                            self.automated_reports.send_weekly_report()
+                            if enhanced_report and self.notifier:
+                                self.notifier.send_message(f"📊 AI Insights Weekly:\n{enhanced_report}")
                         self.last_weekly_report = datetime.now()
-                        logger.info("✅ Weekly report sent")
+                        logger.info("✅ Weekly report sent (with AI insights)")
                     except Exception as e:
                         logger.warning(f"⚠️  Error sending weekly report: {e}")
+    
+    def _generate_enhanced_report(self, report_type: str) -> str:
+        """
+        Genera report potenziato con analisi pattern e ottimizzazione parametri.
+        
+        Args:
+            report_type: 'daily' o 'weekly'
+            
+        Returns:
+            Stringa con contenuto aggiuntivo per report
+        """
+        try:
+            content_parts = []
+            
+            # 1. Analisi Pattern con LLM
+            if self.pattern_analyzer and self.results_tracker:
+                try:
+                    # Ottieni risultati storici
+                    all_results = self.results_tracker.get_all_opportunities()
+                    if all_results:
+                        days = 7 if report_type == 'daily' else 30
+                        pattern_analysis = self.pattern_analyzer.analyze_performance_patterns(
+                            all_results, days=days
+                        )
+                        
+                        if pattern_analysis.get('insights'):
+                            content_parts.append("\n📊 ANALISI PATTERN AI:\n")
+                            for insight in pattern_analysis['insights'][:5]:
+                                content_parts.append(f"  • {insight.get('message', '')}")
+                            
+                            if pattern_analysis.get('recommendations'):
+                                content_parts.append("\n💡 RACCOMANDAZIONI:\n")
+                                for rec in pattern_analysis['recommendations'][:3]:
+                                    content_parts.append(f"  • {rec.get('action', '')}: {rec.get('reason', '')}")
+                except Exception as e:
+                    logger.debug(f"⚠️  Pattern analysis error: {e}")
+            
+            # 2. Ottimizzazione Parametri
+            if self.parameter_optimizer and self.results_tracker:
+                try:
+                    all_results = self.results_tracker.get_all_opportunities()
+                    if all_results:
+                        current_params = {
+                            'min_ev': self.min_ev,
+                            'min_confidence': self.min_confidence
+                        }
+                        
+                        days = 7 if report_type == 'daily' else 30
+                        optimization = self.parameter_optimizer.optimize_parameters(
+                            all_results, current_params, days=days
+                        )
+                        
+                        if optimization.get('recommendation') == 'UPDATE':
+                            content_parts.append("\n⚙️ OTTIMIZZAZIONE PARAMETRI:\n")
+                            content_parts.append(f"  Parametri Attuali: EV≥{current_params['min_ev']}%, Conf≥{current_params['min_confidence']}%")
+                            suggested = optimization.get('suggested_params', {})
+                            content_parts.append(f"  Parametri Suggeriti: EV≥{suggested.get('min_ev', 0)}%, Conf≥{suggested.get('min_confidence', 0)}%")
+                            improvement = optimization.get('improvement_estimate', 0)
+                            if improvement > 0:
+                                content_parts.append(f"  Miglioramento Stimato: +{improvement:.1f}% ROI")
+                except Exception as e:
+                    logger.debug(f"⚠️  Parameter optimization error: {e}")
+            
+            return "\n".join(content_parts) if content_parts else ""
+            
+        except Exception as e:
+            logger.warning(f"⚠️  Error generating enhanced report: {e}")
+            return ""
     
     def _signal_handler(self, signum, frame):
         """Gestisce segnali di shutdown"""
