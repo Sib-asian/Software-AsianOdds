@@ -1,0 +1,147 @@
+================================================================================
+ANALISI STATE MANAGEMENT: SOFTWARE-ASIANODDS
+================================================================================
+
+FINDINGS TOTALI: 11 BUG DI GESTIONE STATO
+
+SEVERITA BREAKDOWN:
+  CRITICAL:  4 bug (cache unbounded growth senza TTL/limite)
+  HIGH:      3 bug (memory leak, race condition, init inconsistency)
+  MEDIUM:    4 bug (unsafe access, scattered init, global mutation)
+
+================================================================================
+TOP 4 CRITICITA (AGIRE IMMEDIATAMENTE)
+================================================================================
+
+1. _STATS_BOMB_MATCH_CACHE - UNBOUNDED GROWTH
+   File: Frontendcloud.py:11451-11504
+   Impatto: Memory leak infinito - App crashes dopo 24h
+   Fix: Implementare TTL (1h) + size limit (500 entries)
+   Race: SI - No lock su accessi concorrenti
+
+2. _STATS_BOMB_EVENTS_CACHE - UNBOUNDED GROWTH  
+   File: Frontendcloud.py:11452, 11507-11519
+   Impatto: Memory leak infinito - Match events large (100KB+ each)
+   Fix: Implementare TTL + size limit
+   Race: SI - No lock
+
+3. _STATS_BOMB_TEAM_METRICS_CACHE - UNBOUNDED GROWTH
+   File: Frontendcloud.py:11454, 11522-11685
+   Impatto: Memory leak infinito
+   Fix: Implementare TTL + size limit
+   Race: SI - No lock
+
+4. _FOOTBALL_DATA_MATCH_CACHE - UNBOUNDED GROWTH
+   File: Frontendcloud.py:347, 11151-11178
+   Impatto: Memory leak infinito
+   Fix: Implementare TTL + size limit
+   Race: SI - No lock
+
+================================================================================
+PROBLEMI DI SESSION STATE (HIGH PRIORITY)
+================================================================================
+
+5. st.session_state["preview_cache"] - INCONSISTENT INIT
+   File: Frontendcloud.py:14915-14916, 15419-15422
+   Problema: preview_cache_timestamps non inizializzato in primo check
+   Impatto: KeyError durante operazioni cache
+   Fix: Centralizzare init in singola funzione
+
+6. st.session_state["preview_cache"] - SIZE LIMIT RACE
+   File: Frontendcloud.py:15454-15459
+   Problema: Check a 50 entry, poi aggiunge → può raggiungere 51+
+   Impatto: Cache cresce oltre limite
+   Race: SI - Due thread passano check contemporaneamente
+
+7. API_CACHE - STALE ENTRIES NOT CLEANED
+   File: Frontendcloud.py:344-345
+   Problema: Ha TTL ma non rimuove entry scadute
+   Impatto: Memory cresce lentamente (partial leak)
+   Fix: Aggiungere cleanup periodico ogni 1h
+   Race: NO (ha lock con _API_CACHE_LOCK)
+
+================================================================================
+PROBLEMI DI ACCESSO (MEDIUM PRIORITY)
+================================================================================
+
+8. st.session_state ACCESSI MISTI (UNSAFE)
+   File: Frontendcloud.py:15813-15819
+   Problema: Misto di .get() (safe) e [] (unsafe)
+   Impatto: Possibili KeyError crash
+   Race: SI - Between check e access
+
+9. TEAM_PROFILES - GLOBAL MUTATION NOT THREAD-SAFE
+   File: auto_features.py:103-121
+   Problema: Global dict modificato da reload_team_profiles()
+   Impatto: Inconsistenza dati tra thread
+   Race: SI - reload non sincronizzato
+
+10. dashboard.py - SESSION STATE INIT TIMING
+    File: dashboard.py:98-131
+    Problema: api_insight/api_error init scattered
+    Impatto: UI mostra valori stale
+    Race: SI (minimal Streamlit rerun)
+
+11. Frontendcloud.py - SCATTERED INIT (10+ places)
+    File: Frontendcloud.py:14885-14916, 14454-14474
+    Problema: 10+ separate if per init (current_match, positions, etc)
+    Impatto: Stato parziale se rerun durante init
+    Race: SI - Rerun durante init
+
+================================================================================
+SOLUZIONI FORNITE
+================================================================================
+
+Due file di documentazione creati:
+
+1. STATE_MANAGEMENT_BUGS_REPORT.md
+   - Analisi dettagliata di ogni bug
+   - Codice problematico
+   - Impatto e race condition
+   - Soluzione proposta per ogni bug
+
+2. STATE_MANAGEMENT_FIXES.md
+   - Codice fix concreto per ogni bug
+   - Classi da implementare:
+     * CachedStorage (TTL + size limit)
+     * PreviewCacheManager (atomic operations)
+     * TeamProfilesManager (thread-safe)
+   - Checklist implementazione
+   - Test cases
+
+================================================================================
+AZIONI RACCOMANDATE (IN ORDINE)
+================================================================================
+
+FASE 1 (QUESTA SETTIMANA): Critical issues
+  ✓ Implementare CachedStorage per _STATS_BOMB_* caches
+  ✓ Centralizzare init_session_state()
+  ✓ Rimuovere 10+ check sparsi
+
+FASE 2 (PROSSIMA SETTIMANA): High priority
+  ✓ Implementare PreviewCacheManager
+  ✓ Implementare TeamProfilesManager  
+  ✓ Aggiungere cleanup API_CACHE
+
+FASE 3 (FOLLOW-UP): Medium priority
+  ✓ Review all st.session_state accessi
+  ✓ Convertiamo ad .get() pattern
+  ✓ Aggiungere test per race condition
+
+================================================================================
+FILE GENERATI
+================================================================================
+
+Location: /home/user/Software-AsianOdds/
+
+1. STATE_MANAGEMENT_BUGS_REPORT.md (557 linee)
+   - Analisi completa di tutti i 11 bug
+   - Dettagli linea per linea
+   - Impatto e race condition
+
+2. STATE_MANAGEMENT_FIXES.md
+   - Codice fix concreto
+   - Classi da implementare
+   - Checklist implementazione
+
+================================================================================

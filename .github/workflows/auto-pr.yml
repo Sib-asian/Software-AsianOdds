@@ -1,0 +1,36 @@
+name: Auto PR on Code Changes
+
+on:
+  push:
+    branches:
+      - 'update-*'
+  workflow_dispatch:
+
+jobs:
+  create-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'Auto-update: ${{ github.event.head_commit.message }}'
+          title: 'Auto PR: ${{ github.event.head_commit.message }}'
+          body: |
+            ## Modifiche Automatiche
+            
+            Questo PR è stato creato automaticamente dopo modifiche al codice.
+            
+            **Branch:** ${{ github.ref }}
+            **Commit:** ${{ github.event.head_commit.message }}
+            **Autore:** ${{ github.event.head_commit.author.name }}
+            
+            ### Checklist
+            - [ ] Codice testato
+            - [ ] Documentazione aggiornata
+            - [ ] Nessun errore di linting
+          branch: auto-pr-${{ github.run_number }}
+          delete-branch: true
+

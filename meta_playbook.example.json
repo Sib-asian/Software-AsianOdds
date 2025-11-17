@@ -1,0 +1,12 @@
+{
+  "low_outcome_feedback": [
+    "python scripts/run_outcome_ingest.py"
+  ],
+  "high_probability_rmse": [
+    "python scripts/run_outcome_ingest.py --ttl-hours 24",
+    "python training/update_models.py --target calibrator"
+  ],
+  "low_weight_xgboost": [
+    "python training/update_models.py --target xgboost"
+  ]
+}
