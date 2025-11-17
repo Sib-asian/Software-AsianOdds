@@ -44,6 +44,7 @@ def main():
     summary_json = json.dumps(health.get("summary"), indent=2)
     windows_json = json.dumps(health.get("window_summaries"), indent=2)
     reliability_json = json.dumps(health.get("reliability"), indent=2)
+    data_quality_json = json.dumps(health.get("data_quality"), indent=2)
 
     html = f"""
     <html>
@@ -69,6 +70,8 @@ def main():
         <pre>{windows_json}</pre>
         <h2>Reliability</h2>
         <pre>{reliability_json}</pre>
+        <h2>Data Quality</h2>
+        <pre>{data_quality_json}</pre>
         <h2>Alerts</h2>
         {"".join(f"<div class='alert {a['level'].upper()}'><strong>{a['code']}</strong>: {a['message']} ({a.get('action','')})</div>" for a in health.get("alerts") or []) or "<p>Nessun alert.</p>"}
     </body>

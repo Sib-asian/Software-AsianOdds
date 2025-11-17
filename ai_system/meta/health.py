@@ -49,6 +49,25 @@ def evaluate_meta_health(
     if rmse is not None and rmse > 0.25:
         alerts.append(_build_alert("high_probability_rmse", "warning", f"RMSE delle probabilità elevato ({rmse:.2f}).", "Verifica calibrazione e qualità dei dati."))
 
+    data_quality: Dict[str, Optional[float]] = {}
+    context_stats = (summary or {}).get("context_features") or {}
+
+    def _avg(name: str) -> Optional[float]:
+        bucket = context_stats.get(name)
+        if not bucket:
+            return None
+        return bucket.get("avg")
+
+    data_quality["avg_data_availability"] = _avg("data_availability")
+    data_quality["avg_h2h_relevance"] = _avg("h2h_relevance")
+    data_quality["avg_form_reliability"] = _avg("form_reliability")
+    data_quality["avg_historical_matches"] = _avg("historical_matches")
+
+    if data_quality["avg_data_availability"] is not None and data_quality["avg_data_availability"] < 0.4:
+        alerts.append(_build_alert("low_data_availability", "warning", "Dati API disponibili <40% in media.", "Verifica API Data Engine / cache."))
+    if data_quality["avg_historical_matches"] is not None and data_quality["avg_historical_matches"] < 0.2:
+        alerts.append(_build_alert("low_data_history", "info", "Storico match limitato (<20%).", "Valuta espansione dataset storico."))
+
     if summary:
         weights = summary.get("weights") or {}
         for model, stats in weights.items():
@@ -63,6 +82,7 @@ def evaluate_meta_health(
         "reliability": reliability,
         "reliability_history": history,
         "window_summaries": window_summaries,
+        "data_quality": data_quality,
         "alerts": alerts,
     }
     return health
