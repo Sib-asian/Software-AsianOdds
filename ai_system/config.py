@@ -75,8 +75,11 @@ class AIConfig:
     telegram_daily_report_time: str = "22:00"  # HH:MM format
 
     # ============================================================
-    # SENTIMENT ANALYSIS - HUGGING FACE API
+    # OUTCOME INGESTION & SENTIMENT ANALYSIS
     # ============================================================
+
+    outcomes_db: str = field(default_factory=lambda: str((Path(__file__).parent / "data" / "match_outcomes.csv")))
+    outcome_status_db: str = field(default_factory=lambda: str((Path(__file__).parent / "data" / "outcome_status.json")))
 
     # Hugging Face API (FREE - optional key for better rate limits)
     # Get free API key at: https://huggingface.co/settings/tokens

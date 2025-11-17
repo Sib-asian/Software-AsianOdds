@@ -16,6 +16,7 @@ from .performance_tracker import PerformanceTracker
 from .meta_optimizer import MetaOptimizer
 from .health import evaluate_meta_health
 from .reports import summarize_meta_health, format_alert
+from .outcome_manager import OutcomeManager, DataFreshnessManager
 
 __all__ = [
     "AdaptiveOrchestrator",
@@ -27,5 +28,7 @@ __all__ = [
     "evaluate_meta_health",
     "summarize_meta_health",
     "format_alert",
+    "OutcomeManager",
+    "DataFreshnessManager",
     "build_match_id",
 ]
