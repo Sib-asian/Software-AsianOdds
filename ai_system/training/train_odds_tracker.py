@@ -12,7 +12,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any, Optional
 
 import numpy as np
 
@@ -168,6 +168,53 @@ def train_model(
     return model
 
 
+def run_training(
+    history_dir: Path,
+    selection: str = "home",
+    sequence_length: Optional[int] = None,
+    horizon: int = 1,
+    epochs: int = 30,
+    batch_size: int = 64,
+    device: str = "cpu",
+    config: Optional[AIConfig] = None,
+) -> Dict[str, Any]:
+    config = config or AIConfig()
+    history_dir = Path(history_dir)
+    if not history_dir.exists():
+        raise FileNotFoundError(f"Directory odds history inesistente: {history_dir}")
+
+    sequence_len = sequence_length or config.odds_lookback_window
+    logger.info("Carico sequences da %s (selection=%s, window=%d)", history_dir, selection, sequence_len)
+    sequences, targets = build_sequences(history_dir, selection, sequence_len, horizon)
+
+    values = np.concatenate([sequences.flatten(), targets])
+    mean = float(values.mean())
+    std = float(values.std()) or 1.0
+    sequences = (sequences - mean) / std
+    targets = (targets - mean) / std
+
+    dataset = OddsHistoryDataset(sequences, targets)
+    logger.info("Dataset pronto: %d samples", len(dataset))
+
+    scaler = {"mean": mean, "std": std, "selection": selection}
+    train_model(
+        dataset=dataset,
+        sequence_length=sequence_len,
+        scaler=scaler,
+        config=config,
+        epochs=epochs,
+        batch_size=batch_size,
+        device=device,
+    )
+    return {
+        "samples": len(dataset),
+        "sequence_length": sequence_len,
+        "selection": selection,
+        "history_dir": str(history_dir),
+        "model_path": str(Path(config.models_dir) / "odds_lstm.pth"),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train Odds LSTM using cached odds history.")
     parser.add_argument("--history-dir", type=str, help="Directory con gli odds history JSON.")
@@ -191,32 +238,18 @@ def main():
         config.models_dir = Path(args.models_dir)
         config.models_dir.mkdir(parents=True, exist_ok=True)
     history_dir = Path(args.history_dir or (config.cache_dir / "odds_history"))
-    if not history_dir.exists():
-        raise FileNotFoundError(f"Directory odds history inesistente: {history_dir}")
 
-    sequence_length = args.sequence_length or config.odds_lookback_window
-    logger.info("Carico sequences da %s (selection=%s, window=%d)", history_dir, args.selection, sequence_length)
-    sequences, targets = build_sequences(history_dir, args.selection, sequence_length, args.horizon)
-
-    values = np.concatenate([sequences.flatten(), targets])
-    mean = float(values.mean())
-    std = float(values.std()) or 1.0
-    sequences = (sequences - mean) / std
-    targets = (targets - mean) / std
-
-    dataset = OddsHistoryDataset(sequences, targets)
-    logger.info("Dataset pronto: %d samples", len(dataset))
-
-    scaler = {"mean": mean, "std": std, "selection": args.selection}
-    train_model(
-        dataset=dataset,
-        sequence_length=sequence_length,
-        scaler=scaler,
-        config=config,
+    result = run_training(
+        history_dir=history_dir,
+        selection=args.selection,
+        sequence_length=args.sequence_length,
+        horizon=args.horizon,
         epochs=args.epochs,
         batch_size=args.batch_size,
         device=args.device,
+        config=config,
     )
+    logger.info("Training completato: %s", result)
 
 
 if __name__ == "__main__":
