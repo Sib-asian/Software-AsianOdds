@@ -67,6 +67,60 @@ def register_outcome(orchestrator: AdaptiveOrchestrator, match_id: str, outcome:
         print(f"⚠️  Nessuna entry trovata per match_id={match_id}")
 
 
+def aggregate_stats(entries):
+    if not entries:
+        return {}
+
+    total = len(entries)
+    with_outcome = sum(1 for e in entries if e.get("actual_outcome") is not None)
+    avg_prob = sum(e.get("probability", 0.0) for e in entries) / total
+    prob_rmse = None
+    diffs = [
+        (e.get("probability", 0.0) - e.get("actual_outcome", 0.0)) ** 2
+        for e in entries
+        if e.get("actual_outcome") is not None
+    ]
+    if diffs:
+        prob_rmse = (sum(diffs) / len(diffs)) ** 0.5
+
+    weight_stats = {}
+    prediction_stats = {}
+    context_stats = {}
+
+    for entry in entries:
+        for model, weight in (entry.get("weights") or {}).items():
+            bucket = weight_stats.setdefault(model, [])
+            bucket.append(weight)
+        for model, value in (entry.get("predictions") or {}).items():
+            bucket = prediction_stats.setdefault(model, [])
+            bucket.append(value)
+        for feature, value in (entry.get("context_features") or {}).items():
+            bucket = context_stats.setdefault(feature, [])
+            bucket.append(value)
+
+    def summarize(bucket_dict):
+        return {
+            key: {
+                "avg": sum(values) / len(values),
+                "min": min(values),
+                "max": max(values),
+            }
+            for key, values in bucket_dict.items()
+            if values
+        }
+
+    return {
+        "total_entries": total,
+        "entries_with_outcome": with_outcome,
+        "outcome_ratio": with_outcome / total,
+        "avg_probability": avg_prob,
+        "probability_rmse": prob_rmse,
+        "weights": summarize(weight_stats),
+        "predictions": summarize(prediction_stats),
+        "context_features": summarize(context_stats),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Meta Layer Diagnostics")
     parser.add_argument(
@@ -81,6 +135,16 @@ def main():
         metavar=("MATCH_ID", "RESULT"),
         help="Aggiorna l'outcome di una predizione (RESULT 0-1)",
     )
+    parser.add_argument(
+        "--aggregate",
+        action="store_true",
+        help="Mostra statistiche aggregate sulle entry disponibili",
+    )
+    parser.add_argument(
+        "--export-json",
+        type=str,
+        help="Salva le statistiche aggregate in un file JSON",
+    )
 
     args = parser.parse_args()
 
@@ -92,6 +156,34 @@ def main():
         register_outcome(orchestrator, match_id, float(result))
 
     show_stats(orchestrator, args.show)
+
+    if args.aggregate or args.export_json:
+        entries = orchestrator.feature_store.load_recent_entries(0)
+        stats = aggregate_stats(entries)
+        if args.aggregate:
+            if not stats:
+                print("\nNessuna entry per statistiche aggregate.")
+            else:
+                print("\n📊 STATISTICHE AGGREGATE")
+                print(f"   Totale entry: {stats['total_entries']}")
+                print(f"   Con outcome: {stats['entries_with_outcome']} ({stats['outcome_ratio']:.1%})")
+                print(f"   Probabilità media: {stats['avg_probability']:.3f}")
+                if stats["probability_rmse"] is not None:
+                    print(f"   RMSE probabilità vs outcome: {stats['probability_rmse']:.3f}")
+                if stats["weights"]:
+                    print("\n   Peso medio per modello:")
+                    for model, values in stats["weights"].items():
+                        print(f"      - {model}: avg={values['avg']:.3f} min={values['min']:.3f} max={values['max']:.3f}")
+                if stats["context_features"]:
+                    top_features = list(stats["context_features"].items())[:5]
+                    print("\n   Prime feature di contesto (medie):")
+                    for feature, values in top_features:
+                        print(f"      - {feature}: avg={values['avg']:.3f}")
+        if args.export_json:
+            import json
+
+            Path(args.export_json).write_text(json.dumps(stats, indent=2), encoding="utf-8")
+            print(f"\n📝 Statistiche aggregate salvate in {args.export_json}")
 
 
 if __name__ == "__main__":

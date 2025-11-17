@@ -91,6 +91,16 @@ class FeatureStore:
                 return entry
         return None
 
+    def iter_entries(self, limit: Optional[int] = None):
+        """
+        Itera sulle entry presenti (opzionale limit per ultime N).
+        """
+        entries = self._load_entries()
+        if limit is not None and limit > 0:
+            entries = entries[-limit:]
+        for entry in entries:
+            yield entry
+
     def count_entries(self) -> int:
         """Numero approssimativo di entry salvate (conta le righe valide)."""
         count = 0
