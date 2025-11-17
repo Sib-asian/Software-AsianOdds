@@ -818,6 +818,112 @@ class APIFootballProvider:
             ]
         }
 
+    def get_head_to_head_stats(
+        self,
+        home_team: str,
+        away_team: str,
+        last: int = 10,
+        season: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Return summarized head-to-head stats between two teams."""
+        home_entry = self.search_team(home_team)
+        away_entry = self.search_team(away_team)
+        if not home_entry or not away_entry:
+            return None
+
+        home_id = (home_entry.get("team") or {}).get("id")
+        away_id = (away_entry.get("team") or {}).get("id")
+        if not home_id or not away_id:
+            return None
+
+        params = {"h2h": f"{home_id}-{away_id}", "last": max(1, int(last))}
+        if season:
+            params["season"] = season
+
+        fixtures = self._request("fixtures/headtohead", params)
+        if not fixtures or not fixtures.get("response"):
+            return None
+
+        return self._summarize_h2h(fixtures["response"], home_id, away_id, last)
+
+    def _summarize_h2h(
+        self,
+        fixtures: List[Dict[str, Any]],
+        home_id: int,
+        away_id: int,
+        last: int
+    ) -> Dict[str, Any]:
+        total = len(fixtures)
+        if total == 0:
+            return {}
+
+        home_wins = draws = away_wins = 0
+        goals_home: List[int] = []
+        goals_away: List[int] = []
+        recent_matches: List[Dict[str, Any]] = []
+
+        for fixture in fixtures[:last]:
+            teams = fixture.get("teams", {}) or {}
+            fixture_info = fixture.get("fixture") or {}
+            goals = fixture.get("goals") or {}
+
+            goals_h = goals.get("home")
+            goals_a = goals.get("away")
+            if goals_h is None or goals_a is None:
+                continue
+
+            record = {
+                "date": fixture_info.get("date"),
+                "home": (teams.get("home") or {}).get("name"),
+                "away": (teams.get("away") or {}).get("name"),
+                "score": f"{goals_h}-{goals_a}",
+                "venue": (fixture_info.get("venue") or {}).get("name"),
+            }
+
+            if (teams.get("home") or {}).get("id") == home_id:
+                goals_home.append(goals_h)
+                goals_away.append(goals_a)
+                if goals_h > goals_a:
+                    home_wins += 1
+                    record["result"] = "H"
+                elif goals_h < goals_a:
+                    away_wins += 1
+                    record["result"] = "A"
+                else:
+                    draws += 1
+                    record["result"] = "D"
+            else:
+                goals_home.append(goals_a)
+                goals_away.append(goals_h)
+                if goals_a > goals_h:
+                    home_wins += 1
+                    record["result"] = "H"
+                elif goals_a < goals_h:
+                    away_wins += 1
+                    record["result"] = "A"
+                else:
+                    draws += 1
+                    record["result"] = "D"
+
+            recent_matches.append(record)
+
+        avg_home = sum(goals_home) / len(goals_home) if goals_home else 0.0
+        avg_away = sum(goals_away) / len(goals_away) if goals_away else 0.0
+
+        return {
+            "total_matches": total,
+            "home_wins": home_wins,
+            "draws": draws,
+            "away_wins": away_wins,
+            "home_win_pct": round(home_wins / total * 100, 1) if total else 0.0,
+            "draw_pct": round(draws / total * 100, 1) if total else 0.0,
+            "away_win_pct": round(away_wins / total * 100, 1) if total else 0.0,
+            "avg_goals_home": round(avg_home, 2),
+            "avg_goals_away": round(avg_away, 2),
+            "avg_total_goals": round(avg_home + avg_away, 2),
+            "recent_matches": recent_matches[: min(len(recent_matches), 5)],
+        }
+
     @staticmethod
     def _infer_style_from_form(form: str) -> str:
         wins = form.count("W")
