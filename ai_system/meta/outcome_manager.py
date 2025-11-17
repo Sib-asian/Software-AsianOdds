@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -41,6 +42,9 @@ class DataFreshnessManager:
         self._write(data)
 
 
+logger = logging.getLogger(__name__)
+
+
 class OutcomeManager:
     def __init__(self, config: AIConfig, pipeline: Optional[AIPipelineType] = None):
         self.config = config
@@ -57,12 +61,14 @@ class OutcomeManager:
                 writer = csv.writer(fp)
                 writer.writerow(["match_id", "outcome", "timestamp"])
         self.status = DataFreshnessManager(config.outcome_status_db)
+        self.feature_store = FeatureStore(Path(config.history_dir) / config.meta_store_filename)
 
     def record_outcome(self, match_id: str, outcome: float):
         outcome = max(0.0, min(1.0, float(outcome)))
         with self.outcomes_path.open("a", newline="") as fp:
             writer = csv.writer(fp)
             writer.writerow([match_id, outcome, time.time()])
+        self._validate_match(match_id)
         self.pipeline.register_outcome(match_id, outcome, {"source": "manual"})
         self.status.mark_processed(match_id)
 
@@ -76,5 +82,21 @@ class OutcomeManager:
                 if not self.status.is_stale(match_id, ttl):
                     continue
                 outcome = float(row["outcome"])
+                self._validate_match(match_id)
                 self.pipeline.register_outcome(match_id, outcome, {"source": "ingest"})
                 self.status.mark_processed(match_id)
+
+    def list_pending_outcomes(self, ttl_hours: Optional[float] = None) -> List[Dict[str, str]]:
+        ttl = (ttl_hours or self.config.outcome_ttl_hours) * 3600
+        pending: List[Dict[str, str]] = []
+        with self.outcomes_path.open("r", newline="") as fp:
+            reader = csv.DictReader(fp)
+            for row in reader:
+                match_id = row["match_id"]
+                if self.status.is_stale(match_id, ttl):
+                    pending.append(row)
+        return pending
+
+    def _validate_match(self, match_id: str):
+        if self.feature_store.load_entry(match_id) is None:
+            logger.warning("[OutcomeManager] match_id %s non presente nel feature store. Verificare naming o ordine di elaborazione.", match_id)
