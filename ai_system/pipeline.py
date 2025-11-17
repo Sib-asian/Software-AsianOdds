@@ -93,7 +93,18 @@ class AIPipeline:
         if self.config.use_ensemble:
             try:
                 logger.info("🤖 Initializing Ensemble Meta-Model...")
-                self.ensemble = EnsembleMetaModel(config={'models_dir': self.config.ensemble_models_dir})
+                meta_store_path = Path(self.config.history_dir) / self.config.meta_store_filename
+                ensemble_config = {
+                    'models_dir': self.config.ensemble_models_dir,
+                    'meta_orchestrator': {
+                        'store_path': str(meta_store_path),
+                        'max_entries': self.config.meta_store_max_entries,
+                        'exploration_rate': self.config.meta_exploration_rate,
+                        'reliability_decay': self.config.meta_reliability_decay,
+                        'bootstrap_window': self.config.meta_bootstrap_window,
+                    }
+                }
+                self.ensemble = EnsembleMetaModel(config=ensemble_config)
 
                 # Load trained models if requested
                 if self.config.ensemble_load_models:
