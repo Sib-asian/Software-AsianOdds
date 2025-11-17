@@ -67,60 +67,6 @@ def register_outcome(orchestrator: AdaptiveOrchestrator, match_id: str, outcome:
         print(f"⚠️  Nessuna entry trovata per match_id={match_id}")
 
 
-def aggregate_stats(entries):
-    if not entries:
-        return {}
-
-    total = len(entries)
-    with_outcome = sum(1 for e in entries if e.get("actual_outcome") is not None)
-    avg_prob = sum(e.get("probability", 0.0) for e in entries) / total
-    prob_rmse = None
-    diffs = [
-        (e.get("probability", 0.0) - e.get("actual_outcome", 0.0)) ** 2
-        for e in entries
-        if e.get("actual_outcome") is not None
-    ]
-    if diffs:
-        prob_rmse = (sum(diffs) / len(diffs)) ** 0.5
-
-    weight_stats = {}
-    prediction_stats = {}
-    context_stats = {}
-
-    for entry in entries:
-        for model, weight in (entry.get("weights") or {}).items():
-            bucket = weight_stats.setdefault(model, [])
-            bucket.append(weight)
-        for model, value in (entry.get("predictions") or {}).items():
-            bucket = prediction_stats.setdefault(model, [])
-            bucket.append(value)
-        for feature, value in (entry.get("context_features") or {}).items():
-            bucket = context_stats.setdefault(feature, [])
-            bucket.append(value)
-
-    def summarize(bucket_dict):
-        return {
-            key: {
-                "avg": sum(values) / len(values),
-                "min": min(values),
-                "max": max(values),
-            }
-            for key, values in bucket_dict.items()
-            if values
-        }
-
-    return {
-        "total_entries": total,
-        "entries_with_outcome": with_outcome,
-        "outcome_ratio": with_outcome / total,
-        "avg_probability": avg_prob,
-        "probability_rmse": prob_rmse,
-        "weights": summarize(weight_stats),
-        "predictions": summarize(prediction_stats),
-        "context_features": summarize(context_stats),
-    }
-
-
 def main():
     parser = argparse.ArgumentParser(description="Meta Layer Diagnostics")
     parser.add_argument(
@@ -158,8 +104,7 @@ def main():
     show_stats(orchestrator, args.show)
 
     if args.aggregate or args.export_json:
-        entries = orchestrator.feature_store.load_recent_entries(0)
-        stats = aggregate_stats(entries)
+        stats = orchestrator.feature_store.aggregate()
         if args.aggregate:
             if not stats:
                 print("\nNessuna entry per statistiche aggregate.")

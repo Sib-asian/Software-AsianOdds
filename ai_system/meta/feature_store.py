@@ -110,6 +110,56 @@ class FeatureStore:
                     count += 1
         return count
 
+    def aggregate(self, limit: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Calcola statistiche aggregate sul meta store (facoltativo limit).
+        """
+        entries = list(self.iter_entries(limit))
+        if not entries:
+            return {}
+
+        total = len(entries)
+        with_outcome = sum(1 for e in entries if e.get("actual_outcome") is not None)
+        avg_prob = sum(e.get("probability", 0.0) for e in entries) / total
+
+        diffs = [
+            (e.get("probability", 0.0) - e.get("actual_outcome", 0.0)) ** 2
+            for e in entries
+            if e.get("actual_outcome") is not None
+        ]
+        prob_rmse = (sum(diffs) / len(diffs)) ** 0.5 if diffs else None
+
+        def collect(field_name: str):
+            buckets: Dict[str, List[float]] = {}
+            for entry in entries:
+                data = entry.get(field_name) or {}
+                for key, value in data.items():
+                    buckets.setdefault(key, []).append(float(value))
+            return buckets
+
+        def summarize(buckets: Dict[str, List[float]]) -> Dict[str, Dict[str, float]]:
+            summary = {}
+            for key, values in buckets.items():
+                if not values:
+                    continue
+                summary[key] = {
+                    "avg": sum(values) / len(values),
+                    "min": min(values),
+                    "max": max(values),
+                }
+            return summary
+
+        return {
+            "total_entries": total,
+            "entries_with_outcome": with_outcome,
+            "outcome_ratio": with_outcome / total,
+            "avg_probability": avg_prob,
+            "probability_rmse": prob_rmse,
+            "weights": summarize(collect("weights")),
+            "predictions": summarize(collect("predictions")),
+            "context_features": summarize(collect("context_features")),
+        }
+
     # --------------------------------------------------------------------- #
     # Helpers privati
     # --------------------------------------------------------------------- #

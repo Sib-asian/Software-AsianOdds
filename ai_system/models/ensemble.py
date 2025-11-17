@@ -453,6 +453,7 @@ class EnsembleMetaModel:
                 'entries': store.count_entries(),
                 'reliability': self.adaptive_orchestrator.registry.snapshot_reliability(),
                 'exploration_rate': self.adaptive_orchestrator.meta_optimizer.exploration_rate,
+                'summary': store.aggregate(limit=500),
             }
 
         return {
