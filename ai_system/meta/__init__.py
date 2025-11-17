@@ -14,6 +14,7 @@ from .feature_store import FeatureStore
 from .model_registry import ModelRegistry, ModelDescriptor
 from .performance_tracker import PerformanceTracker
 from .meta_optimizer import MetaOptimizer
+from .health import evaluate_meta_health
 
 __all__ = [
     "AdaptiveOrchestrator",
@@ -22,5 +23,6 @@ __all__ = [
     "ModelDescriptor",
     "PerformanceTracker",
     "MetaOptimizer",
+    "evaluate_meta_health",
     "build_match_id",
 ]

@@ -24,7 +24,7 @@ from pathlib import Path
 from .xgboost_predictor import XGBoostPredictor
 from .lstm_predictor import LSTMPredictor
 from .meta_learner import MetaLearner
-from ..meta import AdaptiveOrchestrator
+from ..meta import AdaptiveOrchestrator, evaluate_meta_health
 
 logger = logging.getLogger(__name__)
 
@@ -447,17 +447,12 @@ class EnsembleMetaModel:
         """
         meta_stats = None
         if self.adaptive_orchestrator:
-            store = self.adaptive_orchestrator.feature_store
-            summary = store.aggregate(limit=500)
-            meta_stats = {
-                'store_path': str(store.filepath),
-                'entries': store.count_entries(),
-                'reliability': self.adaptive_orchestrator.registry.snapshot_reliability(),
-                'reliability_history': self.adaptive_orchestrator.registry.snapshot_history(limit=50),
-                'exploration_rate': self.adaptive_orchestrator.meta_optimizer.exploration_rate,
-                'summary': summary,
-                'alerts': self._build_meta_alerts(summary),
-            }
+            meta_stats = evaluate_meta_health(
+                store=self.adaptive_orchestrator.feature_store,
+                registry=self.adaptive_orchestrator.registry,
+                limit=500,
+                exploration_rate=self.adaptive_orchestrator.meta_optimizer.exploration_rate,
+            )
 
         return {
             'total_predictions': len(self.prediction_history),
@@ -469,30 +464,6 @@ class EnsembleMetaModel:
             'recent_predictions': self.prediction_history[-10:] if self.prediction_history else [],
             'meta': meta_stats,
         }
-
-    def _build_meta_alerts(self, summary: Optional[Dict[str, Any]]) -> List[str]:
-        alerts: List[str] = []
-        if not summary:
-            alerts.append("meta_store_empty")
-            return alerts
-
-        total = summary.get("total_entries", 0)
-        outcome_ratio = summary.get("outcome_ratio", 0.0)
-        rmse = summary.get("probability_rmse")
-
-        if total < 10:
-            alerts.append("few_meta_entries")
-        if outcome_ratio < 0.1:
-            alerts.append("low_outcome_feedback")
-        if rmse is not None and rmse > 0.25:
-            alerts.append("high_probability_rmse")
-
-        weights = summary.get("weights") or {}
-        for model, stats in weights.items():
-            if stats["min"] < 0.05 and stats["max"] < 0.2:
-                alerts.append(f"low_weight_{model}")
-        return alerts
-
 
 if __name__ == "__main__":
     # Test Ensemble Model
