@@ -66,14 +66,14 @@ class OutcomeManager:
         self.pipeline.register_outcome(match_id, outcome, {"source": "manual"})
         self.status.mark_processed(match_id)
 
-    def apply_pending_outcomes(self, ttl_hours: float = 168):
+    def apply_pending_outcomes(self, ttl_hours: Optional[float] = None):
         """Apply outcomes from CSV that are not yet recorded in the meta store."""
-        fresh_ttl = ttl_hours * 3600
+        ttl = (ttl_hours or self.config.outcome_ttl_hours) * 3600
         with self.outcomes_path.open("r", newline="") as fp:
             reader = csv.DictReader(fp)
             for row in reader:
                 match_id = row["match_id"]
-                if not self.status.is_stale(match_id, fresh_ttl):
+                if not self.status.is_stale(match_id, ttl):
                     continue
                 outcome = float(row["outcome"])
                 self.pipeline.register_outcome(match_id, outcome, {"source": "ingest"})

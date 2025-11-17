@@ -80,6 +80,7 @@ class AIConfig:
 
     outcomes_db: str = field(default_factory=lambda: str((Path(__file__).parent / "data" / "match_outcomes.csv")))
     outcome_status_db: str = field(default_factory=lambda: str((Path(__file__).parent / "data" / "outcome_status.json")))
+    outcome_ttl_hours: float = 168.0  # how often to re-apply outcomes
 
     # Hugging Face API (FREE - optional key for better rate limits)
     # Get free API key at: https://huggingface.co/settings/tokens
