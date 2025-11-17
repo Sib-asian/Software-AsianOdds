@@ -38,6 +38,7 @@ class ProviderHealth:
     failures: int = 0
     last_error: Optional[str] = None
     last_success_ts: Optional[str] = None
+    last_failure_ts: Optional[str] = None
     last_latency_ms: Optional[float] = None
 
     def mark_success(self, latency_ms: Optional[float] = None):
@@ -50,6 +51,18 @@ class ProviderHealth:
     def mark_failure(self, error: str):
         self.failures += 1
         self.last_error = error
+        self.last_failure_ts = datetime.utcnow().isoformat()
+
+    def should_skip(self, failure_threshold: int, cooldown_seconds: int) -> bool:
+        if self.failures < failure_threshold:
+            return False
+        if not self.last_failure_ts:
+            return False
+        try:
+            last_failure = datetime.fromisoformat(self.last_failure_ts)
+        except ValueError:
+            return False
+        return (datetime.utcnow() - last_failure).total_seconds() < cooldown_seconds
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -1131,11 +1144,26 @@ class APIManager:
             return
         health.mark_failure(error)
 
+    def _provider_available(self, provider: str) -> bool:
+        health = self.provider_health.get(provider)
+        if not health:
+            return True
+        failure_threshold = 3
+        cooldown_seconds = 300
+        if health.should_skip(failure_threshold, cooldown_seconds):
+            logger.debug(
+                "Skipping provider %s due to repeated failures (last_error=%s)",
+                provider,
+                health.last_error,
+            )
+            return False
+        return True
+
     def _fetch_from_apis(self, team: str, league: str) -> Optional[Dict]:
         """Try to fetch from API providers"""
 
         # Try TheSportsDB first (free, unlimited)
-        if self.quota.can_use("thesportsdb", calls=1):
+        if self._provider_available("thesportsdb") and self.quota.can_use("thesportsdb", calls=1):
             logger.info(f"📡 Trying TheSportsDB for {team}...")
 
             try:
@@ -1175,7 +1203,12 @@ class APIManager:
 
         # Try API-Football if key available
         api_football = self.providers.get("api-football")
-        if api_football and api_football.api_key and self.quota.can_use("api-football", calls=1):
+        if (
+            api_football
+            and api_football.api_key
+            and self._provider_available("api-football")
+            and self.quota.can_use("api-football", calls=1)
+        ):
             logger.info(f"📡 Trying API-Football for {team}...")
             try:
                 start = time.perf_counter()
@@ -1196,7 +1229,12 @@ class APIManager:
 
         # Try Football-Data.org as fallback premium source
         football_data = self.providers.get("football-data")
-        if football_data and football_data.api_key and self.quota.can_use("football-data", calls=1):
+        if (
+            football_data
+            and football_data.api_key
+            and self._provider_available("football-data")
+            and self.quota.can_use("football-data", calls=1)
+        ):
             logger.info(f"📡 Trying Football-Data.org for {team}...")
             try:
                 start = time.perf_counter()
