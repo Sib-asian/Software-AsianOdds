@@ -29,6 +29,7 @@ def evaluate_meta_health(
     exploration_rate: Optional[float] = None,
 ) -> Dict[str, Any]:
     summary = store.aggregate(limit=limit)
+    window_summaries = store.aggregate_windows()
     reliability = registry.snapshot_reliability()
     history = registry.snapshot_history(limit=min(50, limit))
     alerts: List[Dict[str, Any]] = []
@@ -61,6 +62,7 @@ def evaluate_meta_health(
         "summary": summary,
         "reliability": reliability,
         "reliability_history": history,
+        "window_summaries": window_summaries,
         "alerts": alerts,
     }
     return health

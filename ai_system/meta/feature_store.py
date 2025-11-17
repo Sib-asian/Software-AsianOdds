@@ -160,6 +160,17 @@ class FeatureStore:
             "context_features": summarize(collect("context_features")),
         }
 
+    def aggregate_windows(self, windows: Optional[List[Optional[int]]] = None) -> Dict[str, Dict[str, Any]]:
+        """
+        Calcola aggregate per più finestre (es. ultimi 50, 200, tutti).
+        """
+        windows = windows or [50, 200, None]
+        result: Dict[str, Dict[str, Any]] = {}
+        for window in windows:
+            key = f"last_{window}" if window else "all"
+            result[key] = self.aggregate(limit=window)
+        return result
+
     # --------------------------------------------------------------------- #
     # Helpers privati
     # --------------------------------------------------------------------- #
