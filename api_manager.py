@@ -21,6 +21,7 @@ import logging
 import os
 import sqlite3
 import time
+from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Any, List
@@ -29,6 +30,29 @@ import urllib.parse
 import urllib.error
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ProviderHealth:
+    success: int = 0
+    failures: int = 0
+    last_error: Optional[str] = None
+    last_success_ts: Optional[str] = None
+    last_latency_ms: Optional[float] = None
+
+    def mark_success(self, latency_ms: Optional[float] = None):
+        self.success += 1
+        self.last_success_ts = datetime.utcnow().isoformat()
+        if latency_ms is not None:
+            self.last_latency_ms = round(latency_ms, 2)
+        self.last_error = None
+
+    def mark_failure(self, error: str):
+        self.failures += 1
+        self.last_error = error
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 # ============================================================
 # CONFIGURATION
@@ -1045,6 +1069,9 @@ class APIManager:
             "api-football": APIFootballProvider(),
             "football-data": FootballDataProvider()
         }
+        self.provider_health = {
+            name: ProviderHealth() for name in self.providers.keys()
+        }
 
         logger.info("✅ API Manager initialized")
 
@@ -1091,6 +1118,19 @@ class APIManager:
             "api_calls_used": 0
         }
 
+    def _mark_provider_success(self, provider: str, start_time: float):
+        health = self.provider_health.get(provider)
+        if not health:
+            return
+        latency_ms = (time.perf_counter() - start_time) * 1000
+        health.mark_success(latency_ms=latency_ms)
+
+    def _mark_provider_failure(self, provider: str, error: str):
+        health = self.provider_health.get(provider)
+        if not health:
+            return
+        health.mark_failure(error)
+
     def _fetch_from_apis(self, team: str, league: str) -> Optional[Dict]:
         """Try to fetch from API providers"""
 
@@ -1099,11 +1139,13 @@ class APIManager:
             logger.info(f"📡 Trying TheSportsDB for {team}...")
 
             try:
+                start = time.perf_counter()
                 provider = self.providers["thesportsdb"]
                 team_data = provider.search_team(team)
 
                 if team_data:
                     self.quota.log_usage("thesportsdb", calls=1)
+                    self._mark_provider_success("thesportsdb", start)
 
                     # Extract useful info
                     context = {
@@ -1128,6 +1170,7 @@ class APIManager:
                         "api_calls_used": 1
                     }
             except Exception as e:
+                self._mark_provider_failure("thesportsdb", str(e))
                 logger.error(f"❌ TheSportsDB error: {e}")
 
         # Try API-Football if key available
@@ -1135,10 +1178,12 @@ class APIManager:
         if api_football and api_football.api_key and self.quota.can_use("api-football", calls=1):
             logger.info(f"📡 Trying API-Football for {team}...")
             try:
+                start = time.perf_counter()
                 info = api_football.get_team_info(team, league)
                 if info:
                     calls_used = info.get("api_calls_used", 1)
                     self.quota.log_usage("api-football", calls=calls_used)
+                    self._mark_provider_success("api-football", start)
                     return {
                         "source": "api",
                         "data": info["data"],
@@ -1146,6 +1191,7 @@ class APIManager:
                         "api_calls_used": calls_used
                     }
             except Exception as exc:
+                self._mark_provider_failure("api-football", str(exc))
                 logger.error(f"❌ API-Football error: {exc}")
 
         # Try Football-Data.org as fallback premium source
@@ -1153,9 +1199,11 @@ class APIManager:
         if football_data and football_data.api_key and self.quota.can_use("football-data", calls=1):
             logger.info(f"📡 Trying Football-Data.org for {team}...")
             try:
+                start = time.perf_counter()
                 info = football_data.get_team_info(team, league)
                 if info:
                     self.quota.log_usage("football-data", calls=info.get("api_calls_used", 1))
+                    self._mark_provider_success("football-data", start)
                     return {
                         "source": "api",
                         "data": info["data"],
@@ -1163,6 +1211,7 @@ class APIManager:
                         "api_calls_used": info.get("api_calls_used", 1)
                     }
             except Exception as exc:
+                self._mark_provider_failure("football-data", str(exc))
                 logger.error(f"❌ Football-Data error: {exc}")
 
         # Other providers not implemented in free tier
@@ -1218,6 +1267,10 @@ class APIManager:
                     "used": usage.get("thesportsdb", 0),
                     "note": "Unlimited (free)"
                 }
+            },
+            "provider_health": {
+                name: health.to_dict()
+                for name, health in self.provider_health.items()
             }
         }
 
