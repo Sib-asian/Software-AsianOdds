@@ -18,6 +18,7 @@ import logging
 import numpy as np
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 # PyTorch per LSTM
 try:
@@ -61,6 +62,10 @@ class OddsMovementTracker:
     def __init__(self, config: Optional[AIConfig] = None):
         self.config = config or AIConfig()
         self.model: Optional[OddsLSTM] = None
+        self.lstm_scaler: Optional[Dict[str, float]] = None
+        self.lstm_sequence_length = self.config.odds_lookback_window
+        self.lstm_selection = "home"
+        self.model_path = Path(self.config.models_dir) / "odds_lstm.pth"
         self.is_trained = False
         self.chronos = ChronosForecaster(self.config) if self.config.chronos_enabled else None
         self.theodds_client = TheOddsAPIClient(
@@ -76,6 +81,8 @@ class OddsMovementTracker:
 
         if not TORCH_AVAILABLE:
             logger.warning("⚠️ PyTorch not available, using rule-based tracking")
+        else:
+            self._load_lstm_model()
 
         logger.info("✅ Odds Movement Tracker initialized")
 
@@ -128,18 +135,18 @@ class OddsMovementTracker:
                 current_odds = refreshed_price
 
         # Analizza movimento quote
-        movement_analysis = self._analyze_movement(odds_history, current_odds)
+        movement_analysis = self._analyze_movement(odds_history, current_odds, selection)
 
         # Detect sharp money
         sharp_money = movement_analysis.get("sharp_money_detected", False)
 
         # Predict future odds (se model trainato)
         if self.is_trained and len(odds_history) >= self.config.odds_min_data_points:
-            predicted_odds_1h = self._predict_odds(odds_history, current_odds)
+            predicted_odds_1h = self._predict_odds(odds_history, current_odds, selection)
         else:
             # Rule-based prediction
             predicted_odds_1h = self._rule_based_prediction(
-                odds_history, current_odds, movement_analysis
+                odds_history, current_odds, movement_analysis, selection
             )
 
         # Determine timing recommendation
@@ -182,7 +189,8 @@ class OddsMovementTracker:
     def _analyze_movement(
         self,
         odds_history: List[Dict],
-        current_odds: float
+        current_odds: float,
+        selection: str
     ) -> Dict:
         """Analizza pattern di movimento quote"""
         if len(odds_history) < 2:
@@ -193,7 +201,8 @@ class OddsMovementTracker:
                 "sharp_money_detected": False
             }
 
-        odds_values = [o["odds"] for o in odds_history] + [current_odds]
+        odds_values = self._extract_odds_series(odds_history, selection)
+        odds_values.append(current_odds)
         odds_first = odds_values[0]
         odds_last = odds_values[-1]
 
@@ -232,7 +241,8 @@ class OddsMovementTracker:
         self,
         odds_history: List[Dict],
         current_odds: float,
-        movement_analysis: Dict
+        movement_analysis: Dict,
+        selection: str
     ) -> float:
         """Previsione basata su regole"""
         trend = movement_analysis.get("trend", 0.0)
@@ -259,19 +269,30 @@ class OddsMovementTracker:
     def _predict_odds(
         self,
         odds_history: List[Dict],
-        current_odds: float
+        current_odds: float,
+        selection: str
     ) -> float:
         """Prediction using Chronos or fallback."""
-        series = [entry.get("odds", current_odds) for entry in odds_history[-self.config.odds_lookback_window:]]
+        series = self._extract_odds_series(odds_history, selection)
         series.append(current_odds)
+
+        if (
+            TORCH_AVAILABLE
+            and self.model is not None
+            and self.lstm_scaler
+            and len(series) >= self.lstm_sequence_length
+            and selection == self.lstm_selection
+        ):
+            predicted = self._predict_with_lstm(series)
+            if predicted is not None:
+                return predicted
 
         if self.chronos and self.chronos.enabled:
             forecast = self.chronos.forecast(series)
             if forecast and forecast.get("median") is not None:
                 return float(forecast["median"])
 
-        # TODO: Implement LSTM prediction
-        logger.debug("Chronos unavailable, falling back to current odds for prediction.")
+        logger.debug("Advanced predictors unavailable, falling back to current odds for prediction.")
         return current_odds
 
     def _determine_timing(
@@ -443,10 +464,69 @@ class OddsMovementTracker:
         except ValueError:
             return None
 
+    def _load_lstm_model(self) -> None:
+        if not TORCH_AVAILABLE:
+            return
+        path = Path(self.model_path)
+        if not path.exists():
+            logger.debug("Odds LSTM model not found at %s", path)
+            return
+        try:
+            payload = torch.load(path, map_location="cpu")
+        except Exception as exc:
+            logger.warning("Unable to load odds LSTM model (%s): %s", path, exc)
+            return
+
+        hidden_size = self.config.odds_lstm_units
+        num_layers = self.config.odds_lstm_layers
+        self.model = OddsLSTM(input_size=1, hidden_size=hidden_size, num_layers=num_layers)
+        self.model.load_state_dict(payload["state_dict"])
+        self.model.eval()
+        self.lstm_scaler = payload.get("scaler")
+        self.lstm_sequence_length = payload.get("sequence_length", self.config.odds_lookback_window)
+        self.lstm_selection = payload.get("selection", "home")
+        self.is_trained = True
+        logger.info("✅ Odds LSTM model loaded (%s)", path)
+
+    def _extract_odds_series(self, odds_history: List[Dict[str, Any]], selection: str) -> List[float]:
+        values: List[float] = []
+        for entry in odds_history or []:
+            price = None
+            if isinstance(entry, dict):
+                if "odds" in entry:
+                    price = entry.get("odds")
+                elif "prices" in entry:
+                    price = (
+                        entry.get("prices", {})
+                        .get(selection, {})
+                        .get("price")
+                    )
+            if price is None and isinstance(entry, (int, float)):
+                price = entry
+            if isinstance(price, (int, float)):
+                values.append(float(price))
+        return values
+
+    def _predict_with_lstm(self, series: List[float]) -> Optional[float]:
+        if not TORCH_AVAILABLE or not self.model or not self.lstm_scaler:
+            return None
+        seq = np.array(series[-self.lstm_sequence_length:], dtype=np.float32)
+        if len(seq) < self.lstm_sequence_length:
+            return None
+
+        mean = self.lstm_scaler.get("mean", 0.0)
+        std = self.lstm_scaler.get("std", 1.0) or 1.0
+        normalized = (seq - mean) / std
+        tensor = torch.tensor(normalized, dtype=torch.float32).unsqueeze(0).unsqueeze(-1)
+        with torch.no_grad():
+            prediction = self.model(tensor).item()
+        denorm = prediction * std + mean
+        return float(max(1.01, denorm))
+
     def train(self, historical_odds_data: List[Dict]) -> Dict:
-        """Train LSTM model"""
-        logger.warning("⚠️ LSTM training not yet implemented")
-        return {"status": "not_implemented"}
+        """Deprecated inline training hook; use ai_system/training/train_odds_tracker.py instead."""
+        logger.warning("Use the dedicated training CLI (ai_system/training/train_odds_tracker.py) to train this block.")
+        return {"status": "redirect", "detail": "use_training_cli"}
 
 
 if __name__ == "__main__":
