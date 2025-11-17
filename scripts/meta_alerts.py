@@ -17,7 +17,7 @@ import requests
 
 from ai_system.config import AIConfig
 from ai_system.models.meta_learner import MetaLearner
-from ai_system.meta import AdaptiveOrchestrator, evaluate_meta_health
+from ai_system.meta import AdaptiveOrchestrator, evaluate_meta_health, AlertPlaybook
 from ai_system.meta.reports import summarize_meta_health
 
 
@@ -46,6 +46,8 @@ def main():
     parser.add_argument("--limit", type=int, default=200, help="Numero di entry da considerare per il report")
     parser.add_argument("--webhook-url", type=str, default=os.getenv("META_ALERT_WEBHOOK"), help="Webhook HTTP per notifiche (es. Slack)")
     parser.add_argument("--fail-on-alert", action="store_true", help="Esce con codice 1 se esistono alert")
+    parser.add_argument("--apply-playbook", action="store_true", help="Esegue il playbook per gli alert rilevati")
+    parser.add_argument("--playbook-path", type=str, default=None, help="Percorso alternativo per il playbook JSON")
     parser.add_argument("--print-summary", action="store_true", help="Stampa il report completo in stdout")
     args = parser.parse_args()
 
@@ -65,6 +67,11 @@ def main():
     alerts = health.get("alerts") or []
     if alerts and args.webhook_url:
         send_webhook(args.webhook_url, summary_text)
+
+    if alerts and args.apply_playbook:
+        playbook_path = args.playbook_path or config.alert_playbook_path
+        playbook = AlertPlaybook(playbook_path)
+        playbook.execute(alerts)
 
     if alerts and args.fail_on_alert:
         sys.exit(1)

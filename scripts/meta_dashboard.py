@@ -41,6 +41,10 @@ def main():
         exploration_rate=orchestrator.meta_optimizer.exploration_rate,
     )
 
+    summary_json = json.dumps(health.get("summary"), indent=2)
+    windows_json = json.dumps(health.get("window_summaries"), indent=2)
+    reliability_json = json.dumps(health.get("reliability"), indent=2)
+
     html = f"""
     <html>
     <head>
@@ -60,11 +64,11 @@ def main():
         <p><strong>Entries:</strong> {health.get("entries")}</p>
         <p><strong>Exploration rate:</strong> {health.get("exploration_rate")}</p>
         <h2>Summary</h2>
-        <pre>{json.dumps(health.get("summary"), indent=2)}</pre>
+        <pre>{summary_json}</pre>
         <h2>Window Summaries</h2>
-        <pre>{json.dumps(health.get("summary"), indent=2)}</pre>
+        <pre>{windows_json}</pre>
         <h2>Reliability</h2>
-        <pre>{json.dumps(health.get("reliability"), indent=2)}</pre>
+        <pre>{reliability_json}</pre>
         <h2>Alerts</h2>
         {"".join(f"<div class='alert {a['level'].upper()}'><strong>{a['code']}</strong>: {a['message']} ({a.get('action','')})</div>" for a in health.get("alerts") or []) or "<p>Nessun alert.</p>"}
     </body>

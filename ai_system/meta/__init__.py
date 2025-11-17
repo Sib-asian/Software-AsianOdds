@@ -17,6 +17,7 @@ from .meta_optimizer import MetaOptimizer
 from .health import evaluate_meta_health
 from .reports import summarize_meta_health, format_alert
 from .outcome_manager import OutcomeManager, DataFreshnessManager
+from .playbook import AlertPlaybook
 
 __all__ = [
     "AdaptiveOrchestrator",
@@ -30,5 +31,6 @@ __all__ = [
     "format_alert",
     "OutcomeManager",
     "DataFreshnessManager",
+    "AlertPlaybook",
     "build_match_id",
 ]

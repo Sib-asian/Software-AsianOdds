@@ -1,3 +1,14 @@
+__pycache__/
+*.pyc
+
+# Generated data/log files
+ai_system/data/*.csv
+ai_system/data/*.jsonl
+ai_system/data/*.json
+*.html
+
+# Local configs / playbooks
+meta_playbook.json
 # Python
 __pycache__/
 *.py[cod]
