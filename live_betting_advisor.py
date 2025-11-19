@@ -116,6 +116,10 @@ class LiveBettingAdvisor:
             'dnb_away': 'Draw No Bet Trasferta',
             'next_goal_before_75': 'Prossimo gol prima del 75\'',
             'next_goal_after_75': 'Prossimo gol dopo il 75\'',
+            'win_to_nil_home': 'Vittoria senza subire (Casa)',
+            'win_to_nil_away': 'Vittoria senza subire (Trasferta)',
+            'home_win_to_nil': 'Vittoria senza subire (Casa)',
+            'away_win_to_nil': 'Vittoria senza subire (Trasferta)',
         }
         
         # 🆕 Inizializza LiveMatchAI dedicata esclusivamente ai match live
@@ -138,7 +142,14 @@ class LiveBettingAdvisor:
         self.excluded_leagues_keywords = [
             'U17', 'U19', 'U21', 'U23', 'Youth', 'Junior', 'Giovanil',
             'Reserve', 'B Team', 'Second Team', 'Academy',
-            'Women', 'Feminine', 'Femminile'  # Calcio femminile escluso
+            # 'Women', 'Feminine', 'Femminile'  # RIMOSSO: Permettiamo Champions League femminile ed Europa Cup Women
+        ]
+        
+        # Tornei femminili importanti da includere (eccezioni al filtro generale)
+        self.allowed_women_tournaments = [
+            'Champions League', 'UEFA Champions League', 'Champions League Women',
+            'Europa Cup', 'Europa League', 'Europa Cup Women', 'Europa League Women',
+            'UEFA Women', 'Women Champions', 'Women Europa'
         ]
         
         # NOTA: Campionati minori (Serie D, Division 3, ecc.) sono ACCETTATI se hanno dati live sufficienti
@@ -4172,16 +4183,38 @@ class LiveBettingAdvisor:
         Verifica se la partita vale la pena di essere analizzata.
         Esclude SOLO partite giovanili e riserve.
         Campionati minori sono ACCETTATI se hanno dati live sufficienti (verificato da _has_sufficient_live_data).
+        Permette Champions League femminile ed Europa Cup Women.
         """
         try:
             home = match_data.get('home', '').upper()
             away = match_data.get('away', '').upper()
             league = match_data.get('league', '').upper()
             
+            # 🆕 Verifica se è un torneo femminile importante (Champions League, Europa Cup)
+            # Se sì, ACCETTA anche se contiene "Women", "Feminine", "Femminile"
+            is_important_women_tournament = False
+            for tournament in self.allowed_women_tournaments:
+                if tournament.upper() in league:
+                    is_important_women_tournament = True
+                    break
+            
             # Controlla se è una partita giovanile/riserva (ESCLUDI)
             for keyword in self.excluded_leagues_keywords:
                 if keyword.upper() in home or keyword.upper() in away or keyword.upper() in league:
-                    return False  # Escludi solo giovanili/riserve/femminile
+                    return False  # Escludi solo giovanili/riserve
+            
+            # 🆕 Se è un torneo femminile importante, ACCETTA anche se contiene "Women", "Feminine", "Femminile"
+            if is_important_women_tournament:
+                return True
+            
+            # 🆕 Filtro aggiuntivo: escludi altri campionati femminili (non Champions/Europa)
+            # ma solo se NON è già un torneo importante
+            women_keywords = ['Women', 'Feminine', 'Femminile']
+            for keyword in women_keywords:
+                if keyword.upper() in home or keyword.upper() in away or keyword.upper() in league:
+                    # Se contiene keyword femminile ma NON è un torneo importante, escludi
+                    if not is_important_women_tournament:
+                        return False
             
             # Se passa il filtro giovanili, ACCETTA (anche campionati minori)
             # La qualità dei dati sarà verificata da _has_sufficient_live_data
