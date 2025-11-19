@@ -234,16 +234,16 @@ class TelegramNotifier:
         # Formatta confidence
         if confidence >= 80:
             confidence_emoji = "🟢"
-            confidence_text = "VERY HIGH"
+            confidence_text = "MOLTO ALTA"
         elif confidence >= 70:
             confidence_emoji = "🟡"
-            confidence_text = "HIGH"
+            confidence_text = "ALTA"
         elif confidence >= 60:
             confidence_emoji = "🟠"
-            confidence_text = "MEDIUM"
+            confidence_text = "MEDIA"
         else:
             confidence_emoji = "🔴"
-            confidence_text = "LOW"
+            confidence_text = "BASSA"
 
         # Determina se è live o pre-match
         is_live = match_data.get('is_live', False)
@@ -267,24 +267,24 @@ class TelegramNotifier:
         status_text = f"{status_emoji} {time_info}" if time_info else status_emoji
         
         message = f"""
-{emoji} <b>{opportunity_type} BETTING OPPORTUNITY</b> {emoji}
+{emoji} <b>{opportunity_type} OPPORTUNITÀ DI SCOMMESSA</b> {emoji}
 
-<b>📅 Match</b>
+<b>📅 Partita</b>
 {home} vs {away}
 🏆 {league}
 {status_text}
 
-<b>💰 Recommendation</b>
-Market: <b>{market}</b>
+<b>💰 Raccomandazione</b>
+Mercato: <b>{market}</b>
 Stake: <b>€{stake:.2f}</b>
-Odds: <b>{odds:.2f}</b>
+Quota: <b>{odds:.2f}</b>
 
-<b>📊 Analysis</b>
-Expected Value: <b>{ev:+.1f}%</b>
-Win Probability: <b>{probability:.1f}%</b>
-Confidence: {confidence_emoji} <b>{confidence_text} ({confidence:.0f}%)</b>
+<b>📊 Analisi</b>
+Valore Atteso: <b>{ev:+.1f}%</b>
+Probabilità Vittoria: <b>{probability:.1f}%</b>
+Confidenza: {confidence_emoji} <b>{confidence_text} ({confidence:.0f}%)</b>
 
-<b>🤖 AI Ensemble</b>
+<b>🤖 Ensemble IA</b>
 """
 
         # Aggiungi predizioni modelli se disponibili
@@ -293,30 +293,37 @@ Confidence: {confidence_emoji} <b>{confidence_text} ({confidence:.0f}%)</b>
             predictions = ensemble.get('model_predictions', {})
             weights = ensemble.get('model_weights', {})
 
-            message += f"Dixon-Coles: {predictions.get('dixon_coles', 0)*100:.1f}% (weight: {weights.get('dixon_coles', 0)*100:.0f}%)\n"
-            message += f"XGBoost: {predictions.get('xgboost', 0)*100:.1f}% (weight: {weights.get('xgboost', 0)*100:.0f}%)\n"
-            message += f"LSTM: {predictions.get('lstm', 0)*100:.1f}% (weight: {weights.get('lstm', 0)*100:.0f}%)\n"
+            message += f"Dixon-Coles: {predictions.get('dixon_coles', 0)*100:.1f}% (peso: {weights.get('dixon_coles', 0)*100:.0f}%)\n"
+            message += f"XGBoost: {predictions.get('xgboost', 0)*100:.1f}% (peso: {weights.get('xgboost', 0)*100:.0f}%)\n"
+            message += f"LSTM: {predictions.get('lstm', 0)*100:.1f}% (peso: {weights.get('lstm', 0)*100:.0f}%)\n"
 
             uncertainty = ensemble.get('uncertainty', 0)
-            message += f"\n📉 Uncertainty: {uncertainty*100:.1f}%"
+            message += f"\n📉 Incertezza: {uncertainty*100:.1f}%"
 
         if 'bayesian_fusion' in analysis_result:
             fusion = analysis_result['bayesian_fusion']
             message += (
-                "\n<b>🧠 Bayesian Fusion</b>\n"
-                f"Final Prob: {fusion.get('probability', 0)*100:.1f}%\n"
-                f"CI 95%: {fusion.get('ci_low', 0)*100:.1f}% – {fusion.get('ci_high', 0)*100:.1f}%\n"
-                f"Reliability: <b>{fusion.get('confidence', 0):.0f}%</b>"
+                "\n<b>🧠 Fusione Bayesiana</b>\n"
+                f"Prob. Finale: {fusion.get('probability', 0)*100:.1f}%\n"
+                f"IC 95%: {fusion.get('ci_low', 0)*100:.1f}% – {fusion.get('ci_high', 0)*100:.1f}%\n"
+                f"Affidabilità: <b>{fusion.get('confidence', 0):.0f}%</b>"
             )
 
         regime = final_decision.get("market_regime") or summary.get("market_regime")
         if regime:
-            message += f"\n\n<b>Market Regime:</b> {regime.upper()}"
+            message += f"\n\n<b>Regime di Mercato:</b> {regime.upper()}"
+
+        # Aggiungi statistiche dall'API se disponibili
+        api_context = analysis_result.get('api_context', {})
+        if api_context:
+            stats_text = self._format_api_statistics(api_context)
+            if stats_text:
+                message += f"\n\n<b>📈 Statistiche</b>\n{stats_text}"
 
         llm_playbook = analysis_result.get("llm_playbook") or summary.get("llm_playbook")
         if isinstance(llm_playbook, dict) and llm_playbook.get("text"):
             message += (
-                "\n\n🧠 <b>AI Playbook</b>\n"
+                "\n\n🧠 <b>Ragionamento IA</b>\n"
                 f"{html.escape(llm_playbook['text'])}"
             )
 
@@ -325,6 +332,43 @@ Confidence: {confidence_emoji} <b>{confidence_text} ({confidence:.0f}%)</b>
         message += f"\n\n⏰ {now}"
 
         return message.strip()
+
+    def _format_api_statistics(self, api_context: Dict) -> str:
+        """Formatta statistiche dall'API per il messaggio"""
+        stats_lines = []
+        
+        # Estrai statistiche per casa e trasferta
+        home_ctx = api_context.get('home_context', {}).get('data', {})
+        away_ctx = api_context.get('away_context', {}).get('data', {})
+        
+        # Forma recente
+        home_form = home_ctx.get('form', '')
+        away_form = away_ctx.get('form', '')
+        if home_form or away_form:
+            stats_lines.append(f"Forma: {home_form or 'N/A'} - {away_form or 'N/A'}")
+        
+        # Goals segnati/subiti (ultimi 5 match)
+        home_goals_for = home_ctx.get('goals_scored_last_5', 0)
+        home_goals_against = home_ctx.get('goals_conceded_last_5', 0)
+        away_goals_for = away_ctx.get('goals_scored_last_5', 0)
+        away_goals_against = away_ctx.get('goals_conceded_last_5', 0)
+        
+        if home_goals_for or away_goals_for:
+            stats_lines.append(f"Goal (ult. 5): {home_goals_for}F-{home_goals_against}S vs {away_goals_for}F-{away_goals_against}S")
+        
+        # Infortuni
+        home_injuries = len(home_ctx.get('injuries', []))
+        away_injuries = len(away_ctx.get('injuries', []))
+        if home_injuries > 0 or away_injuries > 0:
+            stats_lines.append(f"Infortuni: {home_injuries} vs {away_injuries}")
+        
+        # xG medio (se disponibile)
+        home_xg = home_ctx.get('avg_xg', 0)
+        away_xg = away_ctx.get('avg_xg', 0)
+        if home_xg > 0 or away_xg > 0:
+            stats_lines.append(f"xG medio: {home_xg:.2f} vs {away_xg:.2f}")
+        
+        return "\n".join(stats_lines) if stats_lines else ""
 
     def _format_live_alert(
         self,
@@ -345,40 +389,48 @@ Confidence: {confidence_emoji} <b>{confidence_text} ({confidence:.0f}%)</b>
         # Alert specifici
         if alert_type == "BET_NOW":
             emoji = "🚨"
-            title = "BET NOW - OPTIMAL TIMING"
+            title = "PUNTA ORA - TIMING OTTIMALE"
         elif alert_type == "VALUE_SHIFT":
             emoji = "📈"
-            title = "VALUE OPPORTUNITY DETECTED"
+            title = "OPPORTUNITÀ DI VALORE RILEVATA"
         elif alert_type == "GOAL":
             emoji = "⚽"
-            title = "GOAL SCORED"
+            title = "GOL SEGNATO"
         elif alert_type == "RED_CARD":
             emoji = "🟥"
-            title = "RED CARD"
+            title = "CARTELLINO ROSSO"
         else:
             emoji = "🔴"
-            title = "LIVE UPDATE"
+            title = "AGGIORNAMENTO LIVE"
+
+        # Traduci timing
+        timing_map = {
+            "NOW": "ORA",
+            "WAIT": "ASPETTA",
+            "WATCH": "MONITORA"
+        }
+        timing_it = timing_map.get(timing, timing)
 
         message = f"""
 {emoji} <b>{title}</b>
 
 <b>🔴 LIVE</b>
 {home} vs {away}
-{minute}' - Score: <b>{score}</b>
+{minute}' - Punteggio: <b>{score}</b>
 
-<b>📊 Updated Probability</b>
-Home Win: <b>{prob:.1f}%</b>
+<b>📊 Probabilità Aggiornata</b>
+Vittoria Casa: <b>{prob:.1f}%</b>
 
 <b>⏱️ Timing</b>
-Recommendation: <b>{timing}</b>
+Raccomandazione: <b>{timing_it}</b>
 """
 
         # Aggiungi adjustments se disponibili
         if 'adjustments' in live_result:
             adj = live_result['adjustments']
-            message += f"\n<b>🔄 Live Adjustments</b>\n"
-            message += f"Score impact: {adj.get('score', 1.0):.2f}x\n"
-            message += f"xG impact: {adj.get('xg', 1.0):.2f}x\n"
+            message += f"\n<b>🔄 Aggiustamenti Live</b>\n"
+            message += f"Impatto punteggio: {adj.get('score', 1.0):.2f}x\n"
+            message += f"Impatto xG: {adj.get('xg', 1.0):.2f}x\n"
             message += f"Momentum: {adj.get('momentum', 1.0):.2f}x\n"
 
         return message.strip()
@@ -396,15 +448,15 @@ Recommendation: <b>{timing}</b>
         today = datetime.now().strftime("%d/%m/%Y")
 
         message = f"""
-📊 <b>DAILY REPORT - {today}</b>
+📊 <b>REPORT GIORNALIERO - {today}</b>
 
-<b>📈 Summary</b>
-Opportunities Found: <b>{opportunities_found}</b>
-Bets Placed: <b>{bets_placed}</b>
-Total Stake: <b>€{total_stake:.2f}</b>
-Expected Profit: <b>€{expected_profit:.2f}</b>
+<b>📈 Riepilogo</b>
+Opportunità Trovate: <b>{opportunities_found}</b>
+Scommesse Piazzate: <b>{bets_placed}</b>
+Stake Totale: <b>€{total_stake:.2f}</b>
+Profitto Atteso: <b>€{expected_profit:.2f}</b>
 
-<b>🎯 Top Opportunities</b>
+<b>🎯 Migliori Opportunità</b>
 """
 
         # Top 5 opportunità

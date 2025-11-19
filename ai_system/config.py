@@ -60,8 +60,8 @@ class AIConfig:
     telegram_chat_id: str = ""    # Set via env var TELEGRAM_CHAT_ID
 
     # Notification thresholds
-    telegram_min_ev: float = 5.0           # Min EV% per inviare notifica
-    telegram_min_confidence: float = 60.0  # Min confidence per inviare
+    telegram_min_ev: float = 8.0           # Min EV% per inviare notifica
+    telegram_min_confidence: float = 75.0  # Min confidence per inviare
     telegram_rate_limit_seconds: int = 3   # Secondi tra messaggi
     telegram_live_alerts_enabled: bool = False  # Disattiva notifiche live di default
 
