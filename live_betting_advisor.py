@@ -116,6 +116,10 @@ class LiveBettingAdvisor:
             'dnb_away': 'Draw No Bet Trasferta',
             'next_goal_before_75': 'Prossimo gol prima del 75\'',
             'next_goal_after_75': 'Prossimo gol dopo il 75\'',
+            'win_to_nil_home': 'Vittoria senza subire (Casa)',
+            'win_to_nil_away': 'Vittoria senza subire (Trasferta)',
+            'home_win_to_nil': 'Vittoria senza subire (Casa)',
+            'away_win_to_nil': 'Vittoria senza subire (Trasferta)',
         }
         
         # 🆕 Inizializza LiveMatchAI dedicata esclusivamente ai match live
