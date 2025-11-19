@@ -120,13 +120,15 @@ class Automation24H:
         min_ev: float = 8.0,  # EV minimo 8%
         min_confidence: float = 70.0,  # Confidence minima 70%
         update_interval: int = 300,  # 5 minuti
-        api_budget_per_day: int = 100
+        api_budget_per_day: int = 100,
+        max_notifications_per_cycle: int = 2  # Max notifiche per ciclo (seleziona le migliori)
     ):
         self.config_path = config_path
         self.min_ev = min_ev
         self.min_confidence = min_confidence
         self.update_interval = update_interval
         self.api_budget_per_day = api_budget_per_day
+        self.max_notifications_per_cycle = max_notifications_per_cycle
         
         # Stato
         self.running = False
@@ -401,8 +403,10 @@ class Automation24H:
             logger.info("   No matches after filters, skipping cycle")
             return
         
-        # 2. Analizza ogni partita
+        # 2. Analizza ogni partita e raccogli tutte le opportunità
+        all_opportunities = []  # Raccogli tutte le opportunità per selezionare le migliori
         opportunities_found = 0
+        
         for match in matches:
             try:
                 # 🆕 NUOVO: Rileva arbitraggi prima di analisi normale
@@ -418,12 +422,22 @@ class Automation24H:
                 for opp in opportunities:
                     if opp:
                         opportunities_found += 1
-                        self._handle_live_opportunity(opp)
+                        all_opportunities.append(opp)  # Raccogli invece di inviare subito
             except Exception as e:
                 logger.error(f"❌ Error analyzing match {match.get('id', 'unknown')}: {e}")
                 continue
         
-        logger.info(f"✅ Cycle complete: {opportunities_found} opportunities found")
+        # 🆕 NUOVO: Seleziona e invia solo le migliori opportunità
+        notified_count = 0
+        if all_opportunities:
+            best_opportunities = self._select_best_opportunities(all_opportunities)
+            logger.info(f"📊 Trovate {opportunities_found} opportunità, selezionate le migliori {len(best_opportunities)} per notifica")
+            
+            for opp_dict in best_opportunities:
+                self._handle_live_opportunity(opp_dict)
+                notified_count += 1
+        
+        logger.info(f"✅ Cycle complete: {opportunities_found} opportunities found, {notified_count} notified")
     
     def _get_matches_to_monitor(self) -> List[Dict]:
         """
@@ -800,26 +814,54 @@ class Automation24H:
             }
             
             # Prepara live_data (dati live partita)
-            current_score = match.get('current_score', '0-0')
-            try:
-                home_score, away_score = map(int, current_score.split('-'))
-            except:
-                home_score, away_score = 0, 0
+            # 🔧 FIX: Usa score_home e score_away da multi_source_match_finder
+            home_score = match.get('score_home', 0)
+            away_score = match.get('score_away', 0)
+            
+            # Fallback: prova anche current_score se score_home/score_away non esistono
+            if home_score == 0 and away_score == 0:
+                current_score = match.get('current_score', '0-0')
+                try:
+                    home_score, away_score = map(int, current_score.split('-'))
+                except:
+                    home_score, away_score = 0, 0
+            
+            # 🔧 LOG per debug: verifica score passato a LiveBettingAdvisor
+            logger.info(f"📊 Analizzando LIVE {match.get('home', '?')} vs {match.get('away', '?')}: {home_score}-{away_score} (min {match.get('minute', 0)})")
             
             # Estrai minute
             minute = match.get('minute', 0)
-            if isinstance(minute, str):
+            if minute is None:
+                minute = 0
+            elif isinstance(minute, str):
                 try:
                     minute = int(minute.replace("'", "").replace("+", "").split()[0])
+                except:
+                    minute = 0
+            elif not isinstance(minute, int):
+                try:
+                    minute = int(minute)
                 except:
                     minute = 0
             
             live_data = {
                 'minute': minute,
-                'home_score': home_score,
-                'away_score': away_score,
+                # 🔧 FIX: Usa score_home/score_away (non home_score/away_score) per compatibilità con LiveBettingAdvisor
+                'score_home': home_score,
+                'score_away': away_score,
+                'home_score': home_score,  # Mantieni anche per retrocompatibilità
+                'away_score': away_score,  # Mantieni anche per retrocompatibilità
                 'status': match.get('status', 'LIVE'),
-                # Statistiche live (se disponibili)
+                # Statistiche live (se disponibili) - usa nomi corretti per LiveBettingAdvisor
+                'shots_on_target_home': match.get('home_shots_on_target', 0),
+                'shots_on_target_away': match.get('away_shots_on_target', 0),
+                'shots_home': match.get('home_total_shots', 0),
+                'shots_away': match.get('away_total_shots', 0),
+                'xg_home': match.get('home_xg', 0.0),
+                'xg_away': match.get('away_xg', 0.0),
+                'dangerous_attacks_home': match.get('home_dangerous_attacks', 0),
+                'dangerous_attacks_away': match.get('away_dangerous_attacks', 0),
+                # Mantieni anche nomi alternativi per retrocompatibilità
                 'home_shots_on_target': match.get('home_shots_on_target', 0),
                 'away_shots_on_target': match.get('away_shots_on_target', 0),
                 'home_total_shots': match.get('home_total_shots', 0),
@@ -829,6 +871,13 @@ class Automation24H:
                 'home_dangerous_attacks': match.get('home_dangerous_attacks', 0),
                 'away_dangerous_attacks': match.get('away_dangerous_attacks', 0),
             }
+            
+            # 🔧 LOG: Verifica live_data prima di passarlo a analyze_live_match
+            logger.info(f"📊 live_data passato a analyze_live_match per {match_id}:")
+            logger.info(f"   score_home: {live_data.get('score_home', 'N/A')}")
+            logger.info(f"   score_away: {live_data.get('score_away', 'N/A')}")
+            logger.info(f"   minute: {live_data.get('minute', 'N/A')}")
+            logger.info(f"   shots_on_target_home: {live_data.get('shots_on_target_home', 'N/A')}")
             
             # Analizza con LiveBettingAdvisor
             opportunities = self.live_betting_advisor.analyze_live_match(
@@ -1030,6 +1079,59 @@ class Automation24H:
         else:
             logger.warning("⚠️  Telegram notifier not available")
     
+    def _select_best_opportunities(self, opportunities: List[Dict]) -> List[Dict]:
+        """
+        Seleziona le migliori opportunità da notificare.
+        
+        Ordina per:
+        1. Combined score (EV + Confidence)
+        2. Confidence
+        3. EV
+        
+        Restituisce max max_notifications_per_cycle opportunità.
+        """
+        if not opportunities:
+            return []
+        
+        # Calcola score per ogni opportunità
+        scored_opportunities = []
+        for opp_dict in opportunities:
+            live_opp = opp_dict.get('live_opportunity')
+            if not live_opp:
+                continue
+            
+            # Calcola combined score (EV * 0.4 + Confidence * 0.6)
+            ev = getattr(live_opp, 'ev', 0.0)
+            confidence = getattr(live_opp, 'confidence', 0.0)
+            
+            # Normalizza EV (può essere negativo)
+            ev_normalized = (ev / 100.0) + 1.0
+            confidence_normalized = confidence / 100.0
+            
+            combined_score = (ev_normalized * 0.4) + (confidence_normalized * 0.6)
+            
+            scored_opportunities.append({
+                'opportunity': opp_dict,
+                'score': combined_score,
+                'confidence': confidence,
+                'ev': ev
+            })
+        
+        # Ordina per score decrescente
+        scored_opportunities.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Prendi solo le migliori
+        best = scored_opportunities[:self.max_notifications_per_cycle]
+        
+        logger.info(f"   🏆 Migliori opportunità selezionate:")
+        for i, item in enumerate(best, 1):
+            live_opp = item['opportunity'].get('live_opportunity')
+            match_id = item['opportunity'].get('match_id', 'unknown')
+            market = getattr(live_opp, 'market', 'unknown')
+            logger.info(f"      {i}. {match_id} - {market}: score={item['score']:.3f}, conf={item['confidence']:.1f}%, ev={item['ev']:.1f}%")
+        
+        return [item['opportunity'] for item in best]
+    
     def _handle_live_opportunity(self, opportunity: Dict):
         """Gestisce opportunità live trovata da LiveBettingAdvisor"""
         match_id = opportunity['match_id']
@@ -1052,6 +1154,30 @@ class Automation24H:
                 message = self.live_betting_advisor.format_live_betting_message(live_opp)
                 
                 if message:
+                    # 🔧 VERIFICA MESSAGGIO: Log completo del messaggio prima dell'invio
+                    logger.info(f"📱 MESSAGGIO TELEGRAM (prima dell'invio):")
+                    logger.info(f"   Match: {match_id}")
+                    logger.info(f"   Market: {market}")
+                    # Verifica dati in live_opp
+                    logger.info(f"   live_opp.match_stats: {live_opp.match_stats}")
+                    logger.info(f"   live_opp.match_data: {live_opp.match_data}")
+                    # Estrai score dal messaggio o da live_opp
+                    if live_opp.match_stats:
+                        stats = live_opp.match_stats
+                        score_home = stats.get('score_home', 0)
+                        score_away = stats.get('score_away', 0)
+                        minute = stats.get('minute', 0)
+                        logger.info(f"   Score da match_stats: {score_home}-{score_away} al {minute}'")
+                    else:
+                        logger.warning(f"   ⚠️  live_opp.match_stats è None o vuoto!")
+                    # Mostra prime 15 righe del messaggio
+                    message_lines = message.split('\n')[:15]
+                    logger.info(f"   Contenuto messaggio (prime 15 righe):")
+                    for i, line in enumerate(message_lines, 1):
+                        logger.info(f"      {i:2d}. {line}")
+                    if len(message.split('\n')) > 15:
+                        logger.info(f"      ... (altre {len(message.split('\n')) - 15} righe)")
+                    
                     # Usa _send_message (metodo privato ma usato in altri punti del codice)
                     success = self.notifier._send_message(message, parse_mode="HTML")
                     if success:
@@ -1330,6 +1456,7 @@ def main():
     parser.add_argument('--telegram-chat-id', type=str, help='Telegram chat ID')
     parser.add_argument('--min-ev', type=float, default=8.0, help='Min EV % (default: 8.0)')
     parser.add_argument('--min-confidence', type=float, default=70.0, help='Min confidence % (default: 70.0)')
+    parser.add_argument('--max-notifications', type=int, default=2, help='Max notifications per cycle (default: 2)')
     parser.add_argument('--update-interval', type=int, default=300, help='Update interval seconds (default: 300)')
     parser.add_argument('--single-run', action='store_true', help='Run once and exit (for cron jobs)')
     
@@ -1348,7 +1475,8 @@ def main():
         telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID'),
         min_ev=args.min_ev or config.get('min_ev', 8.0),
         min_confidence=args.min_confidence or config.get('min_confidence', 70.0),
-        update_interval=args.update_interval or config.get('update_interval', 300)
+        update_interval=args.update_interval or config.get('update_interval', 300),
+        max_notifications_per_cycle=args.max_notifications or config.get('max_notifications_per_cycle', 2)
     )
     
     # Avvia (single_run per cron jobs)

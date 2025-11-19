@@ -156,6 +156,8 @@ class LiveBettingAdvisor:
         # Il filtro _has_sufficient_live_data farà la scrematura basata sulla qualità dei dati
         # 🆕 AUMENTATE: Confidence minima specifica per mercato (aumentate per ridurre segnali banali)
         self.market_min_confidence: Dict[str, float] = {
+            '1x2_home': 78.0,  # 🔧 AUMENTATO: Ribaltone richiede alta confidence
+            '1x2_away': 78.0,  # 🔧 AUMENTATO: Ribaltone richiede alta confidence
             'over_0.5': 75.0,  # 🆕 AUMENTATO: 75% invece di 72%
             'over_0.5_ht': 76.0,  # 🆕 AUMENTATO: 76% invece di 73%
             'over_1.5': 76.0,  # 🆕 AUMENTATO: 76% invece di 73%
@@ -398,6 +400,13 @@ class LiveBettingAdvisor:
             odds_1 = match_data.get('odds_1', 2.0)
             odds_2 = match_data.get('odds_2', 2.0)
             
+            # 🔧 FILTRO: Verifica che ci sia una vera favorita (differenza quote significativa)
+            # Se le quote sono troppo vicine (es. 2.0 vs 2.0), non c'è una vera favorita
+            odds_diff = abs(odds_1 - odds_2)
+            if odds_diff < 0.3:  # Differenza minima 0.3 (es. 1.8 vs 2.1)
+                logger.debug(f"⏭️  Ribaltone saltato: nessuna vera favorita (quote troppo vicine: {odds_1} vs {odds_2})")
+                return opportunities
+            
             is_home_favorite = odds_1 < odds_2
             
             # Situazione: favorita perde
@@ -408,10 +417,33 @@ class LiveBettingAdvisor:
                     logger.debug(f"⏭️  Ribaltone saltato: differenza troppo alta ({score_home}-{score_away}, diff: {goal_diff} gol)")
                     return opportunities
                 
+                # 🔧 FILTRO: Se siamo oltre 60-70 minuti con 1-0, il ribaltone diventa molto difficile
+                if minute >= 65 and goal_diff == 1:
+                    logger.debug(f"⏭️  Ribaltone saltato: troppo tardi per ribaltone realistico ({score_home}-{score_away} al {minute}')")
+                    return opportunities
+                
+                # 🔧 FILTRO: Verifica statistiche che supportino il ribaltone
+                possession_home = live_data.get('possession_home', 50)
+                shots_home = live_data.get('shots_home', 0)
+                shots_away = live_data.get('shots_away', 0)
+                shots_on_target_home = live_data.get('shots_on_target_home', 0)
+                shots_on_target_away = live_data.get('shots_on_target_away', 0)
+                
+                # Se abbiamo statistiche, verifica che la favorita stia dominando
+                if shots_home > 0 or shots_away > 0:
+                    # La favorita deve avere più tiri o almeno tiri simili
+                    if shots_home < shots_away * 0.7:  # Se ha meno del 70% dei tiri dell'avversario
+                        logger.debug(f"⏭️  Ribaltone saltato: favorita non domina (tiri: {shots_home} vs {shots_away})")
+                        return opportunities
+                
                 # Favorita in casa perde
-                if minute >= 30 and minute <= 75:  # Tra 30' e 75'
+                if minute >= 30 and minute <= 65:  # 🔧 RIDOTTO: Tra 30' e 65' (non 75')
                     # 🆕 OTTIMIZZATO: Aumentata confidence base per ribaltone (50% → 60%)
                     confidence = min(85, 60 + (minute - 30) * 0.5)  # Più tardi = più confidence
+                    
+                    # 🔧 BOOST: Se la favorita domina (possesso > 55% o tiri > 1.3x), aumenta confidence
+                    if possession_home > 55 or (shots_home > 0 and shots_home > shots_away * 1.3):
+                        confidence = min(90, confidence + 5)
                     
                     opportunity = LiveBettingOpportunity(
                         match_id=match_id,
@@ -441,10 +473,33 @@ class LiveBettingAdvisor:
                     logger.debug(f"⏭️  Ribaltone saltato: differenza troppo alta ({score_home}-{score_away}, diff: {goal_diff} gol)")
                     return opportunities
                 
+                # 🔧 FILTRO: Se siamo oltre 60-70 minuti con 1-0, il ribaltone diventa molto difficile
+                if minute >= 65 and goal_diff == 1:
+                    logger.debug(f"⏭️  Ribaltone saltato: troppo tardi per ribaltone realistico ({score_home}-{score_away} al {minute}')")
+                    return opportunities
+                
+                # 🔧 FILTRO: Verifica statistiche che supportino il ribaltone
+                possession_away = live_data.get('possession_away', 50)
+                shots_home = live_data.get('shots_home', 0)
+                shots_away = live_data.get('shots_away', 0)
+                shots_on_target_home = live_data.get('shots_on_target_home', 0)
+                shots_on_target_away = live_data.get('shots_on_target_away', 0)
+                
+                # Se abbiamo statistiche, verifica che la favorita stia dominando
+                if shots_home > 0 or shots_away > 0:
+                    # La favorita deve avere più tiri o almeno tiri simili
+                    if shots_away < shots_home * 0.7:  # Se ha meno del 70% dei tiri dell'avversario
+                        logger.debug(f"⏭️  Ribaltone saltato: favorita non domina (tiri: {shots_away} vs {shots_home})")
+                        return opportunities
+                
                 # Favorita in trasferta perde
-                if minute >= 30 and minute <= 75:
+                if minute >= 30 and minute <= 65:  # 🔧 RIDOTTO: Tra 30' e 65' (non 75')
                     # 🆕 OTTIMIZZATO: Aumentata confidence base per ribaltone (50% → 60%)
                     confidence = min(85, 60 + (minute - 30) * 0.5)
+                    
+                    # 🔧 BOOST: Se la favorita domina (possesso > 55% o tiri > 1.3x), aumenta confidence
+                    if possession_away > 55 or (shots_away > 0 and shots_away > shots_home * 1.3):
+                        confidence = min(90, confidence + 5)
                     
                     opportunity = LiveBettingOpportunity(
                         match_id=match_id,
@@ -2831,6 +2886,12 @@ class LiveBettingAdvisor:
     
     def _extract_match_stats(self, live_data: Dict[str, Any]) -> Dict[str, Any]:
         """Estrae statistiche partita da dati live"""
+        # 🔧 LOG: Verifica cosa contiene live_data
+        logger.info(f"📊 _extract_match_stats ricevuto live_data con chiavi: {list(live_data.keys())[:10]}...")
+        logger.info(f"   score_home: {live_data.get('score_home', 'N/A')}")
+        logger.info(f"   score_away: {live_data.get('score_away', 'N/A')}")
+        logger.info(f"   minute: {live_data.get('minute', 'N/A')}")
+        
         return {
             'score_home': live_data.get('score_home', 0),
             'score_away': live_data.get('score_away', 0),
