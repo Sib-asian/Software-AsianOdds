@@ -402,9 +402,61 @@ class MultiSourceMatchFinder:
                         score_home = score.get("home", 0)
                         score_away = score.get("away", 0)
                         
+                        # 🔧 LOG per debug: verifica score recuperato
+                        if score_home > 0 or score_away > 0:
+                            logger.info(f"📊 LIVE {home_team} vs {away_team}: {score_home}-{score_away} (min {minute})")
+                        
                         fixture_status = fixture.get("status", {})
                         minute = fixture_status.get("elapsed", 0)
                         status_long = fixture_status.get("long", "Live")
+                        
+                        # 🔧 Estrai statistiche live se disponibili
+                        statistics = fixture_data.get("statistics", [])
+                        home_shots_on_target = 0
+                        away_shots_on_target = 0
+                        home_total_shots = 0
+                        away_total_shots = 0
+                        home_xg = 0.0
+                        away_xg = 0.0
+                        home_dangerous_attacks = 0
+                        away_dangerous_attacks = 0
+                        
+                        # API-SPORTS restituisce statistiche come array di oggetti per home/away
+                        if statistics and len(statistics) >= 2:
+                            home_stats = statistics[0].get("statistics", [])
+                            away_stats = statistics[1].get("statistics", [])
+                            
+                            # Estrai statistiche home
+                            for stat in home_stats:
+                                stat_type = stat.get("type", "")
+                                value = stat.get("value")
+                                if stat_type == "Shots on Goal":
+                                    home_shots_on_target = int(value) if value else 0
+                                elif stat_type == "Total Shots":
+                                    home_total_shots = int(value) if value else 0
+                                elif stat_type == "Expected Goals":
+                                    try:
+                                        home_xg = float(value) if value else 0.0
+                                    except:
+                                        home_xg = 0.0
+                                elif stat_type == "Dangerous Attacks":
+                                    home_dangerous_attacks = int(value) if value else 0
+                            
+                            # Estrai statistiche away
+                            for stat in away_stats:
+                                stat_type = stat.get("type", "")
+                                value = stat.get("value")
+                                if stat_type == "Shots on Goal":
+                                    away_shots_on_target = int(value) if value else 0
+                                elif stat_type == "Total Shots":
+                                    away_total_shots = int(value) if value else 0
+                                elif stat_type == "Expected Goals":
+                                    try:
+                                        away_xg = float(value) if value else 0.0
+                                    except:
+                                        away_xg = 0.0
+                                elif stat_type == "Dangerous Attacks":
+                                    away_dangerous_attacks = int(value) if value else 0
                         
                         # Estrai data (per deduplicazione)
                         fixture_date_str = fixture.get("date", "")
@@ -435,7 +487,16 @@ class MultiSourceMatchFinder:
                             'score_home': score_home,
                             'score_away': score_away,
                             'minute': minute,
-                            'status': status_long
+                            'status': status_long,
+                            # 🔧 Statistiche live
+                            'home_shots_on_target': home_shots_on_target,
+                            'away_shots_on_target': away_shots_on_target,
+                            'home_total_shots': home_total_shots,
+                            'away_total_shots': away_total_shots,
+                            'home_xg': home_xg,
+                            'away_xg': away_xg,
+                            'home_dangerous_attacks': home_dangerous_attacks,
+                            'away_dangerous_attacks': away_dangerous_attacks
                         })
                     except Exception as e:
                         logger.debug(f"⚠️  Errore processing API-SPORTS live fixture: {e}")
