@@ -188,7 +188,7 @@ class TelegramNotifier:
         analysis_result: Dict,
         opportunity_type: str
     ) -> str:
-        """Formatta messaggio HTML per opportunità betting"""
+        """Formatta messaggio HTML per opportunità betting (in ITALIANO)"""
 
         # Emoji per tipo
         emoji_map = {
@@ -199,15 +199,15 @@ class TelegramNotifier:
         emoji = emoji_map.get(opportunity_type, "⚽")
 
         # Estrai dati
-        home = match_data.get('home', 'Home Team')
-        away = match_data.get('away', 'Away Team')
-        league = match_data.get('league', 'Unknown League')
+        home = match_data.get('home', 'Squadra Casa')
+        away = match_data.get('away', 'Squadra Trasferta')
+        league = match_data.get('league', 'Campionato Sconosciuto')
 
         final_decision = analysis_result.get('final_decision', {})
         summary = analysis_result.get('summary', {})
 
         action = analysis_result.get('action') or final_decision.get('action', 'BET')
-        market = analysis_result.get('market', final_decision.get('market', '1X2'))
+        market_raw = analysis_result.get('market', final_decision.get('market', '1X2'))
         stake = analysis_result.get('stake_amount', final_decision.get('stake', 0))
 
         ev = analysis_result.get('ev')
@@ -231,19 +231,34 @@ class TelegramNotifier:
         if confidence is None:
             confidence = summary.get('confidence', 0)
 
-        # Formatta confidence
+        # Traduci market in italiano
+        market_translations = {
+            '1X2_HOME': '1 (Vittoria Casa)',
+            '1X2_DRAW': 'X (Pareggio)',
+            '1X2_AWAY': '2 (Vittoria Trasferta)',
+            '1X2': '1X2',
+            'OVER_2.5': 'Over 2.5 Gol',
+            'UNDER_2.5': 'Under 2.5 Gol',
+            'OVER_1.5': 'Over 1.5 Gol',
+            'UNDER_1.5': 'Under 1.5 Gol',
+            'BTTS_YES': 'Goal (entrambe segnano)',
+            'BTTS_NO': 'No Goal',
+        }
+        market = market_translations.get(market_raw, market_raw)
+
+        # Formatta confidence in italiano
         if confidence >= 80:
             confidence_emoji = "🟢"
-            confidence_text = "VERY HIGH"
+            confidence_text = "MOLTO ALTA"
         elif confidence >= 70:
             confidence_emoji = "🟡"
-            confidence_text = "HIGH"
+            confidence_text = "ALTA"
         elif confidence >= 60:
             confidence_emoji = "🟠"
-            confidence_text = "MEDIUM"
+            confidence_text = "MEDIA"
         else:
             confidence_emoji = "🔴"
-            confidence_text = "LOW"
+            confidence_text = "BASSA"
 
         # Determina se è live o pre-match
         is_live = match_data.get('is_live', False)
@@ -262,30 +277,51 @@ class TelegramNotifier:
             except:
                 pass
         
-        # Build message
-        status_emoji = "🔴 LIVE" if is_live else "⚽ PRE-MATCH"
+        # Build message in ITALIANO
+        status_emoji = "🔴 LIVE" if is_live else "⚽ PRE-PARTITA"
         status_text = f"{status_emoji} {time_info}" if time_info else status_emoji
         
         message = f"""
-{emoji} <b>{opportunity_type} BETTING OPPORTUNITY</b> {emoji}
+{emoji} <b>OPPORTUNITÀ DI SCOMMESSA</b> {emoji}
 
-<b>📅 Match</b>
+<b>📅 Partita</b>
 {home} vs {away}
 🏆 {league}
 {status_text}
 
-<b>💰 Recommendation</b>
-Market: <b>{market}</b>
-Stake: <b>€{stake:.2f}</b>
-Odds: <b>{odds:.2f}</b>
+<b>💰 Raccomandazione</b>
+Mercato: <b>{market}</b>
+Puntata: <b>€{stake:.2f}</b>
+Quota: <b>{odds:.2f}</b>
 
-<b>📊 Analysis</b>
-Expected Value: <b>{ev:+.1f}%</b>
-Win Probability: <b>{probability:.1f}%</b>
-Confidence: {confidence_emoji} <b>{confidence_text} ({confidence:.0f}%)</b>
-
-<b>🤖 AI Ensemble</b>
+<b>📊 Analisi</b>
+Valore Atteso (EV): <b>{ev:+.1f}%</b>
+Probabilità Vittoria: <b>{probability:.1f}%</b>
+Confidenza: {confidence_emoji} <b>{confidence_text} ({confidence:.0f}%)</b>
 """
+
+        # 📈 NUOVO: Aggiungi statistiche dettagliate per verifica
+        message += "\n<b>📈 Statistiche Estratte</b>\n"
+        
+        # Mostra quote di tutti i mercati
+        odds_1 = match_data.get('odds_1', 0)
+        odds_x = match_data.get('odds_x', 0)
+        odds_2 = match_data.get('odds_2', 0)
+        if odds_1 and odds_x and odds_2:
+            message += f"Quote: 1={odds_1:.2f} X={odds_x:.2f} 2={odds_2:.2f}\n"
+            
+            # Calcola probabilità implicite
+            impl_1 = (1.0 / odds_1 * 100) if odds_1 > 1 else 0
+            impl_x = (1.0 / odds_x * 100) if odds_x > 1 else 0
+            impl_2 = (1.0 / odds_2 * 100) if odds_2 > 1 else 0
+            margin = impl_1 + impl_x + impl_2 - 100
+            message += f"Prob. Implicite: 1={impl_1:.1f}% X={impl_x:.1f}% 2={impl_2:.1f}%\n"
+            message += f"Margine Bookmaker: {margin:.1f}%\n"
+        
+        # Mostra dettagli calcolo EV
+        implied_prob = (1.0 / odds * 100) if odds > 1.0 else 0
+        value_edge = probability - implied_prob
+        message += f"Vantaggio: {value_edge:+.1f}% (Nostra prob. vs Bookmaker)\n"
 
         # Aggiungi predizioni modelli se disponibili
         if 'ensemble' in analysis_result:
@@ -293,30 +329,32 @@ Confidence: {confidence_emoji} <b>{confidence_text} ({confidence:.0f}%)</b>
             predictions = ensemble.get('model_predictions', {})
             weights = ensemble.get('model_weights', {})
 
-            message += f"Dixon-Coles: {predictions.get('dixon_coles', 0)*100:.1f}% (weight: {weights.get('dixon_coles', 0)*100:.0f}%)\n"
-            message += f"XGBoost: {predictions.get('xgboost', 0)*100:.1f}% (weight: {weights.get('xgboost', 0)*100:.0f}%)\n"
-            message += f"LSTM: {predictions.get('lstm', 0)*100:.1f}% (weight: {weights.get('lstm', 0)*100:.0f}%)\n"
+            message += "\n<b>🤖 Ensemble AI</b>\n"
+            message += f"Dixon-Coles: {predictions.get('dixon_coles', 0)*100:.1f}% (peso: {weights.get('dixon_coles', 0)*100:.0f}%)\n"
+            message += f"XGBoost: {predictions.get('xgboost', 0)*100:.1f}% (peso: {weights.get('xgboost', 0)*100:.0f}%)\n"
+            message += f"LSTM: {predictions.get('lstm', 0)*100:.1f}% (peso: {weights.get('lstm', 0)*100:.0f}%)\n"
 
             uncertainty = ensemble.get('uncertainty', 0)
-            message += f"\n📉 Uncertainty: {uncertainty*100:.1f}%"
+            message += f"Incertezza: {uncertainty*100:.1f}%"
 
         if 'bayesian_fusion' in analysis_result:
             fusion = analysis_result['bayesian_fusion']
             message += (
-                "\n<b>🧠 Bayesian Fusion</b>\n"
-                f"Final Prob: {fusion.get('probability', 0)*100:.1f}%\n"
-                f"CI 95%: {fusion.get('ci_low', 0)*100:.1f}% – {fusion.get('ci_high', 0)*100:.1f}%\n"
-                f"Reliability: <b>{fusion.get('confidence', 0):.0f}%</b>"
+                "\n\n<b>🧠 Fusione Bayesiana</b>\n"
+                f"Prob. Finale: {fusion.get('probability', 0)*100:.1f}%\n"
+                f"Intervallo 95%: {fusion.get('ci_low', 0)*100:.1f}% – {fusion.get('ci_high', 0)*100:.1f}%\n"
+                f"Affidabilità: <b>{fusion.get('confidence', 0):.0f}%</b>"
             )
 
         regime = final_decision.get("market_regime") or summary.get("market_regime")
         if regime:
-            message += f"\n\n<b>Market Regime:</b> {regime.upper()}"
+            regime_it = regime.replace("STABLE", "STABILE").replace("VOLATILE", "VOLATILE").replace("SHARP", "MOVIMENTO ESPERTO")
+            message += f"\n\n<b>Regime Mercato:</b> {regime_it}"
 
         llm_playbook = analysis_result.get("llm_playbook") or summary.get("llm_playbook")
         if isinstance(llm_playbook, dict) and llm_playbook.get("text"):
             message += (
-                "\n\n🧠 <b>AI Playbook</b>\n"
+                "\n\n🧠 <b>Analisi AI</b>\n"
                 f"{html.escape(llm_playbook['text'])}"
             )
 

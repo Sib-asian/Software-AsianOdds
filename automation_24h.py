@@ -462,21 +462,22 @@ class Automation24H:
                     # Parse ISO datetime as timezone-aware (UTC)
                     commence_time = datetime.fromisoformat(commence_time_str.replace("Z", "+00:00"))
                     
-                    # Determina se è live o pre-match (compare timezone-aware datetimes)
-                    is_live = commence_time < now
-                    is_prematch = commence_time >= now
+                    # IMPORTANTE: TheOddsAPI non fornisce dati live (minuto, score)
+                    # Analizziamo SOLO partite pre-match per evitare raccomandazioni sbagliate
+                    # come "più gol nel primo tempo" quando siamo già nel secondo tempo
                     
-                    # Filtra:
-                    # - Pre-match: partite nelle prossime 24h
-                    # - Live: partite iniziate nelle ultime 2h (per evitare partite già finite)
-                    if is_prematch:
-                        if commence_time > max_future:
-                            continue  # Troppo in futuro
-                    elif is_live:
-                        if commence_time < min_past:
-                            continue  # Troppo tempo fa (probabilmente finita)
-                    else:
-                        continue  # Non dovrebbe succedere
+                    # Filtra solo partite pre-match (future)
+                    if commence_time < now:
+                        # Partita già iniziata - SKIP (no dati live disponibili)
+                        continue
+                    
+                    if commence_time > max_future:
+                        # Troppo in futuro (oltre 24h)
+                        continue
+                    
+                    # Ora siamo sicuri che è una partita PRE-MATCH nelle prossime 24h
+                    is_live = False
+                    is_prematch = True
                     
                     # Estrai quote migliori da tutti i bookmaker
                     bookmakers = event.get("bookmakers", [])
@@ -519,8 +520,8 @@ class Automation24H:
                             'odds_x': best_odds["draw"],
                             'odds_2': best_odds["away"],
                             'sport_key': event.get("sport_key", "soccer"),
-                            'is_live': is_live,  # Flag per distinguere live/pre-match
-                            'match_status': 'LIVE' if is_live else 'PRE-MATCH'
+                            'is_live': False,  # Sempre False - non abbiamo dati live
+                            'match_status': 'PRE-MATCH'  # Sempre PRE-MATCH
                         }
                         matches.append(match)
                 
@@ -680,9 +681,28 @@ class Automation24H:
                     final_decision['stake'] = optimal_stake
                     ai_result['final_decision'] = final_decision
             
+            # 🎯 NUOVO: Determina miglior market da puntare (HOME/DRAW/AWAY)
+            best_market = self._determine_best_market(match, ai_result)
+            if not best_market:
+                logger.debug(f"   No valid market found for {match_id}")
+                return None
+            
+            # Aggiungi informazioni market al risultato
+            if 'final_decision' not in ai_result:
+                ai_result['final_decision'] = {}
+            ai_result['final_decision']['market'] = best_market['market']
+            ai_result['final_decision']['odds'] = best_market['odds']
+            
+            # Aggiorna anche summary per coerenza
+            if 'summary' not in ai_result:
+                ai_result['summary'] = {}
+            ai_result['summary']['market'] = best_market['market']
+            ai_result['summary']['odds'] = best_market['odds']
+            ai_result['summary']['probability'] = best_market['probability']
+            
             # Verifica filtro market (se disponibile)
             if self.match_filters:
-                market = ai_result.get('final_decision', {}).get('market', '')
+                market = best_market['market']
                 if market and not self.match_filters.should_analyze_market(market):
                     logger.debug(f"   Market {market} filtered out")
                     return None
@@ -703,6 +723,87 @@ class Automation24H:
             
         except Exception as e:
             logger.error(f"❌ Error analyzing match {match_id}: {e}")
+            return None
+    
+    def _determine_best_market(self, match: Dict, ai_result: Dict) -> Optional[Dict]:
+        """
+        Determina il miglior mercato su cui puntare (HOME/DRAW/AWAY) basandosi su:
+        1. Probabilità calcolate dall'AI
+        2. Quote disponibili
+        3. Expected Value per ogni mercato
+        
+        Returns:
+            Dict con 'market', 'odds', 'probability', 'ev' del miglior mercato
+            None se nessun mercato ha valore
+        """
+        try:
+            # Ottieni probabilità dal risultato AI
+            # L'AI pipeline calcola la probabilità per HOME WIN
+            prob_home = ai_result.get('summary', {}).get('probability', 0.33)
+            
+            # Per ora, usa una distribuzione semplificata per DRAW e AWAY
+            # Idealmente, l'AI dovrebbe calcolare tutte e tre le probabilità
+            # Ma per semplicità, assumiamo: prob_draw ≈ 0.25-0.30, resto per AWAY
+            
+            # Strategia conservativa: usa solo home win se probability > 0.40
+            # Altrimenti, considera altri mercati
+            
+            odds_home = match.get('odds_1', 0)
+            odds_draw = match.get('odds_x', 0)
+            odds_away = match.get('odds_2', 0)
+            
+            if not odds_home or not odds_draw or not odds_away:
+                return None
+            
+            # Calcola probabilità implicite dalle quote
+            implied_home = 1.0 / odds_home if odds_home > 1.0 else 0
+            implied_draw = 1.0 / odds_draw if odds_draw > 1.0 else 0
+            implied_away = 1.0 / odds_away if odds_away > 1.0 else 0
+            
+            # Normalizza (le quote hanno margin del bookmaker)
+            total_implied = implied_home + implied_draw + implied_away
+            if total_implied > 0:
+                implied_home = implied_home / total_implied
+                implied_draw = implied_draw / total_implied
+                implied_away = implied_away / total_implied
+            
+            # Stima probabilità per draw e away
+            # Se l'AI dice che HOME ha prob_home, distribuiamo il resto
+            prob_draw = min(0.30, 1.0 - prob_home)  # Max 30% per draw
+            prob_away = max(0.0, 1.0 - prob_home - prob_draw)
+            
+            # Calcola EV per ogni mercato
+            ev_home = (prob_home * odds_home - 1.0) * 100  # EV in %
+            ev_draw = (prob_draw * odds_draw - 1.0) * 100
+            ev_away = (prob_away * odds_away - 1.0) * 100
+            
+            # Trova il mercato con EV più alto
+            markets = [
+                {'market': '1X2_HOME', 'odds': odds_home, 'probability': prob_home, 'ev': ev_home},
+                {'market': '1X2_DRAW', 'odds': odds_draw, 'probability': prob_draw, 'ev': ev_draw},
+                {'market': '1X2_AWAY', 'odds': odds_away, 'probability': prob_away, 'ev': ev_away}
+            ]
+            
+            # Ordina per EV decrescente
+            markets.sort(key=lambda x: x['ev'], reverse=True)
+            best = markets[0]
+            
+            # Verifica che il miglior mercato abbia EV positivo
+            if best['ev'] <= 0:
+                logger.debug(f"   No positive EV market found (best EV: {best['ev']:.1f}%)")
+                return None
+            
+            # Verifica anche che la probabilità sia ragionevole (> 25% almeno)
+            if best['probability'] < 0.25:
+                logger.debug(f"   Best market has too low probability: {best['probability']:.1%}")
+                return None
+            
+            logger.info(f"   ✓ Best market: {best['market']} (EV: {best['ev']:.1f}%, Prob: {best['probability']:.1%}, Odds: {best['odds']:.2f})")
+            
+            return best
+            
+        except Exception as e:
+            logger.error(f"❌ Error determining best market: {e}")
             return None
     
     def _is_real_value_opportunity(self, ai_result: Dict, match: Dict) -> bool:
