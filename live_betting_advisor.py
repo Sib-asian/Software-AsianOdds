@@ -55,8 +55,9 @@ class LiveBettingAdvisor:
         notifier=None,
         min_confidence: float = 75.0,  # 🆕 AUMENTATO: 75% invece di 72% per ridurre segnali banali
         ai_pipeline=None,
-        min_ev: float = 10.0,  # 🆕 AUMENTATO: 10% invece di 8% per ridurre segnali banali
-        max_opportunities_per_match: int = 3
+        min_ev: float = 8.0,  # 🔧 ABBASSATO: 8% invece di 10% per permettere più opportunità valide
+        max_opportunities_per_match: int = 3,
+        performance_tracker=None  # 🔧 NUOVO: Tracker per soglie dinamiche
     ):
         """
         Args:
@@ -69,6 +70,7 @@ class LiveBettingAdvisor:
         self.ai_pipeline = ai_pipeline
         self.min_ev = max(0.0, min_ev)  # Soglia EV (default: 9% per partite live)
         self.max_opportunities_per_match = max(1, int(max_opportunities_per_match))
+        self.performance_tracker = performance_tracker  # 🔧 NUOVO: Tracker per soglie dinamiche
         # 🔧 Filtro quote troppo basse: escludi opportunità con quote < 1.20 (troppo basse, poco interessanti)
         self.min_odds = 1.20  # Quota minima accettabile (1.20 = -500 in odds americane)
         # Per quote molto basse (< 1.25), richiedi EV più alto
@@ -209,6 +211,12 @@ class LiveBettingAdvisor:
         # Messico: Liga MX ok, Ascenso MX e sotto no
         self.excluded_mexico_leagues = [
             'Ascenso MX', 'Liga de Expansión', 'Liga Premier', 'Liga TDP'
+        ]
+        
+        # Trinidad e Tobago: escludi tutti i campionati (troppo inferiori)
+        self.excluded_trinidad_tobago_leagues = [
+            'Trinidad', 'Tobago', 'TT Pro League', 'Trinidad and Tobago',
+            'T&T Pro League', 'Trinidad Premier', 'Tobago League'
         ]
         
         # Altri paesi: escludi divisioni regionali/locali
@@ -508,7 +516,7 @@ class LiveBettingAdvisor:
                     # La favorita deve avere più tiri o almeno tiri simili
                     if shots_home < shots_away * 0.7:  # Se ha meno del 70% dei tiri dell'avversario
                         logger.debug(f"⏭️  Ribaltone saltato: favorita non domina (tiri: {shots_home} vs {shots_away})")
-                        return opportunities
+                    return opportunities
                 
                 # Favorita in casa perde
                 if minute >= 30 and minute <= 65:  # 🔧 RIDOTTO: Tra 30' e 65' (non 75')
@@ -603,7 +611,7 @@ class LiveBettingAdvisor:
                                 timestamp=datetime.now()
                             )
                             opportunities.append(opportunity)
-                        return opportunities
+                    return opportunities
                 
                 # Favorita in trasferta perde
                 if minute >= 30 and minute <= 65:  # 🔧 RIDOTTO: Tra 30' e 65' (non 75')
@@ -738,11 +746,18 @@ class LiveBettingAdvisor:
             is_home_favorite = odds_1 < odds_2
             
             # Situazione: Una squadra in svantaggio
+            # 🔧 FIX: NON generare se una squadra ha cartellino rosso (10 uomini)
+            red_cards_home = live_data.get('red_cards_home', 0)
+            red_cards_away = live_data.get('red_cards_away', 0)
+            
             if score_home != score_away and minute >= 20 and minute <= 70:
                 if score_home < score_away:
+                    # 🔧 FILTRO: Se casa ha cartellino rosso, NON generare "casa segna prossimo gol"
+                    if red_cards_home > 0:
+                        logger.debug(f"⏭️  Next Goal Home non generato: casa ha {red_cards_home} cartellino/i rosso/i (10 uomini)")
                     # 🆕 FIX: Home in svantaggio - verifica se è la favorita o la sfavorita
                     # Se la favorita sta vincendo (away), NON suggerire "2 della sfavorita" (home)
-                    if is_home_favorite:
+                    elif is_home_favorite:
                         # Home è favorita ma sta perdendo → OK suggerire prossimo gol home
                         confidence = 70
                         
@@ -752,8 +767,8 @@ class LiveBettingAdvisor:
                             situation='next_goal_underdog',
                             market='next_goal_home',
                             recommendation=f"Punta {match_data.get('home')} (favorita) segna prossimo gol",
-                            reasoning=(
-                                f"🎯 PROSSIMO GOL OPPORTUNITY!\n\n"
+                        reasoning=(
+                            f"🎯 PROSSIMO GOL OPPORTUNITY!\n\n"
                                 f"• {match_data.get('home')} (favorita) in svantaggio {score_home}-{score_away}\n"
                                 f"• Minuto: {minute}'\n"
                                 f"• La favorita in svantaggio spinge per pareggiare\n"
@@ -791,9 +806,12 @@ class LiveBettingAdvisor:
                         opportunities.append(opportunity)
                 
                 elif score_away < score_home:
+                    # 🔧 FILTRO: Se ospite ha cartellino rosso, NON generare "ospite segna prossimo gol"
+                    if red_cards_away > 0:
+                        logger.debug(f"⏭️  Next Goal Away non generato: ospite ha {red_cards_away} cartellino/i rosso/i (10 uomini)")
                     # 🆕 FIX: Away in svantaggio - verifica se è la favorita o la sfavorita
                     # Se la favorita sta vincendo (home), NON suggerire "1 della sfavorita" (away)
-                    if not is_home_favorite:
+                    elif not is_home_favorite:
                         # Away è favorita ma sta perdendo → OK suggerire prossimo gol away
                         confidence = 70
                         
@@ -829,16 +847,16 @@ class LiveBettingAdvisor:
                             reasoning=(
                                 f"🎯 PROSSIMO GOL OPPORTUNITY!\n\n"
                                 f"• {match_data.get('away')} (sfavorita) in svantaggio {score_away}-{score_home}\n"
-                                f"• Minuto: {minute}'\n"
-                                f"• Squadra in svantaggio spinge per pareggiare\n"
-                                f"• Alta probabilità prossimo gol dalla squadra in svantaggio"
-                            ),
-                            confidence=confidence,
-                            odds=2.2,  # Stima
-                            stake_suggestion=2.5,
-                            timestamp=datetime.now()
-                        )
-                        opportunities.append(opportunity)
+                            f"• Minuto: {minute}'\n"
+                            f"• Squadra in svantaggio spinge per pareggiare\n"
+                            f"• Alta probabilità prossimo gol dalla squadra in svantaggio"
+                        ),
+                        confidence=confidence,
+                        odds=2.2,  # Stima
+                        stake_suggestion=2.5,
+                        timestamp=datetime.now()
+                    )
+                    opportunities.append(opportunity)
         
         except Exception as e:
             logger.debug(f"⚠️  Errore check next goal: {e}")
@@ -1230,7 +1248,7 @@ class LiveBettingAdvisor:
                     base_confidence = 70 + min(10, total_shots_on_target * 3)
                     confidence = min(88, base_confidence + ai_boost)
                     
-                    opportunity = LiveBettingOpportunity(
+                opportunity = LiveBettingOpportunity(
                     match_id=match_id, match_data=match_data,
                     situation='over_0.5_general', market='over_0.5',
                     recommendation="Punta Over 0.5 Gol",
@@ -1259,7 +1277,7 @@ class LiveBettingAdvisor:
                     base_confidence = 72 + min(10, total_shots_on_target * 2)
                     confidence = min(90, base_confidence + ai_boost)
                     
-                    opportunity = LiveBettingOpportunity(
+                opportunity = LiveBettingOpportunity(
                     match_id=match_id, match_data=match_data,
                     situation='over_1.5_general', market='over_1.5',
                     recommendation="Punta Over 1.5 Gol",
@@ -1565,8 +1583,20 @@ class LiveBettingAdvisor:
             
             # BTTS Yes se entrambe hanno segnato o hanno tiri in porta
             # 🆕 FIX: NON generare se siamo oltre 80' (troppo tardi)
+            # 🔧 FIX: NON generare se una squadra ha cartellino rosso (10 uomini)
+            red_cards_home = live_data.get('red_cards_home', 0)
+            red_cards_away = live_data.get('red_cards_away', 0)
+            
             if minute >= 25 and minute <= 80:  # Ridotto a 80' invece di 70'
                 if (score_home > 0 and score_away == 0) or (score_home == 0 and score_away > 0):
+                    # 🔧 FILTRO: Se la squadra che deve ancora segnare ha cartellino rosso, NON generare BTTS
+                    if score_home > 0 and score_away == 0 and red_cards_away > 0:
+                        logger.debug(f"⏭️  BTTS Yes non generato: ospite ha {red_cards_away} cartellino/i rosso/i (10 uomini) - meno probabilità di segnare")
+                        return opportunities
+                    if score_away > 0 and score_home == 0 and red_cards_home > 0:
+                        logger.debug(f"⏭️  BTTS Yes non generato: casa ha {red_cards_home} cartellino/i rosso/i (10 uomini) - meno probabilità di segnare")
+                        return opportunities
+                    
                     # Una squadra ha segnato, l'altra ha tiri in porta
                     if (score_home > 0 and shots_on_target_away >= 2) or (score_away > 0 and shots_on_target_home >= 2):
                         ai_boost = self._get_ai_market_confidence(match_data, live_data, 'btts_yes') if self.ai_pipeline else 0
@@ -2057,9 +2087,16 @@ class LiveBettingAdvisor:
             
             # Home to Score Next: In svantaggio o domina
             # 🆕 FIX: NON generare se partita è già decisa (3+ gol di differenza) o troppo tardi (oltre 85')
+            # 🔧 FIX: NON generare se casa ha cartellino rosso (10 uomini)
             goal_diff = abs(score_home - score_away)
+            red_cards_home = live_data.get('red_cards_home', 0)
+            red_cards_away = live_data.get('red_cards_away', 0)
+            
             if minute >= 20 and minute <= 85 and goal_diff < 3:  # Non generare se partita decisa
-                if (score_home < score_away and possession_home > 55 and shots_on_target_home >= 2) or \
+                # 🔧 FILTRO: Se casa ha cartellino rosso, NON generare "casa segna prossimo gol"
+                if red_cards_home > 0:
+                    logger.debug(f"⏭️  Team to Score Next Home non generato: casa ha {red_cards_home} cartellino/i rosso/i (10 uomini)")
+                elif (score_home < score_away and possession_home > 55 and shots_on_target_home >= 2) or \
                    (score_home == score_away and possession_home > 60 and shots_home > shots_away * 1.3):
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'team_to_score_next_home') if self.ai_pipeline else 0
                     # 🆕 OTTIMIZZATO: Aumentata confidence base per mercato rischioso
@@ -2086,12 +2123,17 @@ class LiveBettingAdvisor:
             
             # Away to Score Next
             # 🆕 FIX: NON generare se partita è già decisa (3+ gol di differenza) o troppo tardi (oltre 85')
+            # 🔧 FIX: NON generare se ospite ha cartellino rosso (10 uomini)
             goal_diff = abs(score_home - score_away)
             if minute >= 20 and minute <= 85 and goal_diff < 3:  # Non generare se partita decisa
-                possession_away = 100 - possession_home
-                if (score_away < score_home and possession_away > 55 and shots_on_target_away >= 2) or \
-                   (score_home == score_away and possession_away > 60 and shots_away > shots_home * 1.3):
-                    ai_boost = self._get_ai_market_confidence(match_data, live_data, 'team_to_score_next_away') if self.ai_pipeline else 0
+                # 🔧 FILTRO: Se ospite ha cartellino rosso, NON generare "ospite segna prossimo gol"
+                if red_cards_away > 0:
+                    logger.debug(f"⏭️  Team to Score Next Away non generato: ospite ha {red_cards_away} cartellino/i rosso/i (10 uomini)")
+                else:
+                    possession_away = 100 - possession_home
+                    if (score_away < score_home and possession_away > 55 and shots_on_target_away >= 2) or \
+                       (score_home == score_away and possession_away > 60 and shots_away > shots_home * 1.3):
+                        ai_boost = self._get_ai_market_confidence(match_data, live_data, 'team_to_score_next_away') if self.ai_pipeline else 0
                     # 🆕 OTTIMIZZATO: Aumentata confidence base per mercato rischioso
                     confidence = 75 + ai_boost
                     
@@ -2247,14 +2289,14 @@ class LiveBettingAdvisor:
                             total_shots_away = live_data.get('shots_away', 0)
                             dangerous_attacks_away = live_data.get('dangerous_attacks_away', 0)
                             xg_away = live_data.get('xg_away', 0)
-                            
-                            opportunity = LiveBettingOpportunity(
-                                match_id=match_id, match_data=match_data,
-                                situation='clean_sheet_home', market='clean_sheet_home',
-                                recommendation=f"Punta {match_data.get('home')} Clean Sheet",
-                                reasoning=(
-                                    f"🎯 PORTA INVOLATA!\n\n"
-                                    f"• Score: {score_home}-{score_away} al {minute}'\n"
+                        
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='clean_sheet_home', market='clean_sheet_home',
+                            recommendation=f"Punta {match_data.get('home')} Clean Sheet",
+                            reasoning=(
+                                f"🎯 PORTA INVOLATA!\n\n"
+                                f"• Score: {score_home}-{score_away} al {minute}'\n"
                                     f"• {match_data.get('home')} in vantaggio di {goal_diff} gol\n"
                                     f"• {match_data.get('away')} OFFENSIVAMENTE INEFFICACE:\n"
                                     f"  - Tiri in porta: {shots_on_target_away} (massimo 1)\n"
@@ -2262,12 +2304,12 @@ class LiveBettingAdvisor:
                                     f"  - Attacchi pericolosi: {dangerous_attacks_away}\n"
                                     f"  - xG: {xg_away:.2f}\n"
                                     f"• Alta probabilità clean sheet basata su dati concreti\n"
-                                    f"• IA boost: +{ai_boost:.0f}%"
-                                ),
-                                confidence=confidence, odds=2.0, stake_suggestion=2.0,
-                                timestamp=datetime.now()
-                            )
-                            opportunities.append(opportunity)
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=2.0, stake_suggestion=2.0,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
             
             # Away Clean Sheet
             # 🆕 FILTRO: Non generare se risultato è già 3-0 o più al 75' (banale)
@@ -2361,14 +2403,14 @@ class LiveBettingAdvisor:
                             total_shots_home = live_data.get('shots_home', 0)
                             dangerous_attacks_home = live_data.get('dangerous_attacks_home', 0)
                             xg_home = live_data.get('xg_home', 0)
-                            
-                            opportunity = LiveBettingOpportunity(
-                                match_id=match_id, match_data=match_data,
-                                situation='clean_sheet_away', market='clean_sheet_away',
-                                recommendation=f"Punta {match_data.get('away')} Clean Sheet",
-                                reasoning=(
-                                    f"🎯 PORTA INVOLATA!\n\n"
-                                    f"• Score: {score_home}-{score_away} al {minute}'\n"
+                        
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='clean_sheet_away', market='clean_sheet_away',
+                            recommendation=f"Punta {match_data.get('away')} Clean Sheet",
+                            reasoning=(
+                                f"🎯 PORTA INVOLATA!\n\n"
+                                f"• Score: {score_home}-{score_away} al {minute}'\n"
                                     f"• {match_data.get('away')} in vantaggio di {goal_diff} gol\n"
                                     f"• {match_data.get('home')} OFFENSIVAMENTE INEFFICACE:\n"
                                     f"  - Tiri in porta: {shots_on_target_home} (massimo 1)\n"
@@ -2376,12 +2418,12 @@ class LiveBettingAdvisor:
                                     f"  - Attacchi pericolosi: {dangerous_attacks_home}\n"
                                     f"  - xG: {xg_home:.2f}\n"
                                     f"• Alta probabilità clean sheet basata su dati concreti\n"
-                                    f"• IA boost: +{ai_boost:.0f}%"
-                                ),
-                                confidence=confidence, odds=2.0, stake_suggestion=2.0,
-                                timestamp=datetime.now()
-                            )
-                            opportunities.append(opportunity)
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=2.0, stake_suggestion=2.0,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
                     
         except Exception as e:
             logger.debug(f"⚠️  Errore check clean sheet markets: {e}")
@@ -3748,6 +3790,18 @@ class LiveBettingAdvisor:
                     logger.debug(f"⏭️  Saltata opportunità illogica: BTTS No quando è {score_home}-{score_away} al {minute}' - già perso")
                     continue
             
+            # 🔧 FILTRO 22D: BTTS Yes quando una squadra ha cartellino rosso - ILLOGICO!
+            red_cards_home = live_data.get('red_cards_home', 0)
+            red_cards_away = live_data.get('red_cards_away', 0)
+            if 'btts_yes' in market:
+                # Se una squadra ha cartellino rosso (10 uomini), ha meno probabilità di segnare
+                if red_cards_home > 0 and score_home == 0:
+                    logger.debug(f"⏭️  Saltata opportunità illogica: BTTS Yes quando casa ha {red_cards_home} cartellino/i rosso/i (10 uomini) e non ha ancora segnato")
+                    continue
+                if red_cards_away > 0 and score_away == 0:
+                    logger.debug(f"⏭️  Saltata opportunità illogica: BTTS Yes quando ospite ha {red_cards_away} cartellino/i rosso/i (10 uomini) e non ha ancora segnato")
+                    continue
+            
             # 🆕 FILTRO 23: Exact Score quando suggerisce lo score attuale - BANALE!
             if 'exact_score' in market:
                 # Estrai score dal market (es. "exact_score_2-0")
@@ -4023,6 +4077,17 @@ class LiveBettingAdvisor:
     
     def _get_market_specific_threshold(self, market: str) -> Optional[float]:
         """Ritorna confidence minima per mercato (match su prefisso)."""
+        # 🔧 NUOVO: Prova prima con soglie dinamiche dal tracker
+        if self.performance_tracker:
+            try:
+                dynamic_threshold = self.performance_tracker.get_dynamic_threshold(market)
+                if dynamic_threshold:
+                    logger.debug(f"📊 Soglia dinamica per {market}: {dynamic_threshold['min_confidence']:.1f}%")
+                    return dynamic_threshold['min_confidence']
+            except Exception as e:
+                logger.debug(f"⚠️  Errore recupero soglia dinamica: {e}")
+        
+        # Fallback a soglie statiche
         for key, value in self.market_min_confidence.items():
             if market.startswith(key):
                 return value
@@ -4060,10 +4125,21 @@ class LiveBettingAdvisor:
             
             # 🔧 Filtro 2: Per quote basse (< 1.25), richiedi EV più alto
             min_ev_required = self.min_ev
+            
+            # 🔧 NUOVO: Prova a usare soglia dinamica dal tracker
+            if self.performance_tracker:
+                try:
+                    dynamic_threshold = self.performance_tracker.get_dynamic_threshold(opp.market)
+                    if dynamic_threshold:
+                        min_ev_required = dynamic_threshold['min_ev']
+                        logger.debug(f"📊 Soglia EV dinamica per {opp.market}: {min_ev_required:.1f}%")
+                except Exception as e:
+                    logger.debug(f"⚠️  Errore recupero soglia EV dinamica: {e}")
+            
             if opp.odds < 1.25:
-                min_ev_required = self.min_ev_low_odds
+                min_ev_required = max(min_ev_required, self.min_ev_low_odds)
                 logger.debug(
-                    f"📊 Opportunità con quota bassa {opp.odds:.2f}: richiesto EV minimo {min_ev_required:.1f}% (invece di {self.min_ev:.1f}%)"
+                    f"📊 Opportunità con quota bassa {opp.odds:.2f}: richiesto EV minimo {min_ev_required:.1f}%"
                 )
             
             ev = getattr(opp, 'ev', None)
@@ -4870,6 +4946,24 @@ class LiveBettingAdvisor:
                     if excluded_league.upper() in league:
                         logger.debug(f"⏭️  Partita esclusa: campionato messicano inferiore ({league})")
                         return False
+            
+            # 🔧 FIX: Controlla PRIMA direttamente il nome del campionato
+            # Trinidad e Tobago: escludi tutti i campionati (troppo inferiori)
+            for excluded_league in self.excluded_trinidad_tobago_leagues:
+                if excluded_league.upper() in league:
+                    logger.info(f"⏭️  Partita esclusa: campionato Trinidad e Tobago ({league}) - keyword: {excluded_league}")
+                    return False
+            
+            # Controllo aggiuntivo per paese (se disponibile)
+            if 'TRINIDAD' in country or 'TOBAGO' in country or 'TRINIDAD AND TOBAGO' in country:
+                for excluded_league in self.excluded_trinidad_tobago_leagues:
+                    if excluded_league.upper() in league:
+                        logger.debug(f"⏭️  Partita esclusa: campionato Trinidad e Tobago ({league})")
+                        return False
+                # Escludi anche se contiene "Trinidad" o "Tobago" nel nome del campionato
+                if 'TRINIDAD' in league or 'TOBAGO' in league:
+                    logger.info(f"⏭️  Partita esclusa: campionato Trinidad e Tobago ({league})")
+                    return False
             
             # Altri paesi: escludi divisioni regionali/locali
             for excluded_league in self.excluded_other_leagues:
