@@ -1,0 +1,9 @@
+{
+  "telegram_token": "8530766126:AAHs1ZoLwrwvT7JuPyn_9ymNVyddPtUXi-g",
+  "telegram_chat_id": "-1003278011521",
+  "min_ev": 8.0,
+  "min_confidence": 70.0,
+  "update_interval": 780,
+  "max_notifications_per_cycle": 2
+}
+

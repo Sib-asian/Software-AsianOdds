@@ -60,6 +60,15 @@ except ImportError as e:
     logger.warning(f"⚠️  Nuovi moduli non disponibili: {e}")
     NEW_MODULES_AVAILABLE = False
 
+# Import live betting performance tracking
+try:
+    from live_betting_performance_tracker import LiveBettingPerformanceTracker
+    from live_betting_reports import LiveBettingReports
+    LIVE_BETTING_TRACKING_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"⚠️  Live betting tracking non disponibile: {e}")
+    LIVE_BETTING_TRACKING_AVAILABLE = False
+
 # Import nuovi sistemi AI avanzati
 try:
     from ai_system.multi_model_consensus import MultiModelConsensus
@@ -134,6 +143,8 @@ class Automation24H:
         self.running = False
         self.monitored_matches: Dict[str, Dict] = {}
         self.notified_opportunities: Set[str] = set()  # Evita duplicati
+        self.notified_opportunities_timestamps: Dict[str, datetime] = {}  # Timestamp delle notifiche
+        self.notified_matches_timestamps: Dict[str, datetime] = {}  # Timestamp per partita (max 1 notifica ogni 30 min per partita)
         self.api_usage_today = 0
         self.last_api_reset = datetime.now().date()
         self.last_daily_report = datetime.now().date()
@@ -159,11 +170,15 @@ class Automation24H:
                 # Per partite live, abbassa soglia EV (odds spesso basse)
                 # Con confidence 72% e odds 1.3, EV = (0.72 * 1.3 - 1) * 100 = -6.4%
                 # Con confidence 75% e odds 1.4, EV = (0.75 * 1.4 - 1) * 100 = 5%
-                # Quindi per live betting, EV minimo più basso (5-6% invece di 9%)
-                live_min_ev = max(5.0, min_ev - 3.0)  # Abbassa di 3% rispetto a pre-match
+                # 🔧 ABBASSATO: Per live betting, EV minimo più basso (6% invece di 5%)
+                live_min_ev = max(6.0, min_ev - 2.0)  # Abbassa di 2% rispetto a pre-match (minimo 6%)
+                # 🔧 NUOVO: Passa performance tracker per soglie dinamiche
+                live_tracker = self.live_performance_tracker if hasattr(self, 'live_performance_tracker') else None
                 self.live_betting_advisor = LiveBettingAdvisor(
+                    notifier=self.notifier,
                     min_confidence=min_confidence,
-                    min_ev=live_min_ev
+                    min_ev=live_min_ev,
+                    performance_tracker=live_tracker  # 🔧 NUOVO: Passa tracker
                 )
                 logger.info(f"   LiveBettingAdvisor: min_confidence={min_confidence}%, min_ev={live_min_ev}% (abbassato per live betting)")
                 logger.info("✅ LiveBettingAdvisor initialized")
@@ -266,6 +281,23 @@ class Automation24H:
             except Exception as e:
                 logger.warning(f"⚠️  Results Tracker error: {e}")
                 self.results_tracker = None
+            
+            # 🔧 NUOVO: Live betting performance tracker
+            if LIVE_BETTING_TRACKING_AVAILABLE:
+                try:
+                    self.live_performance_tracker = LiveBettingPerformanceTracker()
+                    self.live_betting_reports = LiveBettingReports(
+                        tracker=self.live_performance_tracker,
+                        notifier=self.notifier
+                    )
+                    logger.info("✅ Live Betting Performance Tracker initialized")
+                except Exception as e:
+                    logger.warning(f"⚠️  Live Betting Tracker error: {e}")
+                    self.live_performance_tracker = None
+                    self.live_betting_reports = None
+            else:
+                self.live_performance_tracker = None
+                self.live_betting_reports = None
             
             try:
                 self.match_filters = MatchFilters()
@@ -1183,9 +1215,46 @@ class Automation24H:
         if not live_opp:
             return
         
-        # Evita duplicati (usa match_id + market come chiave)
+        # 🔧 MIGLIORATO: Evita duplicati usando match_id + market + minuto
+        # Questo evita di inviare la stessa opportunità più volte anche se rilevata in cicli diversi
         market = live_opp.market
-        opp_key = f"{match_id}_{market}"
+        minute = 0
+        if live_opp.match_stats:
+            minute = live_opp.match_stats.get('minute', 0)
+        
+        # 🔧 NUOVO: Controlla se questa partita ha già ricevuto una notifica di recente (max 1 ogni 15 min per partita)
+        now = datetime.now()
+        if match_id in self.notified_matches_timestamps:
+            last_match_notification = self.notified_matches_timestamps[match_id]
+            time_diff_match = (now - last_match_notification).total_seconds() / 60  # Differenza in minuti
+            
+            # Se questa partita ha già ricevuto una notifica meno di 15 minuti fa, salta
+            if time_diff_match < 15:
+                logger.debug(f"   Match {match_id} already notified {time_diff_match:.1f} minutes ago (max 1 per partita ogni 15 min), skipping")
+                return
+            else:
+                # Rimuovi dalla cache se è passato più di 15 minuti (per liberare memoria)
+                del self.notified_matches_timestamps[match_id]
+        
+        # Crea chiave più specifica: match_id + market + minuto (arrotondato a multipli di 5 per evitare duplicati per minuti simili)
+        minute_rounded = (minute // 5) * 5  # Arrotonda a multipli di 5 (es. 23' -> 20', 27' -> 25')
+        opp_key = f"{match_id}_{market}_{minute_rounded}"
+        
+        # 🔧 NUOVO: Controlla se questa specifica opportunità è stata già notificata di recente (ultimi 15 minuti)
+        if opp_key in self.notified_opportunities_timestamps:
+            last_notified = self.notified_opportunities_timestamps[opp_key]
+            time_diff = (now - last_notified).total_seconds() / 60  # Differenza in minuti
+            
+            # Se è stata notificata meno di 15 minuti fa, salta
+            if time_diff < 15:
+                logger.debug(f"   Live opportunity {opp_key} already notified {time_diff:.1f} minutes ago, skipping")
+                return
+            else:
+                # Rimuovi dalla cache se è passato più di 15 minuti (per liberare memoria)
+                del self.notified_opportunities_timestamps[opp_key]
+                self.notified_opportunities.discard(opp_key)
+        
+        # Controllo classico (backup)
         if opp_key in self.notified_opportunities:
             logger.debug(f"   Live opportunity {opp_key} already notified, skipping")
             return
@@ -1225,7 +1294,18 @@ class Automation24H:
                     success = self.notifier._send_message(message, parse_mode="HTML")
                     if success:
                         self.notified_opportunities.add(opp_key)
-                        logger.info(f"✅ Notified live opportunity: {opp_key}")
+                        self.notified_opportunities_timestamps[opp_key] = datetime.now()
+                        self.notified_matches_timestamps[match_id] = datetime.now()  # Traccia anche per partita
+                        
+                        # 🔧 NUOVO: Salva opportunità nel performance tracker
+                        if hasattr(self, 'live_performance_tracker') and self.live_performance_tracker:
+                            try:
+                                self.live_performance_tracker.save_live_opportunity(live_opp, opportunity.get('match_data', {}))
+                                logger.debug(f"✅ Live opportunity salvata nel tracker: {opp_key}")
+                            except Exception as e:
+                                logger.warning(f"⚠️  Errore salvataggio nel tracker: {e}")
+                        
+                        logger.info(f"✅ Notified live opportunity: {opp_key} (minute: {minute}')")
                     else:
                         logger.warning(f"⚠️  Failed to notify live opportunity: {opp_key}")
                 else:
@@ -1242,6 +1322,8 @@ class Automation24H:
             self.api_usage_today = 0
             self.last_api_reset = today
             self.notified_opportunities.clear()  # Reset notifiche
+            self.notified_opportunities_timestamps.clear()  # Reset timestamp
+            self.notified_matches_timestamps.clear()  # Reset timestamp partite
             logger.info("🔄 New day: API usage reset")
             
             # Invia report giornaliero (se disponibile)
@@ -1281,6 +1363,16 @@ class Automation24H:
                         logger.info("✅ Weekly report sent (with AI insights)")
                     except Exception as e:
                         logger.warning(f"⚠️  Error sending weekly report: {e}")
+            
+            # 🔧 NUOVO: Invia report settimanale live betting
+            if hasattr(self, 'live_betting_reports') and self.live_betting_reports:
+                try:
+                    self.live_betting_reports.send_weekly_report()
+                    # Verifica e invia alert se win rate basso
+                    self.live_betting_reports.check_and_send_alerts()
+                    logger.info("✅ Live betting weekly report sent")
+                except Exception as e:
+                    logger.warning(f"⚠️  Errore invio report settimanale live betting: {e}")
     
     def _generate_enhanced_report(self, report_type: str) -> str:
         """
@@ -1505,11 +1597,13 @@ def main():
     
     args = parser.parse_args()
     
-    # Carica config se fornito
+    # Carica config se fornito o se esiste config.json nella directory corrente
     config = {}
-    if args.config and Path(args.config).exists():
-        with open(args.config, 'r') as f:
+    config_path = args.config or (Path('config.json') if Path('config.json').exists() else None)
+    if config_path and Path(config_path).exists():
+        with open(config_path, 'r') as f:
             config = json.load(f)
+        logger.info(f"✅ Config caricato da {config_path}")
     
     # Crea sistema
     automation = Automation24H(

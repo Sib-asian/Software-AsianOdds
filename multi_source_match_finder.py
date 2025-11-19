@@ -411,7 +411,15 @@ class MultiSourceMatchFinder:
                         status_long = fixture_status.get("long", "Live")
                         
                         # 🔧 Estrai statistiche live se disponibili
+                        # NOTA: Le statistiche potrebbero non essere incluse nell'endpoint /fixtures
+                        # Potrebbero richiedere una chiamata separata all'endpoint /statistics
                         statistics = fixture_data.get("statistics", [])
+                        
+                        # 🔧 LOG: Verifica se le statistiche sono presenti
+                        if not statistics:
+                            logger.debug(f"⚠️  Statistiche non presenti in fixture_data per {home_team} vs {away_team} (fixture_id: {fixture.get('id', 'N/A')})")
+                            # Le statistiche potrebbero essere in un campo diverso o richiedere un endpoint separato
+                        
                         home_shots_on_target = 0
                         away_shots_on_target = 0
                         home_total_shots = 0
@@ -421,42 +429,80 @@ class MultiSourceMatchFinder:
                         home_dangerous_attacks = 0
                         away_dangerous_attacks = 0
                         
+                        # 🔧 PROVA: Cerca statistiche anche in altri campi possibili
+                        # Alcune API potrebbero mettere le statistiche in fixture_data direttamente
+                        if not statistics:
+                            # Prova a cercare in altri formati possibili
+                            if "statistics" in fixture_data:
+                                statistics = fixture_data["statistics"]
+                            elif "stats" in fixture_data:
+                                statistics = fixture_data["stats"]
+                        
                         # API-SPORTS restituisce statistiche come array di oggetti per home/away
                         if statistics and len(statistics) >= 2:
                             home_stats = statistics[0].get("statistics", [])
                             away_stats = statistics[1].get("statistics", [])
                             
+                            # 🔧 LOG: Verifica statistiche disponibili
+                            logger.debug(f"📊 Statistiche disponibili per {home_team} vs {away_team}: {len(home_stats)} home, {len(away_stats)} away")
+                            
                             # Estrai statistiche home
                             for stat in home_stats:
                                 stat_type = stat.get("type", "")
                                 value = stat.get("value")
-                                if stat_type == "Shots on Goal":
-                                    home_shots_on_target = int(value) if value else 0
-                                elif stat_type == "Total Shots":
-                                    home_total_shots = int(value) if value else 0
-                                elif stat_type == "Expected Goals":
+                                # 🔧 FIX: Prova anche varianti del nome (API-SPORTS può usare nomi diversi)
+                                if stat_type in ["Shots on Goal", "Shots on Target", "Shots On Target"]:
                                     try:
-                                        home_xg = float(value) if value else 0.0
+                                        home_shots_on_target = int(value) if value is not None else 0
+                                    except:
+                                        home_shots_on_target = 0
+                                elif stat_type in ["Total Shots", "Shots Total", "Shots"]:
+                                    try:
+                                        home_total_shots = int(value) if value is not None else 0
+                                    except:
+                                        home_total_shots = 0
+                                elif stat_type in ["Expected Goals", "xG", "Expected goals"]:
+                                    try:
+                                        home_xg = float(value) if value is not None else 0.0
                                     except:
                                         home_xg = 0.0
-                                elif stat_type == "Dangerous Attacks":
-                                    home_dangerous_attacks = int(value) if value else 0
+                                elif stat_type in ["Dangerous Attacks", "Dangerous attacks", "Attacks"]:
+                                    try:
+                                        home_dangerous_attacks = int(value) if value is not None else 0
+                                    except:
+                                        home_dangerous_attacks = 0
                             
                             # Estrai statistiche away
                             for stat in away_stats:
                                 stat_type = stat.get("type", "")
                                 value = stat.get("value")
-                                if stat_type == "Shots on Goal":
-                                    away_shots_on_target = int(value) if value else 0
-                                elif stat_type == "Total Shots":
-                                    away_total_shots = int(value) if value else 0
-                                elif stat_type == "Expected Goals":
+                                # 🔧 FIX: Prova anche varianti del nome
+                                if stat_type in ["Shots on Goal", "Shots on Target", "Shots On Target"]:
                                     try:
-                                        away_xg = float(value) if value else 0.0
+                                        away_shots_on_target = int(value) if value is not None else 0
+                                    except:
+                                        away_shots_on_target = 0
+                                elif stat_type in ["Total Shots", "Shots Total", "Shots"]:
+                                    try:
+                                        away_total_shots = int(value) if value is not None else 0
+                                    except:
+                                        away_total_shots = 0
+                                elif stat_type in ["Expected Goals", "xG", "Expected goals"]:
+                                    try:
+                                        away_xg = float(value) if value is not None else 0.0
                                     except:
                                         away_xg = 0.0
-                                elif stat_type == "Dangerous Attacks":
-                                    away_dangerous_attacks = int(value) if value else 0
+                                elif stat_type in ["Dangerous Attacks", "Dangerous attacks", "Attacks"]:
+                                    try:
+                                        away_dangerous_attacks = int(value) if value is not None else 0
+                                    except:
+                                        away_dangerous_attacks = 0
+                            
+                            # 🔧 LOG: Verifica statistiche estratte
+                            if home_shots_on_target > 0 or away_shots_on_target > 0:
+                                logger.info(f"✅ Statistiche estratte per {home_team} vs {away_team}: SOT {home_shots_on_target}-{away_shots_on_target}, Shots {home_total_shots}-{away_total_shots}, xG {home_xg:.2f}-{away_xg:.2f}")
+                        else:
+                            logger.debug(f"⚠️  Statistiche non disponibili o incomplete per {home_team} vs {away_team}")
                         
                         # Estrai data (per deduplicazione)
                         fixture_date_str = fixture.get("date", "")
@@ -471,6 +517,69 @@ class MultiSourceMatchFinder:
                         
                         # Crea match
                         match_id = f"apisports_live_{fixture.get('id', '')}"
+                        fixture_id = fixture.get('id', '')
+                        
+                        # 🔧 NUOVO: Se le statistiche non sono disponibili, fai una chiamata separata
+                        if not statistics and fixture_id:
+                            statistics = self._fetch_statistics_from_api_sports(fixture_id)
+                            if statistics:
+                                # Estrai statistiche dalla chiamata separata
+                                home_stats = statistics[0].get("statistics", []) if len(statistics) > 0 else []
+                                away_stats = statistics[1].get("statistics", []) if len(statistics) > 1 else []
+                                
+                                # Estrai statistiche home
+                                for stat in home_stats:
+                                    stat_type = stat.get("type", "")
+                                    value = stat.get("value")
+                                    if stat_type in ["Shots on Goal", "Shots on Target", "Shots On Target"]:
+                                        try:
+                                            home_shots_on_target = int(value) if value is not None else 0
+                                        except:
+                                            home_shots_on_target = 0
+                                    elif stat_type in ["Total Shots", "Shots Total", "Shots"]:
+                                        try:
+                                            home_total_shots = int(value) if value is not None else 0
+                                        except:
+                                            home_total_shots = 0
+                                    elif stat_type in ["Expected Goals", "xG", "Expected goals"]:
+                                        try:
+                                            home_xg = float(value) if value is not None else 0.0
+                                        except:
+                                            home_xg = 0.0
+                                    elif stat_type in ["Dangerous Attacks", "Dangerous attacks", "Attacks"]:
+                                        try:
+                                            home_dangerous_attacks = int(value) if value is not None else 0
+                                        except:
+                                            home_dangerous_attacks = 0
+                                
+                                # Estrai statistiche away
+                                for stat in away_stats:
+                                    stat_type = stat.get("type", "")
+                                    value = stat.get("value")
+                                    if stat_type in ["Shots on Goal", "Shots on Target", "Shots On Target"]:
+                                        try:
+                                            away_shots_on_target = int(value) if value is not None else 0
+                                        except:
+                                            away_shots_on_target = 0
+                                    elif stat_type in ["Total Shots", "Shots Total", "Shots"]:
+                                        try:
+                                            away_total_shots = int(value) if value is not None else 0
+                                        except:
+                                            away_total_shots = 0
+                                    elif stat_type in ["Expected Goals", "xG", "Expected goals"]:
+                                        try:
+                                            away_xg = float(value) if value is not None else 0.0
+                                        except:
+                                            away_xg = 0.0
+                                    elif stat_type in ["Dangerous Attacks", "Dangerous attacks", "Attacks"]:
+                                        try:
+                                            away_dangerous_attacks = int(value) if value is not None else 0
+                                        except:
+                                            away_dangerous_attacks = 0
+                                
+                                if home_shots_on_target > 0 or away_shots_on_target > 0:
+                                    logger.info(f"✅ Statistiche ottenute da endpoint separato per {home_team} vs {away_team}: SOT {home_shots_on_target}-{away_shots_on_target}, Shots {home_total_shots}-{away_total_shots}, xG {home_xg:.2f}-{away_xg:.2f}")
+                        
                         matches.append({
                             'id': match_id,
                             'home': home_team,
@@ -506,6 +615,54 @@ class MultiSourceMatchFinder:
         except Exception as e:
             logger.error(f"❌ Errore API-SPORTS live: {e}")
             return []
+    
+    def _fetch_statistics_from_api_sports(self, fixture_id: int) -> Optional[List[Dict[str, Any]]]:
+        """
+        Recupera statistiche per una specifica partita da API-SPORTS.
+        Endpoint separato: /fixtures/statistics
+        """
+        if not self.api_sports_key or not fixture_id:
+            return None
+        
+        try:
+            url = "https://v3.football.api-sports.io/fixtures/statistics"
+            params = {
+                "fixture": str(fixture_id)
+            }
+            
+            query = urllib.parse.urlencode(params)
+            full_url = f"{url}?{query}"
+            
+            headers = {
+                "x-rapidapi-key": self.api_sports_key,
+                "x-rapidapi-host": "v3.football.api-sports.io"
+            }
+            
+            req = urllib.request.Request(full_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode())
+                
+                if not data.get("response"):
+                    return None
+                
+                # API-SPORTS restituisce un array con statistiche per home e away
+                statistics = data.get("response", [])
+                if len(statistics) >= 2:
+                    logger.debug(f"✅ Statistiche ottenute da endpoint separato per fixture {fixture_id}")
+                    return statistics
+                else:
+                    logger.debug(f"⚠️  Statistiche incomplete per fixture {fixture_id}")
+                    return None
+                    
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                logger.warning(f"⚠️  Rate limit raggiunto per statistiche fixture {fixture_id}")
+            else:
+                logger.debug(f"⚠️  Errore HTTP ottenendo statistiche per fixture {fixture_id}: {e.code}")
+            return None
+        except Exception as e:
+            logger.debug(f"⚠️  Errore ottenendo statistiche per fixture {fixture_id}: {e}")
+            return None
     
     def _fetch_from_football_data(
         self,
