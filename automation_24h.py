@@ -21,20 +21,14 @@ import time
 import signal
 import sys
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 import argparse
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('automation_24h.log', encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
+# Setup logging using centralized configuration
+from logging_setup import init_logging
+init_logging()
 logger = logging.getLogger(__name__)
 
 # Import sistema esistente
@@ -454,7 +448,7 @@ class Automation24H:
             
             # Converti eventi TheOddsAPI in formato interno
             matches = []
-            now = datetime.now()
+            now = datetime.now(timezone.utc)  # Use timezone-aware UTC datetime
             max_future = now + timedelta(hours=24)  # Prossime 24h
             min_past = now - timedelta(hours=2)  # Partite iniziate nelle ultime 2h (live)
             
@@ -465,22 +459,21 @@ class Automation24H:
                     if not commence_time_str:
                         continue
                     
-                    # Parse ISO datetime
+                    # Parse ISO datetime as timezone-aware (UTC)
                     commence_time = datetime.fromisoformat(commence_time_str.replace("Z", "+00:00"))
-                    commence_time_local = commence_time.replace(tzinfo=None)  # Rimuovi timezone per confronto
                     
-                    # Determina se è live o pre-match
-                    is_live = commence_time_local < now
-                    is_prematch = commence_time_local >= now
+                    # Determina se è live o pre-match (compare timezone-aware datetimes)
+                    is_live = commence_time < now
+                    is_prematch = commence_time >= now
                     
                     # Filtra:
                     # - Pre-match: partite nelle prossime 24h
                     # - Live: partite iniziate nelle ultime 2h (per evitare partite già finite)
                     if is_prematch:
-                        if commence_time_local > max_future:
+                        if commence_time > max_future:
                             continue  # Troppo in futuro
                     elif is_live:
-                        if commence_time_local < min_past:
+                        if commence_time < min_past:
                             continue  # Troppo tempo fa (probabilmente finita)
                     else:
                         continue  # Non dovrebbe succedere
@@ -521,7 +514,7 @@ class Automation24H:
                             'home': event.get("home_team", ""),
                             'away': event.get("away_team", ""),
                             'league': event.get("sport_title", "Soccer"),
-                            'date': commence_time_local,
+                            'date': commence_time,  # Keep timezone-aware datetime
                             'odds_1': best_odds["home"],
                             'odds_x': best_odds["draw"],
                             'odds_2': best_odds["away"],
@@ -1037,8 +1030,8 @@ class Automation24H:
                             )
                             try:
                                 self.notifier._send_message(message)
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Failed to send odds movement notification: {e}")
         except Exception as e:
             logger.debug(f"⚠️  Error monitoring odds: {e}")
     
@@ -1098,8 +1091,8 @@ class Automation24H:
                 try:
                     self.notifier._send_message(message)
                     logger.info(f"💰 Arbitraggio trovato e notificato: {match.get('id')}")
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to send arbitrage notification: {e}")
         except Exception as e:
             logger.debug(f"⚠️  Error checking arbitrage: {e}")
     
@@ -1125,8 +1118,8 @@ class Automation24H:
                     try:
                         self.notifier._send_message(message)
                         logger.info(f"📰 News importante notificata: {news.title[:50]}")
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Failed to send news alert notification: {e}")
         except Exception as e:
             logger.debug(f"⚠️  Error checking news: {e}")
     
