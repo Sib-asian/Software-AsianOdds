@@ -140,9 +140,77 @@ class LiveBettingAdvisor:
         
         # Leghe/categorie da escludere (SOLO giovanili e riserve - campionati minori OK se hanno dati validi)
         self.excluded_leagues_keywords = [
-            'U17', 'U19', 'U21', 'U23', 'Youth', 'Junior', 'Giovanil',
+            'U17', 'U19', 'U20', 'U21', 'U23', 'Youth', 'Junior', 'Giovanil',
             'Reserve', 'B Team', 'Second Team', 'Academy',
             # 'Women', 'Feminine', 'Femminile'  # RIMOSSO: Permettiamo Champions League femminile ed Europa Cup Women
+        ]
+        
+        # 🔧 RESTRIZIONI CAMPIONATI INFERIORI
+        # Germania: fino a Liga 3 ok, sotto no
+        self.excluded_germany_leagues = [
+            'Liga 4', 'Liga 5', 'Oberliga', 'Verbandsliga', 'Landesliga', 
+            'Bezirksliga', 'Kreisliga', 'Kreisklasse', 'A-Klasse', 'B-Klasse'
+        ]
+        
+        # Brasile: Serie A e B ok, sotto no
+        self.excluded_brazil_leagues = [
+            'Serie C', 'Serie D', 'Copa do Brasil U20', 'Brasileiro U20',
+            'Campeonato Brasileiro U20', 'Brasileirão U20'
+        ]
+        
+        # Inghilterra: Premier League, Championship, League One ok, sotto no
+        self.excluded_england_leagues = [
+            'League Two', 'National League', 'National League North', 'National League South',
+            'Conference', 'Northern Premier', 'Southern Premier', 'Isthmian',
+            'Combined Counties', 'Eastern Counties', 'Essex Senior', 'Hellenic',
+            'Midland', 'North West Counties', 'Northern Counties East', 'Northern League',
+            'South West Peninsula', 'Spartan South Midlands', 'United Counties', 'Wessex',
+            'Western', 'West Midlands Regional'
+        ]
+        
+        # Spagna: La Liga, Segunda División ok, sotto no
+        self.excluded_spain_leagues = [
+            'Segunda División B', 'Tercera División', 'Primera División RFEF',
+            'Segunda División RFEF', 'Tercera División RFEF', 'Divisiones Regionales'
+        ]
+        
+        # Italia: Serie A, Serie B ok, Serie C e sotto no
+        self.excluded_italy_leagues = [
+            'Serie C', 'Serie D', 'Eccellenza', 'Promozione', 'Prima Categoria',
+            'Seconda Categoria', 'Terza Categoria', 'Campionato Primavera'
+        ]
+        
+        # Francia: Ligue 1, Ligue 2 ok, sotto no
+        self.excluded_france_leagues = [
+            'National', 'Championnat National 2', 'Championnat National 3',
+            'Régional 1', 'Régional 2', 'Régional 3', 'Départemental'
+        ]
+        
+        # Olanda: Eredivisie, Eerste Divisie ok, sotto no
+        self.excluded_netherlands_leagues = [
+            'Tweede Divisie', 'Derde Divisie', 'Hoofdklasse', 'Eerste Klasse',
+            'Tweede Klasse', 'Derde Klasse'
+        ]
+        
+        # Portogallo: Primeira Liga, Segunda Liga ok, sotto no
+        self.excluded_portugal_leagues = [
+            'Campeonato de Portugal', 'Liga 3', 'Distritais'
+        ]
+        
+        # Argentina: Primera División, Primera Nacional ok, sotto no
+        self.excluded_argentina_leagues = [
+            'Primera B', 'Primera C', 'Primera D', 'Torneo Federal'
+        ]
+        
+        # Messico: Liga MX ok, Ascenso MX e sotto no
+        self.excluded_mexico_leagues = [
+            'Ascenso MX', 'Liga de Expansión', 'Liga Premier', 'Liga TDP'
+        ]
+        
+        # Altri paesi: escludi divisioni regionali/locali
+        self.excluded_other_leagues = [
+            'Regional', 'Regional League', 'Provincial', 'County', 'District',
+            'Amateur', 'Semi-Pro', 'Non-League', 'Local League'
         ]
         
         # Tornei femminili importanti da includere (eccezioni al filtro generale)
@@ -2010,14 +2078,68 @@ class LiveBettingAdvisor:
             shots_on_target_home = live_data.get('shots_on_target_home', 0)
             dangerous_attacks_home = live_data.get('dangerous_attacks_home', 0)
             dangerous_attacks_away = live_data.get('dangerous_attacks_away', 0)
-            max_clean_sheet_minute = 72
+            # 🔧 RIDOTTO: Clean sheet difficile da giocare oltre 65' → usiamo mercati alternativi
+            max_clean_sheet_minute = 65
             
             # Home Clean Sheet: Home in vantaggio, away senza tiri in porta
             # 🆕 FILTRO: Non generare se risultato è già 3-0 o più al 75' (banale)
             goal_diff = abs(score_home - score_away)
             if score_home > 0 and score_away == 0 and minute >= 50:
                 if minute > max_clean_sheet_minute:
-                    logger.debug(f"⏭️  Clean sheet home non generato: minuto {minute}' oltre soglia {max_clean_sheet_minute}'")
+                    # 🔧 ALTERNATIVA: Se minuto avanzato, suggerisci mercati alternativi SEMPRE DISPONIBILI
+                    # Under 1.5, Match Winner, Double Chance sono sempre quotati
+                    if minute <= 80 and goal_diff == 1 and shots_on_target_away <= 1:
+                        # ALTERNATIVA 1: Under 1.5 (sempre disponibile, simile al Clean Sheet)
+                        # Se è 1-0, l'Under 1.5 significa che non ci saranno altri gol
+                        ai_boost = self._get_ai_market_confidence(match_data, live_data, 'under_1.5') if self.ai_pipeline else 0
+                        confidence = 75 + (minute - 65) * 0.3 + min(8, ai_boost)  # Confidence cresce con minuto avanzato
+                        confidence = min(90, confidence)
+                        
+                        if confidence >= 75:  # Soglia minima
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation='under_1.5_clean_sheet_alt', market='under_1.5',
+                                recommendation=f"Punta Under 1.5 (alternativa Clean Sheet)",
+                                reasoning=(
+                                    f"🎯 UNDER 1.5 (Alternativa Clean Sheet)!\n\n"
+                                    f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                    f"• {match_data.get('home')} in vantaggio, {match_data.get('away')} senza tiri in porta\n"
+                                    f"• Minuto avanzato ({minute}') → Under 1.5 sempre quotato\n"
+                                    f"• Alta probabilità che finisca 1-0 (nessun altro gol)\n"
+                                    f"• Mercato comune e sempre disponibile\n"
+                                    f"• IA boost: +{ai_boost:.0f}%"
+                                ),
+                                confidence=confidence, odds=1.6, stake_suggestion=2.5,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
+                        
+                        # ALTERNATIVA 2: Match Winner (sempre disponibile)
+                        # Se è 1-0 avanzato, la vittoria casa è probabile
+                        if minute >= 70:
+                            ai_boost = self._get_ai_market_confidence(match_data, live_data, '1x2_home') if self.ai_pipeline else 0
+                            confidence = 78 + (minute - 70) * 0.2 + min(5, ai_boost)
+                            confidence = min(88, confidence)
+                            
+                            if confidence >= 75:
+                                opportunity = LiveBettingOpportunity(
+                                    match_id=match_id, match_data=match_data,
+                                    situation='match_winner_home_advanced', market='1x2_home',
+                                    recommendation=f"Punta {match_data.get('home')} vince (alternativa Clean Sheet)",
+                                    reasoning=(
+                                        f"🎯 VITTORIA CASA (Alternativa Clean Sheet)!\n\n"
+                                        f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                        f"• {match_data.get('home')} in vantaggio, {match_data.get('away')} senza tiri in porta\n"
+                                        f"• Minuto avanzato ({minute}') → Vittoria casa sempre quotata\n"
+                                        f"• Alta probabilità che mantenga il vantaggio\n"
+                                        f"• Mercato comune e sempre disponibile\n"
+                                        f"• IA boost: +{ai_boost:.0f}%"
+                                    ),
+                                    confidence=confidence, odds=1.5, stake_suggestion=2.5,
+                                    timestamp=datetime.now()
+                                )
+                                opportunities.append(opportunity)
+                    logger.debug(f"⏭️  Clean sheet home non generato: minuto {minute}' oltre soglia {max_clean_sheet_minute}', alternative Under 1.5/Match Winner suggerite")
                 else:
                     # Non generare se risultato è già 3-0 o più al 75' (troppo ovvio)
                     if goal_diff >= 3 and minute >= 75:
@@ -2078,7 +2200,60 @@ class LiveBettingAdvisor:
             # 🆕 FILTRO: Non generare se risultato è già 3-0 o più al 75' (banale)
             if score_away > 0 and score_home == 0 and minute >= 50:
                 if minute > max_clean_sheet_minute:
-                    logger.debug(f"⏭️  Clean sheet away non generato: minuto {minute}' oltre soglia {max_clean_sheet_minute}'")
+                    # 🔧 ALTERNATIVA: Se minuto avanzato, suggerisci mercati alternativi SEMPRE DISPONIBILI
+                    # Under 1.5, Match Winner, Double Chance sono sempre quotati
+                    if minute <= 80 and goal_diff == 1 and shots_on_target_home <= 1:
+                        # ALTERNATIVA 1: Under 1.5 (sempre disponibile, simile al Clean Sheet)
+                        # Se è 0-1, l'Under 1.5 significa che non ci saranno altri gol
+                        ai_boost = self._get_ai_market_confidence(match_data, live_data, 'under_1.5') if self.ai_pipeline else 0
+                        confidence = 75 + (minute - 65) * 0.3 + min(8, ai_boost)  # Confidence cresce con minuto avanzato
+                        confidence = min(90, confidence)
+                        
+                        if confidence >= 75:  # Soglia minima
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation='under_1.5_clean_sheet_alt', market='under_1.5',
+                                recommendation=f"Punta Under 1.5 (alternativa Clean Sheet)",
+                                reasoning=(
+                                    f"🎯 UNDER 1.5 (Alternativa Clean Sheet)!\n\n"
+                                    f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                    f"• {match_data.get('away')} in vantaggio, {match_data.get('home')} senza tiri in porta\n"
+                                    f"• Minuto avanzato ({minute}') → Under 1.5 sempre quotato\n"
+                                    f"• Alta probabilità che finisca 0-1 (nessun altro gol)\n"
+                                    f"• Mercato comune e sempre disponibile\n"
+                                    f"• IA boost: +{ai_boost:.0f}%"
+                                ),
+                                confidence=confidence, odds=1.6, stake_suggestion=2.5,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
+                        
+                        # ALTERNATIVA 2: Match Winner (sempre disponibile)
+                        # Se è 0-1 avanzato, la vittoria trasferta è probabile
+                        if minute >= 70:
+                            ai_boost = self._get_ai_market_confidence(match_data, live_data, '1x2_away') if self.ai_pipeline else 0
+                            confidence = 78 + (minute - 70) * 0.2 + min(5, ai_boost)
+                            confidence = min(88, confidence)
+                            
+                            if confidence >= 75:
+                                opportunity = LiveBettingOpportunity(
+                                    match_id=match_id, match_data=match_data,
+                                    situation='match_winner_away_advanced', market='1x2_away',
+                                    recommendation=f"Punta {match_data.get('away')} vince (alternativa Clean Sheet)",
+                                    reasoning=(
+                                        f"🎯 VITTORIA TRASFERTA (Alternativa Clean Sheet)!\n\n"
+                                        f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                        f"• {match_data.get('away')} in vantaggio, {match_data.get('home')} senza tiri in porta\n"
+                                        f"• Minuto avanzato ({minute}') → Vittoria trasferta sempre quotata\n"
+                                        f"• Alta probabilità che mantenga il vantaggio\n"
+                                        f"• Mercato comune e sempre disponibile\n"
+                                        f"• IA boost: +{ai_boost:.0f}%"
+                                    ),
+                                    confidence=confidence, odds=1.5, stake_suggestion=2.5,
+                                    timestamp=datetime.now()
+                                )
+                                opportunities.append(opportunity)
+                    logger.debug(f"⏭️  Clean sheet away non generato: minuto {minute}' oltre soglia {max_clean_sheet_minute}', alternative Under 1.5/Match Winner suggerite")
                 else:
                     # Non generare se risultato è già 3-0 o più al 75' (troppo ovvio)
                     if goal_diff >= 3 and minute >= 75:
@@ -4276,6 +4451,89 @@ class LiveBettingAdvisor:
                     # Se contiene keyword femminile ma NON è un torneo importante, escludi
                     if not is_important_women_tournament:
                         return False
+            
+            # 🔧 RESTRIZIONI CAMPIONATI INFERIORI
+            country = str(match_data.get('country', '')).upper()
+            
+            # Germania: escludi campionati sotto Liga 3
+            if 'GERMANY' in country or 'GERMANIA' in country or 'DEUTSCHLAND' in country or 'BUNDESLIGA' in league:
+                for excluded_league in self.excluded_germany_leagues:
+                    if excluded_league.upper() in league:
+                        logger.debug(f"⏭️  Partita esclusa: campionato tedesco inferiore ({league})")
+                        return False
+            
+            # Brasile: escludi Serie C, D e campionati U20
+            if 'BRAZIL' in country or 'BRASIL' in country or 'BRASILE' in country or 'BRAZILEIRO' in league:
+                for excluded_league in self.excluded_brazil_leagues:
+                    if excluded_league.upper() in league:
+                        logger.debug(f"⏭️  Partita esclusa: campionato brasiliano inferiore ({league})")
+                        return False
+                # Escludi anche se contiene "U20" o "Under 20"
+                if 'U20' in league or 'UNDER 20' in league or 'U-20' in league:
+                    logger.debug(f"⏭️  Partita esclusa: campionato brasiliano U20 ({league})")
+                    return False
+            
+            # Inghilterra: escludi League Two e sotto
+            if 'ENGLAND' in country or 'INGHILTERRA' in country or 'PREMIER LEAGUE' in league or 'CHAMPIONSHIP' in league:
+                for excluded_league in self.excluded_england_leagues:
+                    if excluded_league.upper() in league:
+                        logger.debug(f"⏭️  Partita esclusa: campionato inglese inferiore ({league})")
+                        return False
+            
+            # Spagna: escludi Segunda División B e sotto
+            if 'SPAIN' in country or 'SPAGNA' in country or 'LA LIGA' in league or 'SEGUNDA DIVISIÓN' in league:
+                for excluded_league in self.excluded_spain_leagues:
+                    if excluded_league.upper() in league:
+                        logger.debug(f"⏭️  Partita esclusa: campionato spagnolo inferiore ({league})")
+                        return False
+            
+            # Italia: escludi Serie C e sotto
+            if 'ITALY' in country or 'ITALIA' in country or 'SERIE A' in league or 'SERIE B' in league:
+                for excluded_league in self.excluded_italy_leagues:
+                    if excluded_league.upper() in league:
+                        logger.debug(f"⏭️  Partita esclusa: campionato italiano inferiore ({league})")
+                        return False
+            
+            # Francia: escludi National e sotto
+            if 'FRANCE' in country or 'FRANCIA' in country or 'LIGUE 1' in league or 'LIGUE 2' in league:
+                for excluded_league in self.excluded_france_leagues:
+                    if excluded_league.upper() in league:
+                        logger.debug(f"⏭️  Partita esclusa: campionato francese inferiore ({league})")
+                        return False
+            
+            # Olanda: escludi Tweede Divisie e sotto
+            if 'NETHERLANDS' in country or 'OLANDA' in country or 'EREDIVISIE' in league:
+                for excluded_league in self.excluded_netherlands_leagues:
+                    if excluded_league.upper() in league:
+                        logger.debug(f"⏭️  Partita esclusa: campionato olandese inferiore ({league})")
+                        return False
+            
+            # Portogallo: escludi Campeonato de Portugal e sotto
+            if 'PORTUGAL' in country or 'PORTOGALLO' in country or 'PRIMEIRA LIGA' in league:
+                for excluded_league in self.excluded_portugal_leagues:
+                    if excluded_league.upper() in league:
+                        logger.debug(f"⏭️  Partita esclusa: campionato portoghese inferiore ({league})")
+                        return False
+            
+            # Argentina: escludi Primera B e sotto
+            if 'ARGENTINA' in country or 'ARGENTINA' in country or 'PRIMERA DIVISIÓN' in league:
+                for excluded_league in self.excluded_argentina_leagues:
+                    if excluded_league.upper() in league:
+                        logger.debug(f"⏭️  Partita esclusa: campionato argentino inferiore ({league})")
+                        return False
+            
+            # Messico: escludi Ascenso MX e sotto
+            if 'MEXICO' in country or 'MESSICO' in country or 'LIGA MX' in league:
+                for excluded_league in self.excluded_mexico_leagues:
+                    if excluded_league.upper() in league:
+                        logger.debug(f"⏭️  Partita esclusa: campionato messicano inferiore ({league})")
+                        return False
+            
+            # Altri paesi: escludi divisioni regionali/locali
+            for excluded_league in self.excluded_other_leagues:
+                if excluded_league.upper() in league:
+                    logger.debug(f"⏭️  Partita esclusa: campionato regionale/locale ({league})")
+                    return False
             
             # Se passa il filtro giovanili, ACCETTA (anche campionati minori)
             # La qualità dei dati sarà verificata da _has_sufficient_live_data
