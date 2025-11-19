@@ -67,7 +67,7 @@ class LiveBettingAdvisor:
         self.notifier = notifier
         self.min_confidence = min_confidence  # 75% aumentato: filtri più restrittivi per ridurre segnali banali
         self.ai_pipeline = ai_pipeline
-        self.min_ev = max(0.0, min_ev)  # 10% aumentato per ridurre segnali banali
+        self.min_ev = max(0.0, min_ev)  # Soglia EV (default: 9% per partite live)
         self.max_opportunities_per_match = max(1, int(max_opportunities_per_match))
         self.market_translations = {
             'clean_sheet_home': 'Porta inviolata (Casa)',
@@ -3746,8 +3746,8 @@ class LiveBettingAdvisor:
                 ev = self._calculate_expected_value(opp)
                 opp.ev = ev
             if ev < self.min_ev:
-                logger.debug(
-                    f"⏭️  Saltata opportunità: valore atteso {ev:.1f}% < soglia {self.min_ev:.1f}% per {opp.market}"
+                logger.info(
+                    f"⏭️  Saltata opportunità: valore atteso {ev:.1f}% < soglia {self.min_ev:.1f}% per {opp.market} (confidence: {opp.confidence:.1f}%, odds: {opp.odds:.2f})"
                 )
                 continue
             filtered.append(opp)

@@ -26,6 +26,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 import argparse
 
+# Carica variabili d'ambiente da .env
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # Setup logging using centralized configuration
 from logging_setup import init_logging
 init_logging()
@@ -84,6 +91,14 @@ except ImportError as e:
     logger.warning(f"⚠️  MultiSourceMatchFinder non disponibile: {e}")
     MULTI_SOURCE_AVAILABLE = False
 
+# Import LiveBettingAdvisor per analisi partite live
+try:
+    from live_betting_advisor import LiveBettingAdvisor
+    LIVE_BETTING_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"⚠️  LiveBettingAdvisor non disponibile: {e}")
+    LIVE_BETTING_AVAILABLE = False
+
 
 class Automation24H:
     """
@@ -135,6 +150,26 @@ class Automation24H:
                 self.multi_source_finder = None
         else:
             self.multi_source_finder = None
+        
+        # 🆕 Inizializza LiveBettingAdvisor per analisi partite live
+        if LIVE_BETTING_AVAILABLE:
+            try:
+                # Per partite live, abbassa soglia EV (odds spesso basse)
+                # Con confidence 72% e odds 1.3, EV = (0.72 * 1.3 - 1) * 100 = -6.4%
+                # Con confidence 75% e odds 1.4, EV = (0.75 * 1.4 - 1) * 100 = 5%
+                # Quindi per live betting, EV minimo più basso (5-6% invece di 9%)
+                live_min_ev = max(5.0, min_ev - 3.0)  # Abbassa di 3% rispetto a pre-match
+                self.live_betting_advisor = LiveBettingAdvisor(
+                    min_confidence=min_confidence,
+                    min_ev=live_min_ev
+                )
+                logger.info(f"   LiveBettingAdvisor: min_confidence={min_confidence}%, min_ev={live_min_ev}% (abbassato per live betting)")
+                logger.info("✅ LiveBettingAdvisor initialized")
+            except Exception as e:
+                logger.warning(f"⚠️  LiveBettingAdvisor error: {e}")
+                self.live_betting_advisor = None
+        else:
+            self.live_betting_advisor = None
         
         logger.info("✅ Automation24H initialized")
         logger.info(f"   Min EV: {min_ev}%")
@@ -340,11 +375,20 @@ class Automation24H:
                     logger.debug(f"⚠️  News check error: {e}")
         
         # 1. Ottieni partite da monitorare
-        matches = self._get_matches_to_monitor()
-        logger.info(f"   Found {len(matches)} matches to monitor")
+        all_matches = self._get_matches_to_monitor()
+        logger.info(f"   Found {len(all_matches)} total matches")
+        
+        # 🆕 FILTRO: Analizza SOLO partite LIVE (no pre-match)
+        matches = [m for m in all_matches if m.get('is_live', False)]
+        pre_match_count = len(all_matches) - len(matches)
+        
+        if pre_match_count > 0:
+            logger.info(f"   ⏭️  Saltate {pre_match_count} partite pre-match (solo live betting attivo)")
+        
+        logger.info(f"   Found {len(matches)} LIVE matches to monitor")
         
         if not matches:
-            logger.info("   No matches to monitor, skipping cycle")
+            logger.info("   No LIVE matches to monitor, skipping cycle")
             return
         
         # 1.5. Applica filtri (se disponibili)
@@ -365,25 +409,16 @@ class Automation24H:
                 if self.arbitrage_detector:
                     self._check_arbitrage(match)
                 
-                opportunity = self._analyze_match(match)
-                if opportunity:
-                    opportunities_found += 1
-                    self._handle_opportunity(opportunity)
-                    
-                    # 🆕 NUOVO: Schedula alert pre-partita
-                    if self.pre_match_alerter and match.get('date'):
-                        try:
-                            match_date = match.get('date')
-                            if isinstance(match_date, str):
-                                match_date = datetime.fromisoformat(match_date.replace('Z', '+00:00'))
-                            self.pre_match_alerter.schedule_alert(
-                                match_id=match.get('id'),
-                                match_data=opportunity.get('match_data', {}),
-                                match_date=match_date,
-                                alert_type='OPPORTUNITY'
-                            )
-                        except Exception as e:
-                            logger.debug(f"⚠️  Error scheduling pre-match alert: {e}")
+                # 🆕 SOLO LIVE BETTING: Analizza solo partite live
+                if not self.live_betting_advisor:
+                    logger.warning("⚠️  LiveBettingAdvisor not available, skipping live match")
+                    continue
+                
+                opportunities = self._analyze_live_match(match)
+                for opp in opportunities:
+                    if opp:
+                        opportunities_found += 1
+                        self._handle_live_opportunity(opp)
             except Exception as e:
                 logger.error(f"❌ Error analyzing match {match.get('id', 'unknown')}: {e}")
                 continue
@@ -742,6 +777,85 @@ class Automation24H:
             logger.error(f"❌ Error analyzing match {match_id}: {e}")
             return None
     
+    def _analyze_live_match(self, match: Dict) -> List[Optional[Dict]]:
+        """
+        Analizza partita live usando LiveBettingAdvisor.
+        
+        Restituisce lista di opportunità (può essere più di una per partita).
+        """
+        if not self.live_betting_advisor:
+            return []
+        
+        try:
+            match_id = str(match.get('id', ''))
+            
+            # Prepara match_data (dati base partita)
+            match_data = {
+                'home': match.get('home', ''),
+                'away': match.get('away', ''),
+                'league': match.get('league', ''),
+                'odds_1': match.get('odds_1'),
+                'odds_x': match.get('odds_x'),
+                'odds_2': match.get('odds_2'),
+            }
+            
+            # Prepara live_data (dati live partita)
+            current_score = match.get('current_score', '0-0')
+            try:
+                home_score, away_score = map(int, current_score.split('-'))
+            except:
+                home_score, away_score = 0, 0
+            
+            # Estrai minute
+            minute = match.get('minute', 0)
+            if isinstance(minute, str):
+                try:
+                    minute = int(minute.replace("'", "").replace("+", "").split()[0])
+                except:
+                    minute = 0
+            
+            live_data = {
+                'minute': minute,
+                'home_score': home_score,
+                'away_score': away_score,
+                'status': match.get('status', 'LIVE'),
+                # Statistiche live (se disponibili)
+                'home_shots_on_target': match.get('home_shots_on_target', 0),
+                'away_shots_on_target': match.get('away_shots_on_target', 0),
+                'home_total_shots': match.get('home_total_shots', 0),
+                'away_total_shots': match.get('away_total_shots', 0),
+                'home_xg': match.get('home_xg', 0.0),
+                'away_xg': match.get('away_xg', 0.0),
+                'home_dangerous_attacks': match.get('home_dangerous_attacks', 0),
+                'away_dangerous_attacks': match.get('away_dangerous_attacks', 0),
+            }
+            
+            # Analizza con LiveBettingAdvisor
+            opportunities = self.live_betting_advisor.analyze_live_match(
+                match_id=match_id,
+                match_data=match_data,
+                live_data=live_data
+            )
+            
+            # Converti in formato standard
+            result = []
+            for opp in opportunities:
+                if opp:
+                    result.append({
+                        'match_id': match.get('id'),
+                        'match_data': match,
+                        'live_opportunity': opp,
+                        'timestamp': datetime.now()
+                    })
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Error analyzing live match {match.get('id', 'unknown')}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+    
     def _is_real_value_opportunity(self, ai_result: Dict, match: Dict) -> bool:
         """
         Verifica se è una VERA opportunità VALUE BET.
@@ -913,6 +1027,42 @@ class Automation24H:
                     logger.warning(f"⚠️  Failed to notify opportunity: {match_id}")
             except Exception as e:
                 logger.error(f"❌ Error notifying opportunity: {e}")
+        else:
+            logger.warning("⚠️  Telegram notifier not available")
+    
+    def _handle_live_opportunity(self, opportunity: Dict):
+        """Gestisce opportunità live trovata da LiveBettingAdvisor"""
+        match_id = opportunity['match_id']
+        live_opp = opportunity.get('live_opportunity')
+        
+        if not live_opp:
+            return
+        
+        # Evita duplicati (usa match_id + market come chiave)
+        market = live_opp.market
+        opp_key = f"{match_id}_{market}"
+        if opp_key in self.notified_opportunities:
+            logger.debug(f"   Live opportunity {opp_key} already notified, skipping")
+            return
+        
+        # Notifica Telegram
+        if self.notifier:
+            try:
+                # Formatta messaggio e invia con _send_message (metodo privato ma usato internamente)
+                message = self.live_betting_advisor.format_live_betting_message(live_opp)
+                
+                if message:
+                    # Usa _send_message (metodo privato ma usato in altri punti del codice)
+                    success = self.notifier._send_message(message, parse_mode="HTML")
+                    if success:
+                        self.notified_opportunities.add(opp_key)
+                        logger.info(f"✅ Notified live opportunity: {opp_key}")
+                    else:
+                        logger.warning(f"⚠️  Failed to notify live opportunity: {opp_key}")
+                else:
+                    logger.warning(f"⚠️  Empty message for live opportunity: {opp_key}")
+            except Exception as e:
+                logger.error(f"❌ Error notifying live opportunity: {e}")
         else:
             logger.warning("⚠️  Telegram notifier not available")
     
@@ -1194,8 +1344,8 @@ def main():
     # Crea sistema
     automation = Automation24H(
         config_path=args.config,
-        telegram_token=args.telegram_token or config.get('telegram_token'),
-        telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id'),
+        telegram_token=args.telegram_token or config.get('telegram_token') or os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN'),
+        telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID'),
         min_ev=args.min_ev or config.get('min_ev', 8.0),
         min_confidence=args.min_confidence or config.get('min_confidence', 70.0),
         update_interval=args.update_interval or config.get('update_interval', 300)
