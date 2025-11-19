@@ -95,20 +95,24 @@ class Automation24H:
         telegram_token: Optional[str] = None,
         telegram_chat_id: Optional[str] = None,
         min_ev: float = 8.0,  # EV minimo 8%
-        min_confidence: float = 70.0,  # Confidence minima 70%
+        min_confidence: float = 75.0,  # Confidence minima 75%
         update_interval: int = 300,  # 5 minuti
-        api_budget_per_day: int = 100
+        api_budget_per_day: int = 100,
+        max_signals_per_match: int = 2  # Massimo 2 segnali per partita,
+        max_signals_per_match: int = 2  # Massimo 2 segnali per partita
     ):
         self.config_path = config_path
         self.min_ev = min_ev
         self.min_confidence = min_confidence
         self.update_interval = update_interval
         self.api_budget_per_day = api_budget_per_day
+        self.max_signals_per_match = max_signals_per_match
         
         # Stato
         self.running = False
         self.monitored_matches: Dict[str, Dict] = {}
         self.notified_opportunities: Set[str] = set()  # Evita duplicati
+        self.match_signal_count: Dict[str, int] = {}  # Conta segnali per partita
         self.api_usage_today = 0
         self.last_api_reset = datetime.now().date()
         self.last_daily_report = datetime.now().date()
@@ -715,6 +719,7 @@ class Automation24H:
         3. Confidence > soglia minima
         4. NON basato su score (se live)
         5. Probabilità vs Quote deve avere vero valore
+        6. NON segnale triviale o assurdo
         """
         # 1. Check action
         action = ai_result.get('action') or ai_result.get('final_decision', {}).get('action')
@@ -746,7 +751,56 @@ class Automation24H:
             logger.debug(f"   No real value detected")
             return False
         
+        # 6. Filtra segnali triviali o assurdi
+        if self._is_trivial_or_absurd_signal(ai_result, match):
+            logger.warning(f"   ⚠️  Rejecting trivial/absurd signal for {match.get('id')}")
+            return False
+        
         return True
+    
+    def _is_trivial_or_absurd_signal(self, ai_result: Dict, match: Dict) -> bool:
+        """
+        Filtra segnali triviali o assurdi.
+        
+        Segnali da filtrare:
+        - Quote troppo basse (<1.20) o troppo alte (>10.0) 
+        - Probabilità estreme (>95% o <5%)
+        - Value score troppo basso (<60)
+        - Red flags elevati
+        """
+        # Check quote assurde
+        odds = ai_result.get('odds') or ai_result.get('summary', {}).get('odds', 0)
+        if odds < 1.20:
+            logger.debug(f"   Quote troppo basse: {odds:.2f}")
+            return True
+        if odds > 10.0:
+            logger.debug(f"   Quote troppo alte: {odds:.2f}")
+            return True
+        
+        # Check probabilità estreme
+        probability = ai_result.get('probability') or ai_result.get('summary', {}).get('probability', 0)
+        if probability > 1.0:  # Se in percentuale, converti
+            probability = probability / 100
+        if probability > 0.95:
+            logger.debug(f"   Probabilità troppo alta: {probability:.1%}")
+            return True
+        if probability < 0.05:
+            logger.debug(f"   Probabilità troppo bassa: {probability:.1%}")
+            return True
+        
+        # Check value score (deve essere almeno decente)
+        value_score = ai_result.get('value_score') or ai_result.get('summary', {}).get('value_score', 0)
+        if value_score < 60:
+            logger.debug(f"   Value score troppo basso: {value_score:.0f}")
+            return True
+        
+        # Check red flags
+        red_flags = ai_result.get('risk_decision', {}).get('red_flags', [])
+        if len(red_flags) >= 3:
+            logger.debug(f"   Troppi red flags: {len(red_flags)}")
+            return True
+        
+        return False
     
     def _is_score_based_recommendation(self, ai_result: Dict, match: Dict) -> bool:
         """
@@ -825,6 +879,12 @@ class Automation24H:
             logger.debug(f"   Opportunity {match_id} already notified, skipping")
             return
         
+        # Limita numero di segnali per partita (max 1-2)
+        signal_count = self.match_signal_count.get(match_id, 0)
+        if signal_count >= self.max_signals_per_match:
+            logger.debug(f"   Max signals ({self.max_signals_per_match}) reached for match {match_id}, skipping")
+            return
+        
         # Salva opportunità nel tracker (se disponibile)
         if self.results_tracker:
             try:
@@ -871,7 +931,9 @@ class Automation24H:
                 
                 if success:
                     self.notified_opportunities.add(match_id)
-                    logger.info(f"✅ Notified opportunity: {match_id}")
+                    # Incrementa contatore segnali per questa partita
+                    self.match_signal_count[match_id] = signal_count + 1
+                    logger.info(f"✅ Notified opportunity: {match_id} (signal {self.match_signal_count[match_id]}/{self.max_signals_per_match})")
                 else:
                     logger.warning(f"⚠️  Failed to notify opportunity: {match_id}")
             except Exception as e:
@@ -886,7 +948,8 @@ class Automation24H:
             self.api_usage_today = 0
             self.last_api_reset = today
             self.notified_opportunities.clear()  # Reset notifiche
-            logger.info("🔄 New day: API usage reset")
+            self.match_signal_count.clear()  # Reset contatore segnali
+            logger.info("🔄 New day: API usage and signal counters reset")
             
             # Invia report giornaliero (se disponibile)
             if self.automated_reports and today > self.last_daily_report:

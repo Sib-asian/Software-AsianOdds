@@ -298,27 +298,50 @@ Rispondi in italiano in modo professionale.
     def _build_explanation_prompt(self, context: Dict, language: str) -> str:
         """Build prompt for explanation"""
         lang_text = "italiano" if language == "it" else "English"
+        
+        # Includi statistiche dettagliate nel prompt
+        stats_info = ""
+        if 'data_quality' in context:
+            stats_info += f"\nQualità Dati: {context['data_quality']:.0%}"
+        if 'home_form' in context:
+            stats_info += f"\nForma Casa: {context['home_form']}"
+        if 'away_form' in context:
+            stats_info += f"\nForma Trasferta: {context['away_form']}"
+        if 'home_injuries' in context:
+            stats_info += f"\nInfortuni Casa: {context['home_injuries']}"
+        if 'away_injuries' in context:
+            stats_info += f"\nInfortuni Trasferta: {context['away_injuries']}"
 
         return f"""
 Sei un esperto analista di scommesse sportive. Spiega questa predizione in modo chiaro e professionale.
 
 {self._format_context(context)}
+{stats_info}
 
 Fornisci una spiegazione strutturata che includa:
 
-1. **Ragioni Principali** (2-3 punti chiave)
-   - Perché questa scommessa è consigliata/sconsigliata
-   - Quali fattori sono più importanti
+1. **Ragioni Principali** (2-3 punti chiave basati su STATISTICHE REALI)
+   - Usa i dati di forma, infortuni, xG e altre statistiche
+   - Evita ragionamenti banali o ovvi
+   - Focus su insights non evidenti dalle quote
 
-2. **Analisi Dati**
-   - Form recente squadre
-   - Eventuali infortuni rilevanti
-   - Expected Value e value score
+2. **Analisi Statistiche Dettagliate**
+   - Form recente squadre e trend
+   - Infortuni chiave e impatto sulla formazione
+   - xG (Expected Goals) e performance offensive/difensive
+   - Head-to-head recenti se disponibili
 
-3. **Rischi e Considerazioni**
-   - Eventuali red flags
-   - Livello di confidence
+3. **Valutazione Value**
+   - Expected Value e perché esiste questo valore
+   - Confronto probabilità stimata vs quote implicite
+   - Value score e sua interpretazione
+
+4. **Rischi e Considerazioni**
+   - Eventuali red flags da dati statistici
+   - Livello di confidence e incertezza
    - Raccomandazioni sul sizing
+
+IMPORTANTE: Basa OGNI affermazione su dati statistici concreti. NO ragionamenti generici.
 
 Scrivi in {lang_text} in modo professionale ma comprensibile.
 """
@@ -342,53 +365,75 @@ Scrivi in {lang_text} in modo professionale ma comprensibile.
         decision = context.get('decision', 'SKIP')
         ev = context.get('expected_value', 0)
         confidence = context.get('confidence', 50)
+        
+        # Estrai statistiche
+        home_form = context.get('home_form', 'N/A')
+        away_form = context.get('away_form', 'N/A')
+        home_inj = context.get('home_injuries', 0)
+        away_inj = context.get('away_injuries', 0)
 
         if decision == "BET":
             explanation = f"""
 🎯 **RACCOMANDAZIONE: SCOMMETTI**
 
-**Ragioni Principali:**
+**Analisi Statistiche:**
 
-1. **Value Eccellente** ({ev:+.1%} EV)
-   - Le nostre analisi indicano che le quote attuali ({context.get('odds', 0):.2f}) offrono un valore significativo
-   - La probabilità reale stimata è {context.get('probability', 0):.1%}
+📊 **Forma Recente:**
+   - Casa: {home_form} - Trasferta: {away_form}
+   {"- Tendenza positiva per la squadra di casa" if 'W' in str(home_form)[:2] else ""}
 
-2. **Confidence Alta** ({confidence:.0f}/100)
-   - I nostri modelli concordano sulla predizione
-   - La qualità dei dati è buona
+⚕️ **Infortuni:**
+   - Casa: {home_inj} assenti - Trasferta: {away_inj} assenti
+   {"- Impatto significativo sulla formazione ospite" if away_inj > home_inj else "- Rosa completa per entrambe"}
 
-3. **Risk/Reward Favorevole**
+💰 **Valutazione Value:**
+   - EV: {ev:+.1%} - Quote {context.get('odds', 0):.2f} vs Probabilità stimata {context.get('probability', 0):.1%}
+   - Value Score: {context.get('value_score', 0):.0f}/100
+   - Le quote sottovalutano la probabilità di successo
+
+🎲 **Confidence & Risk:**
+   - Confidence: {confidence:.0f}/100
+   {"- Alta concordanza tra i modelli predittivi" if confidence >= 70 else "- Moderata concordanza tra modelli"}
    - Stake raccomandato: €{context.get('stake', 0):.2f}
-   - Potenziale profitto proporzionato al rischio
-
-**Considerazioni:**
 """
-            if context.get('red_flags'):
-                explanation += f"\n⚠️ Attenzione a {len(context.get('red_flags', []))} red flags rilevati"
-            else:
-                explanation += "\n✅ Nessun red flag significativo"
+            
+            # Aggiungi ensemble info se disponibile
+            if 'ensemble' in context:
+                explanation += "\n🤖 **Consensus Modelli:**\n"
+                for model, pred in context['ensemble'].get('models', {}).items():
+                    explanation += f"   - {model}: {pred:.1%}\n"
 
-            explanation += "\n\n💡 **Conclusione**: Bet consigliata con sizing appropriato al livello di confidence."
+            if context.get('red_flags'):
+                explanation += f"\n⚠️ **Red Flags**: {len(context.get('red_flags', []))} rilevati - considera attentamente"
+            else:
+                explanation += "\n✅ **Nessun red flag** significativo"
+
+            explanation += "\n\n💡 **Conclusione**: Opportunità di value con buon supporto statistico."
 
         else:
             explanation = f"""
 🚫 **RACCOMANDAZIONE: SKIP**
 
-**Ragioni Principali:**
+**Analisi Statistiche:**
 
-1. **Value Insufficiente** ({ev:+.1%} EV)
-   - Le quote attuali non offrono sufficiente margine
-   - Expected Value troppo basso per giustificare il rischio
+📊 **Forma Recente:**
+   - Casa: {home_form} - Trasferta: {away_form}
+   - Dati non sufficientemente favorevoli
 
-2. **Confidence Non Ottimale** ({confidence:.0f}/100)
-   - Incertezza elevata nella predizione
-   - I modelli non concordano sufficientemente
+⚕️ **Infortuni:**
+   - Casa: {home_inj} assenti - Trasferta: {away_inj} assenti
 
-**Considerazioni:**
-- Meglio attendere opportunità con parametri migliori
-- Risk/reward non favorevole in questo momento
+💰 **Valutazione Value:**
+   - EV: {ev:+.1%} - Insufficiente per giustificare rischio
+   - Value Score: {context.get('value_score', 0):.0f}/100
+   - Quote non offrono margine sufficiente
 
-💡 **Conclusione**: Meglio evitare questa bet e cercare value altrove.
+🎲 **Confidence & Risk:**
+   - Confidence: {confidence:.0f}/100
+   {"- Disaccordo tra modelli" if confidence < 60 else "- Bassa certezza"}
+   - Risk/reward non favorevole
+
+💡 **Conclusione**: Meglio attendere opportunità con parametri migliori e maggiore supporto statistico.
 """
 
         return explanation
