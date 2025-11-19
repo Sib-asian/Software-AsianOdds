@@ -101,8 +101,8 @@ def test_market_selection():
     # Filtro 3: Edge minimo
     implied_prob = 1.0 / best_odds
     edge = best_prob - implied_prob
-    edge_pass = edge >= 0.08
-    print(f"   ✓ Edge >= 8%? {edge_pass} (Edge={edge*100:.1f}%)")
+    edge_pass = edge >= 0.07  # 7% come nel codice
+    print(f"   ✓ Edge >= 7%? {edge_pass} (Edge={edge*100:.1f}%)")
     
     # Filtro 4: Uncertainty
     uncertainty = ai_result['ensemble']['uncertainty']
