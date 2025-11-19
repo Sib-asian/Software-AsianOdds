@@ -76,6 +76,14 @@ except ImportError as e:
     logger.warning(f"⚠️  Sistemi avanzati 24/7 non disponibili: {e}")
     ADVANCED_SYSTEMS_AVAILABLE = False
 
+# Import MultiSourceMatchFinder per trovare partite da API-SPORTS
+try:
+    from multi_source_match_finder import MultiSourceMatchFinder
+    MULTI_SOURCE_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"⚠️  MultiSourceMatchFinder non disponibile: {e}")
+    MULTI_SOURCE_AVAILABLE = False
+
 
 class Automation24H:
     """
@@ -116,6 +124,17 @@ class Automation24H:
         
         # Inizializza componenti
         self._init_components(telegram_token, telegram_chat_id)
+        
+        # 🆕 Inizializza MultiSourceMatchFinder per trovare partite da API-SPORTS
+        if MULTI_SOURCE_AVAILABLE:
+            try:
+                self.multi_source_finder = MultiSourceMatchFinder()
+                logger.info("✅ MultiSourceMatchFinder initialized")
+            except Exception as e:
+                logger.warning(f"⚠️  MultiSourceMatchFinder error: {e}")
+                self.multi_source_finder = None
+        else:
+            self.multi_source_finder = None
         
         logger.info("✅ Automation24H initialized")
         logger.info(f"   Min EV: {min_ev}%")
@@ -409,13 +428,31 @@ class Automation24H:
     
     def _fetch_real_matches(self) -> List[Dict]:
         """
-        Ottiene partite reali da TheOddsAPI.
+        Ottiene partite reali da multiple fonti (API-SPORTS, TheOddsAPI, ecc.).
         
-        TheOddsAPI fornisce:
-        - Partite di calcio (soccer) con quote
-        - Partite nelle prossime 24h
-        - Quote da vari bookmaker
+        🆕 PRIORITÀ: Usa MultiSourceMatchFinder (API-SPORTS) come primario.
+        TheOddsAPI come fallback se MultiSource non disponibile.
         """
+        # 🆕 NUOVO: Usa MultiSourceMatchFinder come primario (API-SPORTS)
+        if self.multi_source_finder:
+            try:
+                logger.info("🔍 Usando sistema multi-fonte per trovare partite (TheOddsAPI + API-SPORTS + Football-Data.org)...")
+                matches = self.multi_source_finder.find_all_matches(
+                    days_ahead=1,
+                    include_minor_leagues=True,
+                    include_live=True
+                )
+                
+                if matches:
+                    logger.info(f"✅ Trovate {len(matches)} partite da sistema multi-fonte")
+                    self.api_usage_today += 1  # Conta chiamata API
+                    return matches
+                else:
+                    logger.info("ℹ️  Nessuna partita trovata da sistema multi-fonte")
+            except Exception as e:
+                logger.warning(f"⚠️  Errore sistema multi-fonte: {e}, fallback a TheOddsAPI")
+        
+        # Fallback a TheOddsAPI se MultiSource non disponibile o fallisce
         import os
         import requests
         from datetime import datetime, timedelta
