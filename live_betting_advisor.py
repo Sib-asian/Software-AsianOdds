@@ -1427,8 +1427,13 @@ class LiveBettingAdvisor:
             shots_on_target_home = live_data.get('shots_on_target_home', 0)
             
             # Win To Nil se una squadra vince e l'altra non ha tiri in porta
+            # 🆕 FIX: Non generare se è già 2-0 avanzato (banale)
             if minute >= 50 and minute <= 80:
-                if score_home > 0 and score_away == 0 and shots_on_target_away == 0:
+                goal_diff = score_home - score_away
+                # Non generare se è già 2-0 o più avanzato (banale)
+                if goal_diff >= 2 and minute >= 70:
+                    logger.debug(f"⏭️  Win to nil home non generato: risultato {score_home}-{score_away} al {minute}' (troppo avanzato, banale)")
+                elif score_home > 0 and score_away == 0 and shots_on_target_away == 0:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'win_to_nil_home') if self.ai_pipeline else 0
                     confidence = 70 + ai_boost
                     
@@ -3151,6 +3156,7 @@ class LiveBettingAdvisor:
         score_home = live_data.get('score_home', 0)
         score_away = live_data.get('score_away', 0)
         minute = live_data.get('minute', 0)
+        total_goals = score_home + score_away  # 🆕 FIX: Definisci total_goals all'inizio
         
         for opp in opportunities:
             market = opp.market.lower()
@@ -3408,6 +3414,18 @@ class LiveBettingAdvisor:
                 # Se una squadra non ha ancora segnato e siamo oltre 85', BTTS è quasi impossibile
                 if score_home == 0 or score_away == 0:
                     logger.debug(f"⏭️  Saltata opportunità illogica: BTTS Yes quando è {score_home}-{score_away} al {minute}' - troppo tardi")
+                    continue
+            
+            # 🆕 FILTRO 22B: BTTS Yes quando entrambe hanno già segnato - BANALE!
+            if 'btts_yes' in market and score_home > 0 and score_away > 0:
+                logger.debug(f"⏭️  Saltata opportunità banale: BTTS Yes quando entrambe hanno già segnato ({score_home}-{score_away})")
+                continue
+            
+            # 🆕 FILTRO 22C: BTTS No quando una squadra ha già segnato e siamo avanzati - ILLOGICO!
+            if 'btts_no' in market and minute >= 80:
+                # Se una squadra ha già segnato e siamo oltre 80', BTTS No è già perso
+                if score_home > 0 or score_away > 0:
+                    logger.debug(f"⏭️  Saltata opportunità illogica: BTTS No quando è {score_home}-{score_away} al {minute}' - già perso")
                     continue
             
             # 🆕 FILTRO 23: Exact Score quando suggerisce lo score attuale - BANALE!
