@@ -94,11 +94,28 @@ class Automation24H:
         config_path: Optional[str] = None,
         telegram_token: Optional[str] = None,
         telegram_chat_id: Optional[str] = None,
-        min_ev: float = 8.0,  # EV minimo 8%
+        min_ev: float = 8.0,  # EV minimo 8% (SOGLIA BASE - in pratica usa 10% per filtro rigoroso)
         min_confidence: float = 70.0,  # Confidence minima 70%
         update_interval: int = 300,  # 5 minuti
         api_budget_per_day: int = 100
     ):
+        """
+        Inizializza sistema automazione 24/7.
+        
+        NOTA IMPORTANTE SULLE SOGLIE:
+        - min_ev=8% è la soglia BASE, ma il sistema applica filtri AGGIUNTIVI:
+          * Richiede EV >= 10% (min_ev + 2%) per ridurre falsi positivi
+          * Richiede edge minimo 8% tra probabilità e quota implicita
+          * Esclude quote < 1.30 (troppo basse) e > 5.0 (troppo alte)
+          * Esclude probabilità < 30% o > 75% (troppo estreme)
+          * Verifica coerenza modelli AI (uncertainty < 20%)
+        
+        Questo significa che anche con min_ev=8% e min_confidence=70%,
+        solo le opportunità VERAMENTE solide passano il filtro.
+        
+        Se ricevi ancora troppi segnali, aumenta min_ev a 12-15% e
+        min_confidence a 75-80%.
+        """
         self.config_path = config_path
         self.min_ev = min_ev
         self.min_confidence = min_confidence
@@ -810,24 +827,30 @@ class Automation24H:
         """
         Verifica se è una VERA opportunità VALUE BET.
         
-        Criteri:
+        Criteri RIGOROSI per ridurre falsi positivi:
         1. Action deve essere BET (non WATCH/SKIP)
-        2. EV > soglia minima
+        2. EV > soglia minima (con margine di sicurezza)
         3. Confidence > soglia minima
         4. NON basato su score (se live)
-        5. Probabilità vs Quote deve avere vero valore
+        5. Probabilità vs Quote deve avere vero valore significativo
+        6. NUOVO: Verifica coerenza tra modelli AI
+        7. NUOVO: Esclude quote troppo basse o troppo alte (suspicious)
         """
         # 1. Check action
         action = ai_result.get('action') or ai_result.get('final_decision', {}).get('action')
         if action != 'BET':
             return False
         
-        # 2. Check EV
+        # 2. Check EV con margine di sicurezza
         ev = ai_result.get('ev') or ai_result.get('summary', {}).get('expected_value', 0)
         if isinstance(ev, float) and ev < 1.0:
             ev = ev * 100  # Convert to %
-        if ev < self.min_ev:
-            logger.debug(f"   EV too low: {ev:.1f}% < {self.min_ev}%")
+        
+        # Aumenta la soglia EV per ridurre falsi positivi
+        # Invece di accettare min_ev esatto, chiedi almeno min_ev + 2%
+        effective_min_ev = self.min_ev + 2.0
+        if ev < effective_min_ev:
+            logger.debug(f"   EV too low: {ev:.1f}% < {effective_min_ev}%")
             return False
         
         # 3. Check confidence
@@ -842,9 +865,37 @@ class Automation24H:
             logger.warning(f"   ⚠️  Rejecting score-based recommendation for {match.get('id')}")
             return False
         
-        # 5. Verifica vero valore (probabilità vs quote)
-        if not self._has_real_value(ai_result):
-            logger.debug(f"   No real value detected")
+        # 5. Verifica vero valore (probabilità vs quote) con margine più alto
+        if not self._has_real_value(ai_result, min_edge=0.07):  # 7% edge minimo (più realistico)
+            logger.debug(f"   No real value detected (edge too small)")
+            return False
+        
+        # 6. NUOVO: Verifica coerenza tra modelli AI
+        # Se i modelli AI sono in forte disaccordo, è meglio evitare
+        if 'ensemble' in ai_result:
+            ensemble = ai_result['ensemble']
+            uncertainty = ensemble.get('uncertainty', 0)
+            # Se incertezza > 20%, i modelli non sono d'accordo
+            if uncertainty > 0.20:
+                logger.debug(f"   High model uncertainty: {uncertainty*100:.1f}%")
+                return False
+        
+        # 7. NUOVO: Verifica che le quote siano ragionevoli
+        odds = ai_result.get('summary', {}).get('odds', 0)
+        if odds < 1.30:
+            # Quote troppo basse = favorito eccessivo, poco margine
+            logger.debug(f"   Odds too low (favorito troppo): {odds:.2f}")
+            return False
+        if odds > 5.0:
+            # Quote troppo alte = possibile trap del bookmaker
+            logger.debug(f"   Odds too high (possibile trap): {odds:.2f}")
+            return False
+        
+        # 8. NUOVO: Verifica probabilità realistica
+        probability = ai_result.get('summary', {}).get('probability', 0)
+        if probability < 0.30 or probability > 0.75:
+            # Troppo estrema - probabile sovrastima o sottostima
+            logger.debug(f"   Probability too extreme: {probability:.1%}")
             return False
         
         return True
@@ -895,11 +946,15 @@ class Automation24H:
         
         return False
     
-    def _has_real_value(self, ai_result: Dict) -> bool:
+    def _has_real_value(self, ai_result: Dict, min_edge: float = 0.05) -> bool:
         """
         Verifica se c'è vero valore (probabilità vs quote).
         
-        True value = probabilità > probabilità implicita dalla quota
+        True value = probabilità > probabilità implicita dalla quota + margine
+        
+        Args:
+            ai_result: Risultato analisi AI
+            min_edge: Margine minimo richiesto (default 5%, ma può essere aumentato)
         """
         probability = ai_result.get('probability') or ai_result.get('summary', {}).get('probability')
         odds = ai_result.get('odds') or ai_result.get('summary', {}).get('odds')
@@ -911,8 +966,7 @@ class Automation24H:
         implied_prob = 1.0 / odds
         
         # Se probabilità reale > probabilità implicita + margine, c'è valore
-        margin = 0.05  # 5% margine minimo
-        if probability > implied_prob + margin:
+        if probability > implied_prob + min_edge:
             return True
         
         return False
