@@ -119,7 +119,7 @@ class Automation24H:
         telegram_chat_id: Optional[str] = None,
         min_ev: float = 8.0,  # EV minimo 8%
         min_confidence: float = 70.0,  # Confidence minima 70%
-        update_interval: int = 300,  # 5 minuti
+        update_interval: int = 780,  # 13 minuti (780 secondi)
         api_budget_per_day: int = 100,
         max_notifications_per_cycle: int = 2  # Max notifiche per ciclo (seleziona le migliori)
     ):
@@ -874,6 +874,11 @@ class Automation24H:
             
             # 🔧 LOG: Verifica live_data prima di passarlo a analyze_live_match
             logger.info(f"📊 live_data passato a analyze_live_match per {match_id}:")
+            logger.info(f"   shots_on_target_home: {live_data.get('shots_on_target_home', 0)}, shots_on_target_away: {live_data.get('shots_on_target_away', 0)}")
+            logger.info(f"   shots_home: {live_data.get('shots_home', 0)}, shots_away: {live_data.get('shots_away', 0)}")
+            logger.info(f"   xg_home: {live_data.get('xg_home', 0.0)}, xg_away: {live_data.get('xg_away', 0.0)}")
+            logger.info(f"   match.get('home_shots_on_target'): {match.get('home_shots_on_target', 'NOT_FOUND')}")
+            logger.info(f"   match.get('away_shots_on_target'): {match.get('away_shots_on_target', 'NOT_FOUND')}")
             logger.info(f"   score_home: {live_data.get('score_home', 'N/A')}")
             logger.info(f"   score_away: {live_data.get('score_away', 'N/A')}")
             logger.info(f"   minute: {live_data.get('minute', 'N/A')}")
@@ -1120,8 +1125,46 @@ class Automation24H:
         # Ordina per score decrescente
         scored_opportunities.sort(key=lambda x: x['score'], reverse=True)
         
-        # Prendi solo le migliori
-        best = scored_opportunities[:self.max_notifications_per_cycle]
+        # 🔧 DIVERSIFICAZIONE: Assicura varietà di mercati invece di sempre gli stessi
+        best = []
+        seen_markets = set()
+        seen_matches = set()
+        
+        # Prima passata: prendi le migliori opportunità con diversificazione
+        for item in scored_opportunities:
+            if len(best) >= self.max_notifications_per_cycle:
+                break
+            
+            live_opp = item['opportunity'].get('live_opportunity')
+            if not live_opp:
+                continue
+            
+            match_id = item['opportunity'].get('match_id', 'unknown')
+            market = getattr(live_opp, 'market', 'unknown')
+            
+            # Estrai tipo di mercato (es. "over_2.5" -> "over", "clean_sheet" -> "clean_sheet")
+            market_type = market.split('_')[0] if '_' in market else market
+            
+            # Se abbiamo già un mercato di questo tipo, salta se non è molto migliore
+            if market_type in seen_markets and len(best) >= 1:
+                # Prendi solo se ha score significativamente migliore (>10% differenza)
+                if best and item['score'] > best[-1]['score'] * 1.1:
+                    best.append(item)
+                    seen_markets.add(market_type)
+                    seen_matches.add(match_id)
+            # Se è un nuovo tipo di mercato o nuova partita, aggiungilo
+            elif market_type not in seen_markets or match_id not in seen_matches:
+                best.append(item)
+                seen_markets.add(market_type)
+                seen_matches.add(match_id)
+        
+        # Se non abbiamo ancora raggiunto il limite, aggiungi le migliori rimanenti
+        if len(best) < self.max_notifications_per_cycle:
+            for item in scored_opportunities:
+                if len(best) >= self.max_notifications_per_cycle:
+                    break
+                if item not in best:
+                    best.append(item)
         
         logger.info(f"   🏆 Migliori opportunità selezionate:")
         for i, item in enumerate(best, 1):

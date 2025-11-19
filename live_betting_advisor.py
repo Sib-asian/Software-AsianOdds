@@ -69,6 +69,10 @@ class LiveBettingAdvisor:
         self.ai_pipeline = ai_pipeline
         self.min_ev = max(0.0, min_ev)  # Soglia EV (default: 9% per partite live)
         self.max_opportunities_per_match = max(1, int(max_opportunities_per_match))
+        # 🔧 Filtro quote troppo basse: escludi opportunità con quote < 1.20 (troppo basse, poco interessanti)
+        self.min_odds = 1.20  # Quota minima accettabile (1.20 = -500 in odds americane)
+        # Per quote molto basse (< 1.25), richiedi EV più alto
+        self.min_ev_low_odds = 15.0  # EV minimo per quote < 1.25
         self.market_translations = {
             'clean_sheet_home': 'Porta inviolata (Casa)',
             'clean_sheet_away': 'Porta inviolata (Trasferta)',
@@ -216,8 +220,10 @@ class LiveBettingAdvisor:
         # Tornei femminili importanti da includere (eccezioni al filtro generale)
         self.allowed_women_tournaments = [
             'Champions League', 'UEFA Champions League', 'Champions League Women',
+            "Women's Champions League", "UEFA Women's Champions League", "Women Champions League",
             'Europa Cup', 'Europa League', 'Europa Cup Women', 'Europa League Women',
-            'UEFA Women', 'Women Champions', 'Women Europa'
+            "Women's Europa League", "UEFA Women's Europa League",
+            'UEFA Women', 'Women Champions', 'Women Europa', 'Femminile Champions'
         ]
         
         # NOTA: Campionati minori (Serie D, Division 3, ecc.) sono ACCETTATI se hanno dati live sufficienti
@@ -284,7 +290,7 @@ class LiveBettingAdvisor:
         try:
             # 🆕 FILTRO PRELIMINARE: Escludi partite giovanili/minori/inutili
             if not self._is_match_worth_analyzing(match_data):
-                logger.debug(f"⏭️  Partita saltata (giovanile/minore): {match_data.get('home', '?')} vs {match_data.get('away', '?')}")
+                logger.info(f"⏭️  Partita saltata (giovanile/minore/inferiore): {match_data.get('home', '?')} vs {match_data.get('away', '?')} - {match_data.get('league', '?')}")
                 return opportunities
             
             # Se non abbiamo dati live, prova a ottenerli
@@ -539,11 +545,37 @@ class LiveBettingAdvisor:
                 goal_diff = score_home - score_away
                 if goal_diff >= 2:
                     logger.debug(f"⏭️  Ribaltone saltato: differenza troppo alta ({score_home}-{score_away}, diff: {goal_diff} gol)")
+                    # 🔧 SUGGERISCI MERCATI ALTERNATIVI
+                    alternatives = self._suggest_alternative_markets('ribaltone', match_data, live_data, 'differenza gol troppo alta')
+                    for alt in alternatives:
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation=f'ribaltone_alt_{alt["market"]}', market=alt['market'],
+                            recommendation=f"Punta {alt['market'].replace('_', ' ').title()} (alternativa Ribaltone)",
+                            reasoning=f"🔄 Alternativa suggerita: {alt.get('reason', 'Mercato sempre disponibile')}",
+                            confidence=alt['confidence'], odds=alt['odds'], stake_suggestion=2.0,
+                            alternative_markets=None,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
                     return opportunities
                 
                 # 🔧 FILTRO: Se siamo oltre 60-70 minuti con 1-0, il ribaltone diventa molto difficile
                 if minute >= 65 and goal_diff == 1:
                     logger.debug(f"⏭️  Ribaltone saltato: troppo tardi per ribaltone realistico ({score_home}-{score_away} al {minute}')")
+                    # 🔧 SUGGERISCI MERCATI ALTERNATIVI
+                    alternatives = self._suggest_alternative_markets('ribaltone', match_data, live_data, 'minuto avanzato')
+                    for alt in alternatives:
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation=f'ribaltone_alt_{alt["market"]}', market=alt['market'],
+                            recommendation=f"Punta {alt['market'].replace('_', ' ').title()} (alternativa Ribaltone)",
+                            reasoning=f"🔄 Alternativa suggerita: {alt.get('reason', 'Mercato sempre disponibile')}",
+                            confidence=alt['confidence'], odds=alt['odds'], stake_suggestion=2.0,
+                            alternative_markets=None,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
                     return opportunities
                 
                 # 🔧 FILTRO: Verifica statistiche che supportino il ribaltone
@@ -558,6 +590,19 @@ class LiveBettingAdvisor:
                     # La favorita deve avere più tiri o almeno tiri simili
                     if shots_away < shots_home * 0.7:  # Se ha meno del 70% dei tiri dell'avversario
                         logger.debug(f"⏭️  Ribaltone saltato: favorita non domina (tiri: {shots_away} vs {shots_home})")
+                        # 🔧 SUGGERISCI MERCATI ALTERNATIVI
+                        alternatives = self._suggest_alternative_markets('ribaltone', match_data, live_data, 'favorita non domina')
+                        for alt in alternatives:
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation=f'ribaltone_alt_{alt["market"]}', market=alt['market'],
+                                recommendation=f"Punta {alt['market'].replace('_', ' ').title()} (alternativa Ribaltone)",
+                                reasoning=f"🔄 Alternativa suggerita: {alt.get('reason', 'Mercato sempre disponibile')}",
+                                confidence=alt['confidence'], odds=alt['odds'], stake_suggestion=2.0,
+                                alternative_markets=None,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
                         return opportunities
                 
                 # Favorita in trasferta perde
@@ -1567,6 +1612,20 @@ class LiveBettingAdvisor:
                 # Non generare se è già 2-0 o più avanzato (banale)
                 if goal_diff >= 2 and minute >= 70:
                     logger.debug(f"⏭️  Win to nil home non generato: risultato {score_home}-{score_away} al {minute}' (troppo avanzato, banale)")
+                    # 🔧 SUGGERISCI MERCATI ALTERNATIVI
+                    alternatives = self._suggest_alternative_markets('win_to_nil_home', match_data, live_data, 'minuto avanzato')
+                    if alternatives:
+                        for alt in alternatives:
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation=f'win_to_nil_alt_{alt["market"]}', market=alt['market'],
+                                recommendation=f"Punta {alt['market'].replace('_', ' ').title()} (alternativa Win to Nil)",
+                                reasoning=f"🔄 Alternativa suggerita: {alt.get('reason', 'Mercato sempre disponibile')}",
+                                confidence=alt['confidence'], odds=alt['odds'], stake_suggestion=2.0,
+                                alternative_markets=None,  # Non annidare alternative
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
                 elif score_home > 0 and score_away == 0 and shots_on_target_away == 0:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'win_to_nil_home') if self.ai_pipeline else 0
                     confidence = 70 + ai_boost
@@ -2087,7 +2146,21 @@ class LiveBettingAdvisor:
             if score_home > 0 and score_away == 0 and minute >= 50:
                 if minute > max_clean_sheet_minute:
                     # 🔧 ALTERNATIVA: Se minuto avanzato, suggerisci mercati alternativi SEMPRE DISPONIBILI
-                    # Under 1.5, Match Winner, Double Chance sono sempre quotati
+                    # Usa la nuova funzione intelligente per suggerire alternative
+                    alternatives = self._suggest_alternative_markets('clean_sheet_home', match_data, live_data, 'minuto avanzato')
+                    for alt in alternatives:
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation=f'clean_sheet_alt_{alt["market"]}', market=alt['market'],
+                            recommendation=f"Punta {alt['market'].replace('_', ' ').title()} (alternativa Clean Sheet)",
+                            reasoning=f"🔄 Alternativa suggerita: {alt.get('reason', 'Mercato sempre disponibile')}",
+                            confidence=alt['confidence'], odds=alt['odds'], stake_suggestion=2.5,
+                            alternative_markets=None,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
+                    
+                    # Mantieni anche la logica originale per retrocompatibilità
                     if minute <= 80 and goal_diff == 1 and shots_on_target_away <= 1:
                         # ALTERNATIVA 1: Under 1.5 (sempre disponibile, simile al Clean Sheet)
                         # Se è 1-0, l'Under 1.5 significa che non ci saranno altri gol
@@ -3974,20 +4047,246 @@ class LiveBettingAdvisor:
         """
         🆕 Filtra solo opportunità con Expected Value MOLTO negativo (non tutte quelle negative).
         Permette segnali con alta confidence anche se EV leggermente negativo.
+        🔧 AGGIUNTO: Filtro per quote troppo basse (< 1.20) e EV più alto per quote basse.
         """
         filtered = []
         for opp in opportunities:
+            # 🔧 Filtro 1: Quote troppo basse (< 1.20) - escludi completamente
+            if opp.odds < self.min_odds:
+                logger.info(
+                    f"⏭️  Saltata opportunità: quota troppo bassa {opp.odds:.2f} < {self.min_odds:.2f} per {opp.market} (confidence: {opp.confidence:.1f}%)"
+                )
+                continue
+            
+            # 🔧 Filtro 2: Per quote basse (< 1.25), richiedi EV più alto
+            min_ev_required = self.min_ev
+            if opp.odds < 1.25:
+                min_ev_required = self.min_ev_low_odds
+                logger.debug(
+                    f"📊 Opportunità con quota bassa {opp.odds:.2f}: richiesto EV minimo {min_ev_required:.1f}% (invece di {self.min_ev:.1f}%)"
+                )
+            
             ev = getattr(opp, 'ev', None)
             if ev is None:
                 ev = self._calculate_expected_value(opp)
                 opp.ev = ev
-            if ev < self.min_ev:
+            
+            if ev < min_ev_required:
                 logger.info(
-                    f"⏭️  Saltata opportunità: valore atteso {ev:.1f}% < soglia {self.min_ev:.1f}% per {opp.market} (confidence: {opp.confidence:.1f}%, odds: {opp.odds:.2f})"
+                    f"⏭️  Saltata opportunità: valore atteso {ev:.1f}% < soglia {min_ev_required:.1f}% per {opp.market} (confidence: {opp.confidence:.1f}%, odds: {opp.odds:.2f})"
                 )
                 continue
             filtered.append(opp)
         return filtered
+    
+    def _suggest_alternative_markets(
+        self,
+        original_market: str,
+        match_data: Dict[str, Any],
+        live_data: Dict[str, Any],
+        reason: str = ""
+    ) -> List[Dict[str, Any]]:
+        """
+        🔧 NUOVO: Suggerisce mercati alternativi intelligenti basati sul contesto.
+        
+        Args:
+            original_market: Mercato originale che non è più valido
+            match_data: Dati della partita
+            live_data: Dati live della partita
+            reason: Motivo per cui il mercato originale non è valido (es. "minuto avanzato", "troppo ovvio")
+        
+        Returns:
+            Lista di mercati alternativi con confidence e odds stimati
+        """
+        alternatives = []
+        minute = live_data.get('minute', 0)
+        score_home = live_data.get('score_home', 0)
+        score_away = live_data.get('score_away', 0)
+        goal_diff = abs(score_home - score_away)
+        total_goals = score_home + score_away
+        
+        # Clean Sheet → Under 1.5 / Match Winner / Double Chance
+        if 'clean_sheet' in original_market:
+            if minute >= 65 and minute <= 85:
+                # Under 1.5 (sempre disponibile, simile al Clean Sheet)
+                if total_goals <= 1:
+                    alt_confidence = 75 + (minute - 65) * 0.3
+                    alt_confidence = min(90, alt_confidence)
+                    alternatives.append({
+                        'market': 'under_1.5',
+                        'confidence': alt_confidence,
+                        'odds': 1.6,
+                        'reason': 'Sempre quotato, simile al Clean Sheet'
+                    })
+                
+                # Match Winner (sempre disponibile)
+                if goal_diff >= 1 and minute >= 70:
+                    winner_market = '1x2_home' if score_home > score_away else '1x2_away'
+                    alt_confidence = 78 + (minute - 70) * 0.2
+                    alt_confidence = min(88, alt_confidence)
+                    alternatives.append({
+                        'market': winner_market,
+                        'confidence': alt_confidence,
+                        'odds': 1.5,
+                        'reason': 'Vittoria sempre quotata'
+                    })
+                
+                # Double Chance (più sicuro)
+                if goal_diff == 1 and minute >= 75:
+                    dc_market = '1x' if score_home > score_away else 'x2'
+                    alternatives.append({
+                        'market': dc_market,
+                        'confidence': 85,
+                        'odds': 1.3,
+                        'reason': 'Doppia chance più sicura'
+                    })
+        
+        # Win to Nil → Under 1.5 / Match Winner
+        elif 'win_to_nil' in original_market:
+            if minute >= 70:
+                # Under 1.5
+                if total_goals <= 1:
+                    alternatives.append({
+                        'market': 'under_1.5',
+                        'confidence': 80 + (minute - 70) * 0.2,
+                        'odds': 1.6,
+                        'reason': 'Sempre quotato, simile al Win to Nil'
+                    })
+                
+                # Match Winner
+                if goal_diff >= 1:
+                    winner_market = '1x2_home' if score_home > score_away else '1x2_away'
+                    alternatives.append({
+                        'market': winner_market,
+                        'confidence': 82 + (minute - 70) * 0.15,
+                        'odds': 1.4,
+                        'reason': 'Vittoria sempre quotata'
+                    })
+        
+        # Next Goal / Team to Score Next → Over/Under
+        elif 'next_goal' in original_market or 'team_to_score_next' in original_market:
+            if minute >= 75:
+                # Over basato sui gol attuali
+                if total_goals == 0:
+                    alternatives.append({
+                        'market': 'over_0.5',
+                        'confidence': 85,
+                        'odds': 1.2,
+                        'reason': 'Almeno un gol probabile'
+                    })
+                elif total_goals == 1:
+                    alternatives.append({
+                        'market': 'over_1.5',
+                        'confidence': 70,
+                        'odds': 1.5,
+                        'reason': 'Secondo gol possibile'
+                    })
+                elif total_goals == 2:
+                    alternatives.append({
+                        'market': 'over_2.5',
+                        'confidence': 65,
+                        'odds': 1.8,
+                        'reason': 'Terzo gol possibile'
+                    })
+        
+        # BTTS → Over/Under
+        elif 'btts' in original_market.lower():
+            if total_goals >= 1:
+                # Se una squadra ha già segnato, suggerisci Over
+                if total_goals == 1:
+                    alternatives.append({
+                        'market': 'over_1.5',
+                        'confidence': 75,
+                        'odds': 1.4,
+                        'reason': 'Secondo gol probabile'
+                    })
+                elif total_goals == 2:
+                    alternatives.append({
+                        'market': 'over_2.5',
+                        'confidence': 70,
+                        'odds': 1.6,
+                        'reason': 'Terzo gol probabile'
+                    })
+            else:
+                # Se 0-0, suggerisci Under
+                if minute >= 60:
+                    alternatives.append({
+                        'market': 'under_0.5',
+                        'confidence': 60 + (minute - 60) * 0.5,
+                        'odds': 2.0,
+                        'reason': 'Partita chiusa, pochi gol'
+                    })
+        
+        # Exact Score → Over/Under / Match Winner
+        elif 'exact_score' in original_market:
+            # Over basato sul punteggio attuale
+            if total_goals == 0:
+                alternatives.append({
+                    'market': 'over_0.5',
+                    'confidence': 80,
+                    'odds': 1.3,
+                    'reason': 'Almeno un gol probabile'
+                })
+            elif total_goals == 1:
+                alternatives.append({
+                    'market': 'over_1.5',
+                    'confidence': 70,
+                    'odds': 1.5,
+                    'reason': 'Secondo gol possibile'
+                })
+            
+            # Match Winner se partita decisa
+            if goal_diff >= 2 and minute >= 70:
+                winner_market = '1x2_home' if score_home > score_away else '1x2_away'
+                alternatives.append({
+                    'market': winner_market,
+                    'confidence': 85,
+                    'odds': 1.3,
+                    'reason': 'Vittoria probabile'
+                })
+        
+        # Ribaltone / Comeback → Over/Under / Match Winner
+        elif 'ribaltone' in original_market or 'comeback' in original_market:
+            # Over (partita aperta)
+            if total_goals >= 2:
+                alternatives.append({
+                    'market': 'over_2.5',
+                    'confidence': 70,
+                    'odds': 1.6,
+                    'reason': 'Partita aperta, altri gol possibili'
+                })
+            
+            # Match Winner se partita si sta chiudendo
+            if goal_diff >= 2 and minute >= 75:
+                winner_market = '1x2_home' if score_home > score_away else '1x2_away'
+                alternatives.append({
+                    'market': winner_market,
+                    'confidence': 88,
+                    'odds': 1.2,
+                    'reason': 'Vittoria probabile'
+                })
+        
+        # Double Chance → Match Winner (più aggressivo)
+        elif '1x' in original_market or 'x2' in original_market or '12' in original_market:
+            if goal_diff >= 1 and minute >= 75:
+                winner_market = '1x2_home' if score_home > score_away else '1x2_away'
+                alternatives.append({
+                    'market': winner_market,
+                    'confidence': 80,
+                    'odds': 1.4,
+                    'reason': 'Vittoria più aggressiva'
+                })
+        
+        # Applica AI boost se disponibile
+        if self.ai_pipeline and alternatives:
+            for alt in alternatives:
+                try:
+                    ai_boost = self._get_ai_market_confidence(match_data, live_data, alt['market'])
+                    alt['confidence'] = min(95, alt['confidence'] + min(5, ai_boost))
+                except:
+                    pass
+        
+        return alternatives
     
     def _calculate_combined_score(self, opportunity: LiveBettingOpportunity) -> float:
         """
@@ -4426,17 +4725,25 @@ class LiveBettingAdvisor:
             away = match_data.get('away', '').upper()
             league = match_data.get('league', '').upper()
             
+            # 🔧 LOG: Verifica cosa viene controllato
+            logger.debug(f"🔍 Verifica partita: {home} vs {away} - {league}")
+            
             # 🆕 Verifica se è un torneo femminile importante (Champions League, Europa Cup)
             # Se sì, ACCETTA anche se contiene "Women", "Feminine", "Femminile"
             is_important_women_tournament = False
+            league_upper = league.upper()
             for tournament in self.allowed_women_tournaments:
-                if tournament.upper() in league:
+                tournament_upper = tournament.upper()
+                # Controlla se il torneo è presente nel nome del campionato
+                if tournament_upper in league_upper:
                     is_important_women_tournament = True
+                    logger.info(f"✅ Torneo femminile importante rilevato: {league} (match: {tournament})")
                     break
             
             # Controlla se è una partita giovanile/riserva (ESCLUDI)
             for keyword in self.excluded_leagues_keywords:
                 if keyword.upper() in home or keyword.upper() in away or keyword.upper() in league:
+                    logger.info(f"⏭️  Partita esclusa: giovanile/riserva ({league}) - keyword: {keyword}")
                     return False  # Escludi solo giovanili/riserve
             
             # 🆕 Se è un torneo femminile importante, ACCETTA anche se contiene "Women", "Feminine", "Femminile"
@@ -4455,14 +4762,28 @@ class LiveBettingAdvisor:
             # 🔧 RESTRIZIONI CAMPIONATI INFERIORI
             country = str(match_data.get('country', '')).upper()
             
-            # Germania: escludi campionati sotto Liga 3
+            # 🔧 FIX: Controlla PRIMA direttamente il nome del campionato (più affidabile)
+            # Germania: escludi campionati sotto Liga 3 (controlla direttamente il nome)
+            for excluded_league in self.excluded_germany_leagues:
+                if excluded_league.upper() in league:
+                    logger.info(f"⏭️  Partita esclusa: campionato tedesco inferiore ({league}) - keyword: {excluded_league}")
+                    return False
+            
+            # Controllo aggiuntivo per paese (se disponibile)
             if 'GERMANY' in country or 'GERMANIA' in country or 'DEUTSCHLAND' in country or 'BUNDESLIGA' in league:
                 for excluded_league in self.excluded_germany_leagues:
                     if excluded_league.upper() in league:
                         logger.debug(f"⏭️  Partita esclusa: campionato tedesco inferiore ({league})")
                         return False
             
+            # 🔧 FIX: Controlla PRIMA direttamente il nome del campionato
             # Brasile: escludi Serie C, D e campionati U20
+            for excluded_league in self.excluded_brazil_leagues:
+                if excluded_league.upper() in league:
+                    logger.info(f"⏭️  Partita esclusa: campionato brasiliano inferiore ({league}) - keyword: {excluded_league}")
+                    return False
+            
+            # Controllo aggiuntivo per paese (se disponibile)
             if 'BRAZIL' in country or 'BRASIL' in country or 'BRASILE' in country or 'BRAZILEIRO' in league:
                 for excluded_league in self.excluded_brazil_leagues:
                     if excluded_league.upper() in league:
@@ -4473,21 +4794,42 @@ class LiveBettingAdvisor:
                     logger.debug(f"⏭️  Partita esclusa: campionato brasiliano U20 ({league})")
                     return False
             
+            # 🔧 FIX: Controlla PRIMA direttamente il nome del campionato
             # Inghilterra: escludi League Two e sotto
+            for excluded_league in self.excluded_england_leagues:
+                if excluded_league.upper() in league:
+                    logger.info(f"⏭️  Partita esclusa: campionato inglese inferiore ({league}) - keyword: {excluded_league}")
+                    return False
+            
+            # Controllo aggiuntivo per paese (se disponibile)
             if 'ENGLAND' in country or 'INGHILTERRA' in country or 'PREMIER LEAGUE' in league or 'CHAMPIONSHIP' in league:
                 for excluded_league in self.excluded_england_leagues:
                     if excluded_league.upper() in league:
                         logger.debug(f"⏭️  Partita esclusa: campionato inglese inferiore ({league})")
                         return False
             
+            # 🔧 FIX: Controlla PRIMA direttamente il nome del campionato
             # Spagna: escludi Segunda División B e sotto
+            for excluded_league in self.excluded_spain_leagues:
+                if excluded_league.upper() in league:
+                    logger.info(f"⏭️  Partita esclusa: campionato spagnolo inferiore ({league}) - keyword: {excluded_league}")
+                    return False
+            
+            # Controllo aggiuntivo per paese (se disponibile)
             if 'SPAIN' in country or 'SPAGNA' in country or 'LA LIGA' in league or 'SEGUNDA DIVISIÓN' in league:
                 for excluded_league in self.excluded_spain_leagues:
                     if excluded_league.upper() in league:
                         logger.debug(f"⏭️  Partita esclusa: campionato spagnolo inferiore ({league})")
                         return False
             
+            # 🔧 FIX: Controlla PRIMA direttamente il nome del campionato
             # Italia: escludi Serie C e sotto
+            for excluded_league in self.excluded_italy_leagues:
+                if excluded_league.upper() in league:
+                    logger.info(f"⏭️  Partita esclusa: campionato italiano inferiore ({league}) - keyword: {excluded_league}")
+                    return False
+            
+            # Controllo aggiuntivo per paese (se disponibile)
             if 'ITALY' in country or 'ITALIA' in country or 'SERIE A' in league or 'SERIE B' in league:
                 for excluded_league in self.excluded_italy_leagues:
                     if excluded_league.upper() in league:
@@ -4669,196 +5011,58 @@ class LiveBettingAdvisor:
             'next_goal_after_75': '⏰'
         }.get(opportunity.situation, '🎯')
         
-        # Header con urgenza
-        message = f"{urgency_emoji} {situation_emoji} OPPORTUNITÀ LIVE BETTING!\n"
-        message += f"{'='*50}\n\n"
-        
-        # Info partita
-        message += f"⚽ {home} vs {away}\n"
-        if league:
-            message += f"🏆 {league}\n"
-        
-        # Statistiche partita se disponibili - MIGLIORATO: mostra solo dati disponibili
-        if opportunity.match_stats:
-            stats = opportunity.match_stats
-            message += f"\n📊 STATISTICHE LIVE:\n"
-            message += f"   Score: {stats.get('score_home', 0)}-{stats.get('score_away', 0)} al {stats.get('minute', 0)}'\n"
-            
-            # Possesso (solo se disponibile e non default 50%)
-            possession_home = stats.get('possession_home', 0)
-            if possession_home and possession_home != 50:
-                possession_away = stats.get('possession_away', 100 - possession_home)
-                message += f"   Possesso: {possession_home:.0f}% - {possession_away:.0f}%\n"
-            
-            # Tiri (solo se disponibili e > 0)
-            shots_home = stats.get('shots_home', 0)
-            shots_away = stats.get('shots_away', 0)
-            shots_on_target_home = stats.get('shots_on_target_home', 0)
-            shots_on_target_away = stats.get('shots_on_target_away', 0)
-            
-            if shots_home > 0 or shots_away > 0:
-                # Mostra tiri in porta solo se disponibili
-                if shots_on_target_home > 0 or shots_on_target_away > 0:
-                    message += f"   Tiri: {shots_home} ({shots_on_target_home} in porta) vs {shots_away} ({shots_on_target_away} in porta)\n"
-                else:
-                    message += f"   Tiri: {shots_home} vs {shots_away}\n"
-            
-            # Corner (solo se disponibili e > 0)
-            corners_home = stats.get('corners_home', 0)
-            corners_away = stats.get('corners_away', 0)
-            if corners_home > 0 or corners_away > 0:
-                message += f"   Corner: {corners_home} - {corners_away}\n"
-            
-            # Cartellini (solo se disponibili e > 0)
-            yellow_home = stats.get('yellow_cards_home', 0)
-            yellow_away = stats.get('yellow_cards_away', 0)
-            red_home = stats.get('red_cards_home', 0)
-            red_away = stats.get('red_cards_away', 0)
-            if yellow_home > 0 or yellow_away > 0 or red_home > 0 or red_away > 0:
-                message += f"   Cartellini: 🟨{yellow_home}/{yellow_away}"
-                if red_home > 0 or red_away > 0:
-                    message += f" 🔴{red_home}/{red_away}"
-                    message += "\n"
-        
-        message += f"\n{'='*50}\n"
-        message += f"💡 RACCOMANDAZIONE PRINCIPALE:\n"
-        message += f"{'='*50}\n"
-        message += f"   {opportunity.recommendation}\n\n"
-        
-        # Mercato e dettagli
+        # 🔧 FORMATO COMPATTO: Header breve
         market_display = self._translate_market_name(opportunity.market)
-        message += f"📊 MERCATO: {market_display}\n"
-        message += f"📈 CONFIDENCE: {opportunity.confidence:.0f}% "
+        message = f"{urgency_emoji} {situation_emoji} {market_display}\n"
+        message += f"{'─'*40}\n"
         
-        # Barra confidence visiva
-        confidence_bars = int(opportunity.confidence / 10)
-        message += "[" + "█" * confidence_bars + "░" * (10 - confidence_bars) + "]\n"
-        
-        message += f"💰 QUOTA: {opportunity.odds:.2f}\n"
-        message += f"💵 STAKE SUGGERITO: {opportunity.stake_suggestion}% bankroll\n"
-        if hasattr(opportunity, 'ev') and opportunity.ev is not None:
-            message += f"📈 VALORE ATTESO: {opportunity.ev:+.1f}%\n"
-        
-        # Traduci urgenza in italiano
-        urgency_it = {
-            'URGENT': 'URGENTE',
-            'HIGH': 'ALTA',
-            'NORMAL': 'NORMALE',
-            'LOW': 'BASSA'
-        }.get(opportunity.urgency_level, opportunity.urgency_level)
-        message += f"⏱️ URGENZA: {urgency_it}\n\n"
-        
-        # Mercati alternativi
-        if opportunity.alternative_markets:
-            message += f"🔄 MERCATI ALTERNATIVI CONSIGLIATI:\n"
-            message += f"{'-'*50}\n"
-            for i, alt_market in enumerate(opportunity.alternative_markets, 1):
-                market_name = alt_market.get('market', '').upper().replace('_', ' ')
-                alt_confidence = alt_market.get('confidence', 0)
-                alt_odds = alt_market.get('odds', 0)
-                message += f"   {i}. {market_name}\n"
-                message += f"      Confidence: {alt_confidence:.0f}% | Quota: {alt_odds:.2f}\n"
-            message += "\n"
-        
-        # 🆕 FIX: Ragionamento dettagliato - sempre presente con statistiche chiave
-        message += f"🧠 ANALISI DETTAGLIATA:\n"
-        message += f"{'-'*50}\n"
-        
-        # Usa reasoning base se disponibile
-        base_reasoning = opportunity.reasoning if opportunity.reasoning and len(opportunity.reasoning.strip()) >= 30 else ""
-        
-        # Aggiungi statistiche chiave al reasoning
+        # Info partita compatta
         stats = opportunity.match_stats if opportunity.match_stats else {}
-        key_stats = opportunity.key_stats if hasattr(opportunity, 'key_stats') and opportunity.key_stats else {}
-        
-        if base_reasoning:
-            message += f"{base_reasoning}\n\n"
-        
-        # 🆕 FIX: Statistiche chiave estratte per l'analisi - sempre mostrate per verificare correttezza
-        stats_shown = False
-        if key_stats and len(key_stats) > 0:
-            message += "📊 STATISTICHE ESTRATTE PER L'ANALISI:\n"
-            message += f"{'-'*50}\n"
-            for label, value in key_stats.items():
-                if value is not None and str(value).strip():
-                    message += f"• {label}: {value}\n"
-                    stats_shown = True
-            if stats_shown:
-                message += "\n"
-        
-        # Se key_stats è vuoto o insufficiente, mostra statistiche generali da match_stats
-        if not stats_shown and stats:
-            message += "📊 STATISTICHE ESTRATTE PER L'ANALISI:\n"
-            message += f"{'-'*50}\n"
-            # Mostra sempre score e minuto
-            message += f"• Score: {stats.get('score_home', 0)}-{stats.get('score_away', 0)}\n"
-            message += f"• Minuto: {stats.get('minute', 0)}'\n"
-            
-            # Possesso
-            if stats.get('possession_home') and stats.get('possession_home') != 50:
-                possession_away = stats.get('possession_away', 100 - stats.get('possession_home', 50))
-                message += f"• Possesso: {stats.get('possession_home', 0):.0f}% - {possession_away:.0f}%\n"
-                stats_shown = True
-            
-            # Tiri
-            shots_home = stats.get('shots_home', 0)
-            shots_away = stats.get('shots_away', 0)
-            shots_on_target_home = stats.get('shots_on_target_home', 0)
-            shots_on_target_away = stats.get('shots_on_target_away', 0)
-            if shots_home > 0 or shots_away > 0:
-                if shots_on_target_home > 0 or shots_on_target_away > 0:
-                    message += f"• Tiri totali: {shots_home + shots_away} ({shots_on_target_home + shots_on_target_away} in porta)\n"
-                    message += f"  - Casa: {shots_home} ({shots_on_target_home} in porta)\n"
-                    message += f"  - Trasferta: {shots_away} ({shots_on_target_away} in porta)\n"
-                else:
-                    message += f"• Tiri totali: {shots_home + shots_away}\n"
-                    message += f"  - Casa: {shots_home}, Trasferta: {shots_away}\n"
-                stats_shown = True
-            
-            # Calcola tiri/minuto se disponibile
-            minute = stats.get('minute', 0)
-            if minute > 0 and (shots_home > 0 or shots_away > 0):
-                shots_per_minute = (shots_home + shots_away) / minute
-                message += f"• Tiri/minuto: {shots_per_minute:.2f}\n"
-            
-            # Corner
-            corners_home = stats.get('corners_home', 0)
-            corners_away = stats.get('corners_away', 0)
-            if corners_home > 0 or corners_away > 0:
-                message += f"• Corner: {corners_home + corners_away} totali ({corners_home}-{corners_away})\n"
-            
-            # Cartellini
-            yellow_home = stats.get('yellow_cards_home', 0)
-            yellow_away = stats.get('yellow_cards_away', 0)
-            red_home = stats.get('red_cards_home', 0)
-            red_away = stats.get('red_cards_away', 0)
-            if yellow_home > 0 or yellow_away > 0 or red_home > 0 or red_away > 0:
-                message += f"• Cartellini: {yellow_home + yellow_away} gialli, {red_home + red_away} rossi\n"
-            
-            message += "\n"
-        
-        # Aggiungi analisi contestuale
         score_home = stats.get('score_home', 0)
         score_away = stats.get('score_away', 0)
         minute = stats.get('minute', 0)
-        total_goals = score_home + score_away
-        goal_diff = abs(score_home - score_away)
-        ev_value = getattr(opportunity, 'ev', 0) if hasattr(opportunity, 'ev') else 0
+        message += f"⚽ {home} vs {away} | {score_home}-{score_away} ({minute}')\n"
+        if league:
+            message += f"🏆 {league}\n"
         
-        if not base_reasoning or len(base_reasoning.strip()) < 50:
-            message += f"• Analisi basata su score attuale ({score_home}-{score_away}) al {minute}' minuto\n"
-            message += f"• Mercato {market_display} con confidence {opportunity.confidence:.0f}% e valore atteso {ev_value:+.1f}%\n"
-            if total_goals > 0:
-                message += f"• Partita con {total_goals} gol totali e differenza di {goal_diff} gol\n"
-            if minute >= 60:
-                message += f"• Fase avanzata della partita ({minute}'), situazione più definita\n"
-            else:
-                message += f"• Fase iniziale ({minute}'), ancora tempo per sviluppi\n"
+        # Mercato principale - formato compatto
+        message += f"\n💡 {opportunity.recommendation}\n"
+        message += f"📊 {market_display} | {opportunity.confidence:.0f}% | {opportunity.odds:.2f}"
+        if hasattr(opportunity, 'ev') and opportunity.ev is not None:
+            ev_sign = "+" if opportunity.ev >= 0 else ""
+            message += f" | EV: {ev_sign}{opportunity.ev:.1f}%\n"
+        else:
+            message += "\n"
         
+        # Statistiche essenziali (solo se rilevanti)
+        if stats:
+            shots_on_target_home = stats.get('shots_on_target_home', 0)
+            shots_on_target_away = stats.get('shots_on_target_away', 0)
+            if shots_on_target_home > 0 or shots_on_target_away > 0:
+                message += f"🎯 Tiri in porta: {shots_on_target_home}-{shots_on_target_away}"
+                xg_home = stats.get('xg_home', 0)
+                xg_away = stats.get('xg_away', 0)
+                if xg_home > 0 or xg_away > 0:
+                    message += f" | xG: {xg_home:.2f}-{xg_away:.2f}\n"
+                else:
+                    message += "\n"
         
-        # Footer
-        message += f"{'='*50}\n"
-        message += f"⏰ {datetime.now().strftime('%H:%M:%S')} | Minuto: {opportunity.match_stats.get('minute', 'N/A') if opportunity.match_stats else 'N/A'}'"
+        # Mercati alternativi - formato compatto (una riga)
+        if opportunity.alternative_markets:
+            message += f"\n🔄 Alternative: "
+            alt_list = []
+            for alt_market in opportunity.alternative_markets[:3]:  # Max 3 alternative
+                market_name = self._translate_market_name(alt_market.get('market', ''))
+                alt_odds = alt_market.get('odds', 0)
+                alt_list.append(f"{market_name} ({alt_odds:.2f})")
+            message += " | ".join(alt_list) + "\n"
+        
+        # Ragionamento breve (solo se essenziale)
+        if opportunity.reasoning and len(opportunity.reasoning.strip()) > 0:
+            # Prendi solo le prime 2 righe del reasoning
+            reasoning_lines = opportunity.reasoning.strip().split('\n')[:2]
+            if reasoning_lines:
+                message += f"\n💭 {' '.join(reasoning_lines)}\n"
         
         return message
 
