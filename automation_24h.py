@@ -128,7 +128,7 @@ class Automation24H:
         telegram_chat_id: Optional[str] = None,
         min_ev: float = 8.0,  # EV minimo 8%
         min_confidence: float = 70.0,  # Confidence minima 70%
-        update_interval: int = 780,  # 13 minuti (780 secondi)
+        update_interval: int = 300,  # 5 minuti (300 secondi)
         api_budget_per_day: int = 100,
         max_notifications_per_cycle: int = 2  # Max notifiche per ciclo (seleziona le migliori)
     ):
@@ -145,6 +145,8 @@ class Automation24H:
         self.notified_opportunities: Set[str] = set()  # Evita duplicati
         self.notified_opportunities_timestamps: Dict[str, datetime] = {}  # Timestamp delle notifiche
         self.notified_matches_timestamps: Dict[str, datetime] = {}  # Timestamp per partita (max 1 notifica ogni 30 min per partita)
+        # 🔧 OPZIONE 4: Tracking mercati già suggeriti per partita (per penalizzazione/bonus)
+        self.match_markets_history: Dict[str, List[Dict[str, Any]]] = {}  # match_id -> lista di {market, timestamp}
         self.api_usage_today = 0
         self.last_api_reset = datetime.now().date()
         self.last_daily_report = datetime.now().date()
@@ -858,11 +860,9 @@ class Automation24H:
                 except:
                     home_score, away_score = 0, 0
             
-            # 🔧 LOG per debug: verifica score passato a LiveBettingAdvisor
-            logger.info(f"📊 Analizzando LIVE {match.get('home', '?')} vs {match.get('away', '?')}: {home_score}-{away_score} (min {match.get('minute', 0)})")
-            
-            # Estrai minute
+            # Estrai minute e status
             minute = match.get('minute', 0)
+            match_status = match.get('status', 'LIVE')
             if minute is None:
                 minute = 0
             elif isinstance(minute, str):
@@ -876,6 +876,14 @@ class Automation24H:
                 except:
                     minute = 0
             
+            # 🔧 FILTRO: Escludi partite finite prima di analizzarle
+            if minute > 90 or (match_status and match_status.upper() in ["FINISHED", "FT", "AET", "PEN"]):
+                logger.debug(f"⏭️  Partita saltata (finita): {match.get('home', '?')} vs {match.get('away', '?')} - minuto {minute}, status {match_status}")
+                return []
+            
+            # 🔧 LOG per debug: verifica score passato a LiveBettingAdvisor
+            logger.info(f"📊 Analizzando LIVE {match.get('home', '?')} vs {match.get('away', '?')}: {home_score}-{away_score} (min {minute})")
+            
             live_data = {
                 'minute': minute,
                 # 🔧 FIX: Usa score_home/score_away (non home_score/away_score) per compatibilità con LiveBettingAdvisor
@@ -883,7 +891,7 @@ class Automation24H:
                 'score_away': away_score,
                 'home_score': home_score,  # Mantieni anche per retrocompatibilità
                 'away_score': away_score,  # Mantieni anche per retrocompatibilità
-                'status': match.get('status', 'LIVE'),
+                'status': match_status,  # Usa match_status già estratto sopra
                 # Statistiche live (se disponibili) - usa nomi corretti per LiveBettingAdvisor
                 'shots_on_target_home': match.get('home_shots_on_target', 0),
                 'shots_on_target_away': match.get('away_shots_on_target', 0),
@@ -893,6 +901,9 @@ class Automation24H:
                 'xg_away': match.get('away_xg', 0.0),
                 'dangerous_attacks_home': match.get('home_dangerous_attacks', 0),
                 'dangerous_attacks_away': match.get('away_dangerous_attacks', 0),
+                # 🔧 NUOVO: Possesso (se disponibile)
+                'possession_home': match.get('home_possession'),
+                'possession_away': match.get('away_possession'),
                 # Mantieni anche nomi alternativi per retrocompatibilità
                 'home_shots_on_target': match.get('home_shots_on_target', 0),
                 'away_shots_on_target': match.get('away_shots_on_target', 0),
@@ -902,6 +913,17 @@ class Automation24H:
                 'away_xg': match.get('away_xg', 0.0),
                 'home_dangerous_attacks': match.get('home_dangerous_attacks', 0),
                 'away_dangerous_attacks': match.get('away_dangerous_attacks', 0),
+                'home_possession': match.get('home_possession'),
+                'away_possession': match.get('away_possession'),
+                # 🔧 NUOVO: Statistiche aggiuntive (priorità 1-4)
+                'corners_home': match.get('home_corners', 0),
+                'corners_away': match.get('away_corners', 0),
+                'yellow_cards_home': match.get('home_yellow_cards', 0),
+                'yellow_cards_away': match.get('away_yellow_cards', 0),
+                'red_cards_home': match.get('home_red_cards', 0),
+                'red_cards_away': match.get('away_red_cards', 0),
+                'fouls_home': match.get('home_fouls', 0),
+                'fouls_away': match.get('away_fouls', 0),
             }
             
             # 🔧 LOG: Verifica live_data prima di passarlo a analyze_live_match
@@ -1130,14 +1152,42 @@ class Automation24H:
         if not opportunities:
             return []
         
-        # Calcola score per ogni opportunità
-        scored_opportunities = []
+        # 🔧 NUOVO: Filtra PRIMA le opportunità senza statistiche live
+        # Questo assicura che selezioniamo solo tra opportunità che possono essere inviate
+        valid_opportunities = []
         for opp_dict in opportunities:
             live_opp = opp_dict.get('live_opportunity')
             if not live_opp:
                 continue
             
-            # Calcola combined score (EV * 0.4 + Confidence * 0.6)
+            # Salta opportunità senza statistiche live significative
+            if hasattr(live_opp, "has_live_stats") and not live_opp.has_live_stats:
+                continue
+            
+            valid_opportunities.append(opp_dict)
+        
+        # Se non ci sono opportunità valide, ritorna lista vuota
+        if not valid_opportunities:
+            logger.info(f"⚠️  Nessuna opportunità valida con statistiche live tra {len(opportunities)} totali")
+            return []
+        
+        # 🔧 OPZIONE 4: Identifica mercati alternativi (Over/Under, BTTS, Clean Sheet, ecc.)
+        # Nota: usiamo solo il primo tipo (es. "over" per "over_2.5", "btts" per "btts_yes")
+        alternative_market_types = {'over', 'under', 'btts', 'clean', 'exact', 'goal', 'odd', 'ht'}
+        
+        # Calcola score per ogni opportunità VALIDA con penalizzazioni/bonus
+        scored_opportunities = []
+        now = datetime.now()
+        for opp_dict in valid_opportunities:
+            live_opp = opp_dict.get('live_opportunity')
+            if not live_opp:
+                continue
+            
+            match_id = opp_dict.get('match_id', 'unknown')
+            market = getattr(live_opp, 'market', 'unknown')
+            market_type = market.split('_')[0] if '_' in market else market
+            
+            # Calcola combined score base (EV * 0.4 + Confidence * 0.6)
             ev = getattr(live_opp, 'ev', 0.0)
             confidence = getattr(live_opp, 'confidence', 0.0)
             
@@ -1147,11 +1197,44 @@ class Automation24H:
             
             combined_score = (ev_normalized * 0.4) + (confidence_normalized * 0.6)
             
+            # 🔧 OPZIONE 4: Applica penalizzazioni e bonus
+            score_modifier = 1.0
+            modifier_reason = ""
+            
+            # Se questa partita ha già ricevuto notifiche, applica penalizzazioni/bonus
+            if match_id in self.match_markets_history:
+                # Verifica se questo mercato è stato già suggerito per questa partita
+                market_already_used = False
+                for market_entry in self.match_markets_history[match_id]:
+                    if market_entry['market'] == market:
+                        market_already_used = True
+                        break
+                
+                if market_already_used:
+                    # 🔧 OPZIONE 4: Penalizza mercato già usato del 30%
+                    score_modifier *= 0.7
+                    modifier_reason = " (penalizzato -30%: mercato già suggerito)"
+                elif market_type in alternative_market_types:
+                    # 🔧 OPZIONE 4: Bonus +20% per mercati alternativi se partita già notificata
+                    score_modifier *= 1.2
+                    modifier_reason = " (bonus +20%: mercato alternativo)"
+            
+            combined_score *= score_modifier
+            
+            minute = 0
+            stats = getattr(live_opp, 'match_stats', {}) or {}
+            if isinstance(stats, dict):
+                minute = stats.get('minute', 0) or 0
+            
             scored_opportunities.append({
                 'opportunity': opp_dict,
                 'score': combined_score,
                 'confidence': confidence,
-                'ev': ev
+                'ev': ev,
+                'minute': minute,
+                'is_first_half': minute > 0 and minute < 45,
+                'score_modifier': score_modifier,
+                'modifier_reason': modifier_reason
             })
         
         # Ordina per score decrescente
@@ -1161,6 +1244,22 @@ class Automation24H:
         best = []
         seen_markets = set()
         seen_matches = set()
+        selected_ids = set()
+        
+        # Priorità: se disponibile almeno un'opportunità nel primo tempo, includila
+        first_half_candidates = [item for item in scored_opportunities if item.get('is_first_half')]
+        if first_half_candidates:
+            first_half_candidates.sort(key=lambda x: x['score'], reverse=True)
+            top_first_half = first_half_candidates[0]
+            live_opp = top_first_half['opportunity'].get('live_opportunity')
+            if live_opp:
+                match_id = top_first_half['opportunity'].get('match_id', 'unknown')
+                market = getattr(live_opp, 'market', 'unknown')
+                market_type = market.split('_')[0] if '_' in market else market
+                seen_markets.add(market_type)
+                seen_matches.add(match_id)
+                best.append(top_first_half)
+                selected_ids.add(id(top_first_half['opportunity']))
         
         # Prima passata: prendi le migliori opportunità con diversificazione
         for item in scored_opportunities:
@@ -1168,7 +1267,7 @@ class Automation24H:
                 break
             
             live_opp = item['opportunity'].get('live_opportunity')
-            if not live_opp:
+            if not live_opp or id(item['opportunity']) in selected_ids:
                 continue
             
             match_id = item['opportunity'].get('match_id', 'unknown')
@@ -1177,6 +1276,10 @@ class Automation24H:
             # Estrai tipo di mercato (es. "over_2.5" -> "over", "clean_sheet" -> "clean_sheet")
             market_type = market.split('_')[0] if '_' in market else market
             
+            # 🚫 NUOVO: Blocca se questa partita è già stata selezionata (max 1 notifica per partita per ciclo)
+            if match_id in seen_matches:
+                continue  # Salta questa opportunità, partita già selezionata
+            
             # Se abbiamo già un mercato di questo tipo, salta se non è molto migliore
             if market_type in seen_markets and len(best) >= 1:
                 # Prendi solo se ha score significativamente migliore (>10% differenza)
@@ -1184,26 +1287,36 @@ class Automation24H:
                     best.append(item)
                     seen_markets.add(market_type)
                     seen_matches.add(match_id)
-            # Se è un nuovo tipo di mercato o nuova partita, aggiungilo
-            elif market_type not in seen_markets or match_id not in seen_matches:
+                    selected_ids.add(id(item['opportunity']))
+            # Se è un nuovo tipo di mercato, aggiungilo
+            elif market_type not in seen_markets:
                 best.append(item)
                 seen_markets.add(market_type)
                 seen_matches.add(match_id)
         
         # Se non abbiamo ancora raggiunto il limite, aggiungi le migliori rimanenti
+        # 🚫 NUOVO: Escludi partite già selezionate
         if len(best) < self.max_notifications_per_cycle:
             for item in scored_opportunities:
                 if len(best) >= self.max_notifications_per_cycle:
                     break
-                if item not in best:
-                    best.append(item)
+                if id(item['opportunity']) in selected_ids:
+                    continue
+                # 🚫 NUOVO: Salta se questa partita è già stata selezionata
+                match_id = item['opportunity'].get('match_id', 'unknown')
+                if match_id in seen_matches:
+                    continue
+                best.append(item)
+                selected_ids.add(id(item['opportunity']))
+                seen_matches.add(match_id)
         
         logger.info(f"   🏆 Migliori opportunità selezionate:")
         for i, item in enumerate(best, 1):
             live_opp = item['opportunity'].get('live_opportunity')
             match_id = item['opportunity'].get('match_id', 'unknown')
             market = getattr(live_opp, 'market', 'unknown')
-            logger.info(f"      {i}. {match_id} - {market}: score={item['score']:.3f}, conf={item['confidence']:.1f}%, ev={item['ev']:.1f}%")
+            modifier_info = item.get('modifier_reason', '')
+            logger.info(f"      {i}. {match_id} - {market}: score={item['score']:.3f}, conf={item['confidence']:.1f}%, ev={item['ev']:.1f}%{modifier_info}")
         
         return [item['opportunity'] for item in best]
     
@@ -1214,27 +1327,48 @@ class Automation24H:
         
         if not live_opp:
             return
+
+        # 🔍 Assicura che ci siano statistiche live reali prima di notificare
+        # NOTA: Questo controllo è ridondante ora che filtriamo in _select_best_opportunities,
+        # ma lo manteniamo come sicurezza aggiuntiva
+        if hasattr(live_opp, "has_live_stats") and not live_opp.has_live_stats:
+            logger.debug(f"⏭️  Opportunità {match_id}/{live_opp.market} saltata: nessuna statistica live disponibile (dovrebbe essere già filtrata)")
+            return
         
         # 🔧 MIGLIORATO: Evita duplicati usando match_id + market + minuto
         # Questo evita di inviare la stessa opportunità più volte anche se rilevata in cicli diversi
         market = live_opp.market
         minute = 0
+        status = None
         if live_opp.match_stats:
             minute = live_opp.match_stats.get('minute', 0)
+            status = live_opp.match_stats.get('status', None)
         
-        # 🔧 NUOVO: Controlla se questa partita ha già ricevuto una notifica di recente (max 1 ogni 15 min per partita)
+        # 🔧 NUOVO: Filtra partite finite - NON inviare notifiche per partite già terminate
+        if minute > 90 or (status and status.upper() in ["FINISHED", "FT", "AET", "PEN"]):
+            logger.debug(f"⏭️  Partita {match_id} saltata: partita finita (minuto: {minute}, status: {status})")
+            return
+        
+        # 🔧 FIX: Definisci 'now' prima di usarlo
         now = datetime.now()
+        
+        # 🆕 NUOVO: Blocca partita per 15 minuti (max 1 notifica ogni 15 minuti per partita)
         if match_id in self.notified_matches_timestamps:
             last_match_notification = self.notified_matches_timestamps[match_id]
             time_diff_match = (now - last_match_notification).total_seconds() / 60  # Differenza in minuti
-            
-            # Se questa partita ha già ricevuto una notifica meno di 15 minuti fa, salta
-            if time_diff_match < 15:
-                logger.debug(f"   Match {match_id} already notified {time_diff_match:.1f} minutes ago (max 1 per partita ogni 15 min), skipping")
+            if time_diff_match < 15:  # Blocco 15 minuti per partita
+                logger.info(f"⏭️  Match {match_id} already notified {time_diff_match:.1f} minutes ago (blocked for 15 min), skipping")
                 return
-            else:
-                # Rimuovi dalla cache se è passato più di 15 minuti (per liberare memoria)
-                del self.notified_matches_timestamps[match_id]
+        
+        # 🔧 OPZIONE 4: Blocca stesso mercato per partita per 30 minuti (invece di bloccare tutta la partita)
+        # Controlla se questo mercato è stato già suggerito per questa partita di recente
+        if match_id in self.match_markets_history:
+            for market_entry in self.match_markets_history[match_id]:
+                if market_entry['market'] == market:
+                    time_diff_market = (now - market_entry['timestamp']).total_seconds() / 60
+                    if time_diff_market < 30:  # 🔧 OPZIONE 4: Blocco 30 minuti per stesso mercato
+                        logger.info(f"⏭️  Market {market} for match {match_id} already notified {time_diff_market:.1f} minutes ago (blocked for 30 min), skipping")
+                        return
         
         # Crea chiave più specifica: match_id + market + minuto (arrotondato a multipli di 5 per evitare duplicati per minuti simili)
         minute_rounded = (minute // 5) * 5  # Arrotonda a multipli di 5 (es. 23' -> 20', 27' -> 25')
@@ -1247,7 +1381,7 @@ class Automation24H:
             
             # Se è stata notificata meno di 15 minuti fa, salta
             if time_diff < 15:
-                logger.debug(f"   Live opportunity {opp_key} already notified {time_diff:.1f} minutes ago, skipping")
+                logger.info(f"⏭️  Live opportunity {opp_key} already notified {time_diff:.1f} minutes ago, skipping")
                 return
             else:
                 # Rimuovi dalla cache se è passato più di 15 minuti (per liberare memoria)
@@ -1256,7 +1390,7 @@ class Automation24H:
         
         # Controllo classico (backup)
         if opp_key in self.notified_opportunities:
-            logger.debug(f"   Live opportunity {opp_key} already notified, skipping")
+            logger.info(f"⏭️  Live opportunity {opp_key} already notified, skipping")
             return
         
         # Notifica Telegram
@@ -1297,6 +1431,19 @@ class Automation24H:
                         self.notified_opportunities_timestamps[opp_key] = datetime.now()
                         self.notified_matches_timestamps[match_id] = datetime.now()  # Traccia anche per partita
                         
+                        # 🔧 OPZIONE 4: Traccia mercato suggerito per questa partita
+                        if match_id not in self.match_markets_history:
+                            self.match_markets_history[match_id] = []
+                        self.match_markets_history[match_id].append({
+                            'market': market,
+                            'timestamp': datetime.now()
+                        })
+                        # Pulisci entry vecchie (> 60 minuti) per liberare memoria
+                        self.match_markets_history[match_id] = [
+                            entry for entry in self.match_markets_history[match_id]
+                            if (datetime.now() - entry['timestamp']).total_seconds() / 60 < 60
+                        ]
+                        
                         # 🔧 NUOVO: Salva opportunità nel performance tracker
                         if hasattr(self, 'live_performance_tracker') and self.live_performance_tracker:
                             try:
@@ -1324,6 +1471,7 @@ class Automation24H:
             self.notified_opportunities.clear()  # Reset notifiche
             self.notified_opportunities_timestamps.clear()  # Reset timestamp
             self.notified_matches_timestamps.clear()  # Reset timestamp partite
+            self.match_markets_history.clear()  # 🔧 OPZIONE 4: Reset storico mercati
             logger.info("🔄 New day: API usage reset")
             
             # Invia report giornaliero (se disponibile)
