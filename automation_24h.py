@@ -1672,18 +1672,28 @@ class Automation24H:
                 
                 # Valida qualità segnale (solo se Signal Quality Gate è disponibile)
                 if self.signal_quality_gate:
-                    should_send, quality_score = self.signal_quality_gate.should_send_signal(
-                        opportunity=opportunity,
-                        match_data=match_data,
-                        live_data=live_data
-                    )
+                    try:
+                        should_send, quality_score = self.signal_quality_gate.should_send_signal(
+                            opportunity=opportunity,
+                            match_data=match_data,
+                            live_data=live_data
+                        )
+                        # Verifica che quality_score sia valido
+                        if quality_score is not None and not hasattr(quality_score, 'total_score'):
+                            logger.error(f"❌ quality_score non ha attributo total_score: {type(quality_score)}")
+                            quality_score = None
+                    except Exception as e:
+                        logger.error(f"❌ Errore durante should_send_signal: {e}", exc_info=True)
+                        should_send = True
+                        quality_score = None
                 else:
                     # Se Signal Quality Gate non disponibile, approva sempre
                     should_send = True
                     quality_score = None
                 
-                # Salva in cache
-                self.quality_score_cache[opp_key] = quality_score
+                # Salva in cache solo se quality_score è valido
+                if quality_score is not None:
+                    self.quality_score_cache[opp_key] = quality_score
                 
             except ImportError as e:
                 logger.warning(f"⚠️  Signal Quality Gate non disponibile: {e}")
@@ -1694,15 +1704,28 @@ class Automation24H:
                 # In caso di errore, continua comunque (non bloccare tutto il sistema)
         
         # Valida Quality Score se disponibile
-        if quality_score:
+        if quality_score is not None:
+            # Verifica che quality_score abbia gli attributi necessari
+            if not hasattr(quality_score, 'total_score'):
+                logger.error(f"❌ quality_score non ha attributo total_score: {type(quality_score)}")
+                quality_score = None
+            elif not hasattr(quality_score, 'is_approved'):
+                logger.error(f"❌ quality_score non ha attributo is_approved: {type(quality_score)}")
+                quality_score = None
+        
+        if quality_score is not None:
             should_send = quality_score.is_approved
             if not should_send:
-                logger.info(
-                    f"⏭️  Segnale {match_id}/{market} BLOCCATO da Signal Quality Gate "
-                    f"(score: {quality_score.total_score:.1f}/100, min: 75.0)"
-                )
-                if quality_score.reasons:
-                    logger.info(f"   Motivi blocco: {', '.join(quality_score.reasons)}")
+                try:
+                    score_value = quality_score.total_score if hasattr(quality_score, 'total_score') else 0.0
+                    logger.info(
+                        f"⏭️  Segnale {match_id}/{market} BLOCCATO da Signal Quality Gate "
+                        f"(score: {score_value:.1f}/100, min: 75.0)"
+                    )
+                    if hasattr(quality_score, 'reasons') and quality_score.reasons:
+                        logger.info(f"   Motivi blocco: {', '.join(quality_score.reasons)}")
+                except Exception as e:
+                    logger.error(f"❌ Errore durante logging blocco segnale: {e}", exc_info=True)
                 return
         
         # 🔧 MIGLIORATO: Evita duplicati usando match_id + market + minuto
