@@ -157,8 +157,9 @@ class Automation24H:
         self.notified_opportunities: Set[str] = set()  # Evita duplicati
         self.notified_opportunities_timestamps: Dict[str, datetime] = {}  # Timestamp delle notifiche
         self.notified_matches_timestamps: Dict[str, datetime] = {}  # Timestamp per partita (max 1 notifica ogni 30 min per partita)
-        self.last_global_notification_time: Optional[datetime] = None  # 🆕 Limite globale 10 minuti tra qualsiasi notifica
+        self.last_global_notification_time: Optional[datetime] = None  # 🆕 Limite globale 10 minuti tra BETTING notifications
         self._load_last_global_notification_time()  # 🆕 Carica timestamp persistente
+        self.last_system_notification_time: Optional[datetime] = None  # 🎯 NUOVO: Limite 1 ora tra SYSTEM notifications (stats, reports, progress)
         # 🔧 OPZIONE 4: Tracking mercati già suggeriti per partita (per penalizzazione/bonus)
         self.match_markets_history: Dict[str, List[Dict[str, Any]]] = {}  # match_id -> lista di {market, timestamp}
         # 🆕 Cache Quality Score per evitare doppio calcolo
@@ -525,8 +526,12 @@ class Automation24H:
                                 status = "✅" if was_approved else "❌"
                                 message += f"{status} {match_id[:20]}/{market} (QS: {quality_score:.1f})\n"
                         
-                        self.notifier._send_message(message, parse_mode="HTML")
-                        logger.info(f"📊 Notifica statistiche database: {total_signals} totali ({approved_count} approvati, {blocked_count} bloccati)")
+                        # 🎯 Usa metodo sistema con limite 1 ora
+                        sent = self._send_system_notification(message, parse_mode="HTML", min_interval_minutes=60)
+                        if sent:
+                            logger.info(f"📊 Notifica statistiche database: {total_signals} totali ({approved_count} approvati, {blocked_count} bloccati)")
+                        else:
+                            logger.debug(f"📊 Notifica statistiche database bloccata da limite temporale")
                     except Exception as e:
                         logger.debug(f"⚠️  Errore notifica statistiche database: {e}")
                     
@@ -571,10 +576,14 @@ class Automation24H:
                             filled = int(progress_percent / 100 * bar_length)
                             bar = "█" * filled + "░" * (bar_length - filled)
                             message += f"<code>{bar}</code> {progress_percent:.0f}%"
-                            
-                            self.notifier._send_message(message, parse_mode="HTML")
-                            self.last_progress_notification[threshold_key] = datetime.now()
-                            logger.info(f"📊 Notifica progresso: {signals_with_results}/{min_samples} ({progress_percent:.1f}%)")
+
+                            # 🎯 Usa metodo sistema con limite 1 ora
+                            sent = self._send_system_notification(message, parse_mode="HTML", min_interval_minutes=60)
+                            if sent:
+                                self.last_progress_notification[threshold_key] = datetime.now()
+                                logger.info(f"📊 Notifica progresso: {signals_with_results}/{min_samples} ({progress_percent:.1f}%)")
+                            else:
+                                logger.debug(f"📊 Notifica progresso bloccata da limite temporale")
                         except Exception as e:
                             logger.debug(f"⚠️  Errore notifica progresso: {e}")
             except Exception as e:
@@ -589,14 +598,15 @@ class Automation24H:
                 try:
                     logger.info("🧠 Eseguendo apprendimento automatico Signal Quality Gate...")
                     
-                    # 🆕 Notifica inizio apprendimento
+                    # 🆕 Notifica inizio apprendimento (sistema, limite 1 ora)
                     if self.notifier:
                         try:
-                            self.notifier._send_message(
+                            self._send_system_notification(
                                 "🧠 <b>IA: Apprendimento Automatico</b>\n\n"
                                 "🔄 Inizio apprendimento Signal Quality Gate...\n"
                                 "📊 Analizzando risultati segnali precedenti...",
-                                parse_mode="HTML"
+                                parse_mode="HTML",
+                                min_interval_minutes=60
                             )
                         except Exception as e:
                             logger.debug(f"⚠️  Errore notifica inizio apprendimento: {e}")
@@ -632,7 +642,8 @@ class Automation24H:
                                     f"🎯 <b>Nuova Soglia Minima:</b> {results['min_quality_score']:.1f}/100\n\n"
                                     f"📈 Sistema aggiornato e pronto!"
                                 )
-                                self.notifier._send_message(message, parse_mode="HTML")
+                                # 🎯 Usa metodo sistema con limite 1 ora
+                                self._send_system_notification(message, parse_mode="HTML", min_interval_minutes=60)
                             except Exception as e:
                                 logger.debug(f"⚠️  Errore notifica completamento apprendimento: {e}")
                         
@@ -647,14 +658,15 @@ class Automation24H:
                     elif results.get('status') == 'insufficient_samples':
                         logger.info(f"ℹ️  Campioni insufficienti per apprendere ({results['samples']} < {results['min_samples']})")
                         
-                        # 🆕 Notifica campioni insufficienti
+                        # 🆕 Notifica campioni insufficienti (sistema, limite 1 ora)
                         if self.notifier:
                             try:
-                                self.notifier._send_message(
+                                self._send_system_notification(
                                     f"⚠️ <b>IA: Apprendimento Posticipato</b>\n\n"
                                     f"📊 Campioni insufficienti: {results['samples']}/{results['min_samples']}\n"
                                     f"⏳ Attendo più dati per apprendere...",
-                                    parse_mode="HTML"
+                                    parse_mode="HTML",
+                                    min_interval_minutes=60
                                 )
                             except Exception as e:
                                 logger.debug(f"⚠️  Errore notifica campioni insufficienti: {e}")
@@ -663,14 +675,15 @@ class Automation24H:
                 except Exception as e:
                     logger.error(f"❌ Errore apprendimento automatico: {e}")
                     
-                    # 🆕 Notifica errore apprendimento
+                    # 🆕 Notifica errore apprendimento (sistema, limite 1 ora)
                     if self.notifier:
                         try:
-                            self.notifier._send_message(
+                            self._send_system_notification(
                                 f"❌ <b>IA: Errore Apprendimento</b>\n\n"
                                 f"⚠️ Errore durante l'apprendimento automatico:\n"
                                 f"<code>{str(e)[:200]}</code>",
-                                parse_mode="HTML"
+                                parse_mode="HTML",
+                                min_interval_minutes=60
                             )
                         except:
                             pass
@@ -2055,7 +2068,8 @@ class Automation24H:
                         # Se non supporta additional_content, invia normale e poi invia enhanced separatamente
                         self.automated_reports.send_daily_report()
                         if enhanced_report and self.notifier:
-                            self.notifier.send_message(f"📊 AI Insights Daily:\n{enhanced_report}")
+                            # 🎯 Usa metodo sistema con limite 1 ora
+                            self._send_system_notification(f"📊 AI Insights Daily:\n{enhanced_report}", min_interval_minutes=60)
                     self.last_daily_report = today
                     logger.info("✅ Daily report sent (with AI insights)")
                 except Exception as e:
@@ -2075,7 +2089,8 @@ class Automation24H:
                             # Se non supporta additional_content, invia normale e poi invia enhanced separatamente
                             self.automated_reports.send_weekly_report()
                             if enhanced_report and self.notifier:
-                                self.notifier.send_message(f"📊 AI Insights Weekly:\n{enhanced_report}")
+                                # 🎯 Usa metodo sistema con limite 1 ora
+                                self._send_system_notification(f"📊 AI Insights Weekly:\n{enhanced_report}", min_interval_minutes=60)
                         self.last_weekly_report = datetime.now()
                         logger.info("✅ Weekly report sent (with AI insights)")
                     except Exception as e:
@@ -2365,13 +2380,15 @@ class Automation24H:
                 if news.importance in ['HIGH', 'CRITICAL']
             ]
             
-            # Invia alert per notizie importanti
+            # Invia alert per notizie importanti (sistema, limite 1 ora)
             for news in important_news:
                 if self.notifier:
                     message = self.news_analyzer.format_news_alert(news)
                     try:
-                        self.notifier._send_message(message)
-                        logger.info(f"📰 News importante notificata: {news.title[:50]}")
+                        # 🎯 Usa metodo sistema con limite 1 ora
+                        sent = self._send_system_notification(message, min_interval_minutes=60)
+                        if sent:
+                            logger.info(f"📰 News importante notificata: {news.title[:50]}")
                     except Exception as e:
                         logger.debug(f"Failed to send news alert notification: {e}")
         except Exception as e:
@@ -2443,7 +2460,45 @@ class Automation24H:
                 logger.debug(f"💾 Timestamp globale salvato nel database: {self.last_global_notification_time}")
         except Exception as e:
             logger.debug(f"⚠️  Errore salvataggio stato persistente: {e}")
-    
+
+    def _send_system_notification(self, message: str, parse_mode: str = "HTML", min_interval_minutes: int = 60) -> bool:
+        """
+        🎯 NUOVO: Invia notifica di SISTEMA (stats, reports, progress) con controllo limite temporale.
+
+        Args:
+            message: Messaggio da inviare
+            parse_mode: Formato messaggio (default: HTML)
+            min_interval_minutes: Minuti minimi tra notifiche sistema (default: 60 = 1 ora)
+
+        Returns:
+            True se inviata, False se bloccata da limite temporale
+        """
+        if not self.notifier:
+            return False
+
+        now = datetime.now()
+
+        # Controlla limite temporale
+        if self.last_system_notification_time:
+            minutes_since = (now - self.last_system_notification_time).total_seconds() / 60
+            if minutes_since < min_interval_minutes:
+                logger.debug(
+                    f"⏭️  Notifica sistema bloccata: ultima notifica sistema {minutes_since:.1f} min fa "
+                    f"(minimo {min_interval_minutes} min richiesti)"
+                )
+                return False
+
+        # Invia notifica
+        try:
+            success = self.notifier._send_message(message, parse_mode=parse_mode)
+            if success:
+                self.last_system_notification_time = now
+                logger.info(f"✅ Notifica sistema inviata (prossima tra {min_interval_minutes} min)")
+            return success
+        except Exception as e:
+            logger.error(f"❌ Errore invio notifica sistema: {e}")
+            return False
+
     def stop(self):
         """Ferma sistema"""
         logger.info("🛑 Stopping Automation24H system...")
