@@ -44,6 +44,7 @@ class LiveBettingOpportunity:
     key_stats: Dict[str, Any] = field(default_factory=dict)  # Statistiche chiave mercato
     ev: float = 0.0  # Valore atteso (%)
     has_live_stats: bool = True  # Se false, non notifichiamo (mancano dati live)
+    live_data: Dict[str, Any] = field(default_factory=dict)  # 🎯 NUOVO: Dati live per time suitability
 
 
 class LiveBettingAdvisor:
@@ -72,6 +73,12 @@ class LiveBettingAdvisor:
         self.min_ev = max(0.0, min_ev)  # Soglia EV (default: 9% per partite live)
         self.max_opportunities_per_match = max(1, int(max_opportunities_per_match))
         self.performance_tracker = performance_tracker  # 🔧 NUOVO: Tracker per soglie dinamiche
+
+        # 🎯 NUOVO: Sistema di tracking diversità mercati
+        # Tiene traccia degli ultimi mercati raccomandati per garantire varietà
+        self.recent_markets = []  # Lista degli ultimi N mercati raccomandati
+        self.max_recent_markets = 30  # Finestra sliding: ultimi 30 consigli
+
         # 🔧 Filtro quote troppo basse: escludi opportunità con quote < 1.20 (troppo basse, poco interessanti)
         self.min_odds = 1.20  # Quota minima accettabile (1.20 = -500 in odds americane)
         # Per quote molto basse (< 1.25), richiedi EV leggermente più alto (ma non troppo!)
@@ -399,12 +406,21 @@ class LiveBettingAdvisor:
                     match_opps.append(best)
                 
                 final_opportunities.extend(match_opps)
-            
+
             opportunities = final_opportunities
-            
+
+            # 🎯 NUOVO: Aggiungi dati live a tutte le opportunità (per time suitability)
+            for opp in opportunities:
+                if not hasattr(opp, 'live_data') or not opp.live_data:
+                    opp.live_data = live_data
+
+            # 🎯 NUOVO: Aggiorna tracking diversità mercati per le opportunità selezionate
+            for opp in opportunities:
+                self._update_market_tracking(opp.market)
+
         except Exception as e:
             logger.error(f"❌ Errore analisi live match {match_id}: {e}")
-        
+
         return opportunities
     
     def _get_live_data(
@@ -4773,25 +4789,383 @@ class LiveBettingAdvisor:
                     pass
         
         return alternatives
-    
+
+    def _calculate_time_suitability(
+        self,
+        market_type: str,
+        minute: int,
+        score_home: int,
+        score_away: int,
+        live_data: Dict[str, Any]
+    ) -> float:
+        """
+        🎯 NUOVO: Calcola quanto un mercato è "adatto" nel contesto attuale della partita.
+
+        Considera:
+        - Minutaggio (primo tempo vs secondo tempo)
+        - Score attuale vs goal necessari per il mercato
+        - Tempo rimanente per raggiungere l'obiettivo
+        - Logica specifica per ogni tipo di mercato
+
+        Returns:
+            Score da 0 a 100 che indica quanto il mercato è adatto ORA
+        """
+        total_goals = score_home + score_away
+        is_first_half = minute < 45
+        time_remaining_in_half = (45 - minute) if is_first_half else (90 - minute)
+        time_remaining_total = 90 - minute
+
+        # Normalizza market type (lowercase, strip)
+        market = market_type.lower().strip()
+
+        # === MERCATI PRIMO TEMPO (HT) ===
+
+        if 'over_0.5_ht' in market or market == 'over_0.5_1h':
+            if not is_first_half:
+                return 0.0  # Impossibile: siamo nel secondo tempo
+            if total_goals >= 1:
+                return 0.0  # Già successo, non ha senso scommettere
+            # Minuto 15-30 → Perfetto (100%), più tardi → meno adatto
+            if 15 <= minute <= 25:
+                return 100.0
+            elif 26 <= minute <= 35:
+                return 90.0 - ((minute - 25) * 2)  # 90% a 26', scende a 70% a 35'
+            elif 36 <= minute <= 42:
+                return 60.0 - ((minute - 35) * 5)  # 60% a 36', scende a 25% a 42'
+            else:
+                return max(10.0, 45 - minute)  # Ultimi minuti: molto rischioso
+
+        elif 'over_1.5_ht' in market or market == 'over_1.5_1h':
+            if not is_first_half:
+                return 0.0  # Impossibile
+            goals_needed = max(0, 2 - total_goals)
+            if goals_needed == 0:
+                return 0.0  # Già fatto
+            if minute >= 40:
+                return 20.0  # Troppo poco tempo per 2 gol
+            elif minute >= 30:
+                return 45.0 if goals_needed == 1 else 25.0
+            else:
+                return 100.0 if goals_needed == 1 else 70.0
+
+        # === MERCATI OVER TOTALI ===
+
+        elif market == 'over_0.5':
+            if total_goals >= 1:
+                return 0.0  # Già fatto
+            # 0-0: più tempo hai, meglio è
+            if minute < 20:
+                return 100.0
+            elif minute < 60:
+                return 95.0
+            elif minute < 80:
+                return 85.0
+            else:
+                return 70.0  # Ancora possibile ma meno tempo
+
+        elif market == 'over_1.5':
+            goals_needed = max(0, 2 - total_goals)
+            if goals_needed == 0:
+                return 0.0  # Già fatto
+            if goals_needed == 1:
+                # Serve 1 gol: perfetto se hai tempo
+                if time_remaining_total >= 30:
+                    return 100.0
+                elif time_remaining_total >= 15:
+                    return 85.0
+                else:
+                    return 65.0
+            else:  # Servono 2 gol
+                if minute < 30:
+                    return 90.0  # Tanto tempo
+                elif minute < 50:
+                    return 70.0
+                elif minute < 70:
+                    return 45.0
+                else:
+                    return 25.0  # Poco tempo per 2 gol
+
+        elif market == 'over_2.5':
+            goals_needed = max(0, 3 - total_goals)
+            if goals_needed == 0:
+                return 0.0  # Già fatto
+            if goals_needed == 1:
+                # Serve solo 1 gol
+                if time_remaining_total >= 25:
+                    return 100.0
+                elif time_remaining_total >= 15:
+                    return 90.0
+                else:
+                    return 70.0
+            elif goals_needed == 2:
+                # Servono 2 gol
+                if minute < 40:
+                    return 85.0
+                elif minute < 60:
+                    return 65.0
+                else:
+                    return 35.0
+            else:  # Servono 3 gol (0-0)
+                if minute < 25:
+                    return 60.0
+                elif minute < 40:
+                    return 40.0
+                else:
+                    return 20.0
+
+        elif market == 'over_3.5':
+            goals_needed = max(0, 4 - total_goals)
+            if goals_needed == 0:
+                return 0.0  # Già fatto
+            if goals_needed == 1:
+                # Serve solo 1 gol (situazione ideale)
+                if time_remaining_total >= 25:
+                    return 100.0
+                elif time_remaining_total >= 15:
+                    return 95.0
+                else:
+                    return 80.0
+            elif goals_needed == 2:
+                # Servono 2 gol
+                if minute < 45:
+                    return 70.0
+                elif minute < 60:
+                    return 50.0
+                else:
+                    return 25.0
+            elif goals_needed == 3:
+                # Servono 3 gol
+                if minute < 30:
+                    return 40.0
+                elif minute < 45:
+                    return 25.0
+                else:
+                    return 15.0
+            else:  # Servono 4 gol (0-0)
+                return 15.0  # Molto ambizioso
+
+        # === MERCATI UNDER ===
+
+        elif 'under' in market:
+            # Under: più tempo passa senza gol, meglio è
+            # Ma non troppo tardi (serve margine di sicurezza)
+            if 'under_1.5' in market:
+                if total_goals >= 2:
+                    return 0.0  # Già perso
+                if minute >= 70:
+                    return 100.0  # Perfetto timing
+                elif minute >= 60:
+                    return 90.0
+                elif minute >= 50:
+                    return 75.0
+                else:
+                    return 50.0  # Troppo presto, rischioso
+            elif 'under_2.5' in market:
+                if total_goals >= 3:
+                    return 0.0
+                if minute >= 70:
+                    return 95.0
+                elif minute >= 60:
+                    return 85.0
+                else:
+                    return 65.0
+
+        # === BTTS (Both Teams To Score) ===
+
+        elif 'btts' in market:
+            home_scored = score_home > 0
+            away_scored = score_away > 0
+
+            if 'btts_yes' in market or market == 'btts':
+                if home_scored and away_scored:
+                    return 0.0  # Già fatto
+
+                teams_need_to_score = (0 if home_scored else 1) + (0 if away_scored else 1)
+
+                if teams_need_to_score == 1:
+                    # Una squadra deve ancora segnare
+                    if time_remaining_total >= 30:
+                        return 95.0
+                    elif time_remaining_total >= 20:
+                        return 85.0
+                    elif time_remaining_total >= 10:
+                        return 70.0
+                    else:
+                        return 50.0
+                else:  # Entrambe devono segnare (0-0)
+                    if minute < 30:
+                        return 85.0
+                    elif minute < 50:
+                        return 70.0
+                    elif minute < 65:
+                        return 50.0
+                    else:
+                        return 30.0
+
+            elif 'btts_no' in market:
+                if home_scored and away_scored:
+                    return 0.0  # Già perso
+                # Più tempo passa senza che entrambe segnino, meglio è
+                if minute >= 70:
+                    return 90.0
+                elif minute >= 60:
+                    return 75.0
+                else:
+                    return 55.0
+
+        # === MERCATI SPECIALI ===
+
+        elif 'next_goal' in market or 'team_to_score_next' in market:
+            # Mercati "prossimo gol": sempre rilevanti se c'è tempo
+            if time_remaining_total >= 20:
+                return 90.0
+            elif time_remaining_total >= 10:
+                return 75.0
+            else:
+                return 60.0
+
+        elif 'clean_sheet' in market:
+            # Porta inviolata: meglio se tardi nel match
+            if minute >= 70:
+                return 95.0
+            elif minute >= 60:
+                return 80.0
+            else:
+                return 60.0
+
+        # === DEFAULT: Mercati generici ===
+        # Per mercati non specificatamente gestiti, usa logica neutra
+        return 75.0  # Default neutro
+
+    def _get_diversity_bonus(self, market_type: str) -> float:
+        """
+        🎯 NUOVO: Calcola bonus/penalità basato su quanto un mercato è stato usato recentemente.
+
+        Se un mercato è stato raccomandato troppo → penalità leggera
+        Se un mercato è stato raccomandato poco → bonus leggero
+
+        Returns:
+            Bonus/penalità in punti percentuali (range: -5 a +5)
+        """
+        if not self.recent_markets:
+            return 0.0  # Nessun dato, nessun adjustment
+
+        # Normalizza market type per confronto
+        market = market_type.lower().strip()
+
+        # Conta quante volte questo mercato appare negli ultimi N consigli
+        market_count = sum(1 for m in self.recent_markets if m.lower().strip() == market)
+        total_count = len(self.recent_markets)
+
+        if total_count == 0:
+            return 0.0
+
+        # Calcola percentuale di utilizzo
+        usage_percentage = (market_count / total_count) * 100
+
+        # Logica di bonus/penalità conservativa:
+        # - Se uso > 50% → penalità -5%
+        # - Se uso > 40% → penalità -3%
+        # - Se uso < 10% → bonus +5%
+        # - Se uso < 20% → bonus +3%
+        # - Altrimenti → neutro
+
+        if usage_percentage >= 50:
+            return -5.0  # Troppo usato
+        elif usage_percentage >= 40:
+            return -3.0
+        elif usage_percentage < 10 and total_count >= 10:  # Poco usato (ma solo se abbiamo almeno 10 campioni)
+            return 5.0
+        elif usage_percentage < 20 and total_count >= 10:
+            return 3.0
+        else:
+            return 0.0  # Uso normale
+
+    def _update_market_tracking(self, market_type: str):
+        """
+        🎯 NUOVO: Aggiorna il tracking dei mercati raccomandati.
+        Mantiene una finestra sliding degli ultimi N mercati.
+        """
+        self.recent_markets.append(market_type)
+        # Mantieni solo gli ultimi max_recent_markets
+        if len(self.recent_markets) > self.max_recent_markets:
+            self.recent_markets = self.recent_markets[-self.max_recent_markets:]
+
     def _calculate_combined_score(self, opportunity: LiveBettingOpportunity) -> float:
         """
-        🆕 Calcola score combinato di Expected Value e Confidence.
-        Formula: (EV * 0.4) + (confidence/100 * 0.6)
-        Questo bilancia valore e probabilità.
+        🎯 NUOVO: Calcola score combinato intelligente che considera:
+        - Statistical Confidence (45%)
+        - Time Suitability (35%) - quanto il mercato è adatto al momento della partita
+        - Expected Value (15%)
+        - Diversity Bonus (5%) - bonus per varietà mercati
+
+        Formula precedente: (EV * 0.4) + (confidence/100 * 0.6)
+        Formula nuova: (confidence/100 * 0.45) + (time_suitability/100 * 0.35) + (EV/100 * 0.15) + (diversity/100 * 0.05)
         """
+        # 1. Expected Value
         ev = getattr(opportunity, 'ev', None)
         if ev is None:
             ev = self._calculate_expected_value(opportunity)
             opportunity.ev = ev
-        confidence_score = opportunity.confidence / 100.0
-        
-        # Normalizza EV (può essere negativo, quindi aggiungiamo 1 per renderlo positivo)
-        ev_normalized = (ev / 100.0) + 1.0  # EV% da -100.. diventa 0..+
-        
-        # Combina: 40% peso su EV, 60% peso su confidence
-        combined_score = (ev_normalized * 0.4) + (confidence_score * 0.6)
-        
+        ev_normalized = max(0, min(100, ev))  # Clamp tra 0 e 100
+
+        # 2. Confidence
+        confidence_score = opportunity.confidence  # Già in percentuale 0-100
+
+        # 3. Time Suitability - calcola quanto il mercato è adatto ORA
+        try:
+            # Prova prima a usare live_data nell'opportunità, poi fallback a match_data
+            live_data = getattr(opportunity, 'live_data', {})
+            if not live_data:
+                live_data = opportunity.match_data.get('live_data', {})
+
+            # Estrai dati necessari
+            minute = live_data.get('minute', 0)
+            score_home = live_data.get('score_home', 0)
+            score_away = live_data.get('score_away', 0)
+
+            # Assicura che siano interi
+            minute = int(minute) if minute is not None else 0
+            score_home = int(score_home) if score_home is not None else 0
+            score_away = int(score_away) if score_away is not None else 0
+
+            # Se non abbiamo dati live, usa default neutro
+            if minute == 0 and score_home == 0 and score_away == 0:
+                time_suitability = 75.0  # Default neutro se mancano dati
+            else:
+                time_suitability = self._calculate_time_suitability(
+                    market_type=opportunity.market,
+                    minute=minute,
+                    score_home=score_home,
+                    score_away=score_away,
+                    live_data=live_data
+                )
+        except Exception as e:
+            logger.warning(f"⚠️  Errore calcolo time suitability per {opportunity.market}: {e}")
+            time_suitability = 75.0  # Default neutro in caso di errore
+
+        # 4. Diversity Bonus
+        diversity_bonus = self._get_diversity_bonus(opportunity.market)
+
+        # 5. Formula finale (tutti i valori normalizzati 0-100)
+        combined_score = (
+            (confidence_score / 100.0 * 0.45) +      # 45% peso confidence
+            (time_suitability / 100.0 * 0.35) +      # 35% peso timing
+            (ev_normalized / 100.0 * 0.15) +         # 15% peso EV
+            ((diversity_bonus + 50) / 100.0 * 0.05)  # 5% peso diversity (normalizzato da -5/+5 a 0-100)
+        )
+
+        # Log per debugging (solo se abbiamo suitability significativamente diversa da default)
+        if abs(time_suitability - 75.0) > 10:
+            logger.debug(
+                f"📊 Score {opportunity.market}: "
+                f"Conf={confidence_score:.1f}% (45%), "
+                f"TimeSuit={time_suitability:.1f}% (35%), "
+                f"EV={ev_normalized:.1f}% (15%), "
+                f"Div={diversity_bonus:+.1f}% (5%) "
+                f"→ Total={combined_score:.3f}"
+            )
+
         return combined_score
     
     def _deduplicate_opportunities(self, opportunities: List[LiveBettingOpportunity]) -> List[LiveBettingOpportunity]:
