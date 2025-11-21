@@ -1855,6 +1855,53 @@ class Automation24H:
                                 logger.warning(f"⚠️  Errore salvataggio nel tracker: {e}")
                         
                         logger.info(f"✅ Notified live opportunity: {opp_key} (minute: {minute}')")
+                        
+                        # 🆕 Registra segnale nel database per apprendimento (se non già registrato)
+                        if hasattr(self, 'signal_quality_learner') and self.signal_quality_learner:
+                            try:
+                                # Usa quality_score dalla cache se disponibile, altrimenti crea uno di default
+                                cached_quality_score = self.quality_score_cache.get(opp_key)
+                                if cached_quality_score and hasattr(cached_quality_score, 'total_score'):
+                                    # Segnale già valutato, registra con quality_score dalla cache
+                                    record_id = self.signal_quality_learner.record_signal(
+                                        match_id=match_id,
+                                        market=market,
+                                        minute=minute,
+                                        score_home=live_opp.match_stats.get('score_home', 0) if live_opp.match_stats else 0,
+                                        score_away=live_opp.match_stats.get('score_away', 0) if live_opp.match_stats else 0,
+                                        quality_score=cached_quality_score.total_score,
+                                        context_score=cached_quality_score.context_score if hasattr(cached_quality_score, 'context_score') else 0.0,
+                                        data_quality_score=cached_quality_score.data_quality_score if hasattr(cached_quality_score, 'data_quality_score') else 0.0,
+                                        logic_score=cached_quality_score.logic_score if hasattr(cached_quality_score, 'logic_score') else 0.0,
+                                        timing_score=cached_quality_score.timing_score if hasattr(cached_quality_score, 'timing_score') else 0.0,
+                                        was_approved=cached_quality_score.is_approved if hasattr(cached_quality_score, 'is_approved') else True,
+                                        block_reasons=cached_quality_score.reasons if hasattr(cached_quality_score, 'reasons') else [],
+                                        confidence=getattr(live_opp, 'confidence', 0.0),
+                                        ev=getattr(live_opp, 'ev', 0.0)
+                                    )
+                                    logger.info(f"📝 Segnale registrato nel database (ID: {record_id}): {match_id}/{market} - APPROVATO (da cache)")
+                                else:
+                                    # Segnale non valutato, registra con valori di default (dovrebbe essere raro)
+                                    logger.warning(f"⚠️  quality_score non in cache per {opp_key}, registro con valori di default")
+                                    record_id = self.signal_quality_learner.record_signal(
+                                        match_id=match_id,
+                                        market=market,
+                                        minute=minute,
+                                        score_home=live_opp.match_stats.get('score_home', 0) if live_opp.match_stats else 0,
+                                        score_away=live_opp.match_stats.get('score_away', 0) if live_opp.match_stats else 0,
+                                        quality_score=75.0,  # Default
+                                        context_score=75.0,
+                                        data_quality_score=75.0,
+                                        logic_score=75.0,
+                                        timing_score=75.0,
+                                        was_approved=True,
+                                        block_reasons=[],
+                                        confidence=getattr(live_opp, 'confidence', 0.0),
+                                        ev=getattr(live_opp, 'ev', 0.0)
+                                    )
+                                    logger.info(f"📝 Segnale registrato nel database (ID: {record_id}): {match_id}/{market} - APPROVATO (default)")
+                            except Exception as e:
+                                logger.error(f"❌ Errore registrazione segnale dopo invio: {e}", exc_info=True)
                     else:
                         logger.warning(f"⚠️  Failed to notify live opportunity: {opp_key}")
                 else:
