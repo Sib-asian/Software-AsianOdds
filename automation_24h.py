@@ -1808,12 +1808,15 @@ class Automation24H:
                     else:
                         logger.warning(f"   ⚠️  live_opp.match_stats è None o vuoto!")
                     # Mostra prime 15 righe del messaggio
-                    message_lines = message.split('\n')[:15]
+                    message_lines = message.split('\n')
+                    total_lines = len(message_lines)
+                    message_lines_preview = message_lines[:15]
                     logger.info(f"   Contenuto messaggio (prime 15 righe):")
-                    for i, line in enumerate(message_lines, 1):
+                    for i, line in enumerate(message_lines_preview, 1):
                         logger.info(f"      {i:2d}. {line}")
-                    if len(message.split('\n')) > 15:
-                        logger.info(f"      ... (altre {len(message.split('\n')) - 15} righe)")
+                    if total_lines > 15:
+                        remaining_lines = total_lines - 15
+                        logger.info(f"      ... (altre {remaining_lines} righe)")
                     
                     # Usa _send_message (metodo privato ma usato in altri punti del codice)
                     success = self.notifier._send_message(message, parse_mode="HTML")
