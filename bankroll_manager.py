@@ -19,6 +19,12 @@ class BankrollManager:
     """Gestisce bankroll e calcolo stake"""
     
     def __init__(self, db_path: str = "bankroll.db", initial_bankroll: float = 1000.0):
+        # Use /data persistent disk on Render if available
+        import os
+        if os.path.exists('/data') and os.path.isdir('/data'):
+            db_path = os.path.join('/data', os.path.basename(db_path))
+            logger.info(f"📁 Using persistent disk: {db_path}")
+
         self.db_path = db_path
         self.initial_bankroll = initial_bankroll
         self._init_database()
