@@ -851,15 +851,21 @@ class MultiSourceMatchFinder:
                             'score_away': score_away,
                             'minute': minute,
                             'status': status_long,
-                            # 🔧 Statistiche live
+                            # 🔧 Statistiche live (DOPPIO FORMATO per compatibilità)
                             'home_shots_on_target': home_shots_on_target,
                             'away_shots_on_target': away_shots_on_target,
+                            'shots_on_target_home': home_shots_on_target,  # 🎯 Formato alternativo
+                            'shots_on_target_away': away_shots_on_target,  # 🎯 Formato alternativo
                             'home_total_shots': home_total_shots,
                             'away_total_shots': away_total_shots,
+                            'shots_home': home_total_shots,  # 🎯 Formato alternativo
+                            'shots_away': away_total_shots,  # 🎯 Formato alternativo
                             'home_xg': home_xg,
                             'away_xg': away_xg,
                             'home_dangerous_attacks': home_dangerous_attacks,
                             'away_dangerous_attacks': away_dangerous_attacks,
+                            'dangerous_attacks_home': home_dangerous_attacks,  # 🎯 Formato alternativo
+                            'dangerous_attacks_away': away_dangerous_attacks,  # 🎯 Formato alternativo
                             'home_possession': home_possession,
                             'away_possession': away_possession,
                             # 🔧 FIX: Calcola possesso away se non disponibile ma home sì (e viceversa)
@@ -868,12 +874,20 @@ class MultiSourceMatchFinder:
                             # 🔧 NUOVO: Statistiche aggiuntive (priorità 1-4)
                             'home_corners': home_corners,
                             'away_corners': away_corners,
+                            'corners_home': home_corners,  # 🎯 Formato alternativo
+                            'corners_away': away_corners,  # 🎯 Formato alternativo
                             'home_yellow_cards': home_yellow_cards,
                             'away_yellow_cards': away_yellow_cards,
+                            'yellow_cards_home': home_yellow_cards,  # 🎯 Formato alternativo
+                            'yellow_cards_away': away_yellow_cards,  # 🎯 Formato alternativo
                             'home_red_cards': home_red_cards,
                             'away_red_cards': away_red_cards,
+                            'red_cards_home': home_red_cards,  # 🎯 Formato alternativo
+                            'red_cards_away': away_red_cards,  # 🎯 Formato alternativo
                             'home_fouls': home_fouls,
-                            'away_fouls': away_fouls
+                            'away_fouls': away_fouls,
+                            'fouls_home': home_fouls,  # 🎯 Formato alternativo
+                            'fouls_away': away_fouls  # 🎯 Formato alternativo
                         })
                     except Exception as e:
                         logger.error(f"❌ Errore processing API-SPORTS live fixture: {e}")
