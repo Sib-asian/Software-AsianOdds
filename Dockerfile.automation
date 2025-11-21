@@ -22,26 +22,23 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
-# Copia SOLO file essenziali (minimal copy)
+# Copia file essenziali (devono esistere)
 COPY automation_24h.py .
 COPY start_automation.py .
 COPY api_manager.py .
+COPY logging_setup.py .
 
-# Copia solo ai_system essenziale (escludi modelli, training, etc.)
-COPY ai_system/__init__.py ./ai_system/
-COPY ai_system/config.py ./ai_system/
-COPY ai_system/pipeline.py ./ai_system/
-COPY ai_system/telegram_notifier.py ./ai_system/
-COPY ai_system/blocco_*.py ./ai_system/ 2>/dev/null || true
-COPY ai_system/live_*.py ./ai_system/ 2>/dev/null || true
-COPY ai_system/backtesting.py ./ai_system/ 2>/dev/null || true
-COPY ai_system/background_services.py ./ai_system/ 2>/dev/null || true
+# Copia tutti i file Python dalla root (COPY fallisce silenziosamente se file non esiste)
+# Usa un approccio più robusto: copia tutto e poi rimuovi se necessario
+COPY *.py ./
 
-# Copia utils se necessario
-RUN mkdir -p ./ai_system/utils && \
-    (cp -r ai_system/utils/*.py ./ai_system/utils/ 2>/dev/null || true)
+# Copia ai_system essenziale
+RUN mkdir -p ./ai_system/utils
 
-# Rimuovi TUTTO il resto (modelli, training, data, etc.)
+# Copia tutto ai_system (COPY fallisce silenziosamente se directory non esiste)
+COPY ai_system/ ./ai_system/
+
+# Rimuovi file non necessari da ai_system
 RUN rm -rf ./ai_system/models ./ai_system/training ./ai_system/data ./ai_system/analysis 2>/dev/null || true && \
     find ./ai_system -type f \( -name "*.md" -o -name "*.pkl" -o -name "*.pth" -o -name "*.h5" -o -name "*.model" -o -name "*.csv" -o -name "*.jsonl" -o -name "*.json" ! -name "*.example.json" \) -delete 2>/dev/null || true && \
     find ./ai_system -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
