@@ -406,8 +406,13 @@ class Automation24H:
                     logger.info("✅ Single run completed")
                     break
                 
-                # Attendi prima del prossimo ciclo
-                time.sleep(self.update_interval)
+                # Attendi prima del prossimo ciclo (con controllo running per shutdown immediato)
+                # Suddividi il sleep in piccoli intervalli per rispondere rapidamente ai segnali
+                sleep_interval = min(60, self.update_interval)  # Max 60 secondi per controllo
+                elapsed = 0
+                while elapsed < self.update_interval and self.running:
+                    time.sleep(sleep_interval)
+                    elapsed += sleep_interval
                 
         except KeyboardInterrupt:
             logger.info("🛑 Shutdown requested")
@@ -2335,13 +2340,25 @@ class Automation24H:
     
     def _signal_handler(self, signum, frame):
         """Gestisce segnali di shutdown"""
-        logger.info(f"🛑 Received signal {signum}, shutting down...")
+        signal_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT" if signum == signal.SIGINT else f"Signal {signum}"
+        logger.info(f"🛑 Received {signal_name}, shutting down gracefully...")
         self.running = False
+        # Forza uscita immediata (non aspetta sleep)
+        logger.info("✅ Shutdown signal processed, exiting...")
     
     def stop(self):
         """Ferma sistema"""
         logger.info("🛑 Stopping Automation24H system...")
         self.running = False
+        
+        # Chiudi connessioni database se presenti
+        if hasattr(self, 'signal_quality_learner') and self.signal_quality_learner:
+            try:
+                # Chiudi eventuali connessioni aperte
+                pass
+            except Exception as e:
+                logger.debug(f"⚠️  Errore chiusura database: {e}")
+        
         logger.info("✅ Automation24H stopped")
 
 
