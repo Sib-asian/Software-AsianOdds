@@ -1974,14 +1974,18 @@ class Automation24H:
                     
                     # Usa _send_message (metodo privato ma usato in altri punti del codice)
                     # 🆕 FIX: Aggiorna timestamp globale PRIMA di inviare (così il limite funziona anche se la notifica fallisce)
-                    self.last_global_notification_time = datetime.now()  # 🆕 Aggiorna timestamp globale
+                    now_notification = datetime.now()
+                    old_timestamp = self.last_global_notification_time
+                    self.last_global_notification_time = now_notification  # 🆕 Aggiorna timestamp globale
                     self._save_last_global_notification_time()  # 🆕 Salva in modo persistente
+                    logger.info(f"⏰ Timestamp globale aggiornato: {old_timestamp} -> {now_notification} (Match: {match_id}, Market: {market})")
                     
                     success = self.notifier._send_message(message, parse_mode="HTML")
                     if success:
                         self.notified_opportunities.add(opp_key)
                         self.notified_opportunities_timestamps[opp_key] = datetime.now()
                         self.notified_matches_timestamps[match_id] = datetime.now()  # Traccia anche per partita
+                        logger.info(f"✅ Notifica inviata con successo: {opp_key}")
                         logger.info(f"✅ Notifica inviata e timestamp globale aggiornato: {self.last_global_notification_time}")
                         
                         # 🔧 OPZIONE 4: Traccia mercato suggerito per questa partita
