@@ -1604,6 +1604,33 @@ class Automation24H:
         # Ordina per score decrescente
         scored_opportunities.sort(key=lambda x: x['score'], reverse=True)
         
+        # 🆕 FIX: Diversificazione mercati - penalizza mercati già inviati di recente
+        # Conta quante volte ogni mercato è stato inviato nelle ultime notifiche
+        market_counts = {}
+        if hasattr(self, 'last_global_notification_time') and self.last_global_notification_time:
+            # Conta mercati inviati nelle ultime 30 minuti (circa 3 notifiche)
+            cutoff_time = datetime.now() - timedelta(minutes=30)
+            for match_id_history, markets_list in self.match_markets_history.items():
+                for market_entry in markets_list:
+                    if market_entry['timestamp'] > cutoff_time:
+                        market = market_entry['market']
+                        market_counts[market] = market_counts.get(market, 0) + 1
+        
+        # Applica penalizzazione aggiuntiva per mercati già inviati di recente
+        for opp in scored_opportunities:
+            live_opp = opp['opportunity'].get('live_opportunity')
+            if live_opp:
+                market = getattr(live_opp, 'market', None)
+                if market and market in market_counts:
+                    # Penalizza in base a quante volte è stato inviato
+                    penalty = 0.1 * market_counts[market]  # -10% per ogni volta inviato
+                    opp['score'] *= (1.0 - min(penalty, 0.5))  # Max -50% di penalizzazione
+                    current_reason = opp.get('modifier_reason', '')
+                    opp['modifier_reason'] = f"{current_reason} (penalizzato -{penalty*100:.0f}%: mercato già inviato {market_counts[market]} volte)"
+        
+        # Riordina dopo penalizzazioni
+        scored_opportunities.sort(key=lambda x: x['score'], reverse=True)
+        
         # 🆕 Seleziona SOLO la migliore in assoluto (max 1)
         best = []
         if scored_opportunities:
