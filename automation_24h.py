@@ -158,7 +158,7 @@ class Automation24H:
         self.notified_opportunities_timestamps: Dict[str, datetime] = {}  # Timestamp delle notifiche
         self.notified_matches_timestamps: Dict[str, datetime] = {}  # Timestamp per partita (max 1 notifica ogni 30 min per partita)
         self.last_global_notification_time: Optional[datetime] = None  # 🆕 Limite globale 10 minuti tra BETTING notifications
-        self._load_last_global_notification_time()  # 🆕 Carica timestamp persistente
+        # 🔧 FIX: Caricamento timestamp spostato alla fine di _init_components (dopo init signal_quality_learner)
         self.last_system_notification_time: Optional[datetime] = None  # 🎯 NUOVO: Limite 1 ora tra SYSTEM notifications (stats, reports, progress)
         # 🔧 OPZIONE 4: Tracking mercati già suggeriti per partita (per penalizzazione/bonus)
         self.match_markets_history: Dict[str, List[Dict[str, Any]]] = {}  # match_id -> lista di {market, timestamp}
@@ -376,7 +376,10 @@ class Automation24H:
             self.match_filters = None
             self.bankroll_manager = None
             self.automated_reports = None
-    
+
+        # 🔧 FIX: Carica timestamp globale DOPO l'inizializzazione di signal_quality_learner
+        self._load_last_global_notification_time()
+
     def start(self, single_run: bool = False):
         """
         Avvia sistema 24/7
@@ -2403,61 +2406,59 @@ class Automation24H:
         logger.info("✅ Shutdown signal processed, exiting...")
     
     def _load_last_global_notification_time(self):
-        """Carica ultimo timestamp notifica globale da database persistente"""
+        """Carica ultimo timestamp notifica globale da file JSON persistente"""
         try:
-            if hasattr(self, 'signal_quality_learner') and self.signal_quality_learner:
-                conn = sqlite3.connect(self.signal_quality_learner.db_path)
-                cursor = conn.cursor()
-                
-                # Crea tabella se non esiste
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS automation_state (
-                        key TEXT PRIMARY KEY,
-                        value TEXT,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
-                # Carica timestamp
-                cursor.execute("SELECT value FROM automation_state WHERE key = 'last_global_notification_time'")
-                result = cursor.fetchone()
-                conn.close()
-                
-                if result and result[0]:
-                    timestamp_str = result[0]
-                    self.last_global_notification_time = datetime.fromisoformat(timestamp_str)
-                    logger.info(f"📥 Caricato timestamp globale persistente da database: {self.last_global_notification_time}")
-                else:
-                    logger.debug("ℹ️  Nessun timestamp globale persistente trovato nel database")
+            # 🔧 FIX: Usa file JSON invece di database per maggiore robustezza
+            state_file = Path("automation_state.json")
+
+            # Se esiste /data (Render persistent disk), usa quello
+            if os.path.exists('/data') and os.path.isdir('/data'):
+                state_file = Path("/data/automation_state.json")
+
+            if state_file.exists():
+                with open(state_file, 'r') as f:
+                    state = json.load(f)
+                    timestamp_str = state.get('last_global_notification_time')
+                    if timestamp_str:
+                        self.last_global_notification_time = datetime.fromisoformat(timestamp_str)
+                        logger.info(f"📥 Caricato timestamp globale da {state_file}: {self.last_global_notification_time}")
+                    else:
+                        logger.debug("ℹ️  Nessun timestamp trovato nel file di stato")
+            else:
+                logger.debug(f"ℹ️  File di stato non trovato: {state_file}")
         except Exception as e:
             logger.debug(f"⚠️  Errore caricamento stato persistente: {e}")
             self.last_global_notification_time = None
     
     def _save_last_global_notification_time(self):
-        """Salva ultimo timestamp notifica globale in database persistente"""
+        """Salva ultimo timestamp notifica globale in file JSON persistente"""
         try:
-            if hasattr(self, 'signal_quality_learner') and self.signal_quality_learner and self.last_global_notification_time:
-                conn = sqlite3.connect(self.signal_quality_learner.db_path)
-                cursor = conn.cursor()
-                
-                # Crea tabella se non esiste
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS automation_state (
-                        key TEXT PRIMARY KEY,
-                        value TEXT,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
-                # Salva timestamp
-                timestamp_str = self.last_global_notification_time.isoformat()
-                cursor.execute("""
-                    INSERT OR REPLACE INTO automation_state (key, value, updated_at)
-                    VALUES ('last_global_notification_time', ?, CURRENT_TIMESTAMP)
-                """, (timestamp_str,))
-                conn.commit()
-                conn.close()
-                logger.debug(f"💾 Timestamp globale salvato nel database: {self.last_global_notification_time}")
+            if self.last_global_notification_time:
+                # 🔧 FIX: Usa file JSON invece di database per maggiore robustezza
+                state_file = Path("automation_state.json")
+
+                # Se esiste /data (Render persistent disk), usa quello
+                if os.path.exists('/data') and os.path.isdir('/data'):
+                    state_file = Path("/data/automation_state.json")
+
+                # Carica stato esistente (se presente)
+                state = {}
+                if state_file.exists():
+                    try:
+                        with open(state_file, 'r') as f:
+                            state = json.load(f)
+                    except:
+                        pass  # Se fallisce, usa dict vuoto
+
+                # Aggiorna timestamp
+                state['last_global_notification_time'] = self.last_global_notification_time.isoformat()
+                state['updated_at'] = datetime.now().isoformat()
+
+                # Salva
+                with open(state_file, 'w') as f:
+                    json.dump(state, f, indent=2)
+
+                logger.debug(f"💾 Timestamp globale salvato in {state_file}: {self.last_global_notification_time}")
         except Exception as e:
             logger.debug(f"⚠️  Errore salvataggio stato persistente: {e}")
 
