@@ -28,38 +28,17 @@ COPY start_automation.py .
 COPY api_manager.py .
 COPY logging_setup.py .
 
-# Copia tutti i file Python dalla root (se esistono)
-# Usa RUN per gestire file mancanti senza errori
-RUN for file in match_filters.py betting_results_tracker.py bankroll_manager.py automated_reports.py live_betting_performance_tracker.py live_betting_reports.py odds_monitor.py result_tracker_auto.py pre_match_alerter.py arbitrage_detector_auto.py news_sentiment_analyzer.py multi_source_match_finder.py live_betting_advisor.py; do \
-    [ -f "$file" ] && cp "$file" . || true; \
-    done
+# Copia tutti i file Python dalla root (COPY fallisce silenziosamente se file non esiste)
+# Usa un approccio più robusto: copia tutto e poi rimuovi se necessario
+COPY *.py ./
 
 # Copia ai_system essenziale
 RUN mkdir -p ./ai_system/utils
 
-# Copia file base ai_system (obbligatori - se esistono)
-RUN for file in __init__.py config.py pipeline.py telegram_notifier.py; do \
-    [ -f "ai_system/$file" ] && cp "ai_system/$file" ./ai_system/ || true; \
-    done
+# Copia tutto ai_system (COPY fallisce silenziosamente se directory non esiste)
+COPY ai_system/ ./ai_system/
 
-# Copia altri moduli ai_system se esistono
-RUN for file in backtesting.py background_services.py multi_model_consensus.py intelligent_alert_system.py pattern_analyzer_llm.py parameter_optimizer.py signal_quality_learner.py signal_quality_scorer.py; do \
-    [ -f "ai_system/$file" ] && cp "ai_system/$file" ./ai_system/ || true; \
-    done
-
-# Copia moduli ai_system usando RUN per gestire file mancanti
-RUN if [ -d ai_system/utils ]; then \
-    for file in ai_system/utils/*.py; do \
-        if [ -f "$file" ]; then cp "$file" ./ai_system/utils/ 2>/dev/null || true; fi; \
-    done; \
-fi
-
-# Copia moduli ai_system con pattern usando find (se esistono)
-RUN find . -path "./ai_system/blocco_*.py" -exec cp {} ./ai_system/ \; 2>/dev/null || true && \
-    find . -path "./ai_system/live_*.py" -exec cp {} ./ai_system/ \; 2>/dev/null || true && \
-    find . -path "./ai_system/signal_quality_*.py" -exec cp {} ./ai_system/ \; 2>/dev/null || true
-
-# Rimuovi TUTTO il resto (modelli, training, data, etc.)
+# Rimuovi file non necessari da ai_system
 RUN rm -rf ./ai_system/models ./ai_system/training ./ai_system/data ./ai_system/analysis 2>/dev/null || true && \
     find ./ai_system -type f \( -name "*.md" -o -name "*.pkl" -o -name "*.pth" -o -name "*.h5" -o -name "*.model" -o -name "*.csv" -o -name "*.jsonl" -o -name "*.json" ! -name "*.example.json" \) -delete 2>/dev/null || true && \
     find ./ai_system -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
