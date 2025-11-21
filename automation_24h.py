@@ -1859,11 +1859,11 @@ class Automation24H:
         # 🔧 FIX: Definisci 'now' prima di usarlo
         now = datetime.now()
         
-        # 🆕 FIX: Limite globale 10 minuti tra qualsiasi notifica
-        if self.last_global_notification_time:
+        # 🆕 FIX: Limite globale 10 minuti tra qualsiasi notifica (CONTROLLO PRIMA DI TUTTO)
+        if hasattr(self, 'last_global_notification_time') and self.last_global_notification_time:
             time_since_global = (now - self.last_global_notification_time).total_seconds() / 60
             if time_since_global < 10:  # Blocco globale 10 minuti
-                logger.info(f"⏭️  Notifica globale bloccata: ultima notifica {time_since_global:.1f} minuti fa (minimo 10 minuti richiesti)")
+                logger.info(f"⏭️  Notifica globale bloccata: ultima notifica {time_since_global:.1f} minuti fa (minimo 10 minuti richiesti) - Match: {match_id}, Market: {market}")
                 return
         
         # 🆕 NUOVO: Blocca partita per 15 minuti (max 1 notifica ogni 15 minuti per partita)
@@ -1942,12 +1942,17 @@ class Automation24H:
                         logger.info(f"      ... (altre {remaining_lines} righe)")
                     
                     # Usa _send_message (metodo privato ma usato in altri punti del codice)
+                    # 🆕 FIX: Aggiorna timestamp globale PRIMA di inviare (così il limite funziona anche se la notifica fallisce)
+                    self.last_global_notification_time = datetime.now()  # 🆕 Aggiorna timestamp globale
+                    
                     success = self.notifier._send_message(message, parse_mode="HTML")
                     if success:
                         self.notified_opportunities.add(opp_key)
                         self.notified_opportunities_timestamps[opp_key] = datetime.now()
                         self.notified_matches_timestamps[match_id] = datetime.now()  # Traccia anche per partita
-                        self.last_global_notification_time = datetime.now()  # 🆕 Aggiorna timestamp globale
+                        logger.info(f"✅ Notifica inviata e timestamp globale aggiornato: {self.last_global_notification_time}")
+                    else:
+                        logger.warning(f"⚠️  Notifica fallita ma timestamp globale già aggiornato (limite 10 min attivo)")
                         
                         # 🔧 OPZIONE 4: Traccia mercato suggerito per questa partita
                         if match_id not in self.match_markets_history:
