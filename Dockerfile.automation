@@ -22,24 +22,42 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
-# Copia SOLO file essenziali (minimal copy)
+# Copia file essenziali (devono esistere)
 COPY automation_24h.py .
 COPY start_automation.py .
 COPY api_manager.py .
+COPY logging_setup.py .
 
-# Copia solo ai_system essenziale (escludi modelli, training, etc.)
-COPY ai_system/__init__.py ./ai_system/
-COPY ai_system/config.py ./ai_system/
-COPY ai_system/pipeline.py ./ai_system/
-COPY ai_system/telegram_notifier.py ./ai_system/
-COPY ai_system/blocco_*.py ./ai_system/ 2>/dev/null || true
-COPY ai_system/live_*.py ./ai_system/ 2>/dev/null || true
-COPY ai_system/backtesting.py ./ai_system/ 2>/dev/null || true
-COPY ai_system/background_services.py ./ai_system/ 2>/dev/null || true
+# Copia tutti i file Python dalla root (se esistono)
+# Usa RUN per gestire file mancanti senza errori
+RUN for file in match_filters.py betting_results_tracker.py bankroll_manager.py automated_reports.py live_betting_performance_tracker.py live_betting_reports.py odds_monitor.py result_tracker_auto.py pre_match_alerter.py arbitrage_detector_auto.py news_sentiment_analyzer.py multi_source_match_finder.py live_betting_advisor.py; do \
+    [ -f "$file" ] && cp "$file" . || true; \
+    done
 
-# Copia utils se necessario
-RUN mkdir -p ./ai_system/utils && \
-    (cp -r ai_system/utils/*.py ./ai_system/utils/ 2>/dev/null || true)
+# Copia ai_system essenziale
+RUN mkdir -p ./ai_system/utils
+
+# Copia file base ai_system (obbligatori - se esistono)
+RUN for file in __init__.py config.py pipeline.py telegram_notifier.py; do \
+    [ -f "ai_system/$file" ] && cp "ai_system/$file" ./ai_system/ || true; \
+    done
+
+# Copia altri moduli ai_system se esistono
+RUN for file in backtesting.py background_services.py multi_model_consensus.py intelligent_alert_system.py pattern_analyzer_llm.py parameter_optimizer.py signal_quality_learner.py signal_quality_scorer.py; do \
+    [ -f "ai_system/$file" ] && cp "ai_system/$file" ./ai_system/ || true; \
+    done
+
+# Copia moduli ai_system usando RUN per gestire file mancanti
+RUN if [ -d ai_system/utils ]; then \
+    for file in ai_system/utils/*.py; do \
+        if [ -f "$file" ]; then cp "$file" ./ai_system/utils/ 2>/dev/null || true; fi; \
+    done; \
+fi
+
+# Copia moduli ai_system con pattern usando find (se esistono)
+RUN find . -path "./ai_system/blocco_*.py" -exec cp {} ./ai_system/ \; 2>/dev/null || true && \
+    find . -path "./ai_system/live_*.py" -exec cp {} ./ai_system/ \; 2>/dev/null || true && \
+    find . -path "./ai_system/signal_quality_*.py" -exec cp {} ./ai_system/ \; 2>/dev/null || true
 
 # Rimuovi TUTTO il resto (modelli, training, data, etc.)
 RUN rm -rf ./ai_system/models ./ai_system/training ./ai_system/data ./ai_system/analysis 2>/dev/null || true && \
