@@ -158,6 +158,7 @@ class Automation24H:
         self.notified_opportunities_timestamps: Dict[str, datetime] = {}  # Timestamp delle notifiche
         self.notified_matches_timestamps: Dict[str, datetime] = {}  # Timestamp per partita (max 1 notifica ogni 30 min per partita)
         self.last_global_notification_time: Optional[datetime] = None  # 🆕 Limite globale 10 minuti tra qualsiasi notifica
+        self._load_last_global_notification_time()  # 🆕 Carica timestamp persistente
         # 🔧 OPZIONE 4: Tracking mercati già suggeriti per partita (per penalizzazione/bonus)
         self.match_markets_history: Dict[str, List[Dict[str, Any]]] = {}  # match_id -> lista di {market, timestamp}
         # 🆕 Cache Quality Score per evitare doppio calcolo
@@ -1891,7 +1892,10 @@ class Automation24H:
             time_since_global = (now - self.last_global_notification_time).total_seconds() / 60
             if time_since_global < 10:  # Blocco globale 10 minuti
                 logger.info(f"⏭️  Notifica globale bloccata: ultima notifica {time_since_global:.1f} minuti fa (minimo 10 minuti richiesti) - Match: {match_id}, Market: {market}")
+                logger.debug(f"   Timestamp ultima notifica: {self.last_global_notification_time}, Ora attuale: {now}")
                 return
+        else:
+            logger.debug(f"ℹ️  Nessun timestamp globale precedente, prima notifica consentita - Match: {match_id}, Market: {market}")
         
         # 🆕 NUOVO: Blocca partita per 15 minuti (max 1 notifica ogni 15 minuti per partita)
         if match_id in self.notified_matches_timestamps:
@@ -1971,6 +1975,7 @@ class Automation24H:
                     # Usa _send_message (metodo privato ma usato in altri punti del codice)
                     # 🆕 FIX: Aggiorna timestamp globale PRIMA di inviare (così il limite funziona anche se la notifica fallisce)
                     self.last_global_notification_time = datetime.now()  # 🆕 Aggiorna timestamp globale
+                    self._save_last_global_notification_time()  # 🆕 Salva in modo persistente
                     
                     success = self.notifier._send_message(message, parse_mode="HTML")
                     if success:
@@ -2376,10 +2381,73 @@ class Automation24H:
         # Forza uscita immediata (non aspetta sleep)
         logger.info("✅ Shutdown signal processed, exiting...")
     
+    def _load_last_global_notification_time(self):
+        """Carica ultimo timestamp notifica globale da database persistente"""
+        try:
+            if hasattr(self, 'signal_quality_learner') and self.signal_quality_learner:
+                conn = sqlite3.connect(self.signal_quality_learner.db_path)
+                cursor = conn.cursor()
+                
+                # Crea tabella se non esiste
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS automation_state (
+                        key TEXT PRIMARY KEY,
+                        value TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Carica timestamp
+                cursor.execute("SELECT value FROM automation_state WHERE key = 'last_global_notification_time'")
+                result = cursor.fetchone()
+                conn.close()
+                
+                if result and result[0]:
+                    timestamp_str = result[0]
+                    self.last_global_notification_time = datetime.fromisoformat(timestamp_str)
+                    logger.info(f"📥 Caricato timestamp globale persistente da database: {self.last_global_notification_time}")
+                else:
+                    logger.debug("ℹ️  Nessun timestamp globale persistente trovato nel database")
+        except Exception as e:
+            logger.debug(f"⚠️  Errore caricamento stato persistente: {e}")
+            self.last_global_notification_time = None
+    
+    def _save_last_global_notification_time(self):
+        """Salva ultimo timestamp notifica globale in database persistente"""
+        try:
+            if hasattr(self, 'signal_quality_learner') and self.signal_quality_learner and self.last_global_notification_time:
+                conn = sqlite3.connect(self.signal_quality_learner.db_path)
+                cursor = conn.cursor()
+                
+                # Crea tabella se non esiste
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS automation_state (
+                        key TEXT PRIMARY KEY,
+                        value TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Salva timestamp
+                timestamp_str = self.last_global_notification_time.isoformat()
+                cursor.execute("""
+                    INSERT OR REPLACE INTO automation_state (key, value, updated_at)
+                    VALUES ('last_global_notification_time', ?, CURRENT_TIMESTAMP)
+                """, (timestamp_str,))
+                conn.commit()
+                conn.close()
+                logger.debug(f"💾 Timestamp globale salvato nel database: {self.last_global_notification_time}")
+        except Exception as e:
+            logger.debug(f"⚠️  Errore salvataggio stato persistente: {e}")
+    
     def stop(self):
         """Ferma sistema"""
         logger.info("🛑 Stopping Automation24H system...")
         self.running = False
+        
+        # Salva stato persistente prima di chiudere
+        if self.last_global_notification_time:
+            self._save_last_global_notification_time()
         
         # Chiudi connessioni database se presenti
         if hasattr(self, 'signal_quality_learner') and self.signal_quality_learner:
