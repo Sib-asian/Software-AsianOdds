@@ -39,16 +39,27 @@ from logging_setup import init_logging
 init_logging()
 logger = logging.getLogger(__name__)
 
-# Import sistema esistente
+# Import componenti base (senza dipendenze torch/xgboost)
+try:
+    from ai_system.telegram_notifier import TelegramNotifier
+    from api_manager import APIManager
+    BASE_COMPONENTS_AVAILABLE = True
+except ImportError as e:
+    logger.error(f"❌ Import error (base components): {e}")
+    BASE_COMPONENTS_AVAILABLE = False
+    TelegramNotifier = None
+    APIManager = None
+
+# Import AI Pipeline (richiede torch/xgboost)
 try:
     from ai_system.pipeline import AIPipeline
     from ai_system.config import AIConfig
-    from ai_system.telegram_notifier import TelegramNotifier
-    from api_manager import APIManager
     AI_SYSTEM_AVAILABLE = True
 except ImportError as e:
-    logger.error(f"❌ Import error: {e}")
+    logger.warning(f"⚠️  AI Pipeline not available: {e}")
     AI_SYSTEM_AVAILABLE = False
+    AIPipeline = None
+    AIConfig = None
 
 # Import nuovi moduli
 try:
@@ -242,23 +253,35 @@ class Automation24H:
             logger.warning("⚠️  Advanced AI systems not available")
         
         # API Manager (deve essere prima di tutto)
-        try:
-            self.api_manager = APIManager()
-            logger.info("✅ API Manager initialized")
-        except Exception as e:
-            logger.error(f"❌ API Manager error: {e}")
+        if BASE_COMPONENTS_AVAILABLE and APIManager is not None:
+            try:
+                self.api_manager = APIManager()
+                logger.info("✅ API Manager initialized")
+            except Exception as e:
+                logger.error(f"❌ API Manager error: {e}")
+                self.api_manager = None
+        else:
             self.api_manager = None
-        
+            logger.warning("⚠️  API Manager not available (missing dependencies)")
+
         # Telegram Notifier
         if telegram_token and telegram_chat_id:
-            self.notifier = TelegramNotifier(
-                bot_token=telegram_token,
-                chat_id=telegram_chat_id,
-                min_ev=self.min_ev,
-                min_confidence=self.min_confidence,
-                rate_limit_seconds=3
-            )
-            logger.info("✅ Telegram Notifier initialized")
+            if BASE_COMPONENTS_AVAILABLE and TelegramNotifier is not None:
+                try:
+                    self.notifier = TelegramNotifier(
+                        bot_token=telegram_token,
+                        chat_id=telegram_chat_id,
+                        min_ev=self.min_ev,
+                        min_confidence=self.min_confidence,
+                        rate_limit_seconds=3
+                    )
+                    logger.info("✅ Telegram Notifier initialized")
+                except Exception as e:
+                    logger.error(f"❌ Telegram Notifier error: {e}")
+                    self.notifier = None
+            else:
+                self.notifier = None
+                logger.warning("⚠️  Telegram Notifier not available (missing dependencies)")
         else:
             self.notifier = None
             logger.warning("⚠️  Telegram not configured")
