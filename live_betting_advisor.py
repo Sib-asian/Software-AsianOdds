@@ -259,6 +259,7 @@ class LiveBettingAdvisor:
                 return opportunities
             
             # Analizza diverse situazioni con più mercati
+            initial_count = len(opportunities)
             opportunities.extend(self._check_ribaltone_opportunity(match_id, match_data, live_data))
             opportunities.extend(self._check_under_over_opportunity(match_id, match_data, live_data))
             opportunities.extend(self._check_next_goal_opportunity(match_id, match_data, live_data))
@@ -266,6 +267,10 @@ class LiveBettingAdvisor:
             opportunities.extend(self._check_ht_markets(match_id, match_data, live_data))
             opportunities.extend(self._check_double_chance_markets(match_id, match_data, live_data))
             opportunities.extend(self._check_over_under_markets(match_id, match_data, live_data))
+            after_initial_checks = len(opportunities)
+            if after_initial_checks == initial_count:
+                # 🔍 LOG: Nessuna opportunità trovata dalle funzioni iniziali
+                logger.info(f"🔍 {match_id}: Nessuna opportunità dalle funzioni iniziali (score: {live_data.get('score_home', 0)}-{live_data.get('score_away', 0)}, min: {live_data.get('minute', 0)})")
             
             # 🆕 NUOVO: Mercati avanzati
             opportunities.extend(self._check_corner_markets(match_id, match_data, live_data))
@@ -308,12 +313,21 @@ class LiveBettingAdvisor:
                 self._populate_opportunity_metadata(opp, live_data)
             
             # 🆕 FILTRI INTELLIGENTI: Rimuovi suggerimenti banali/ovvi
+            before_obvious_filter = len(opportunities)
             opportunities = self._filter_obvious_opportunities(opportunities, live_data)
+            after_obvious_filter = len(opportunities)
+            if before_obvious_filter > 0 and before_obvious_filter > after_obvious_filter:
+                logger.debug(f"🔍 {match_id}: {before_obvious_filter} opportunità prima filtro ovvie, {after_obvious_filter} dopo")
+            
             opportunities = self._apply_market_specific_rules(opportunities, match_data, live_data)
             opportunities = self._apply_market_min_confidence(opportunities)
             
             # 🆕 OTTIMIZZATO: Filtra solo opportunità con EV molto negativo (non tutte quelle negative)
+            before_ev_filter = len(opportunities)
             opportunities = self._filter_by_expected_value(opportunities)
+            after_ev_filter = len(opportunities)
+            if before_ev_filter > 0 and before_ev_filter > after_ev_filter:
+                logger.debug(f"🔍 {match_id}: {before_ev_filter} opportunità prima filtro EV, {after_ev_filter} dopo")
             
             # Filtra solo opportunità con alta confidence
             before_confidence_filter = len(opportunities)
@@ -327,6 +341,9 @@ class LiveBettingAdvisor:
                     if filtered_opps:
                         confidences = [f"{opp.confidence:.0f}%" for opp in filtered_opps[:5]]  # Prime 5
                         logger.debug(f"   Confidence filtrate: {', '.join(confidences)}")
+            elif before_obvious_filter == 0:
+                # 🔍 NUOVO: Log quando non vengono trovate opportunità iniziali
+                logger.info(f"🔍 {match_id}: Nessuna opportunità iniziale trovata (score: {live_data.get('score_home', 0)}-{live_data.get('score_away', 0)}, min: {live_data.get('minute', 0)})")
             
             # 🆕 OTTIMIZZATO: Deduplica opportunità per match_id + market (PRIMA del limite)
             opportunities = self._deduplicate_opportunities(opportunities)
@@ -696,7 +713,61 @@ class LiveBettingAdvisor:
             red_cards_home = live_data.get('red_cards_home', 0)
             red_cards_away = live_data.get('red_cards_away', 0)
             
-            if score_home != score_away and 20 <= minute <= 70:
+            # 🆕 NUOVO: Gestione partite 0-0 (Next Goal basato su statistiche)
+            if score_home == score_away == 0 and 20 <= minute <= 70:
+                shots_home = live_data.get('shots_home', 0)
+                shots_away = live_data.get('shots_away', 0)
+                shots_on_target_home = live_data.get('shots_on_target_home', 0)
+                shots_on_target_away = live_data.get('shots_on_target_away', 0)
+                possession_home = live_data.get('possession_home', 50)
+                
+                # Se una squadra domina nettamente (possesso > 60% e tiri > 1.5x avversario)
+                if possession_home > 60 and shots_home > shots_away * 1.5 and shots_on_target_home >= 1:
+                    confidence = 65 + min(10, shots_on_target_home * 2)
+                    opportunity = LiveBettingOpportunity(
+                        match_id=match_id,
+                        match_data=match_data,
+                        situation='next_goal_0_0_dominance',
+                        market='next_goal_home',
+                        recommendation=f"Punta {match_data.get('home')} segna prossimo gol (domina 0-0)",
+                        reasoning=(
+                            f"🎯 PROSSIMO GOL 0-0!\n\n"
+                            f"• Score: 0-0 al {minute}'\n"
+                            f"• {match_data.get('home')} DOMINA:\n"
+                            f"  - Possesso: {possession_home:.0f}%\n"
+                            f"  - Tiri: {shots_home}-{shots_away} ({shots_on_target_home} in porta)\n"
+                            f"• Alta probabilità primo gol dalla squadra dominante"
+                        ),
+                        confidence=confidence,
+                        odds=2.0,
+                        stake_suggestion=2.0,
+                        timestamp=datetime.now()
+                    )
+                    opportunities.append(opportunity)
+                elif possession_home < 40 and shots_away > shots_home * 1.5 and shots_on_target_away >= 1:
+                    confidence = 65 + min(10, shots_on_target_away * 2)
+                    opportunity = LiveBettingOpportunity(
+                        match_id=match_id,
+                        match_data=match_data,
+                        situation='next_goal_0_0_dominance',
+                        market='next_goal_away',
+                        recommendation=f"Punta {match_data.get('away')} segna prossimo gol (domina 0-0)",
+                        reasoning=(
+                            f"🎯 PROSSIMO GOL 0-0!\n\n"
+                            f"• Score: 0-0 al {minute}'\n"
+                            f"• {match_data.get('away')} DOMINA:\n"
+                            f"  - Possesso: {100 - possession_home:.0f}%\n"
+                            f"  - Tiri: {shots_away}-{shots_home} ({shots_on_target_away} in porta)\n"
+                            f"• Alta probabilità primo gol dalla squadra dominante"
+                        ),
+                        confidence=confidence,
+                        odds=2.0,
+                        stake_suggestion=2.0,
+                        timestamp=datetime.now()
+                    )
+                    opportunities.append(opportunity)
+            
+            elif score_home != score_away and 20 <= minute <= 70:
                 if score_home < score_away:
                     if red_cards_home > 0:
                         logger.debug(f"⏭️  Next Goal Home non generato: casa ha {red_cards_home} cartellino/i rosso/i (10 uomini)")
@@ -704,21 +775,21 @@ class LiveBettingAdvisor:
                         # Sfavorita sta perdendo e favorita (away) sta vincendo → evita segnale banale
                         logger.debug("⏭️  Next Goal Home non generato: sfavorita in svantaggio (richiesta utente)")
                     else:
-                    confidence = 70
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id,
-                        match_data=match_data,
-                        situation='next_goal_underdog',
-                        market='next_goal_home',
+                        confidence = 70
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id,
+                            match_data=match_data,
+                            situation='next_goal_underdog',
+                            market='next_goal_home',
                             recommendation=f"Punta {match_data.get('home')} (favorita) segna prossimo gol",
-                        reasoning=(
-                            f"🎯 PROSSIMO GOL OPPORTUNITY!\n\n"
+                            reasoning=(
+                                f"🎯 PROSSIMO GOL OPPORTUNITY!\n\n"
                                 f"• {match_data.get('home')} (favorita) in svantaggio {score_home}-{score_away}\n"
-                            f"• Minuto: {minute}'\n"
+                                f"• Minuto: {minute}'\n"
                                 f"• La favorita in svantaggio spinge per pareggiare\n"
                                 f"• Alta probabilità prossimo gol dalla favorita"
-                        ),
-                        confidence=confidence,
+                            ),
+                            confidence=confidence,
                             odds=2.2,
                             stake_suggestion=2.5,
                             timestamp=datetime.now()
@@ -852,7 +923,8 @@ class LiveBettingAdvisor:
                     shots_on_target_per_minute = total_shots_on_target / minute if minute > 0 else 0
                     
                     # Se partita aperta (tiri frequenti)
-                    if shots_per_minute > 0.3 and shots_on_target_per_minute > 0.1:
+                    # 🔧 ABBASSATO: shots/min > 0.2 (da 0.3), SOT/min > 0.05 (da 0.1) per permettere più opportunità
+                    if shots_per_minute > 0.2 and shots_on_target_per_minute > 0.05:
                         ai_boost = self._get_ai_market_confidence(match_data, live_data, 'over_0.5_ht') if self.ai_pipeline else 0
                         # Confidence aumenta con minuto e tiri
                         # 🆕 OTTIMIZZATO: Aumentata confidence base per mercato rischioso
@@ -1144,17 +1216,18 @@ class LiveBettingAdvisor:
             expected_goals_final = goals_per_minute * 90 if minute > 0 else 0
             
             # OVER 0.5: Nessun gol ma partita aperta
+            # 🔧 ABBASSATO: shots/min > 0.15 (da 0.25), SOT >= 1 (da 2) per permettere più opportunità
             if total_goals == 0 and minute >= 20 and minute <= 70:
                 shots_per_minute = total_shots / minute if minute > 0 else 0
-                if shots_per_minute > 0.25 and total_shots_on_target >= 2:
+                if shots_per_minute > 0.15 and total_shots_on_target >= 1:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'over_0.5') if self.ai_pipeline else 0
                     base_confidence = 70 + min(10, total_shots_on_target * 3)
                     confidence = min(88, base_confidence + ai_boost)
                     
-                opportunity = LiveBettingOpportunity(
-                    match_id=match_id, match_data=match_data,
-                    situation='over_0.5_general', market='over_0.5',
-                    recommendation="Punta Over 0.5 Gol",
+                    opportunity = LiveBettingOpportunity(
+                        match_id=match_id, match_data=match_data,
+                        situation='over_0.5_general', market='over_0.5',
+                        recommendation="Punta Over 0.5 Gol",
                         reasoning=(
                             f"🎯 OVER 0.5!\n\n"
                             f"• Score: {score_home}-{score_away} al {minute}'\n"
@@ -1164,14 +1237,23 @@ class LiveBettingAdvisor:
                             f"• Alta probabilità almeno 1 gol\n"
                             f"• IA boost: +{ai_boost:.0f}%"
                         ),
-                    confidence=confidence, odds=1.2, stake_suggestion=2.5,
-                    timestamp=datetime.now(),
-                    alternative_markets=[
-                        {'market': 'over_1.5', 'confidence': confidence - 15, 'odds': 1.6},
-                        {'market': 'over_2.5', 'confidence': confidence - 25, 'odds': 2.0}
-                    ]
-                )
-                opportunities.append(opportunity)
+                        confidence=confidence, odds=1.2, stake_suggestion=2.5,
+                        timestamp=datetime.now(),
+                        alternative_markets=[
+                            {'market': 'over_1.5', 'confidence': confidence - 15, 'odds': 1.6},
+                            {'market': 'over_2.5', 'confidence': confidence - 25, 'odds': 2.0}
+                        ]
+                    )
+                    opportunities.append(opportunity)
+                else:
+                    # 🔍 LOG: Perché Over 0.5 non viene generato per 0-0
+                    logger.info(f"🔍 {match_id}: Over 0.5 non generato per 0-0 (min {minute}): shots/min={shots_per_minute:.2f} (min 0.15), SOT={total_shots_on_target} (min 1)")
+            elif total_goals == 0 and minute < 20:
+                # 🔍 LOG: Partita 0-0 troppo presto
+                logger.info(f"🔍 {match_id}: Over 0.5 non generato per 0-0 (min {minute}): troppo presto (min 20)")
+            elif total_goals == 0 and minute > 70:
+                # 🔍 LOG: Partita 0-0 troppo tardi
+                logger.info(f"🔍 {match_id}: Over 0.5 non generato per 0-0 (min {minute}): troppo tardi (max 70)")
             
             # OVER 1.5: Già 1 gol, probabile secondo
             elif total_goals == 1 and minute >= 25 and minute <= 75:
@@ -1274,7 +1356,8 @@ class LiveBettingAdvisor:
             
             # UNDER 1.5: Partita chiusa, max 1 gol
             # 🆕 FIX: NON generare Under 1.5 se c'è già 1 gol e siamo oltre 45' (illogico - se è 1-0 al 50', under 1.5 è già perso se segna un altro gol)
-            if total_goals == 0 and minute >= 50 and minute <= 80:  # Solo se è 0-0, non se c'è già 1 gol
+            # 🚫 FIX: Aumentato minuto minimo da 50' a 65' per Under 1.5 sullo 0-0 (più conservativo)
+            if total_goals == 0 and minute >= 65 and minute <= 80:  # Solo se è 0-0, non se c'è già 1 gol
                 shots_per_minute = total_shots / minute if minute > 0 else 0
                 if shots_per_minute < 0.2 and total_shots < 15:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'under_1.5') if self.ai_pipeline else 0
@@ -1299,10 +1382,15 @@ class LiveBettingAdvisor:
                     opportunities.append(opportunity)
             
             # UNDER 2.5: Partita chiusa, max 2 gol
+            # 🚫 FIX: Blocca Under 2.5 se c'è già 1 gol e siamo prima del 30' (troppo rischioso)
             elif total_goals <= 2 and minute >= 60 and minute <= 85:
-                shots_per_minute = total_shots / minute if minute > 0 else 0
-                if shots_per_minute < 0.25 and total_shots < 20:
-                    ai_boost = self._get_ai_market_confidence(match_data, live_data, 'under_2.5') if self.ai_pipeline else 0
+                # Se c'è già 1 gol (1-0 o 0-1) e siamo prima del 30', è troppo rischioso - salta
+                if total_goals == 1 and minute < 30:
+                    pass  # Salta questa opportunità
+                else:
+                    shots_per_minute = total_shots / minute if minute > 0 else 0
+                    if shots_per_minute < 0.25 and total_shots < 20:
+                        ai_boost = self._get_ai_market_confidence(match_data, live_data, 'under_2.5') if self.ai_pipeline else 0
                     base_confidence = 72 + (minute - 60) * 0.4
                     confidence = min(91, base_confidence + ai_boost)
                     
@@ -1492,7 +1580,39 @@ class LiveBettingAdvisor:
             red_cards_away = live_data.get('red_cards_away', 0)
             
             if minute >= 25 and minute <= 80:  # Ridotto a 80' invece di 70'
-                if (score_home > 0 and score_away == 0) or (score_home == 0 and score_away > 0):
+                # 🆕 NUOVO: BTTS per partite 0-0 (entrambe hanno tiri in porta, partita aperta)
+                if score_home == 0 and score_away == 0:
+                    # Entrambe hanno tiri in porta e partita è aperta
+                    if shots_on_target_home >= 1 and shots_on_target_away >= 1:
+                        total_shots = live_data.get('shots_home', 0) + live_data.get('shots_away', 0)
+                        shots_per_minute = total_shots / minute if minute > 0 else 0
+                        # Partita aperta: almeno 0.2 tiri/minuto
+                        if shots_per_minute >= 0.2:
+                            ai_boost = self._get_ai_market_confidence(match_data, live_data, 'btts_yes') if self.ai_pipeline else 0
+                            # Confidence aumenta con minuto e tiri in porta
+                            base_confidence = 65 + min(15, (minute - 25) * 0.3) + min(10, (shots_on_target_home + shots_on_target_away) * 2)
+                            confidence = min(85, base_confidence + ai_boost)
+                            
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation='btts_yes_0_0', market='btts_yes',
+                                recommendation="Punta Both Teams To Score (BTTS) - Sì (0-0 aperta)",
+                                reasoning=(
+                                    f"🎯 BTTS 0-0 OPPORTUNITY!\n\n"
+                                    f"• Score: 0-0 al {minute}'\n"
+                                    f"• Partita APERTA:\n"
+                                    f"  - Casa: {shots_on_target_home} tiri in porta\n"
+                                    f"  - Ospite: {shots_on_target_away} tiri in porta\n"
+                                    f"  - Media: {shots_per_minute:.2f} tiri/min\n"
+                                    f"• Entrambe le squadre stanno creando occasioni\n"
+                                    f"• Alta probabilità che entrambe segnino"
+                                ),
+                                confidence=confidence, odds=2.1, stake_suggestion=2.0,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
+                
+                elif (score_home > 0 and score_away == 0) or (score_home == 0 and score_away > 0):
                     # 🔧 FILTRO: Se la squadra che deve ancora segnare ha cartellino rosso, NON generare BTTS
                     if score_home > 0 and score_away == 0 and red_cards_away > 0:
                         logger.debug(f"⏭️  BTTS Yes non generato: ospite ha {red_cards_away} cartellino/i rosso/i (10 uomini) - meno probabilità di segnare")
@@ -1748,7 +1868,8 @@ class LiveBettingAdvisor:
             total_shots = shots_home + shots_away
             
             # Odd: Se gol dispari e partita chiusa
-            if total_goals % 2 == 1 and minute >= 60 and minute <= 85:
+            # 🚫 FIX: Limita a 80 minuti (oltre è banale)
+            if total_goals % 2 == 1 and minute >= 60 and minute <= 80:
                 shots_per_minute = total_shots / minute if minute > 0 else 0
                 if shots_per_minute < 0.25:  # Partita chiusa
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'total_goals_odd') if self.ai_pipeline else 0
@@ -2046,31 +2167,31 @@ class LiveBettingAdvisor:
                 if red_cards_away > 0:
                     logger.debug(f"⏭️  Team to Score Next Away non generato: ospite ha {red_cards_away} cartellino/i rosso/i (10 uomini)")
                 else:
-                possession_away = 100 - possession_home
-                if (score_away < score_home and possession_away > 55 and shots_on_target_away >= 2) or \
-                   (score_home == score_away and possession_away > 60 and shots_away > shots_home * 1.3):
-                    ai_boost = self._get_ai_market_confidence(match_data, live_data, 'team_to_score_next_away') if self.ai_pipeline else 0
-                    # 🆕 OTTIMIZZATO: Aumentata confidence base per mercato rischioso
-                    confidence = 75 + ai_boost
-                    
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                            situazione='team_to_score_next_away', market='team_to_score_next_away',
-                        recommendation=f"Punta {match_data.get('away')} segna prossimo gol",
-                        reasoning=(
-                            f"🎯 SQUADRA CHE SEGNA PROSSIMO GOL!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• {match_data.get('away')}:\n"
-                            f"  - Possesso: {possession_away}%\n"
-                            f"  - Tiri in porta: {shots_on_target_away}\n"
-                            f"  - {'In svantaggio, spinge' if score_away < score_home else 'Domina'}\n"
-                            f"• Alta probabilità prossimo gol\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        confidence=confidence, odds=2.2, stake_suggestion=2.5,
-                        timestamp=datetime.now()
-                    )
-                    opportunities.append(opportunity)
+                    possession_away = 100 - possession_home
+                    if (score_away < score_home and possession_away > 55 and shots_on_target_away >= 2) or \
+                       (score_home == score_away and possession_away > 60 and shots_away > shots_home * 1.3):
+                        ai_boost = self._get_ai_market_confidence(match_data, live_data, 'team_to_score_next_away') if self.ai_pipeline else 0
+                        # 🆕 OTTIMIZZATO: Aumentata confidence base per mercato rischioso
+                        confidence = 75 + ai_boost
+                        
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='team_to_score_next_away', market='team_to_score_next_away',
+                            recommendation=f"Punta {match_data.get('away')} segna prossimo gol",
+                            reasoning=(
+                                f"🎯 SQUADRA CHE SEGNA PROSSIMO GOL!\n\n"
+                                f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                f"• {match_data.get('away')}:\n"
+                                f"  - Possesso: {possession_away}%\n"
+                                f"  - Tiri in porta: {shots_on_target_away}\n"
+                                f"  - {'In svantaggio, spinge' if score_away < score_home else 'Domina'}\n"
+                                f"• Alta probabilità prossimo gol\n"
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=2.2, stake_suggestion=2.5,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
                     
         except Exception as e:
             logger.debug(f"⚠️  Errore check team to score next markets: {e}")
@@ -3175,7 +3296,12 @@ class LiveBettingAdvisor:
             goal_diff = abs(score_home - score_away)
             
             # 🆕 FILTRO ANTI-OVVIETÀ: Solo se partita non decisa e non troppo tardi
+            # 🚫 FIX: Blocca win_either_half sullo 0-0 dopo 60' (troppo tardi)
+            total_goals = score_home + score_away
             if goal_diff <= 2 and minute >= 20 and minute <= 75:
+                # Se è 0-0, blocca dopo 60' (troppo tardo per essere utile)
+                if total_goals == 0 and minute > 60:
+                    return opportunities
                 # Home domina ma non vince nettamente
                 if possession_home > 60 and shots_home > shots_away * 1.5 and score_home <= score_away + 1:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'win_either_half_home') if self.ai_pipeline else 0
@@ -3839,14 +3965,14 @@ class LiveBettingAdvisor:
                     logger.debug(f"⏭️  Saltata opportunità banale: Under 3.5 quando è {score_home}-{score_away} all'{minute}'")
                     continue
                 if minute >= 78 and total_goals <= 2:
+                    logger.debug(f"⏭️  Saltata opportunità banale: Under 3.5 quando è {score_home}-{score_away} (solo {total_goals} gol) al {minute}' - troppo ovvio")
+                    continue
             
             # 🚫 NUOVO FILTRO: Over 3.5 troppo aggressivo ai minuti avanzati (oltre 70')
             if 'over_3.5' in market:
                 total_goals = score_home + score_away
-                if minute >= 70:
+                if minute > 70:
                     logger.debug(f"⏭️  Saltata opportunità troppo aggressiva: Over 3.5 al {minute}' (troppo tardi, rischioso)")
-                    continue
-                    logger.debug(f"⏭️  Saltata opportunità banale: Under 3.5 quando è {score_home}-{score_away} (solo {total_goals} gol) al {minute}' - troppo ovvio")
                     continue
             
             # FILTRO 10: Under 2.5 quando è 2-0 all'85' (BANALE!)
@@ -4108,7 +4234,7 @@ class LiveBettingAdvisor:
                     continue
                 if minute >= 80:
                     logger.debug(f"⏭️  Saltata opportunità banale: Segna gol Trasferta al {minute}' (troppo tardi)")
-                        continue
+                    continue
             
             # 🆕 FILTRO 28: Time of Next Goal quando è troppo tardi (oltre 85')
             if 'next_goal' in market and minute >= 85:
@@ -5285,8 +5411,8 @@ class LiveBettingAdvisor:
         if hasattr(opportunity, 'ev') and opportunity.ev is not None:
             ev_sign = "+" if opportunity.ev >= 0 else ""
             message += f" | EV: {ev_sign}{opportunity.ev:.1f}%\n"
-                else:
-                    message += "\n"
+        else:
+            message += "\n"
         
         # Statistiche essenziali (sempre visibili se abbiamo dati)
         if stats:
