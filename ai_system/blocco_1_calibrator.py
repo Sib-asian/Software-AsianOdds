@@ -18,7 +18,7 @@ Output: probabilità calibrata + incertezza
 import logging
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
 from pathlib import Path
 import joblib
 import json
@@ -34,6 +34,13 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
     logging.warning("⚠️ PyTorch not available. Install with: pip install torch")
+
+# For type hints only
+if TYPE_CHECKING:
+    try:
+        import torch
+    except ImportError:
+        pass
 
 from .config import AIConfig
 
@@ -400,8 +407,8 @@ class ProbabilityCalibrator:
 
     def _calculate_metrics(
         self,
-        X: torch.Tensor,
-        y: torch.Tensor
+        X: "torch.Tensor",
+        y: "torch.Tensor"
     ) -> Dict[str, float]:
         """Calcola metriche di performance"""
         self.model.eval()
