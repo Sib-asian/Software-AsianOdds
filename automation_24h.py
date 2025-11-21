@@ -1479,13 +1479,16 @@ class Automation24H:
                     )
                     
                     # Normalizza Quality Score (0-100 -> 0-1)
-                    quality_score_normalized = quality_score_obj.total_score / 100.0
-                    
-                    # 🆕 Salva in cache per evitare doppio calcolo
-                    minute = live_data.get('minute', 0)
-                    minute_rounded = (minute // 5) * 5
-                    opp_key = f"{match_id}_{market}_{minute_rounded}"
-                    self.quality_score_cache[opp_key] = quality_score_obj
+                    if quality_score_obj:
+                        quality_score_normalized = quality_score_obj.total_score / 100.0
+                        # 🆕 Salva in cache per evitare doppio calcolo
+                        minute = live_data.get('minute', 0)
+                        minute_rounded = (minute // 5) * 5
+                        opp_key = f"{match_id}_{market}_{minute_rounded}"
+                        self.quality_score_cache[opp_key] = quality_score_obj
+                    else:
+                        logger.warning(f"⚠️  quality_score_obj è None per {match_id}/{market}, uso default 0.5")
+                        quality_score_normalized = 0.5
                     
                 except Exception as e:
                     logger.debug(f"⚠️  Errore calcolo Quality Score per {match_id}/{market}: {e}")
@@ -1608,7 +1611,10 @@ class Automation24H:
         quality_score = None
         if opp_key in self.quality_score_cache:
             quality_score = self.quality_score_cache[opp_key]
-            logger.debug(f"✅ Quality Score da cache per {opp_key}: {quality_score.total_score:.1f}/100")
+            if quality_score:
+                logger.debug(f"✅ Quality Score da cache per {opp_key}: {quality_score.total_score:.1f}/100")
+            else:
+                logger.debug(f"⚠️  Quality Score in cache è None per {opp_key}")
         else:
             # Calcola Quality Score se non in cache
             try:
@@ -1666,35 +1672,60 @@ class Automation24H:
                 
                 # Valida qualità segnale (solo se Signal Quality Gate è disponibile)
                 if self.signal_quality_gate:
-                    should_send, quality_score = self.signal_quality_gate.should_send_signal(
-                        opportunity=opportunity,
-                        match_data=match_data,
-                        live_data=live_data
-                    )
+                    try:
+                        should_send, quality_score = self.signal_quality_gate.should_send_signal(
+                            opportunity=opportunity,
+                            match_data=match_data,
+                            live_data=live_data
+                        )
+                        # Verifica che quality_score sia valido
+                        if quality_score is not None and not hasattr(quality_score, 'total_score'):
+                            logger.error(f"❌ quality_score non ha attributo total_score: {type(quality_score)}")
+                            quality_score = None
+                    except Exception as e:
+                        logger.error(f"❌ Errore durante should_send_signal: {e}", exc_info=True)
+                        should_send = True
+                        quality_score = None
                 else:
                     # Se Signal Quality Gate non disponibile, approva sempre
                     should_send = True
                     quality_score = None
                 
-                # Salva in cache
-                self.quality_score_cache[opp_key] = quality_score
+                # Salva in cache solo se quality_score è valido
+                if quality_score is not None:
+                    self.quality_score_cache[opp_key] = quality_score
                 
             except ImportError as e:
                 logger.warning(f"⚠️  Signal Quality Gate non disponibile: {e}")
+                quality_score = None
             except Exception as e:
-                logger.error(f"❌ Errore Signal Quality Gate: {e}")
+                logger.error(f"❌ Errore Signal Quality Gate: {e}", exc_info=True)
+                quality_score = None
                 # In caso di errore, continua comunque (non bloccare tutto il sistema)
         
         # Valida Quality Score se disponibile
-        if quality_score:
+        if quality_score is not None:
+            # Verifica che quality_score abbia gli attributi necessari
+            if not hasattr(quality_score, 'total_score'):
+                logger.error(f"❌ quality_score non ha attributo total_score: {type(quality_score)}")
+                quality_score = None
+            elif not hasattr(quality_score, 'is_approved'):
+                logger.error(f"❌ quality_score non ha attributo is_approved: {type(quality_score)}")
+                quality_score = None
+        
+        if quality_score is not None:
             should_send = quality_score.is_approved
             if not should_send:
-                logger.info(
-                    f"⏭️  Segnale {match_id}/{market} BLOCCATO da Signal Quality Gate "
-                    f"(score: {quality_score.total_score:.1f}/100, min: 75.0)"
-                )
-                if quality_score.reasons:
-                    logger.info(f"   Motivi blocco: {', '.join(quality_score.reasons)}")
+                try:
+                    score_value = quality_score.total_score if hasattr(quality_score, 'total_score') else 0.0
+                    logger.info(
+                        f"⏭️  Segnale {match_id}/{market} BLOCCATO da Signal Quality Gate "
+                        f"(score: {score_value:.1f}/100, min: 75.0)"
+                    )
+                    if hasattr(quality_score, 'reasons') and quality_score.reasons:
+                        logger.info(f"   Motivi blocco: {', '.join(quality_score.reasons)}")
+                except Exception as e:
+                    logger.error(f"❌ Errore durante logging blocco segnale: {e}", exc_info=True)
                 return
         
         # 🔧 MIGLIORATO: Evita duplicati usando match_id + market + minuto
