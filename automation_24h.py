@@ -478,37 +478,51 @@ class Automation24H:
                     if signals_with_results >= threshold:
                         current_threshold = threshold
                 
-                # 🆕 Notifica se nuovo segnale registrato
+                # 🆕 Notifica se nuovo segnale registrato (con statistiche database)
                 if total_signals > self.last_signal_count and self.notifier:
                     new_signals = total_signals - self.last_signal_count
                     try:
-                        # Recupera ultimi segnali registrati
+                        # Recupera statistiche complete
                         conn = sqlite3.connect(self.signal_quality_learner.db_path)
                         cursor = conn.cursor()
+                        
+                        # Conta approvati e bloccati
+                        cursor.execute("SELECT COUNT(*) FROM signal_records WHERE was_approved = 1")
+                        approved_count = cursor.fetchone()[0]
+                        cursor.execute("SELECT COUNT(*) FROM signal_records WHERE was_approved = 0")
+                        blocked_count = cursor.fetchone()[0]
+                        
+                        # Recupera ultimi segnali registrati
                         cursor.execute("""
                             SELECT match_id, market, was_approved, quality_score, notified_at
                             FROM signal_records
                             ORDER BY notified_at DESC
                             LIMIT ?
-                        """, (new_signals,))
+                        """, (min(new_signals, 3),))  # Max 3 segnali per notifica
                         recent_signals = cursor.fetchall()
                         conn.close()
                         
-                        for signal in recent_signals:
-                            match_id, market, was_approved, quality_score, notified_at = signal
-                            status = "✅ APPROVATO" if was_approved else "❌ BLOCCATO"
-                            message = (
-                                f"📝 <b>IA: Nuovo Segnale Registrato</b>\n\n"
-                                f"⚽ Match: {match_id}\n"
-                                f"📊 Mercato: {market}\n"
-                                f"🎯 Status: {status}\n"
-                                f"⭐ Quality Score: {quality_score:.1f}/100\n"
-                                f"📈 Progresso: {signals_with_results}/50 segnali con risultati"
-                            )
-                            self.notifier._send_message(message, parse_mode="HTML")
-                            logger.info(f"📝 Notifica nuovo segnale: {match_id}/{market} ({status})")
+                        # Notifica con statistiche complete
+                        message = (
+                            f"📊 <b>IA: Statistiche Database</b>\n\n"
+                            f"📈 Totale segnali: <b>{total_signals}</b>\n"
+                            f"✅ Approvati: {approved_count}\n"
+                            f"❌ Bloccati: {blocked_count}\n"
+                            f"⏳ In attesa risultati: {signals_pending}\n"
+                            f"✅ Con risultati: {signals_with_results}/50\n\n"
+                        )
+                        
+                        if recent_signals:
+                            message += f"📝 Ultimi {len(recent_signals)} segnali:\n"
+                            for signal in recent_signals:
+                                match_id, market, was_approved, quality_score, notified_at = signal
+                                status = "✅" if was_approved else "❌"
+                                message += f"{status} {match_id[:20]}/{market} (QS: {quality_score:.1f})\n"
+                        
+                        self.notifier._send_message(message, parse_mode="HTML")
+                        logger.info(f"📊 Notifica statistiche database: {total_signals} totali ({approved_count} approvati, {blocked_count} bloccati)")
                     except Exception as e:
-                        logger.debug(f"⚠️  Errore notifica nuovo segnale: {e}")
+                        logger.debug(f"⚠️  Errore notifica statistiche database: {e}")
                     
                     self.last_signal_count = total_signals
                 
@@ -1737,6 +1751,11 @@ class Automation24H:
                 quality_score = None
         
         # 🆕 FIX: Registra segnale PRIMA del controllo should_send (così anche i bloccati vengono registrati)
+        if not hasattr(self, 'signal_quality_learner'):
+            logger.warning(f"⚠️  signal_quality_learner non esiste come attributo")
+        elif self.signal_quality_learner is None:
+            logger.warning(f"⚠️  signal_quality_learner è None")
+        
         if hasattr(self, 'signal_quality_learner') and self.signal_quality_learner:
             try:
                 # Usa quality_score dalla cache o quello appena calcolato
@@ -2198,15 +2217,49 @@ class Automation24H:
                                             cursor = conn.cursor()
                                             cursor.execute("SELECT COUNT(*) FROM signal_records WHERE was_correct IS NOT NULL")
                                             total_with_results = cursor.fetchone()[0]
+                                            
+                                            # Conta quanti erano corretti e quanti sbagliati
+                                            cursor.execute("SELECT COUNT(*) FROM signal_records WHERE match_id = ? AND was_correct = 1", (match_id,))
+                                            correct_count = cursor.fetchone()[0]
+                                            cursor.execute("SELECT COUNT(*) FROM signal_records WHERE match_id = ? AND was_correct = 0", (match_id,))
+                                            wrong_count = cursor.fetchone()[0]
+                                            
+                                            # Conta totale segnali per questa partita
+                                            cursor.execute("SELECT COUNT(*) FROM signal_records WHERE match_id = ?", (match_id,))
+                                            total_match_signals = cursor.fetchone()[0]
+                                            
                                             conn.close()
                                             
-                                            self.notifier._send_message(
-                                                f"📊 <b>IA: Risultato Aggiornato</b>\n\n"
-                                                f"⚽ {home_team} {result.home_score}-{result.away_score} {away_team}\n"
-                                                f"📈 Aggiornati {updated_count} segnali\n"
-                                                f"✅ Progresso: {total_with_results}/50 segnali con risultati",
-                                                parse_mode="HTML"
+                                            # Calcola percentuale corretti
+                                            correct_percent = (correct_count / total_match_signals * 100) if total_match_signals > 0 else 0
+                                            
+                                            message = (
+                                                f"⚽ <b>IA: Partita Finita - Risultati Aggiornati</b>\n\n"
+                                                f"🏆 {home_team} {result.home_score}-{result.away_score} {away_team}\n\n"
+                                                f"📊 <b>Segnali per questa partita:</b>\n"
+                                                f"   • Totale: {total_match_signals}\n"
+                                                f"   • ✅ Corretti: {correct_count} ({correct_percent:.1f}%)\n"
+                                                f"   • ❌ Sbagliati: {wrong_count}\n"
+                                                f"   • Aggiornati: {updated_count}\n\n"
+                                                f"📈 <b>Progresso Apprendimento:</b>\n"
+                                                f"   • Segnali con risultati: {total_with_results}/50\n"
                                             )
+                                            
+                                            # Aggiungi barra progresso
+                                            progress_percent = (total_with_results / 50 * 100) if 50 > 0 else 0
+                                            bar_length = 20
+                                            filled = int(progress_percent / 100 * bar_length)
+                                            bar = "█" * filled + "░" * (bar_length - filled)
+                                            message += f"   <code>{bar}</code> {progress_percent:.0f}%\n\n"
+                                            
+                                            if total_with_results >= 50:
+                                                message += "🎉 <b>Pronto per apprendimento automatico!</b>"
+                                            else:
+                                                remaining = 50 - total_with_results
+                                                message += f"⏳ Mancano {remaining} segnali per iniziare l'apprendimento"
+                                            
+                                            self.notifier._send_message(message, parse_mode="HTML")
+                                            logger.info(f"📊 Notifica risultato partita: {home_team} {result.home_score}-{result.away_score} {away_team} - {correct_count}/{total_match_signals} corretti")
                                         except Exception as e:
                                             logger.debug(f"⚠️  Errore notifica aggiornamento risultato: {e}")
                         except Exception as e:
