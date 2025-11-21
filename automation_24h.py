@@ -1479,13 +1479,16 @@ class Automation24H:
                     )
                     
                     # Normalizza Quality Score (0-100 -> 0-1)
-                    quality_score_normalized = quality_score_obj.total_score / 100.0
-                    
-                    # 🆕 Salva in cache per evitare doppio calcolo
-                    minute = live_data.get('minute', 0)
-                    minute_rounded = (minute // 5) * 5
-                    opp_key = f"{match_id}_{market}_{minute_rounded}"
-                    self.quality_score_cache[opp_key] = quality_score_obj
+                    if quality_score_obj:
+                        quality_score_normalized = quality_score_obj.total_score / 100.0
+                        # 🆕 Salva in cache per evitare doppio calcolo
+                        minute = live_data.get('minute', 0)
+                        minute_rounded = (minute // 5) * 5
+                        opp_key = f"{match_id}_{market}_{minute_rounded}"
+                        self.quality_score_cache[opp_key] = quality_score_obj
+                    else:
+                        logger.warning(f"⚠️  quality_score_obj è None per {match_id}/{market}, uso default 0.5")
+                        quality_score_normalized = 0.5
                     
                 except Exception as e:
                     logger.debug(f"⚠️  Errore calcolo Quality Score per {match_id}/{market}: {e}")
@@ -1608,7 +1611,10 @@ class Automation24H:
         quality_score = None
         if opp_key in self.quality_score_cache:
             quality_score = self.quality_score_cache[opp_key]
-            logger.debug(f"✅ Quality Score da cache per {opp_key}: {quality_score.total_score:.1f}/100")
+            if quality_score:
+                logger.debug(f"✅ Quality Score da cache per {opp_key}: {quality_score.total_score:.1f}/100")
+            else:
+                logger.debug(f"⚠️  Quality Score in cache è None per {opp_key}")
         else:
             # Calcola Quality Score se non in cache
             try:
@@ -1681,8 +1687,10 @@ class Automation24H:
                 
             except ImportError as e:
                 logger.warning(f"⚠️  Signal Quality Gate non disponibile: {e}")
+                quality_score = None
             except Exception as e:
-                logger.error(f"❌ Errore Signal Quality Gate: {e}")
+                logger.error(f"❌ Errore Signal Quality Gate: {e}", exc_info=True)
+                quality_score = None
                 # In caso di errore, continua comunque (non bloccare tutto il sistema)
         
         # Valida Quality Score se disponibile
