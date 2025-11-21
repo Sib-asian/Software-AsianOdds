@@ -4790,6 +4790,182 @@ class LiveBettingAdvisor:
         
         return alternatives
 
+    def _calculate_statistical_quality_multiplier(
+        self,
+        market_type: str,
+        minute: int,
+        live_data: Dict[str, Any]
+    ) -> float:
+        """
+        🎯 NUOVO: Calcola un moltiplicatore basato sulle statistiche live reali.
+
+        Analizza:
+        - Tiri totali e tiri in porta
+        - Possesso palla
+        - Dangerous attacks
+        - xG (Expected Goals)
+
+        Returns:
+            Moltiplicatore da 0.5 (partita morta) a 1.2 (partita apertissima)
+        """
+        # Estrai statistiche live (supporta entrambi i formati di naming)
+        shots_home = live_data.get('shots_home', 0) or live_data.get('home_total_shots', 0)
+        shots_away = live_data.get('shots_away', 0) or live_data.get('away_total_shots', 0)
+        sot_home = live_data.get('shots_on_target_home', 0) or live_data.get('home_shots_on_target', 0)
+        sot_away = live_data.get('shots_on_target_away', 0) or live_data.get('away_shots_on_target', 0)
+        possession_home = live_data.get('possession_home') or live_data.get('home_possession')
+        possession_away = live_data.get('possession_away') or live_data.get('away_possession')
+        dangerous_attacks_home = live_data.get('dangerous_attacks_home', 0) or live_data.get('home_dangerous_attacks', 0)
+        dangerous_attacks_away = live_data.get('dangerous_attacks_away', 0) or live_data.get('away_dangerous_attacks', 0)
+        xg_home = live_data.get('home_xg', 0.0)
+        xg_away = live_data.get('away_xg', 0.0)
+
+        # Se non abbiamo statistiche, restituisci 1.0 (neutro)
+        total_shots = shots_home + shots_away
+        total_sot = sot_home + sot_away
+        if total_shots == 0 and total_sot == 0:
+            return 1.0  # Nessuna statistica disponibile
+
+        # Normalizza market type
+        market = market_type.lower().strip()
+
+        # === CALCOLA INDICATORI DI APERTURA PARTITA ===
+
+        # 1. Tiri per minuto (più tiri = partita più aperta)
+        if minute > 0:
+            shots_per_minute = total_shots / minute
+        else:
+            shots_per_minute = 0
+
+        # 2. Tiri in porta per minuto
+        if minute > 0:
+            sot_per_minute = total_sot / minute
+        else:
+            sot_per_minute = 0
+
+        # 3. Qualità degli attacchi (% tiri in porta su tiri totali)
+        if total_shots > 0:
+            shot_accuracy = (total_sot / total_shots) * 100
+        else:
+            shot_accuracy = 0
+
+        # 4. Bilanciamento partita (quanto è equilibrata)
+        if shots_home + shots_away > 0:
+            balance_score = min(shots_home, shots_away) / max(shots_home, shots_away) if max(shots_home, shots_away) > 0 else 1.0
+        else:
+            balance_score = 1.0
+
+        # 5. Expected Goals totali (quanto è pericolosa la partita)
+        total_xg = xg_home + xg_away
+
+        # === CALCOLA MULTIPLIER PER MERCATO SPECIFICO ===
+
+        # MERCATI OVER (vogliamo partite aperte con tanti tiri)
+        if 'over' in market and 'under' not in market:
+            multiplier = 1.0
+
+            # Tiri per minuto (ideale: >0.3)
+            if shots_per_minute >= 0.4:
+                multiplier += 0.15  # Moltissimi tiri
+            elif shots_per_minute >= 0.3:
+                multiplier += 0.10
+            elif shots_per_minute >= 0.2:
+                multiplier += 0.05
+            elif shots_per_minute < 0.15:
+                multiplier -= 0.25  # Pochissimi tiri
+
+            # Tiri in porta per minuto (ideale: >0.15)
+            if sot_per_minute >= 0.2:
+                multiplier += 0.10
+            elif sot_per_minute >= 0.15:
+                multiplier += 0.05
+            elif sot_per_minute < 0.05:
+                multiplier -= 0.15
+
+            # xG totali (ideale: >2.0)
+            if total_xg >= 3.0:
+                multiplier += 0.10
+            elif total_xg >= 2.0:
+                multiplier += 0.05
+            elif total_xg < 0.8:
+                multiplier -= 0.15
+
+            # Dangerous attacks
+            total_dangerous = dangerous_attacks_home + dangerous_attacks_away
+            if total_dangerous > minute * 0.5 and minute > 0:  # >0.5 dangerous per minuto
+                multiplier += 0.05
+
+            # Clamp tra 0.5 e 1.2
+            return max(0.5, min(1.2, multiplier))
+
+        # MERCATI UNDER (vogliamo partite chiuse con pochi tiri)
+        elif 'under' in market:
+            multiplier = 1.0
+
+            # Pochi tiri = buono per under
+            if shots_per_minute < 0.15:
+                multiplier += 0.15
+            elif shots_per_minute < 0.2:
+                multiplier += 0.10
+            elif shots_per_minute >= 0.35:
+                multiplier -= 0.20
+
+            # Pochi tiri in porta = buono per under
+            if sot_per_minute < 0.05:
+                multiplier += 0.10
+            elif sot_per_minute < 0.10:
+                multiplier += 0.05
+            elif sot_per_minute >= 0.20:
+                multiplier -= 0.15
+
+            # xG bassi = buono per under
+            if total_xg < 0.8:
+                multiplier += 0.10
+            elif total_xg < 1.2:
+                multiplier += 0.05
+            elif total_xg >= 2.5:
+                multiplier -= 0.15
+
+            return max(0.5, min(1.2, multiplier))
+
+        # MERCATI BTTS (vogliamo entrambe le squadre pericolose)
+        elif 'btts' in market:
+            multiplier = 1.0
+
+            # Entrambe le squadre devono tirare
+            if sot_home >= 1 and sot_away >= 1:
+                multiplier += 0.15  # Entrambe hanno tirato in porta
+            elif sot_home >= 1 or sot_away >= 1:
+                multiplier += 0.05  # Solo una ha tirato
+
+            # Bilanciamento (partita equilibrata favorisce BTTS)
+            if balance_score >= 0.7:  # Molto equilibrata
+                multiplier += 0.10
+            elif balance_score >= 0.5:
+                multiplier += 0.05
+            elif balance_score < 0.3:  # Molto sbilanciata
+                multiplier -= 0.15
+
+            # xG entrambe le squadre
+            if xg_home >= 0.5 and xg_away >= 0.5:
+                multiplier += 0.10
+            elif (xg_home >= 0.3 and xg_away < 0.2) or (xg_away >= 0.3 and xg_home < 0.2):
+                multiplier -= 0.10  # Solo una squadra è pericolosa
+
+            return max(0.5, min(1.2, multiplier))
+
+        # MERCATI GENERICI (possesso e tiri contano comunque)
+        else:
+            multiplier = 1.0
+
+            # Più attività = meglio (in generale)
+            if shots_per_minute >= 0.3:
+                multiplier += 0.10
+            elif shots_per_minute < 0.15:
+                multiplier -= 0.10
+
+            return max(0.8, min(1.1, multiplier))
+
     def _calculate_time_suitability(
         self,
         market_type: str,
@@ -4806,6 +4982,7 @@ class LiveBettingAdvisor:
         - Score attuale vs goal necessari per il mercato
         - Tempo rimanente per raggiungere l'obiettivo
         - Logica specifica per ogni tipo di mercato
+        - 🎯 Statistiche live reali (tiri, possesso, xG, dangerous attacks)
 
         Returns:
             Score da 0 a 100 che indica quanto il mercato è adatto ORA
@@ -4817,6 +4994,9 @@ class LiveBettingAdvisor:
 
         # Normalizza market type (lowercase, strip)
         market = market_type.lower().strip()
+
+        # 🎯 Variabile che conterrà il time suitability base (prima di applicare statistiche)
+        base_suitability = 75.0  # Default
 
         # === MERCATI PRIMO TEMPO (HT) ===
 
@@ -5037,6 +5217,32 @@ class LiveBettingAdvisor:
         # Per mercati non specificatamente gestiti, usa logica neutra
         return 75.0  # Default neutro
 
+    def _apply_statistical_multiplier_to_suitability(
+        self,
+        base_suitability: float,
+        market_type: str,
+        minute: int,
+        live_data: Dict[str, Any]
+    ) -> float:
+        """
+        🎯 Helper: Applica il statistical quality multiplier al base time suitability.
+
+        Questo wrappa il calcolo per evitare di duplicare codice in _calculate_time_suitability.
+        """
+        if base_suitability <= 0:
+            return 0.0  # Non ha senso applicare multiplier a 0
+
+        # Calcola multiplier basato su statistiche live
+        statistical_multiplier = self._calculate_statistical_quality_multiplier(
+            market_type=market_type,
+            minute=minute,
+            live_data=live_data
+        )
+
+        # Applica e clamp tra 0 e 100
+        final_suitability = base_suitability * statistical_multiplier
+        return max(0.0, min(100.0, final_suitability))
+
     def _get_diversity_bonus(self, market_type: str) -> float:
         """
         🎯 NUOVO: Calcola bonus/penalità basato su quanto un mercato è stato usato recentemente.
@@ -5131,15 +5337,24 @@ class LiveBettingAdvisor:
 
             # Se non abbiamo dati live, usa default neutro
             if minute == 0 and score_home == 0 and score_away == 0:
-                time_suitability = 75.0  # Default neutro se mancano dati
+                base_time_suitability = 75.0  # Default neutro se mancano dati
             else:
-                time_suitability = self._calculate_time_suitability(
+                # Calcola time suitability base (senza statistiche)
+                base_time_suitability = self._calculate_time_suitability(
                     market_type=opportunity.market,
                     minute=minute,
                     score_home=score_home,
                     score_away=score_away,
                     live_data=live_data
                 )
+
+            # 🎯 NUOVO: Applica statistical multiplier per considerare statistiche live reali
+            time_suitability = self._apply_statistical_multiplier_to_suitability(
+                base_suitability=base_time_suitability,
+                market_type=opportunity.market,
+                minute=minute,
+                live_data=live_data
+            )
         except Exception as e:
             logger.warning(f"⚠️  Errore calcolo time suitability per {opportunity.market}: {e}")
             time_suitability = 75.0  # Default neutro in caso di errore
