@@ -157,6 +157,7 @@ class Automation24H:
         self.notified_opportunities: Set[str] = set()  # Evita duplicati
         self.notified_opportunities_timestamps: Dict[str, datetime] = {}  # Timestamp delle notifiche
         self.notified_matches_timestamps: Dict[str, datetime] = {}  # Timestamp per partita (max 1 notifica ogni 30 min per partita)
+        self.last_global_notification_time: Optional[datetime] = None  # 🆕 Limite globale 10 minuti tra qualsiasi notifica
         # 🔧 OPZIONE 4: Tracking mercati già suggeriti per partita (per penalizzazione/bonus)
         self.match_markets_history: Dict[str, List[Dict[str, Any]]] = {}  # match_id -> lista di {market, timestamp}
         # 🆕 Cache Quality Score per evitare doppio calcolo
@@ -1759,7 +1760,8 @@ class Automation24H:
                         ev=getattr(live_opp, 'ev', 0.0)
                     )
                     status_text = "APPROVATO" if cached_quality_score.is_approved else "BLOCCATO"
-                    logger.info(f"📝 Segnale registrato nel database (ID: {record_id}): {match_id}/{market} - {status_text} (QS: {cached_quality_score.total_score:.1f})")
+                    source_text = "da cache" if opp_key in self.quality_score_cache else "calcolato"
+                    logger.info(f"📝 Segnale registrato nel database (ID: {record_id}): {match_id}/{market} - {status_text} (QS: {cached_quality_score.total_score:.1f}, {source_text})")
                 elif quality_score and hasattr(quality_score, 'total_score'):
                     # Quality score appena calcolato ma non in cache
                     record_id = self.signal_quality_learner.record_signal(
@@ -1832,6 +1834,13 @@ class Automation24H:
         
         # 🔧 FIX: Definisci 'now' prima di usarlo
         now = datetime.now()
+        
+        # 🆕 FIX: Limite globale 10 minuti tra qualsiasi notifica
+        if self.last_global_notification_time:
+            time_since_global = (now - self.last_global_notification_time).total_seconds() / 60
+            if time_since_global < 10:  # Blocco globale 10 minuti
+                logger.info(f"⏭️  Notifica globale bloccata: ultima notifica {time_since_global:.1f} minuti fa (minimo 10 minuti richiesti)")
+                return
         
         # 🆕 NUOVO: Blocca partita per 15 minuti (max 1 notifica ogni 15 minuti per partita)
         if match_id in self.notified_matches_timestamps:
@@ -1914,6 +1923,7 @@ class Automation24H:
                         self.notified_opportunities.add(opp_key)
                         self.notified_opportunities_timestamps[opp_key] = datetime.now()
                         self.notified_matches_timestamps[match_id] = datetime.now()  # Traccia anche per partita
+                        self.last_global_notification_time = datetime.now()  # 🆕 Aggiorna timestamp globale
                         
                         # 🔧 OPZIONE 4: Traccia mercato suggerito per questa partita
                         if match_id not in self.match_markets_history:
