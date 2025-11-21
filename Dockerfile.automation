@@ -38,8 +38,8 @@ RUN mkdir -p ./ai_system/utils
 # Copia tutto ai_system (COPY fallisce silenziosamente se directory non esiste)
 COPY ai_system/ ./ai_system/
 
-# Rimuovi file non necessari da ai_system
-RUN rm -rf ./ai_system/models ./ai_system/training ./ai_system/data ./ai_system/analysis 2>/dev/null || true && \
+# Rimuovi file non necessari da ai_system (mantieni models/ per i file Python)
+RUN rm -rf ./ai_system/training ./ai_system/data ./ai_system/analysis 2>/dev/null || true && \
     find ./ai_system -type f \( -name "*.md" -o -name "*.pkl" -o -name "*.pth" -o -name "*.h5" -o -name "*.model" -o -name "*.csv" -o -name "*.jsonl" -o -name "*.json" ! -name "*.example.json" \) -delete 2>/dev/null || true && \
     find ./ai_system -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
     find ./ai_system -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
