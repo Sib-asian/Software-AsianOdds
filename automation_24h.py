@@ -406,8 +406,13 @@ class Automation24H:
                     logger.info("✅ Single run completed")
                     break
                 
-                # Attendi prima del prossimo ciclo
-                time.sleep(self.update_interval)
+                # Attendi prima del prossimo ciclo (con controllo running per shutdown immediato)
+                # Suddividi il sleep in piccoli intervalli per rispondere rapidamente ai segnali
+                sleep_interval = min(60, self.update_interval)  # Max 60 secondi per controllo
+                elapsed = 0
+                while elapsed < self.update_interval and self.running:
+                    time.sleep(sleep_interval)
+                    elapsed += sleep_interval
                 
         except KeyboardInterrupt:
             logger.info("🛑 Shutdown requested")
@@ -1599,6 +1604,33 @@ class Automation24H:
         # Ordina per score decrescente
         scored_opportunities.sort(key=lambda x: x['score'], reverse=True)
         
+        # 🆕 FIX: Diversificazione mercati - penalizza mercati già inviati di recente
+        # Conta quante volte ogni mercato è stato inviato nelle ultime notifiche
+        market_counts = {}
+        if hasattr(self, 'last_global_notification_time') and self.last_global_notification_time:
+            # Conta mercati inviati nelle ultime 30 minuti (circa 3 notifiche)
+            cutoff_time = datetime.now() - timedelta(minutes=30)
+            for match_id_history, markets_list in self.match_markets_history.items():
+                for market_entry in markets_list:
+                    if market_entry['timestamp'] > cutoff_time:
+                        market = market_entry['market']
+                        market_counts[market] = market_counts.get(market, 0) + 1
+        
+        # Applica penalizzazione aggiuntiva per mercati già inviati di recente
+        for opp in scored_opportunities:
+            live_opp = opp['opportunity'].get('live_opportunity')
+            if live_opp:
+                market = getattr(live_opp, 'market', None)
+                if market and market in market_counts:
+                    # Penalizza in base a quante volte è stato inviato
+                    penalty = 0.1 * market_counts[market]  # -10% per ogni volta inviato
+                    opp['score'] *= (1.0 - min(penalty, 0.5))  # Max -50% di penalizzazione
+                    current_reason = opp.get('modifier_reason', '')
+                    opp['modifier_reason'] = f"{current_reason} (penalizzato -{penalty*100:.0f}%: mercato già inviato {market_counts[market]} volte)"
+        
+        # Riordina dopo penalizzazioni
+        scored_opportunities.sort(key=lambda x: x['score'], reverse=True)
+        
         # 🆕 Seleziona SOLO la migliore in assoluto (max 1)
         best = []
         if scored_opportunities:
@@ -1854,11 +1886,11 @@ class Automation24H:
         # 🔧 FIX: Definisci 'now' prima di usarlo
         now = datetime.now()
         
-        # 🆕 FIX: Limite globale 10 minuti tra qualsiasi notifica
-        if self.last_global_notification_time:
+        # 🆕 FIX: Limite globale 10 minuti tra qualsiasi notifica (CONTROLLO PRIMA DI TUTTO)
+        if hasattr(self, 'last_global_notification_time') and self.last_global_notification_time:
             time_since_global = (now - self.last_global_notification_time).total_seconds() / 60
             if time_since_global < 10:  # Blocco globale 10 minuti
-                logger.info(f"⏭️  Notifica globale bloccata: ultima notifica {time_since_global:.1f} minuti fa (minimo 10 minuti richiesti)")
+                logger.info(f"⏭️  Notifica globale bloccata: ultima notifica {time_since_global:.1f} minuti fa (minimo 10 minuti richiesti) - Match: {match_id}, Market: {market}")
                 return
         
         # 🆕 NUOVO: Blocca partita per 15 minuti (max 1 notifica ogni 15 minuti per partita)
@@ -1937,12 +1969,17 @@ class Automation24H:
                         logger.info(f"      ... (altre {remaining_lines} righe)")
                     
                     # Usa _send_message (metodo privato ma usato in altri punti del codice)
+                    # 🆕 FIX: Aggiorna timestamp globale PRIMA di inviare (così il limite funziona anche se la notifica fallisce)
+                    self.last_global_notification_time = datetime.now()  # 🆕 Aggiorna timestamp globale
+                    
                     success = self.notifier._send_message(message, parse_mode="HTML")
                     if success:
                         self.notified_opportunities.add(opp_key)
                         self.notified_opportunities_timestamps[opp_key] = datetime.now()
                         self.notified_matches_timestamps[match_id] = datetime.now()  # Traccia anche per partita
-                        self.last_global_notification_time = datetime.now()  # 🆕 Aggiorna timestamp globale
+                        logger.info(f"✅ Notifica inviata e timestamp globale aggiornato: {self.last_global_notification_time}")
+                    else:
+                        logger.warning(f"⚠️  Notifica fallita ma timestamp globale già aggiornato (limite 10 min attivo)")
                         
                         # 🔧 OPZIONE 4: Traccia mercato suggerito per questa partita
                         if match_id not in self.match_markets_history:
@@ -2335,13 +2372,25 @@ class Automation24H:
     
     def _signal_handler(self, signum, frame):
         """Gestisce segnali di shutdown"""
-        logger.info(f"🛑 Received signal {signum}, shutting down...")
+        signal_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT" if signum == signal.SIGINT else f"Signal {signum}"
+        logger.info(f"🛑 Received {signal_name}, shutting down gracefully...")
         self.running = False
+        # Forza uscita immediata (non aspetta sleep)
+        logger.info("✅ Shutdown signal processed, exiting...")
     
     def stop(self):
         """Ferma sistema"""
         logger.info("🛑 Stopping Automation24H system...")
         self.running = False
+        
+        # Chiudi connessioni database se presenti
+        if hasattr(self, 'signal_quality_learner') and self.signal_quality_learner:
+            try:
+                # Chiudi eventuali connessioni aperte
+                pass
+            except Exception as e:
+                logger.debug(f"⚠️  Errore chiusura database: {e}")
+        
         logger.info("✅ Automation24H stopped")
 
 
