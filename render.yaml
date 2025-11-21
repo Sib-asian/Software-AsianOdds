@@ -6,6 +6,13 @@ services:
     dockerContext: .
     plan: starter  # Starter Plan ($7/mese) - necessario per 24/7
     region: frankfurt  # Scegli: frankfurt, london, oregon, singapore
+
+    # 🔧 PERSISTENT DISK per salvare database IA e risultati
+    disk:
+      name: automation-data
+      mountPath: /data
+      sizeGB: 1  # 1GB sufficiente per database IA
+
     envVars:
       # Variabili di sistema
       - key: PYTHONUNBUFFERED

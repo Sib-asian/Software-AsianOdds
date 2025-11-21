@@ -21,6 +21,12 @@ class BettingResultsTracker:
     """Traccia risultati scommesse e calcola performance"""
     
     def __init__(self, db_path: str = "betting_results.db"):
+        # Use /data persistent disk on Render if available
+        import os
+        if os.path.exists('/data') and os.path.isdir('/data'):
+            db_path = os.path.join('/data', os.path.basename(db_path))
+            logger.info(f"📁 Using persistent disk: {db_path}")
+
         self.db_path = db_path
         self._init_database()
     
