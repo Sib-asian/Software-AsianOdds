@@ -21,9 +21,10 @@ import time
 import signal
 import sys
 import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Any
 import argparse
 
 # Carica variabili d'ambiente da .env
@@ -128,9 +129,9 @@ class Automation24H:
         telegram_chat_id: Optional[str] = None,
         min_ev: float = 8.0,  # EV minimo 8%
         min_confidence: float = 70.0,  # Confidence minima 70%
-        update_interval: int = 300,  # 5 minuti (300 secondi)
-        api_budget_per_day: int = 100,
-        max_notifications_per_cycle: int = 2  # Max notifiche per ciclo (seleziona le migliori)
+        update_interval: int = 600,  # 10 minuti (600 secondi)
+        api_budget_per_day: int = 7500,  # Piano Pro: 7500 chiamate/giorno
+        max_notifications_per_cycle: int = 1  # Max notifiche per ciclo (solo la migliore in assoluto)
     ):
         self.config_path = config_path
         self.min_ev = min_ev
@@ -147,6 +148,17 @@ class Automation24H:
         self.notified_matches_timestamps: Dict[str, datetime] = {}  # Timestamp per partita (max 1 notifica ogni 30 min per partita)
         # 🔧 OPZIONE 4: Tracking mercati già suggeriti per partita (per penalizzazione/bonus)
         self.match_markets_history: Dict[str, List[Dict[str, Any]]] = {}  # match_id -> lista di {market, timestamp}
+        # 🆕 Cache Quality Score per evitare doppio calcolo
+        self.quality_score_cache: Dict[str, Any] = {}  # opp_key -> QualityScore
+        # 🆕 Signal Quality Gate (inizializzato lazy)
+        self.signal_quality_gate = None
+        # 🆕 Signal Quality Learner per apprendimento automatico
+        self.signal_quality_learner = None
+        self.last_learning_update = None
+        # 🆕 Tracking progresso apprendimento (per notifiche)
+        self.last_progress_notification = {}  # {threshold: datetime}
+        self.last_signal_count = 0  # Ultimo conteggio segnali per rilevare nuovi
+        self.start_time = datetime.now()  # Per calcolo stima giorni
         self.api_usage_today = 0
         self.last_api_reset = datetime.now().date()
         self.last_daily_report = datetime.now().date()
@@ -301,6 +313,15 @@ class Automation24H:
                 self.live_performance_tracker = None
                 self.live_betting_reports = None
             
+            # 🆕 Inizializza Signal Quality Learner per apprendimento automatico
+            try:
+                from ai_system.signal_quality_learner import SignalQualityLearner
+                self.signal_quality_learner = SignalQualityLearner()
+                logger.info("✅ Signal Quality Learner inizializzato per apprendimento automatico")
+            except Exception as e:
+                logger.warning(f"⚠️  Signal Quality Learner non disponibile: {e}")
+                self.signal_quality_learner = None
+            
             try:
                 self.match_filters = MatchFilters()
                 logger.info("✅ Match Filters initialized")
@@ -409,6 +430,207 @@ class Automation24H:
                     self.last_news_check = datetime.now()
                 except Exception as e:
                     logger.debug(f"⚠️  News check error: {e}")
+        
+        # 🆕 Controlla progresso apprendimento e invia notifiche
+        if self.signal_quality_learner:
+            try:
+                # Conta segnali con risultati
+                conn = sqlite3.connect(self.signal_quality_learner.db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM signal_records WHERE was_correct IS NOT NULL")
+                signals_with_results = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM signal_records WHERE was_correct IS NULL")
+                signals_pending = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM signal_records")
+                total_signals = cursor.fetchone()[0]
+                conn.close()
+                
+                min_samples = 50
+                progress_percent = (signals_with_results / min_samples * 100) if min_samples > 0 else 0
+                
+                # 🆕 Soglie di notifica ogni 5 segnali (5, 10, 15, 20, 25, 30, 35, 40, 45, 50)
+                thresholds = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
+                current_threshold = None
+                for threshold in thresholds:
+                    if signals_with_results >= threshold:
+                        current_threshold = threshold
+                
+                # 🆕 Notifica se nuovo segnale registrato
+                if total_signals > self.last_signal_count and self.notifier:
+                    new_signals = total_signals - self.last_signal_count
+                    try:
+                        # Recupera ultimi segnali registrati
+                        conn = sqlite3.connect(self.signal_quality_learner.db_path)
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            SELECT match_id, market, was_approved, quality_score, notified_at
+                            FROM signal_records
+                            ORDER BY notified_at DESC
+                            LIMIT ?
+                        """, (new_signals,))
+                        recent_signals = cursor.fetchall()
+                        conn.close()
+                        
+                        for signal in recent_signals:
+                            match_id, market, was_approved, quality_score, notified_at = signal
+                            status = "✅ APPROVATO" if was_approved else "❌ BLOCCATO"
+                            message = (
+                                f"📝 <b>IA: Nuovo Segnale Registrato</b>\n\n"
+                                f"⚽ Match: {match_id}\n"
+                                f"📊 Mercato: {market}\n"
+                                f"🎯 Status: {status}\n"
+                                f"⭐ Quality Score: {quality_score:.1f}/100\n"
+                                f"📈 Progresso: {signals_with_results}/50 segnali con risultati"
+                            )
+                            self.notifier._send_message(message, parse_mode="HTML")
+                            logger.info(f"📝 Notifica nuovo segnale: {match_id}/{market} ({status})")
+                    except Exception as e:
+                        logger.debug(f"⚠️  Errore notifica nuovo segnale: {e}")
+                    
+                    self.last_signal_count = total_signals
+                
+                # Notifica se raggiunta nuova soglia (max 1 notifica ogni 1 ora per soglia)
+                if current_threshold and self.notifier:
+                    threshold_key = f"{current_threshold}%"
+                    last_notif = self.last_progress_notification.get(threshold_key)
+                    should_notify = False
+                    
+                    if not last_notif:
+                        should_notify = True
+                    else:
+                        time_since = (datetime.now() - last_notif).total_seconds()
+                        if time_since > 3600:  # 1 ora (ridotto per notifiche più frequenti)
+                            should_notify = True
+                    
+                    if should_notify:
+                        try:
+                            # Calcola giorni stimati per raggiungere 50 (basato su media giornaliera)
+                            days_estimate = ""
+                            if signals_with_results > 0 and total_signals > 0:
+                                # Stima basata su segnali totali e tempo
+                                avg_per_day = signals_with_results / max(1, (datetime.now() - self.start_time).days) if hasattr(self, 'start_time') else signals_with_results
+                                if avg_per_day > 0:
+                                    remaining = min_samples - signals_with_results
+                                    days_needed = remaining / avg_per_day
+                                    days_estimate = f"\n⏱️ Stima: ~{days_needed:.1f} giorni per raggiungere 50"
+                            
+                            message = (
+                                f"📊 <b>IA: Progresso Apprendimento</b>\n\n"
+                                f"🎯 Soglia raggiunta: <b>{current_threshold}/{min_samples}</b>\n"
+                                f"✅ Segnali con risultati: <b>{signals_with_results}/{min_samples}</b> ({progress_percent:.1f}%)\n"
+                                f"⏳ Segnali in attesa: {signals_pending}\n"
+                                f"📈 Totale tracciati: {total_signals}\n"
+                                f"{days_estimate}\n\n"
+                            )
+                            
+                            # Aggiungi barra progresso visiva
+                            bar_length = 20
+                            filled = int(progress_percent / 100 * bar_length)
+                            bar = "█" * filled + "░" * (bar_length - filled)
+                            message += f"<code>{bar}</code> {progress_percent:.0f}%"
+                            
+                            self.notifier._send_message(message, parse_mode="HTML")
+                            self.last_progress_notification[threshold_key] = datetime.now()
+                            logger.info(f"📊 Notifica progresso: {signals_with_results}/{min_samples} ({progress_percent:.1f}%)")
+                        except Exception as e:
+                            logger.debug(f"⚠️  Errore notifica progresso: {e}")
+            except Exception as e:
+                logger.debug(f"⚠️  Errore controllo progresso: {e}")
+        
+        # 🆕 Apprendimento automatico Signal Quality Gate (ogni 6 ore)
+        if self.signal_quality_learner:
+            if not self.last_learning_update:
+                self.last_learning_update = datetime.now() - timedelta(hours=7)
+            time_since_learning = (datetime.now() - self.last_learning_update).total_seconds()
+            if time_since_learning > 21600:  # 6 ore
+                try:
+                    logger.info("🧠 Eseguendo apprendimento automatico Signal Quality Gate...")
+                    
+                    # 🆕 Notifica inizio apprendimento
+                    if self.notifier:
+                        try:
+                            self.notifier._send_message(
+                                "🧠 <b>IA: Apprendimento Automatico</b>\n\n"
+                                "🔄 Inizio apprendimento Signal Quality Gate...\n"
+                                "📊 Analizzando risultati segnali precedenti...",
+                                parse_mode="HTML"
+                            )
+                        except Exception as e:
+                            logger.debug(f"⚠️  Errore notifica inizio apprendimento: {e}")
+                    
+                    results = self.signal_quality_learner.learn_from_results(min_samples=50)
+                    if results.get('status') == 'success':
+                        logger.info(
+                            f"✅ Apprendimento completato: "
+                            f"Precision={results['precision']:.2%}, "
+                            f"Recall={results['recall']:.2%}, "
+                            f"Accuracy={results['accuracy']:.2%} | "
+                            f"Nuovi pesi: Context={results['weights']['context']:.2%}, "
+                            f"Data={results['weights']['data_quality']:.2%}, "
+                            f"Logic={results['weights']['logic']:.2%}, "
+                            f"Timing={results['weights']['timing']:.2%} | "
+                            f"Nuova soglia: {results['min_quality_score']:.1f}"
+                        )
+                        
+                        # 🆕 Notifica completamento apprendimento con risultati
+                        if self.notifier:
+                            try:
+                                message = (
+                                    "✅ <b>IA: Apprendimento Completato</b>\n\n"
+                                    f"📊 <b>Metriche:</b>\n"
+                                    f"   • Precision: {results['precision']:.1%}\n"
+                                    f"   • Recall: {results['recall']:.1%}\n"
+                                    f"   • Accuracy: {results['accuracy']:.1%}\n\n"
+                                    f"⚖️ <b>Nuovi Pesi Quality Score:</b>\n"
+                                    f"   • Context: {results['weights']['context']:.1%}\n"
+                                    f"   • Data Quality: {results['weights']['data_quality']:.1%}\n"
+                                    f"   • Logic: {results['weights']['logic']:.1%}\n"
+                                    f"   • Timing: {results['weights']['timing']:.1%}\n\n"
+                                    f"🎯 <b>Nuova Soglia Minima:</b> {results['min_quality_score']:.1f}/100\n\n"
+                                    f"📈 Sistema aggiornato e pronto!"
+                                )
+                                self.notifier._send_message(message, parse_mode="HTML")
+                            except Exception as e:
+                                logger.debug(f"⚠️  Errore notifica completamento apprendimento: {e}")
+                        
+                        # Ricarica Signal Quality Gate con nuovi parametri
+                        if hasattr(self, 'signal_quality_gate'):
+                            from ai_system.signal_quality_scorer import SignalQualityGate
+                            self.signal_quality_gate = SignalQualityGate(
+                                ai_pipeline=self.ai_pipeline,
+                                min_quality_score=results['min_quality_score'],
+                                learner=self.signal_quality_learner
+                            )
+                    elif results.get('status') == 'insufficient_samples':
+                        logger.info(f"ℹ️  Campioni insufficienti per apprendere ({results['samples']} < {results['min_samples']})")
+                        
+                        # 🆕 Notifica campioni insufficienti
+                        if self.notifier:
+                            try:
+                                self.notifier._send_message(
+                                    f"⚠️ <b>IA: Apprendimento Posticipato</b>\n\n"
+                                    f"📊 Campioni insufficienti: {results['samples']}/{results['min_samples']}\n"
+                                    f"⏳ Attendo più dati per apprendere...",
+                                    parse_mode="HTML"
+                                )
+                            except Exception as e:
+                                logger.debug(f"⚠️  Errore notifica campioni insufficienti: {e}")
+                    
+                    self.last_learning_update = datetime.now()
+                except Exception as e:
+                    logger.error(f"❌ Errore apprendimento automatico: {e}")
+                    
+                    # 🆕 Notifica errore apprendimento
+                    if self.notifier:
+                        try:
+                            self.notifier._send_message(
+                                f"❌ <b>IA: Errore Apprendimento</b>\n\n"
+                                f"⚠️ Errore durante l'apprendimento automatico:\n"
+                                f"<code>{str(e)[:200]}</code>",
+                                parse_mode="HTML"
+                            )
+                        except:
+                            pass
         
         # 1. Ottieni partite da monitorare
         all_matches = self._get_matches_to_monitor()
@@ -1140,20 +1362,20 @@ class Automation24H:
     
     def _select_best_opportunities(self, opportunities: List[Dict]) -> List[Dict]:
         """
-        Seleziona le migliori opportunità da notificare.
+        Seleziona la migliore opportunità in assoluto da notificare.
         
-        Ordina per:
-        1. Combined score (EV + Confidence)
-        2. Confidence
-        3. EV
+        Ranking basato su:
+        - EV (30%): Profittabilità
+        - Confidence (30%): Affidabilità
+        - Quality Score (30%): Qualità segnale (dal Signal Quality Gate)
+        - Stats Bonus (10%): Qualità dati statistici disponibili
         
-        Restituisce max max_notifications_per_cycle opportunità.
+        Restituisce max 1 opportunità (la migliore in assoluto).
         """
         if not opportunities:
             return []
         
-        # 🔧 NUOVO: Filtra PRIMA le opportunità senza statistiche live
-        # Questo assicura che selezioniamo solo tra opportunità che possono essere inviate
+        # 🔧 Filtra PRIMA le opportunità senza statistiche live
         valid_opportunities = []
         for opp_dict in opportunities:
             live_opp = opp_dict.get('live_opportunity')
@@ -1171,13 +1393,16 @@ class Automation24H:
             logger.info(f"⚠️  Nessuna opportunità valida con statistiche live tra {len(opportunities)} totali")
             return []
         
-        # 🔧 OPZIONE 4: Identifica mercati alternativi (Over/Under, BTTS, Clean Sheet, ecc.)
-        # Nota: usiamo solo il primo tipo (es. "over" per "over_2.5", "btts" per "btts_yes")
+        # 🆕 Inizializza Signal Quality Gate se non esiste (verrà inizializzato in _handle_live_opportunity se necessario)
+        # Non inizializziamo qui per evitare duplicazioni
+        
+        # 🔧 OPZIONE 4: Identifica mercati alternativi
         alternative_market_types = {'over', 'under', 'btts', 'clean', 'exact', 'goal', 'odd', 'ht'}
         
-        # Calcola score per ogni opportunità VALIDA con penalizzazioni/bonus
+        # 🆕 Calcola score completo per ogni opportunità (incluso Quality Score)
         scored_opportunities = []
         now = datetime.now()
+        
         for opp_dict in valid_opportunities:
             live_opp = opp_dict.get('live_opportunity')
             if not live_opp:
@@ -1187,7 +1412,7 @@ class Automation24H:
             market = getattr(live_opp, 'market', 'unknown')
             market_type = market.split('_')[0] if '_' in market else market
             
-            # Calcola combined score base (EV * 0.4 + Confidence * 0.6)
+            # 1. Calcola EV e Confidence
             ev = getattr(live_opp, 'ev', 0.0)
             confidence = getattr(live_opp, 'confidence', 0.0)
             
@@ -1195,15 +1420,106 @@ class Automation24H:
             ev_normalized = (ev / 100.0) + 1.0
             confidence_normalized = confidence / 100.0
             
-            combined_score = (ev_normalized * 0.4) + (confidence_normalized * 0.6)
+            # 2. 🆕 Calcola Quality Score (se disponibile)
+            quality_score_normalized = 0.0
+            quality_score_obj = None
+            opp_key = None
             
-            # 🔧 OPZIONE 4: Applica penalizzazioni e bonus
+            # 🆕 Inizializza Signal Quality Gate se necessario (PRIMA del controllo)
+            if not hasattr(self, 'signal_quality_gate') or not self.signal_quality_gate:
+                try:
+                    from ai_system.signal_quality_scorer import SignalQualityGate
+                    # Verifica che il learner sia disponibile
+                    if not hasattr(self, 'signal_quality_learner') or not self.signal_quality_learner:
+                        logger.warning("⚠️  SignalQualityLearner non disponibile per SignalQualityGate!")
+                    self.signal_quality_gate = SignalQualityGate(
+                        ai_pipeline=self.ai_pipeline,
+                        min_quality_score=75.0,
+                        learner=getattr(self, 'signal_quality_learner', None)
+                    )
+                    if self.signal_quality_gate.learner:
+                        logger.debug("✅ SignalQualityGate inizializzato con learner in _select_best_opportunities")
+                    else:
+                        logger.warning("⚠️  SignalQualityGate inizializzato SENZA learner in _select_best_opportunities!")
+                except Exception as e:
+                    logger.error(f"❌ Errore inizializzazione SignalQualityGate: {e}")
+                    self.signal_quality_gate = None
+            
+            if self.signal_quality_gate:
+                try:
+                    # Prepara dati per validazione
+                    match_data = {
+                        'home': opp_dict.get('home', ''),
+                        'away': opp_dict.get('away', ''),
+                        'league': opp_dict.get('league', '')
+                    }
+                    
+                    # Estrai live_data
+                    live_data = {}
+                    if hasattr(live_opp, 'match_stats') and live_opp.match_stats:
+                        live_data = live_opp.match_stats.copy()
+                    else:
+                        live_data = {
+                            'minute': opp_dict.get('minute', 0),
+                            'score_home': opp_dict.get('score_home', 0),
+                            'score_away': opp_dict.get('score_away', 0),
+                            'shots_home': opp_dict.get('shots_home', 0),
+                            'shots_away': opp_dict.get('shots_away', 0),
+                            'shots_on_target_home': opp_dict.get('shots_on_target_home', 0),
+                            'shots_on_target_away': opp_dict.get('shots_on_target_away', 0),
+                            'possession_home': opp_dict.get('possession_home'),
+                            'xg_home': opp_dict.get('xg_home', 0.0),
+                            'xg_away': opp_dict.get('xg_away', 0.0)
+                        }
+                    
+                    _, quality_score_obj = self.signal_quality_gate.should_send_signal(
+                        opportunity=opp_dict,
+                        match_data=match_data,
+                        live_data=live_data
+                    )
+                    
+                    # Normalizza Quality Score (0-100 -> 0-1)
+                    quality_score_normalized = quality_score_obj.total_score / 100.0
+                    
+                    # 🆕 Salva in cache per evitare doppio calcolo
+                    minute = live_data.get('minute', 0)
+                    minute_rounded = (minute // 5) * 5
+                    opp_key = f"{match_id}_{market}_{minute_rounded}"
+                    self.quality_score_cache[opp_key] = quality_score_obj
+                    
+                except Exception as e:
+                    logger.debug(f"⚠️  Errore calcolo Quality Score per {match_id}/{market}: {e}")
+                    quality_score_normalized = 0.5  # Default neutro se errore
+            
+            # 3. Calcola Stats Bonus (qualità dati statistici)
+            stats_bonus = 0.8  # Default: penalità se statistiche insufficienti
+            stats = getattr(live_opp, 'match_stats', {}) or {}
+            if isinstance(stats, dict):
+                stats_count = 0
+                if stats.get('shots_home', 0) > 0 or stats.get('shots_away', 0) > 0:
+                    stats_count += 1
+                if stats.get('shots_on_target_home', 0) > 0 or stats.get('shots_on_target_away', 0) > 0:
+                    stats_count += 1
+                if stats.get('possession_home') is not None:
+                    stats_count += 1
+                if stats.get('xg_home', 0) > 0 or stats.get('xg_away', 0) > 0:
+                    stats_count += 1
+                
+                # Bonus basato su numero di statistiche disponibili
+                if stats_count >= 4:
+                    stats_bonus = 1.2  # +20% se statistiche complete
+                elif stats_count >= 3:
+                    stats_bonus = 1.0  # Neutro se 3 statistiche
+                elif stats_count >= 2:
+                    stats_bonus = 0.9  # -10% se solo 2 statistiche
+                else:
+                    stats_bonus = 0.8  # -20% se statistiche insufficienti
+            
+            # 4. 🔧 OPZIONE 4: Applica penalizzazioni e bonus per mercati
             score_modifier = 1.0
             modifier_reason = ""
             
-            # Se questa partita ha già ricevuto notifiche, applica penalizzazioni/bonus
             if match_id in self.match_markets_history:
-                # Verifica se questo mercato è stato già suggerito per questa partita
                 market_already_used = False
                 for market_entry in self.match_markets_history[match_id]:
                     if market_entry['market'] == market:
@@ -1211,112 +1527,56 @@ class Automation24H:
                         break
                 
                 if market_already_used:
-                    # 🔧 OPZIONE 4: Penalizza mercato già usato del 30%
                     score_modifier *= 0.7
                     modifier_reason = " (penalizzato -30%: mercato già suggerito)"
                 elif market_type in alternative_market_types:
-                    # 🔧 OPZIONE 4: Bonus +20% per mercati alternativi se partita già notificata
                     score_modifier *= 1.2
                     modifier_reason = " (bonus +20%: mercato alternativo)"
             
-            combined_score *= score_modifier
+            # 5. 🆕 Calcola Final Score composito
+            final_score = (
+                ev_normalized * 0.30 +
+                confidence_normalized * 0.30 +
+                quality_score_normalized * 0.30 +
+                stats_bonus * 0.10
+            ) * score_modifier
             
-            minute = 0
-            stats = getattr(live_opp, 'match_stats', {}) or {}
-            if isinstance(stats, dict):
-                minute = stats.get('minute', 0) or 0
+            minute = stats.get('minute', 0) if isinstance(stats, dict) else 0
             
             scored_opportunities.append({
                 'opportunity': opp_dict,
-                'score': combined_score,
-                'confidence': confidence,
+                'score': final_score,
                 'ev': ev,
+                'confidence': confidence,
+                'quality_score': quality_score_obj.total_score if quality_score_obj else 0.0,
+                'stats_bonus': stats_bonus,
                 'minute': minute,
-                'is_first_half': minute > 0 and minute < 45,
                 'score_modifier': score_modifier,
-                'modifier_reason': modifier_reason
+                'modifier_reason': modifier_reason,
+                'opp_key': opp_key  # Per cache
             })
         
         # Ordina per score decrescente
         scored_opportunities.sort(key=lambda x: x['score'], reverse=True)
         
-        # 🔧 DIVERSIFICAZIONE: Assicura varietà di mercati invece di sempre gli stessi
+        # 🆕 Seleziona SOLO la migliore in assoluto (max 1)
         best = []
-        seen_markets = set()
-        seen_matches = set()
-        selected_ids = set()
+        if scored_opportunities:
+            best.append(scored_opportunities[0])
         
-        # Priorità: se disponibile almeno un'opportunità nel primo tempo, includila
-        first_half_candidates = [item for item in scored_opportunities if item.get('is_first_half')]
-        if first_half_candidates:
-            first_half_candidates.sort(key=lambda x: x['score'], reverse=True)
-            top_first_half = first_half_candidates[0]
-            live_opp = top_first_half['opportunity'].get('live_opportunity')
-            if live_opp:
-                match_id = top_first_half['opportunity'].get('match_id', 'unknown')
-                market = getattr(live_opp, 'market', 'unknown')
-                market_type = market.split('_')[0] if '_' in market else market
-                seen_markets.add(market_type)
-                seen_matches.add(match_id)
-                best.append(top_first_half)
-                selected_ids.add(id(top_first_half['opportunity']))
-        
-        # Prima passata: prendi le migliori opportunità con diversificazione
-        for item in scored_opportunities:
-            if len(best) >= self.max_notifications_per_cycle:
-                break
-            
-            live_opp = item['opportunity'].get('live_opportunity')
-            if not live_opp or id(item['opportunity']) in selected_ids:
-                continue
-            
-            match_id = item['opportunity'].get('match_id', 'unknown')
-            market = getattr(live_opp, 'market', 'unknown')
-            
-            # Estrai tipo di mercato (es. "over_2.5" -> "over", "clean_sheet" -> "clean_sheet")
-            market_type = market.split('_')[0] if '_' in market else market
-            
-            # 🚫 NUOVO: Blocca se questa partita è già stata selezionata (max 1 notifica per partita per ciclo)
-            if match_id in seen_matches:
-                continue  # Salta questa opportunità, partita già selezionata
-            
-            # Se abbiamo già un mercato di questo tipo, salta se non è molto migliore
-            if market_type in seen_markets and len(best) >= 1:
-                # Prendi solo se ha score significativamente migliore (>10% differenza)
-                if best and item['score'] > best[-1]['score'] * 1.1:
-                    best.append(item)
-                    seen_markets.add(market_type)
-                    seen_matches.add(match_id)
-                    selected_ids.add(id(item['opportunity']))
-            # Se è un nuovo tipo di mercato, aggiungilo
-            elif market_type not in seen_markets:
-                best.append(item)
-                seen_markets.add(market_type)
-                seen_matches.add(match_id)
-        
-        # Se non abbiamo ancora raggiunto il limite, aggiungi le migliori rimanenti
-        # 🚫 NUOVO: Escludi partite già selezionate
-        if len(best) < self.max_notifications_per_cycle:
-            for item in scored_opportunities:
-                if len(best) >= self.max_notifications_per_cycle:
-                    break
-                if id(item['opportunity']) in selected_ids:
-                    continue
-                # 🚫 NUOVO: Salta se questa partita è già stata selezionata
-                match_id = item['opportunity'].get('match_id', 'unknown')
-                if match_id in seen_matches:
-                    continue
-                best.append(item)
-                selected_ids.add(id(item['opportunity']))
-                seen_matches.add(match_id)
-        
+        # Log dettagliato
         logger.info(f"   🏆 Migliori opportunità selezionate:")
         for i, item in enumerate(best, 1):
             live_opp = item['opportunity'].get('live_opportunity')
             match_id = item['opportunity'].get('match_id', 'unknown')
             market = getattr(live_opp, 'market', 'unknown')
             modifier_info = item.get('modifier_reason', '')
-            logger.info(f"      {i}. {match_id} - {market}: score={item['score']:.3f}, conf={item['confidence']:.1f}%, ev={item['ev']:.1f}%{modifier_info}")
+            quality_info = f", quality={item['quality_score']:.1f}/100" if item['quality_score'] > 0 else ""
+            logger.info(
+                f"      {i}. {match_id} - {market}: "
+                f"final_score={item['score']:.3f}, "
+                f"ev={item['ev']:.1f}%, conf={item['confidence']:.1f}%{quality_info}{modifier_info}"
+            )
         
         return [item['opportunity'] for item in best]
     
@@ -1335,13 +1595,113 @@ class Automation24H:
             logger.debug(f"⏭️  Opportunità {match_id}/{live_opp.market} saltata: nessuna statistica live disponibile (dovrebbe essere già filtrata)")
             return
         
-        # 🔧 MIGLIORATO: Evita duplicati usando match_id + market + minuto
-        # Questo evita di inviare la stessa opportunità più volte anche se rilevata in cicli diversi
+        # 🆕 AI SIGNAL QUALITY GATE: Validazione finale qualità segnale
+        # 🆕 Ottimizzazione: Usa cache se disponibile per evitare doppio calcolo
         market = live_opp.market
         minute = 0
-        status = None
         if live_opp.match_stats:
             minute = live_opp.match_stats.get('minute', 0)
+        minute_rounded = (minute // 5) * 5
+        opp_key = f"{match_id}_{market}_{minute_rounded}"
+        
+        # Verifica se Quality Score è già in cache (calcolato in _select_best_opportunities)
+        quality_score = None
+        if opp_key in self.quality_score_cache:
+            quality_score = self.quality_score_cache[opp_key]
+            logger.debug(f"✅ Quality Score da cache per {opp_key}: {quality_score.total_score:.1f}/100")
+        else:
+            # Calcola Quality Score se non in cache
+            try:
+                from ai_system.signal_quality_scorer import SignalQualityGate
+                if not hasattr(self, 'signal_quality_gate'):
+                    # 🆕 Inizializza learner se non esiste
+                    if not hasattr(self, 'signal_quality_learner'):
+                        try:
+                            from ai_system.signal_quality_learner import SignalQualityLearner
+                            self.signal_quality_learner = SignalQualityLearner()
+                            logger.info("✅ Signal Quality Learner inizializzato")
+                        except Exception as e:
+                            logger.debug(f"⚠️  Signal Quality Learner non disponibile: {e}")
+                            self.signal_quality_learner = None
+                    
+                    # Verifica che il learner sia disponibile
+                    learner = getattr(self, 'signal_quality_learner', None)
+                    if not learner:
+                        logger.warning("⚠️  SignalQualityLearner non disponibile per SignalQualityGate in _handle_live_opportunity!")
+                    self.signal_quality_gate = SignalQualityGate(
+                        ai_pipeline=self.ai_pipeline,
+                        min_quality_score=75.0,
+                        learner=learner
+                    )
+                    if self.signal_quality_gate.learner:
+                        logger.debug("✅ SignalQualityGate inizializzato con learner in _handle_live_opportunity")
+                    else:
+                        logger.warning("⚠️  SignalQualityGate inizializzato SENZA learner in _handle_live_opportunity!")
+                
+                # Prepara dati per validazione
+                match_data = {
+                    'home': opportunity.get('home', ''),
+                    'away': opportunity.get('away', ''),
+                    'league': opportunity.get('league', '')
+                }
+                
+                # Estrai live_data da live_opp
+                live_data = {}
+                if hasattr(live_opp, 'match_stats') and live_opp.match_stats:
+                    live_data = live_opp.match_stats.copy()
+                else:
+                    # Fallback: usa dati da opportunity
+                    live_data = {
+                        'minute': opportunity.get('minute', 0),
+                        'score_home': opportunity.get('score_home', 0),
+                        'score_away': opportunity.get('score_away', 0),
+                        'shots_home': opportunity.get('shots_home', 0),
+                        'shots_away': opportunity.get('shots_away', 0),
+                        'shots_on_target_home': opportunity.get('shots_on_target_home', 0),
+                        'shots_on_target_away': opportunity.get('shots_on_target_away', 0),
+                        'possession_home': opportunity.get('possession_home'),
+                        'xg_home': opportunity.get('xg_home', 0.0),
+                        'xg_away': opportunity.get('xg_away', 0.0)
+                    }
+                
+                # Valida qualità segnale (solo se Signal Quality Gate è disponibile)
+                if self.signal_quality_gate:
+                    should_send, quality_score = self.signal_quality_gate.should_send_signal(
+                        opportunity=opportunity,
+                        match_data=match_data,
+                        live_data=live_data
+                    )
+                else:
+                    # Se Signal Quality Gate non disponibile, approva sempre
+                    should_send = True
+                    quality_score = None
+                
+                # Salva in cache
+                self.quality_score_cache[opp_key] = quality_score
+                
+            except ImportError as e:
+                logger.warning(f"⚠️  Signal Quality Gate non disponibile: {e}")
+            except Exception as e:
+                logger.error(f"❌ Errore Signal Quality Gate: {e}")
+                # In caso di errore, continua comunque (non bloccare tutto il sistema)
+        
+        # Valida Quality Score se disponibile
+        if quality_score:
+            should_send = quality_score.is_approved
+            if not should_send:
+                logger.info(
+                    f"⏭️  Segnale {match_id}/{market} BLOCCATO da Signal Quality Gate "
+                    f"(score: {quality_score.total_score:.1f}/100, min: 75.0)"
+                )
+                if quality_score.reasons:
+                    logger.info(f"   Motivi blocco: {', '.join(quality_score.reasons)}")
+                return
+        
+        # 🔧 MIGLIORATO: Evita duplicati usando match_id + market + minuto
+        # Questo evita di inviare la stessa opportunità più volte anche se rilevata in cicli diversi
+        # (market e minute già definiti sopra)
+        status = None
+        if live_opp.match_stats:
             status = live_opp.match_stats.get('status', None)
         
         # 🔧 NUOVO: Filtra partite finite - NON inviare notifiche per partite già terminate
@@ -1444,6 +1804,17 @@ class Automation24H:
                             if (datetime.now() - entry['timestamp']).total_seconds() / 60 < 60
                         ]
                         
+                        # 🆕 Pulisci cache Quality Score vecchia (> 30 minuti) per liberare memoria
+                        # Rimuovi solo entry vecchie dalla cache
+                        keys_to_remove = []
+                        for cached_key in list(self.quality_score_cache.keys()):
+                            # Estrai timestamp dalla chiave se possibile, altrimenti rimuovi dopo 30 minuti
+                            # Per semplicità, limitiamo la cache a 100 entry
+                            if len(self.quality_score_cache) > 100:
+                                keys_to_remove.append(cached_key)
+                        for key in keys_to_remove[:50]:  # Rimuovi max 50 alla volta
+                            del self.quality_score_cache[key]
+                        
                         # 🔧 NUOVO: Salva opportunità nel performance tracker
                         if hasattr(self, 'live_performance_tracker') and self.live_performance_tracker:
                             try:
@@ -1472,6 +1843,7 @@ class Automation24H:
             self.notified_opportunities_timestamps.clear()  # Reset timestamp
             self.notified_matches_timestamps.clear()  # Reset timestamp partite
             self.match_markets_history.clear()  # 🔧 OPZIONE 4: Reset storico mercati
+            self.quality_score_cache.clear()  # 🆕 Reset cache Quality Score
             logger.info("🔄 New day: API usage reset")
             
             # Invia report giornaliero (se disponibile)
@@ -1634,10 +2006,12 @@ class Automation24H:
     def _update_match_results(self):
         """Aggiorna risultati partite automaticamente"""
         if not self.result_tracker_auto:
+            logger.debug("⚠️  ResultTrackerAuto non disponibile")
             return
         
         try:
             # Aggiungi partite da tracciare
+            tracked_count = 0
             for match_id, match in self.monitored_matches.items():
                 self.result_tracker_auto.add_match_to_track(
                     match_id=match_id,
@@ -1646,16 +2020,69 @@ class Automation24H:
                     league=match.get('league'),
                     match_date=match.get('date')
                 )
+                tracked_count += 1
+            
+            if tracked_count > 0:
+                logger.info(f"📊 Tracciate {tracked_count} partite per aggiornamento risultati")
             
             # Aggiorna risultati
             updated_results = self.result_tracker_auto.update_results()
             
-            # Aggiorna betting results tracker se partita finita
+            if updated_results:
+                logger.info(f"✅ Aggiornati {len(updated_results)} risultati partite")
+            else:
+                logger.debug(f"ℹ️  Nessun risultato aggiornato (partite tracciate: {len(self.result_tracker_auto.tracked_matches)})")
+            
+            # 🆕 Aggiorna Signal Quality Learner con risultati finali
             for result in updated_results:
-                if result.status == "FINISHED" and self.results_tracker:
-                    # Determina outcome scommessa (da implementare con logica specifica)
-                    # self.result_tracker_auto.update_betting_results(...)
-                    pass
+                if result.status == "FINISHED":
+                    # Aggiorna Signal Quality Learner con risultati finali
+                    if hasattr(self, 'signal_quality_learner') and self.signal_quality_learner:
+                        try:
+                            match_id = result.match_id if hasattr(result, 'match_id') else None
+                            if match_id and result.home_score is not None and result.away_score is not None:
+                                # 🆕 Passa eventi e statistiche per valutazione mercati complessi
+                                events = getattr(result, 'events', None)
+                                statistics = getattr(result, 'statistics', None)
+                                updated_count = self.signal_quality_learner.update_signal_result(
+                                    match_id=match_id,
+                                    final_score_home=result.home_score,
+                                    final_score_away=result.away_score,
+                                    events=events,
+                                    statistics=statistics
+                                )
+                                if updated_count > 0:
+                                    logger.info(f"✅ Aggiornati {updated_count} segnali per partita {match_id} (risultato: {result.home_score}-{result.away_score})")
+                                    
+                                    # 🆕 Notifica aggiornamento risultati per apprendimento
+                                    if self.notifier and updated_count > 0:
+                                        try:
+                                            home_team = result.home_team if hasattr(result, 'home_team') else 'Home'
+                                            away_team = result.away_team if hasattr(result, 'away_team') else 'Away'
+                                            # Conta segnali totali con risultati dopo aggiornamento
+                                            conn = sqlite3.connect(self.signal_quality_learner.db_path)
+                                            cursor = conn.cursor()
+                                            cursor.execute("SELECT COUNT(*) FROM signal_records WHERE was_correct IS NOT NULL")
+                                            total_with_results = cursor.fetchone()[0]
+                                            conn.close()
+                                            
+                                            self.notifier._send_message(
+                                                f"📊 <b>IA: Risultato Aggiornato</b>\n\n"
+                                                f"⚽ {home_team} {result.home_score}-{result.away_score} {away_team}\n"
+                                                f"📈 Aggiornati {updated_count} segnali\n"
+                                                f"✅ Progresso: {total_with_results}/50 segnali con risultati",
+                                                parse_mode="HTML"
+                                            )
+                                        except Exception as e:
+                                            logger.debug(f"⚠️  Errore notifica aggiornamento risultato: {e}")
+                        except Exception as e:
+                            logger.debug(f"⚠️  Errore aggiornamento learner: {e}")
+                    
+                    # Aggiorna betting results tracker se partita finita
+                    if self.results_tracker:
+                        # Determina outcome scommessa (da implementare con logica specifica)
+                        # self.result_tracker_auto.update_betting_results(...)
+                        pass
         except Exception as e:
             logger.debug(f"⚠️  Error updating results: {e}")
     
@@ -1740,7 +2167,7 @@ def main():
     parser.add_argument('--min-ev', type=float, default=8.0, help='Min EV % (default: 8.0)')
     parser.add_argument('--min-confidence', type=float, default=70.0, help='Min confidence % (default: 70.0)')
     parser.add_argument('--max-notifications', type=int, default=2, help='Max notifications per cycle (default: 2)')
-    parser.add_argument('--update-interval', type=int, default=300, help='Update interval seconds (default: 300)')
+    parser.add_argument('--update-interval', type=int, default=600, help='Update interval seconds (default: 600 = 10 min)')
     parser.add_argument('--single-run', action='store_true', help='Run once and exit (for cron jobs)')
     
     args = parser.parse_args()
@@ -1760,7 +2187,8 @@ def main():
         telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID'),
         min_ev=args.min_ev or config.get('min_ev', 8.0),
         min_confidence=args.min_confidence or config.get('min_confidence', 70.0),
-        update_interval=args.update_interval or config.get('update_interval', 300),
+        update_interval=args.update_interval or config.get('update_interval', 600),
+        api_budget_per_day=config.get('api_budget_per_day', 7500),  # Piano Pro: 7500 chiamate/giorno
         max_notifications_per_cycle=args.max_notifications or config.get('max_notifications_per_cycle', 2)
     )
     
