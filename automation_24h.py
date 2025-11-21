@@ -1978,8 +1978,6 @@ class Automation24H:
                         self.notified_opportunities_timestamps[opp_key] = datetime.now()
                         self.notified_matches_timestamps[match_id] = datetime.now()  # Traccia anche per partita
                         logger.info(f"✅ Notifica inviata e timestamp globale aggiornato: {self.last_global_notification_time}")
-                    else:
-                        logger.warning(f"⚠️  Notifica fallita ma timestamp globale già aggiornato (limite 10 min attivo)")
                         
                         # 🔧 OPZIONE 4: Traccia mercato suggerito per questa partita
                         if match_id not in self.match_markets_history:
