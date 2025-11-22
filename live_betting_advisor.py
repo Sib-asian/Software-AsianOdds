@@ -645,12 +645,13 @@ class LiveBettingAdvisor:
             minute = int(minute) if minute is not None else 0
             total_goals = score_home + score_away
             
-            # Situazione: Gol subito (primi 15 minuti)
-            if minute <= 15 and total_goals >= 1:
+            # Situazione: Gol subito (primi 15 minuti) - SOLO SE 1 GOL TOTALE
+            # 🔧 FIX: Under 2.5 solo se c'è ESATTAMENTE 1 gol (non 2+!)
+            if minute <= 15 and total_goals == 1:  # Cambiato da >= 1 a == 1
                 # Gol subito → se partita sembra chiusa, punta Under
                 # (da implementare analisi pattern partita)
                 confidence = 70
-                
+
                 opportunity = LiveBettingOpportunity(
                     match_id=match_id,
                     match_data=match_data,
@@ -3994,6 +3995,10 @@ class LiveBettingAdvisor:
             # FILTRO 10: Under 2.5 quando è 2-0 all'85' (BANALE!)
             if 'under_2.5' in market:
                 total_goals = score_home + score_away
+                # 🚨 FIX CRITICO: Blocca Under 2.5 se ci sono già 2+ gol nei primi 30 minuti (partita ad alto ritmo)
+                if total_goals >= 2 and minute <= 30:
+                    logger.debug(f"⏭️  Saltata opportunità illogica: Under 2.5 quando è già {score_home}-{score_away} ({total_goals} gol) al {minute}' - partita ad alto ritmo!")
+                    continue
                 if minute >= 80 and total_goals == 2:
                     logger.debug(f"⏭️  Saltata opportunità banale: Under 2.5 quando è {score_home}-{score_away} all'{minute}'")
                     continue
@@ -4005,6 +4010,10 @@ class LiveBettingAdvisor:
             # Se è 1-0 al 50', under 1.5 significa che non ci saranno altri gol - troppo rischioso e illogico
             if 'under_1.5' in market and not 'ht' in market:  # Solo per under_1.5 generale, non HT
                 total_goals = score_home + score_away
+                # 🚨 FIX CRITICO: Blocca Under 1.5 se ci sono già 2+ gol (ASSURDO!)
+                if total_goals >= 2:
+                    logger.debug(f"⏭️  Saltata opportunità ASSURDA: Under 1.5 quando ci sono già {total_goals} gol ({score_home}-{score_away}) al {minute}'!")
+                    continue
                 if total_goals >= 1 and minute >= 45:
                     logger.debug(f"⏭️  Saltata opportunità illogica: Under 1.5 quando è già {score_home}-{score_away} (1+ gol) al {minute}' - troppo rischioso")
                     continue
