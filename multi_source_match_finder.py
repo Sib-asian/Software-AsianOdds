@@ -1030,7 +1030,7 @@ class MultiSourceMatchFinder:
                     logger.debug(f"⚠️  Nessuna quota live per fixture {fixture_id}, provo endpoint odds normale...")
                     return self._fetch_odds_from_api_sports_prematch(fixture_id)
 
-                # Estrai quote dal primo bookmaker disponibile
+                # Estrai quote dal bookmaker preferito (o primo disponibile)
                 fixture_odds = data["response"][0]
                 bookmakers = fixture_odds.get("bookmakers", [])
 
@@ -1038,72 +1038,88 @@ class MultiSourceMatchFinder:
                     logger.debug(f"⚠️  Nessun bookmaker disponibile per fixture {fixture_id}")
                     return None
 
-                # Usa il primo bookmaker con quote disponibili
-                odds_dict = {}
+                # 🎯 Bookmaker IDs preferiti (in ordine di preferenza)
+                # Bet365 (8), Pinnacle (12), William Hill (3), 1xBet (5), Betfair (11)
+                preferred_bookmaker_ids = [8, 12, 3, 5, 11]
 
-                for bookmaker in bookmakers:
-                    bets = bookmaker.get("bets", [])
-
-                    for bet in bets:
-                        bet_name = bet.get("name", "")
-                        bet_id = bet.get("id", 0)
-                        values = bet.get("values", [])
-
-                        # Match Winner (1X2)
-                        if bet_name == "Match Winner" or bet_id == 1:
-                            for value in values:
-                                outcome = value.get("value", "")
-                                odd = value.get("odd")
-                                if odd:
-                                    if outcome == "Home":
-                                        odds_dict['odds_1'] = float(odd)
-                                    elif outcome == "Draw":
-                                        odds_dict['odds_x'] = float(odd)
-                                    elif outcome == "Away":
-                                        odds_dict['odds_2'] = float(odd)
-
-                        # Goals Over/Under
-                        elif "Goals Over/Under" in bet_name or bet_id == 5:
-                            for value in values:
-                                outcome = value.get("value", "")
-                                odd = value.get("odd")
-                                if odd:
-                                    # Over/Under 0.5
-                                    if "Over 0.5" in outcome:
-                                        odds_dict['odds_over_0_5'] = float(odd)
-                                    elif "Under 0.5" in outcome:
-                                        odds_dict['odds_under_0_5'] = float(odd)
-                                    # Over/Under 1.5
-                                    elif "Over 1.5" in outcome:
-                                        odds_dict['odds_over_1_5'] = float(odd)
-                                    elif "Under 1.5" in outcome:
-                                        odds_dict['odds_under_1_5'] = float(odd)
-                                    # Over/Under 2.5
-                                    elif "Over 2.5" in outcome:
-                                        odds_dict['odds_over_2_5'] = float(odd)
-                                    elif "Under 2.5" in outcome:
-                                        odds_dict['odds_under_2_5'] = float(odd)
-                                    # Over/Under 3.5
-                                    elif "Over 3.5" in outcome:
-                                        odds_dict['odds_over_3_5'] = float(odd)
-                                    elif "Under 3.5" in outcome:
-                                        odds_dict['odds_under_3_5'] = float(odd)
-
-                        # Both Teams Score (BTTS)
-                        elif "Both Teams Score" in bet_name or "BTTS" in bet_name or bet_id == 8:
-                            for value in values:
-                                outcome = value.get("value", "")
-                                odd = value.get("odd")
-                                if odd:
-                                    if "Yes" in outcome:
-                                        odds_dict['odds_btts_yes'] = float(odd)
-                                    elif "No" in outcome:
-                                        odds_dict['odds_btts_no'] = float(odd)
-
-                    # Se abbiamo trovato almeno alcune quote, usciamo
-                    if len(odds_dict) >= 3:
+                # Cerca bookmaker preferito
+                selected_bookmaker = None
+                for pref_id in preferred_bookmaker_ids:
+                    for bookmaker in bookmakers:
+                        if bookmaker.get("id") == pref_id:
+                            selected_bookmaker = bookmaker
+                            logger.info(f"💰 Usando bookmaker: {bookmaker.get('name', 'N/A')} (ID: {pref_id}) per fixture {fixture_id}")
+                            break
+                    if selected_bookmaker:
                         break
 
+                # Se nessun preferito trovato, usa il primo disponibile
+                if not selected_bookmaker:
+                    selected_bookmaker = bookmakers[0]
+                    logger.info(f"💰 Usando bookmaker di default: {selected_bookmaker.get('name', 'N/A')} (ID: {selected_bookmaker.get('id')}) per fixture {fixture_id}")
+
+                # Usa il bookmaker selezionato
+                odds_dict = {}
+                bookmaker = selected_bookmaker
+                bets = bookmaker.get("bets", [])
+
+                for bet in bets:
+                    bet_name = bet.get("name", "")
+                    bet_id = bet.get("id", 0)
+                    values = bet.get("values", [])
+
+                    # Match Winner (1X2)
+                    if bet_name == "Match Winner" or bet_id == 1:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                if outcome == "Home":
+                                    odds_dict['odds_1'] = float(odd)
+                                elif outcome == "Draw":
+                                    odds_dict['odds_x'] = float(odd)
+                                elif outcome == "Away":
+                                    odds_dict['odds_2'] = float(odd)
+
+                    # Goals Over/Under
+                    elif "Goals Over/Under" in bet_name or bet_id == 5:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                # Over/Under 0.5
+                                if "Over 0.5" in outcome:
+                                    odds_dict['odds_over_0_5'] = float(odd)
+                                elif "Under 0.5" in outcome:
+                                    odds_dict['odds_under_0_5'] = float(odd)
+                                # Over/Under 1.5
+                                elif "Over 1.5" in outcome:
+                                    odds_dict['odds_over_1_5'] = float(odd)
+                                elif "Under 1.5" in outcome:
+                                    odds_dict['odds_under_1_5'] = float(odd)
+                                # Over/Under 2.5
+                                elif "Over 2.5" in outcome:
+                                    odds_dict['odds_over_2_5'] = float(odd)
+                                elif "Under 2.5" in outcome:
+                                    odds_dict['odds_under_2_5'] = float(odd)
+                                # Over/Under 3.5
+                                elif "Over 3.5" in outcome:
+                                    odds_dict['odds_over_3_5'] = float(odd)
+                                elif "Under 3.5" in outcome:
+                                    odds_dict['odds_under_3_5'] = float(odd)
+
+                    # Both Teams Score (BTTS)
+                    elif "Both Teams Score" in bet_name or "BTTS" in bet_name or bet_id == 8:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                if "Yes" in outcome:
+                                    odds_dict['odds_btts_yes'] = float(odd)
+                                elif "No" in outcome:
+                                    odds_dict['odds_btts_no'] = float(odd)
+
+                # Quote recuperate con successo
                 if odds_dict:
                     logger.info(f"✅ Quote recuperate per fixture {fixture_id}: {list(odds_dict.keys())}")
                     return odds_dict
