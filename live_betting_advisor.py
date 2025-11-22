@@ -909,25 +909,30 @@ class LiveBettingAdvisor:
                     base_confidence=65.0
                 )
 
-                opportunity = LiveBettingOpportunity(
-                    match_id=match_id,
-                    match_data=match_data,
-                    situation='over_no_goals',
-                    market='over_1.5',
-                    recommendation="Punta Over 1.5 (nessun gol ma partita aperta)",
-                    reasoning=(
-                        f"🎯 OVER OPPORTUNITY!\n\n"
-                        f"• Nessun gol dopo {minute} minuti\n"
-                        f"• Partita sembra aperta\n"
-                        f"• Pattern: partite senza gol iniziali spesso si aprono dopo\n"
-                        f"• Quote Over probabilmente buone"
-                    ),
-                    confidence=confidence,
-                    odds=1.6,  # Stima
-                    stake_suggestion=2.0,
-                    timestamp=datetime.now()
-                )
-                opportunities.append(opportunity)
+                # 🆕 Usa quota reale da match_data se disponibile
+                odds_over_1_5 = match_data.get('odds_over_1_5')
+                if not odds_over_1_5:
+                    logger.warning(f"⏭️ Over 1.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                else:
+                    opportunity = LiveBettingOpportunity(
+                        match_id=match_id,
+                        match_data=match_data,
+                        situation='over_no_goals',
+                        market='over_1.5',
+                        recommendation="Punta Over 1.5 (nessun gol ma partita aperta)",
+                        reasoning=(
+                            f"🎯 OVER OPPORTUNITY!\n\n"
+                            f"• Nessun gol dopo {minute} minuti\n"
+                            f"• Partita sembra aperta\n"
+                            f"• Pattern: partite senza gol iniziali spesso si aprono dopo\n"
+                            f"• Quote Over probabilmente buone"
+                        ),
+                        confidence=confidence,
+                        odds=odds_over_1_5,
+                        stake_suggestion=2.0,
+                        timestamp=datetime.now()
+                    )
+                    opportunities.append(opportunity)
         
         except Exception as e:
             logger.debug(f"⚠️  Errore check under/over: {e}")
@@ -1473,27 +1478,38 @@ class LiveBettingAdvisor:
                     base_confidence = 70 + min(10, total_shots_on_target * 3)
                     confidence = min(88, base_confidence + ai_boost)
                     
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='over_0.5_general', market='over_0.5',
-                        recommendation="Punta Over 0.5 Gol",
-                        reasoning=(
-                            f"🎯 OVER 0.5!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• Partita APERTA:\n"
-                            f"  - Tiri: {total_shots} ({total_shots_on_target} in porta)\n"
-                            f"  - Media: {shots_per_minute:.2f} tiri/min\n"
-                            f"• Alta probabilità almeno 1 gol\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        confidence=confidence, odds=1.2, stake_suggestion=2.5,
-                        timestamp=datetime.now(),
-                        alternative_markets=[
-                            {'market': 'over_1.5', 'confidence': confidence - 15, 'odds': 1.6},
-                            {'market': 'over_2.5', 'confidence': confidence - 25, 'odds': 2.0}
-                        ]
-                    )
-                    opportunities.append(opportunity)
+                    # 🆕 Usa quota reale da match_data se disponibile
+                    odds_over_0_5 = match_data.get('odds_over_0_5')
+                    if not odds_over_0_5:
+                        logger.warning(f"⏭️ Over 0.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                    else:
+                        # Quote alternative (se disponibili)
+                        odds_over_1_5 = match_data.get('odds_over_1_5')
+                        odds_over_2_5 = match_data.get('odds_over_2_5')
+                        alternative_markets = []
+                        if odds_over_1_5:
+                            alternative_markets.append({'market': 'over_1.5', 'confidence': confidence - 15, 'odds': odds_over_1_5})
+                        if odds_over_2_5:
+                            alternative_markets.append({'market': 'over_2.5', 'confidence': confidence - 25, 'odds': odds_over_2_5})
+
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='over_0.5_general', market='over_0.5',
+                            recommendation="Punta Over 0.5 Gol",
+                            reasoning=(
+                                f"🎯 OVER 0.5!\n\n"
+                                f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                f"• Partita APERTA:\n"
+                                f"  - Tiri: {total_shots} ({total_shots_on_target} in porta)\n"
+                                f"  - Media: {shots_per_minute:.2f} tiri/min\n"
+                                f"• Alta probabilità almeno 1 gol\n"
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=odds_over_0_5, stake_suggestion=2.5,
+                            timestamp=datetime.now(),
+                            alternative_markets=alternative_markets if alternative_markets else None
+                        )
+                        opportunities.append(opportunity)
                 else:
                     # 🔍 LOG: Perché Over 0.5 non viene generato per 0-0
                     logger.info(f"🔍 {match_id}: Over 0.5 non generato per 0-0 (min {minute}): shots/min={shots_per_minute:.2f} (min 0.15), SOT={total_shots_on_target} (min 1)")
@@ -1511,23 +1527,32 @@ class LiveBettingAdvisor:
                     base_confidence = 72 + min(10, total_shots_on_target * 2)
                     confidence = min(90, base_confidence + ai_boost)
                     
-                opportunity = LiveBettingOpportunity(
-                    match_id=match_id, match_data=match_data,
-                    situation='over_1.5_general', market='over_1.5',
-                    recommendation="Punta Over 1.5 Gol",
-                        reasoning=(
-                            f"🎯 OVER 1.5!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• Già 1 gol, partita APERTA:\n"
-                            f"  - Tiri: {total_shots} ({total_shots_on_target} in porta)\n"
-                            f"• Alta probabilità secondo gol\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        confidence=confidence, odds=1.6, stake_suggestion=3.0,
-                    timestamp=datetime.now(),
-                        alternative_markets=[{'market': 'over_2.5', 'confidence': confidence - 12, 'odds': 2.0}]
-                )
-                opportunities.append(opportunity)
+                # 🆕 Usa quota reale da match_data se disponibile
+                odds_over_1_5 = match_data.get('odds_over_1_5')
+                if not odds_over_1_5:
+                    logger.warning(f"⏭️ Over 1.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                else:
+                    # Quota alternativa Over 2.5 (se disponibile)
+                    odds_over_2_5 = match_data.get('odds_over_2_5')
+                    alternative_markets = [{'market': 'over_2.5', 'confidence': confidence - 12, 'odds': odds_over_2_5}] if odds_over_2_5 else None
+
+                    opportunity = LiveBettingOpportunity(
+                        match_id=match_id, match_data=match_data,
+                        situation='over_1.5_general', market='over_1.5',
+                        recommendation="Punta Over 1.5 Gol",
+                            reasoning=(
+                                f"🎯 OVER 1.5!\n\n"
+                                f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                f"• Già 1 gol, partita APERTA:\n"
+                                f"  - Tiri: {total_shots} ({total_shots_on_target} in porta)\n"
+                                f"• Alta probabilità secondo gol\n"
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=odds_over_1_5, stake_suggestion=3.0,
+                        timestamp=datetime.now(),
+                            alternative_markets=alternative_markets
+                    )
+                    opportunities.append(opportunity)
             
             # OVER 2.5: Già 2 gol o partita molto aperta
             if total_goals == 2 and minute >= 30 and minute <= 75:
@@ -1537,23 +1562,32 @@ class LiveBettingAdvisor:
                     base_confidence = 75 + min(10, (total_shots - 15) * 0.5)
                     confidence = min(92, base_confidence + ai_boost)
                     
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='over_2.5_general', market='over_2.5',
-                        recommendation="Punta Over 2.5 Gol",
-                        reasoning=(
-                            f"🎯 OVER 2.5!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• Già 2 gol, partita MOLTO APERTA:\n"
-                            f"  - Tiri: {total_shots} ({total_shots_on_target} in porta)\n"
-                            f"• Alta probabilità terzo gol\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        confidence=confidence, odds=2.0, stake_suggestion=3.0,
-                        timestamp=datetime.now(),
-                        alternative_markets=[{'market': 'over_3.5', 'confidence': confidence - 20, 'odds': 3.0}]
-                    )
-                    opportunities.append(opportunity)
+                    # 🆕 Usa quota reale da match_data se disponibile
+                    odds_over_2_5 = match_data.get('odds_over_2_5')
+                    if not odds_over_2_5:
+                        logger.warning(f"⏭️ Over 2.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                    else:
+                        # Quota alternativa Over 3.5 (se disponibile)
+                        odds_over_3_5 = match_data.get('odds_over_3_5')
+                        alternative_markets = [{'market': 'over_3.5', 'confidence': confidence - 20, 'odds': odds_over_3_5}] if odds_over_3_5 else None
+
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='over_2.5_general', market='over_2.5',
+                            recommendation="Punta Over 2.5 Gol",
+                            reasoning=(
+                                f"🎯 OVER 2.5!\n\n"
+                                f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                f"• Già 2 gol, partita MOLTO APERTA:\n"
+                                f"  - Tiri: {total_shots} ({total_shots_on_target} in porta)\n"
+                                f"• Alta probabilità terzo gol\n"
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=odds_over_2_5, stake_suggestion=3.0,
+                            timestamp=datetime.now(),
+                            alternative_markets=alternative_markets
+                        )
+                        opportunities.append(opportunity)
             elif total_goals == 1 and minute >= 40 and minute <= 70:
                 # Solo 1 gol ma partita molto aperta
                 shots_per_minute = total_shots / minute if minute > 0 else 0
@@ -1587,21 +1621,26 @@ class LiveBettingAdvisor:
                 base_confidence = 70 + min(15, (minute - 40) * 0.3)
                 confidence = min(90, base_confidence + ai_boost)
                 
-                opportunity = LiveBettingOpportunity(
-                    match_id=match_id, match_data=match_data,
-                    situation='over_3.5_general', market='over_3.5',
-                    recommendation="Punta Over 3.5 Gol",
-                    reasoning=(
-                        f"🎯 OVER 3.5!\n\n"
-                        f"• Score: {score_home}-{score_away} al {minute}'\n"
-                        f"• Già 3 gol, partita ESTREMAMENTE APERTA\n"
-                        f"• Alta probabilità quarto gol\n"
-                        f"• IA boost: +{ai_boost:.0f}%"
-                    ),
-                    confidence=confidence, odds=3.0, stake_suggestion=2.5,
-                    timestamp=datetime.now()
-                )
-                opportunities.append(opportunity)
+                # 🆕 Usa quota reale da match_data se disponibile
+                odds_over_3_5 = match_data.get('odds_over_3_5')
+                if not odds_over_3_5:
+                    logger.warning(f"⏭️ Over 3.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                else:
+                    opportunity = LiveBettingOpportunity(
+                        match_id=match_id, match_data=match_data,
+                        situation='over_3.5_general', market='over_3.5',
+                        recommendation="Punta Over 3.5 Gol",
+                        reasoning=(
+                            f"🎯 OVER 3.5!\n\n"
+                            f"• Score: {score_home}-{score_away} al {minute}'\n"
+                            f"• Già 3 gol, partita ESTREMAMENTE APERTA\n"
+                            f"• Alta probabilità quarto gol\n"
+                            f"• IA boost: +{ai_boost:.0f}%"
+                        ),
+                        confidence=confidence, odds=odds_over_3_5, stake_suggestion=2.5,
+                        timestamp=datetime.now()
+                    )
+                    opportunities.append(opportunity)
             
             # UNDER 1.5: Partita chiusa, max 1 gol
             # 🆕 FIX: NON generare Under 1.5 se c'è già 1 gol e siamo oltre 45' (illogico - se è 1-0 al 50', under 1.5 è già perso se segna un altro gol)
