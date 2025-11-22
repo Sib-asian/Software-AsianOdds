@@ -35,8 +35,9 @@ class LiveMatchAI:
     """
 
     # 🛡️ SANITY CHECK - Costanti per filtrare opportunità irrealistiche
-    MAX_EV_ALLOWED = 30.0  # Max 30% EV (già molto generoso)
-    MAX_CONFIDENCE_ALLOWED = 85.0  # Max 85% confidence (nel betting reale è difficile superare 75%)
+    # AGGIORNATO: Soglie più conservative per ridurre notifiche irrealistiche
+    MAX_EV_ALLOWED = 15.0  # Max 15% EV (betting reale raramente supera 5-8%)
+    MAX_CONFIDENCE_ALLOWED = 80.0  # Max 80% confidence (nel betting difficile superare 75%)
     MAX_PROB_DEVIATION = 0.15  # Max 15% differenza da quote bookmaker
 
     def __init__(
