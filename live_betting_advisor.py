@@ -16,6 +16,12 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
+# 🛡️ SANITY CHECK - Costanti per filtrare opportunità irrealistiche
+# Queste soglie proteggono da segnali esagerati che non riflettono la realtà del betting
+MAX_EV_ALLOWED = 15.0  # Max 15% EV (betting reale raramente supera 5-8%)
+MAX_CONFIDENCE_ALLOWED = 80.0  # Max 80% confidence (nel betting difficile superare 75%)
+MAX_PROB_DEVIATION = 0.15  # Max 15% differenza tra prob AI e prob implicita quote
+
 # 🆕 Importa LiveMatchAI per analisi AI dedicata ai match live
 try:
     from ai_system.live_match_ai import LiveMatchAI
@@ -3898,11 +3904,51 @@ class LiveBettingAdvisor:
         opportunity: LiveBettingOpportunity,
         live_data: Dict[str, Any]
     ) -> None:
-        """Arricchisce l'opportunità con stats, EV e urgenza."""
+        """Arricchisce l'opportunità con stats, EV e urgenza + applica SANITY CHECK."""
         opportunity.match_stats = self._extract_match_stats(live_data)
         opportunity.key_stats = self._extract_key_stats_for_market(opportunity, live_data)
         opportunity.urgency_level = self._calculate_urgency(opportunity, live_data)
-        opportunity.ev = self._calculate_expected_value(opportunity)
+
+        # Calcola EV
+        ev_raw = self._calculate_expected_value(opportunity)
+
+        # 🛡️ SANITY CHECK 1: Limita EV massimo
+        if ev_raw > MAX_EV_ALLOWED:
+            logger.warning(
+                f"⚠️ SANITY CHECK: {opportunity.market} EV limitato da {ev_raw:.1f}% a {MAX_EV_ALLOWED:.1f}% "
+                f"(confidence: {opportunity.confidence:.1f}%, odds: {opportunity.odds:.2f})"
+            )
+            ev_raw = MAX_EV_ALLOWED
+
+        # 🛡️ SANITY CHECK 2: Limita confidence massima
+        if opportunity.confidence > MAX_CONFIDENCE_ALLOWED:
+            logger.warning(
+                f"⚠️ SANITY CHECK: {opportunity.market} confidence limitata da {opportunity.confidence:.1f}% a {MAX_CONFIDENCE_ALLOWED:.1f}%"
+            )
+            opportunity.confidence = MAX_CONFIDENCE_ALLOWED
+            # Ricalcola EV con confidence limitata
+            ev_raw = self._calculate_expected_value(opportunity)
+            if ev_raw > MAX_EV_ALLOWED:
+                ev_raw = MAX_EV_ALLOWED
+
+        # 🛡️ SANITY CHECK 3: Verifica deviazione probabilità vs quote
+        prob_ai = opportunity.confidence / 100.0
+        prob_implied = 1.0 / opportunity.odds if opportunity.odds > 1.0 else 0.5
+        prob_deviation = abs(prob_ai - prob_implied)
+
+        if prob_deviation > MAX_PROB_DEVIATION:
+            logger.warning(
+                f"⚠️ SANITY CHECK: {opportunity.market} deviazione eccessiva {prob_deviation*100:.1f}% "
+                f"(AI: {prob_ai*100:.1f}% vs Quote: {prob_implied*100:.1f}%) - penalizzo confidence"
+            )
+            # Penalizza confidence del 20% se deviazione eccessiva
+            opportunity.confidence *= 0.8
+            # Ricalcola EV
+            ev_raw = self._calculate_expected_value(opportunity)
+            if ev_raw > MAX_EV_ALLOWED:
+                ev_raw = MAX_EV_ALLOWED
+
+        opportunity.ev = ev_raw
         opportunity.has_live_stats = self._has_meaningful_live_stats(live_data)
     
     def _calculate_urgency(self, opportunity: LiveBettingOpportunity, live_data: Dict[str, Any]) -> str:
