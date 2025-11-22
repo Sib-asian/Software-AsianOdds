@@ -180,15 +180,38 @@ class LiveBettingAdvisor:
         self.stats_calculator = None
         self.confidence_calculator = None
         self.quality_scorer = None
+        self.quality_control_enabled = False
+
         if QUALITY_CONTROL_AVAILABLE:
             try:
                 self.data_validator = LiveDataValidator()
                 self.stats_calculator = AdvancedStatsCalculator()
                 self.confidence_calculator = DynamicConfidenceCalculator()
                 self.quality_scorer = SignalQualityScorer()
-                logger.info("✅ Quality Control System inizializzato - validazione avanzata dati live attiva")
+                self.quality_control_enabled = True
+                logger.info("=" * 60)
+                logger.info("✅ QUALITY CONTROL SYSTEM: ATTIVO")
+                logger.info("=" * 60)
+                logger.info("📊 Modalità: PRECISION MODE")
+                logger.info("🎯 Confidence dinamico: ATTIVO (basato su statistiche reali)")
+                logger.info("✅ Data validation: ATTIVA (coerenza + outlier + range)")
+                logger.info("🔍 Quality scoring: ATTIVO (solo segnali >= 60/100)")
+                logger.info("🚫 Anti-banality filter: ATTIVO (penalizza segnali ovvi)")
+                logger.info("=" * 60)
             except Exception as e:
-                logger.warning(f"⚠️  Errore inizializzazione Quality Control: {e} - verrà utilizzata validazione base")
+                logger.error(f"❌ Errore inizializzazione Quality Control: {e}")
+                logger.error("⚠️  Modalità BASE attiva - precisione ridotta!")
+                self.quality_control_enabled = False
+        else:
+            logger.warning("=" * 60)
+            logger.warning("⚠️  QUALITY CONTROL MODULES NON DISPONIBILI")
+            logger.warning("=" * 60)
+            logger.warning("Modalità: BASE (precisione ridotta)")
+            logger.warning("Per massima precisione, verifica che:")
+            logger.warning("  1. ai_system/live_data_quality.py esista")
+            logger.warning("  2. Tutte le dipendenze siano installate")
+            logger.warning("=" * 60)
+            self.quality_control_enabled = False
 
         self.monitored_matches: Dict[str, Dict] = {}
         self.last_analysis: Dict[str, datetime] = {}
@@ -256,7 +279,44 @@ class LiveBettingAdvisor:
             'btts_first_half': 76.0,  # 🆕 AUMENTATO: 76% invece di 73%
             'half_time_result': 76.0,  # 🆕 AUMENTATO: 76% invece di 73%
         }
-    
+
+    def health_check(self) -> Dict[str, Any]:
+        """
+        🎯 NUOVO: Health check completo del sistema.
+
+        Verifica:
+        - Quality Control attivo
+        - Componenti inizializzati
+        - Configurazione corretta
+
+        Returns:
+            Dict con status e dettagli
+        """
+        status = {
+            'quality_control_enabled': self.quality_control_enabled,
+            'components': {
+                'data_validator': self.data_validator is not None,
+                'stats_calculator': self.stats_calculator is not None,
+                'confidence_calculator': self.confidence_calculator is not None,
+                'quality_scorer': self.quality_scorer is not None,
+                'live_match_ai': self.live_match_ai is not None
+            },
+            'config': {
+                'min_confidence': self.min_confidence,
+                'min_ev': self.min_ev,
+                'max_opportunities_per_match': self.max_opportunities_per_match
+            },
+            'status': 'OK' if self.quality_control_enabled else 'DEGRADED'
+        }
+
+        # Log status
+        if self.quality_control_enabled:
+            logger.info("🎯 Health Check: SISTEMA AL 100% - Quality Control ATTIVO")
+        else:
+            logger.warning("⚠️  Health Check: SISTEMA IN MODALITÀ BASE - Quality Control NON ATTIVO")
+
+        return status
+
     def _calculate_dynamic_confidence(
         self,
         market_type: str,
