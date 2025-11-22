@@ -3980,37 +3980,61 @@ def get_best_worst_bets(limit: int = 10) -> Dict[str, List[Dict]]:
         }
 
 def get_performance_by_market() -> List[Dict[str, Any]]:
-    """Analizza performance per tipo di mercato"""
+    """Analizza performance per tipo di mercato, includendo mercati solo pending."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
+            WITH markets AS (
+                SELECT DISTINCT market
+                FROM bets
+            )
             SELECT
-                market,
-                COUNT(*) as total_bets,
-                SUM(CASE WHEN result = 'win' THEN 1 ELSE 0 END) as wins,
-                SUM(stake) as total_staked,
-                SUM(COALESCE(profit, 0)) as total_profit,
-                AVG(edge) as avg_edge
-            FROM bets
-            WHERE result != 'pending'
-            GROUP BY market
+                m.market AS market,
+                SUM(CASE WHEN b.result != 'pending' THEN 1 ELSE 0 END) AS settled_bets,
+                SUM(CASE WHEN b.result = 'pending' THEN 1 ELSE 0 END) AS pending_bets,
+                SUM(CASE WHEN b.result = 'win' THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN b.result = 'loss' THEN 1 ELSE 0 END) AS losses,
+                SUM(CASE WHEN b.result = 'push' THEN 1 ELSE 0 END) AS pushes,
+                SUM(CASE WHEN b.result != 'pending' THEN b.stake ELSE 0 END) AS total_staked,
+                SUM(CASE WHEN b.result != 'pending' THEN COALESCE(b.profit, 0) ELSE 0 END) AS total_profit,
+                SUM(CASE WHEN b.result != 'pending' THEN b.edge ELSE 0 END) AS sum_edge
+            FROM markets m
+            LEFT JOIN bets b ON b.market = m.market
+            GROUP BY m.market
             ORDER BY total_profit DESC
         """)
 
         results = []
         for row in cursor.fetchall():
-            total = row['total_bets']
-            win_rate = (row['wins'] / total * 100) if total > 0 else 0
-            roi = (row['total_profit'] / row['total_staked'] * 100) if row['total_staked'] > 0 else 0
+            market_name = (row['market'] or '').strip() or 'Unknown'
+            settled_bets = row['settled_bets'] or 0
+            pending_bets = row['pending_bets'] or 0
+            wins = row['wins'] or 0
+            losses = row['losses'] or 0
+            pushes = row['pushes'] or 0
+            decision_bets = wins + losses
+
+            total_staked = row['total_staked'] or 0.0
+            total_profit = row['total_profit'] or 0.0
+            sum_edge = row['sum_edge'] or 0.0
+
+            roi = (total_profit / total_staked * 100) if total_staked else None
+            win_rate = (wins / decision_bets * 100) if decision_bets else None
+            avg_edge = (sum_edge / settled_bets * 100) if settled_bets else None
 
             results.append({
-                'market': row['market'],
-                'total_bets': total,
-                'win_rate': round(win_rate, 2),
-                'total_staked': round(row['total_staked'], 2),
-                'total_profit': round(row['total_profit'], 2),
-                'roi': round(roi, 2),
-                'avg_edge': round(row['avg_edge'] * 100, 2) if row['avg_edge'] else None
+                'market': market_name,
+                'total_bets': settled_bets,
+                'pending_bets': pending_bets,
+                'wins': wins,
+                'losses': losses,
+                'pushes': pushes,
+                'decision_bets': decision_bets,
+                'win_rate': round(win_rate, 2) if win_rate is not None else None,
+                'total_staked': round(total_staked, 2),
+                'total_profit': round(total_profit, 2),
+                'roi': round(roi, 2) if roi is not None else None,
+                'avg_edge': round(avg_edge, 2) if avg_edge is not None else None
             })
 
         return results
