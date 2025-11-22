@@ -17,10 +17,11 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 # 🛡️ SANITY CHECK - Costanti per filtrare opportunità irrealistiche
-# Queste soglie proteggono da segnali esagerati che non riflettono la realtà del betting
+# OPZIONE B (BILANCIATA): Permette value betting dove AI trova valore sottostimato dal mercato
 MAX_EV_ALLOWED = 15.0  # Max 15% EV (betting reale raramente supera 5-8%)
 MAX_CONFIDENCE_ALLOWED = 80.0  # Max 80% confidence (nel betting difficile superare 75%)
-MAX_PROB_DEVIATION = 0.15  # Max 15% differenza tra prob AI e prob implicita quote
+MAX_PROB_DEVIATION = 0.20  # Max 20% differenza tra prob AI e prob implicita quote (era 15%)
+CONFIDENCE_PENALTY = 0.10  # Penalizzazione -10% se deviazione eccessiva (era -20%)
 
 # 🆕 Importa LiveMatchAI per analisi AI dedicata ai match live
 try:
@@ -3939,10 +3940,10 @@ class LiveBettingAdvisor:
         if prob_deviation > MAX_PROB_DEVIATION:
             logger.warning(
                 f"⚠️ SANITY CHECK: {opportunity.market} deviazione eccessiva {prob_deviation*100:.1f}% "
-                f"(AI: {prob_ai*100:.1f}% vs Quote: {prob_implied*100:.1f}%) - penalizzo confidence"
+                f"(AI: {prob_ai*100:.1f}% vs Quote: {prob_implied*100:.1f}%) - penalizzo confidence -{CONFIDENCE_PENALTY*100:.0f}%"
             )
-            # Penalizza confidence del 20% se deviazione eccessiva
-            opportunity.confidence *= 0.8
+            # Penalizza confidence se deviazione eccessiva
+            opportunity.confidence *= (1 - CONFIDENCE_PENALTY)
             # Ricalcola EV
             ev_raw = self._calculate_expected_value(opportunity)
             if ev_raw > MAX_EV_ALLOWED:
