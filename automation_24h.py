@@ -294,10 +294,11 @@ class Automation24H:
         
         # Sistemi avanzati 24/7 (dopo notifier e api_manager)
         if ADVANCED_SYSTEMS_AVAILABLE:
-            self.odds_monitor = OddsMonitor()
+            # 🔇 DISABILITATO: Odds monitor e arbitrage per ridurre spam notifiche
+            self.odds_monitor = None  # OddsMonitor() - DISABILITATO per evitare notifiche extra
             self.result_tracker_auto = ResultTrackerAuto(api_manager=self.api_manager)
             self.pre_match_alerter = PreMatchAlerter(notifier=self.notifier)
-            self.arbitrage_detector = ArbitrageDetectorAuto(min_profit_pct=1.0)
+            self.arbitrage_detector = None  # ArbitrageDetectorAuto(min_profit_pct=1.0) - DISABILITATO per evitare notifiche extra
             
             # News analyzer (richiede sentiment analyzer se disponibile)
             sentiment_analyzer = None
