@@ -157,7 +157,7 @@ class Automation24H:
         self.notified_opportunities: Set[str] = set()  # Evita duplicati
         self.notified_opportunities_timestamps: Dict[str, datetime] = {}  # Timestamp delle notifiche
         self.notified_matches_timestamps: Dict[str, datetime] = {}  # Timestamp per partita (max 1 notifica ogni 30 min per partita)
-        self.last_global_notification_time: Optional[datetime] = None  # 🆕 Limite globale 10 minuti tra BETTING notifications
+        self.last_global_notification_time: Optional[datetime] = None  # 🆕 Limite globale 20 minuti tra BETTING notifications
         # 🔧 FIX: Caricamento timestamp spostato alla fine di _init_components (dopo init signal_quality_learner)
         self.last_system_notification_time: Optional[datetime] = None  # 🎯 NUOVO: Limite 1 ora tra SYSTEM notifications (stats, reports, progress)
         # 🔧 OPZIONE 4: Tracking mercati già suggeriti per partita (per penalizzazione/bonus)
@@ -294,10 +294,11 @@ class Automation24H:
         
         # Sistemi avanzati 24/7 (dopo notifier e api_manager)
         if ADVANCED_SYSTEMS_AVAILABLE:
-            self.odds_monitor = OddsMonitor()
+            # 🔇 DISABILITATO: Odds monitor e arbitrage per ridurre spam notifiche
+            self.odds_monitor = None  # OddsMonitor() - DISABILITATO per evitare notifiche extra
             self.result_tracker_auto = ResultTrackerAuto(api_manager=self.api_manager)
             self.pre_match_alerter = PreMatchAlerter(notifier=self.notifier)
-            self.arbitrage_detector = ArbitrageDetectorAuto(min_profit_pct=1.0)
+            self.arbitrage_detector = None  # ArbitrageDetectorAuto(min_profit_pct=1.0) - DISABILITATO per evitare notifiche extra
             
             # News analyzer (richiede sentiment analyzer se disponibile)
             sentiment_analyzer = None
@@ -1907,11 +1908,11 @@ class Automation24H:
         # 🔧 FIX: Definisci 'now' prima di usarlo
         now = datetime.now()
         
-        # 🆕 FIX: Limite globale 10 minuti tra qualsiasi notifica (CONTROLLO PRIMA DI TUTTO)
+        # 🆕 FIX: Limite globale 20 minuti tra qualsiasi notifica (CONTROLLO PRIMA DI TUTTO)
         if hasattr(self, 'last_global_notification_time') and self.last_global_notification_time:
             time_since_global = (now - self.last_global_notification_time).total_seconds() / 60
-            if time_since_global < 10:  # Blocco globale 10 minuti
-                logger.info(f"⏭️  Notifica globale bloccata: ultima notifica {time_since_global:.1f} minuti fa (minimo 10 minuti richiesti) - Match: {match_id}, Market: {market}")
+            if time_since_global < 20:  # Blocco globale 20 minuti
+                logger.info(f"⏭️  Notifica globale bloccata: ultima notifica {time_since_global:.1f} minuti fa (minimo 20 minuti richiesti) - Match: {match_id}, Market: {market}")
                 logger.debug(f"   Timestamp ultima notifica: {self.last_global_notification_time}, Ora attuale: {now}")
                 return
         else:
