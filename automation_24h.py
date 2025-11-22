@@ -1152,6 +1152,31 @@ class Automation24H:
                 'odds_1': match.get('odds_1'),
                 'odds_x': match.get('odds_x'),
                 'odds_2': match.get('odds_2'),
+                # 🆕 NUOVO: Quote Over/Under e BTTS da API-SPORTS
+                'odds_over_0_5': match.get('odds_over_0_5'),
+                'odds_under_0_5': match.get('odds_under_0_5'),
+                'odds_over_1_5': match.get('odds_over_1_5'),
+                'odds_under_1_5': match.get('odds_under_1_5'),
+                'odds_over_2_5': match.get('odds_over_2_5'),
+                'odds_under_2_5': match.get('odds_under_2_5'),
+                'odds_over_3_5': match.get('odds_over_3_5'),
+                'odds_under_3_5': match.get('odds_under_3_5'),
+                'odds_btts_yes': match.get('odds_btts_yes'),
+                'odds_btts_no': match.get('odds_btts_no'),
+                # 🆕 NUOVO: Quote Double Chance, DNB, HT/FT, Odd/Even
+                'odds_1x': match.get('odds_1x'),
+                'odds_x2': match.get('odds_x2'),
+                'odds_12': match.get('odds_12'),
+                'odds_dnb_home': match.get('odds_dnb_home'),
+                'odds_dnb_away': match.get('odds_dnb_away'),
+                'odds_ht_1': match.get('odds_ht_1'),
+                'odds_ht_x': match.get('odds_ht_x'),
+                'odds_ht_2': match.get('odds_ht_2'),
+                'odds_2h_1': match.get('odds_2h_1'),
+                'odds_2h_x': match.get('odds_2h_x'),
+                'odds_2h_2': match.get('odds_2h_2'),
+                'odds_goals_odd': match.get('odds_goals_odd'),
+                'odds_goals_even': match.get('odds_goals_even'),
             }
             
             # Prepara live_data (dati live partita)

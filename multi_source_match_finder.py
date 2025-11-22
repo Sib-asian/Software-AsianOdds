@@ -830,10 +830,44 @@ class MultiSourceMatchFinder:
                                         logger.info(f"📊 Tipi statistiche endpoint separato per {home_team} vs {away_team}: {all_home_types}")
                                         logger.debug(f"   Tipi statistiche home disponibili: {all_home_types}")
                                         logger.debug(f"   Tipi statistiche away disponibili: {all_away_types}")
-                        
+
+                        # 🆕 NUOVO: Recupera quote live da API-SPORTS
+                        odds_data = self._fetch_odds_from_api_sports(fixture_id) if fixture_id else None
+
+                        # Usa quote reali se disponibili, altrimenti fallback a valori di default
+                        odds_1 = odds_data.get('odds_1', 2.0) if odds_data else 2.0
+                        odds_x = odds_data.get('odds_x', 3.0) if odds_data else 3.0
+                        odds_2 = odds_data.get('odds_2', 2.0) if odds_data else 2.0
+                        odds_over_0_5 = odds_data.get('odds_over_0_5') if odds_data else None
+                        odds_under_0_5 = odds_data.get('odds_under_0_5') if odds_data else None
+                        odds_over_1_5 = odds_data.get('odds_over_1_5') if odds_data else None
+                        odds_under_1_5 = odds_data.get('odds_under_1_5') if odds_data else None
+                        odds_over_2_5 = odds_data.get('odds_over_2_5') if odds_data else None
+                        odds_under_2_5 = odds_data.get('odds_under_2_5') if odds_data else None
+                        odds_over_3_5 = odds_data.get('odds_over_3_5') if odds_data else None
+                        odds_under_3_5 = odds_data.get('odds_under_3_5') if odds_data else None
+                        odds_btts_yes = odds_data.get('odds_btts_yes') if odds_data else None
+                        odds_btts_no = odds_data.get('odds_btts_no') if odds_data else None
+                        # 🆕 NUOVO: Quote Double Chance, DNB, HT/FT, Odd/Even
+                        odds_1x = odds_data.get('odds_1x') if odds_data else None
+                        odds_x2 = odds_data.get('odds_x2') if odds_data else None
+                        odds_12 = odds_data.get('odds_12') if odds_data else None
+                        odds_dnb_home = odds_data.get('odds_dnb_home') if odds_data else None
+                        odds_dnb_away = odds_data.get('odds_dnb_away') if odds_data else None
+                        odds_ht_1 = odds_data.get('odds_ht_1') if odds_data else None
+                        odds_ht_x = odds_data.get('odds_ht_x') if odds_data else None
+                        odds_ht_2 = odds_data.get('odds_ht_2') if odds_data else None
+                        odds_2h_1 = odds_data.get('odds_2h_1') if odds_data else None
+                        odds_2h_x = odds_data.get('odds_2h_x') if odds_data else None
+                        odds_2h_2 = odds_data.get('odds_2h_2') if odds_data else None
+                        odds_goals_odd = odds_data.get('odds_goals_odd') if odds_data else None
+                        odds_goals_even = odds_data.get('odds_goals_even') if odds_data else None
+
                         # 🔧 LOG: Verifica prima di aggiungere
                         logger.debug(f"🔍 Aggiungendo partita LIVE: {home_team} vs {away_team} (id: {match_id})")
-                        
+                        if odds_data:
+                            logger.info(f"💰 Quote recuperate: 1X2 ({odds_1:.2f}/{odds_x:.2f}/{odds_2:.2f}), Under 2.5: {odds_under_2_5}, BTTS: {odds_btts_yes}")
+
                         matches.append({
                             'id': match_id,
                             'home': home_team,
@@ -841,9 +875,33 @@ class MultiSourceMatchFinder:
                             'league': league_name,
                             'country': country,
                             'date': fixture_date,
-                            'odds_1': 2.0,  # Default, quote live non sempre disponibili
-                            'odds_x': 3.0,
-                            'odds_2': 2.0,
+                            'odds_1': odds_1,
+                            'odds_x': odds_x,
+                            'odds_2': odds_2,
+                            'odds_over_0_5': odds_over_0_5,
+                            'odds_under_0_5': odds_under_0_5,
+                            'odds_over_1_5': odds_over_1_5,
+                            'odds_under_1_5': odds_under_1_5,
+                            'odds_over_2_5': odds_over_2_5,
+                            'odds_under_2_5': odds_under_2_5,
+                            'odds_over_3_5': odds_over_3_5,
+                            'odds_under_3_5': odds_under_3_5,
+                            'odds_btts_yes': odds_btts_yes,
+                            'odds_btts_no': odds_btts_no,
+                            # 🆕 Quote aggiuntive
+                            'odds_1x': odds_1x,
+                            'odds_x2': odds_x2,
+                            'odds_12': odds_12,
+                            'odds_dnb_home': odds_dnb_home,
+                            'odds_dnb_away': odds_dnb_away,
+                            'odds_ht_1': odds_ht_1,
+                            'odds_ht_x': odds_ht_x,
+                            'odds_ht_2': odds_ht_2,
+                            'odds_2h_1': odds_2h_1,
+                            'odds_2h_x': odds_2h_x,
+                            'odds_2h_2': odds_2h_2,
+                            'odds_goals_odd': odds_goals_odd,
+                            'odds_goals_even': odds_goals_even,
                             'source': 'api-sports',
                             'league_id': league_id,
                             'is_live': True,  # Marca come live
@@ -949,7 +1007,325 @@ class MultiSourceMatchFinder:
         except Exception as e:
             logger.debug(f"⚠️  Errore ottenendo statistiche per fixture {fixture_id}: {e}")
             return None
-    
+
+    def _fetch_odds_from_api_sports(self, fixture_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Recupera quote live per una specifica partita da API-SPORTS.
+        Endpoint: /odds/live
+
+        Returns:
+            Dizionario con quote per vari mercati:
+            {
+                'odds_1': float,  # Vittoria casa
+                'odds_x': float,  # Pareggio
+                'odds_2': float,  # Vittoria ospite
+                'odds_over_0_5': float,
+                'odds_under_0_5': float,
+                'odds_over_1_5': float,
+                'odds_under_1_5': float,
+                'odds_over_2_5': float,
+                'odds_under_2_5': float,
+                'odds_over_3_5': float,
+                'odds_under_3_5': float,
+                'odds_btts_yes': float,
+                'odds_btts_no': float,
+            }
+        """
+        if not self.api_sports_key or not fixture_id:
+            return None
+
+        try:
+            # Prova prima odds/live (per partite in corso)
+            url = "https://v3.football.api-sports.io/odds/live"
+            params = {
+                "fixture": str(fixture_id)
+            }
+
+            query = urllib.parse.urlencode(params)
+            full_url = f"{url}?{query}"
+
+            headers = {
+                "x-rapidapi-key": self.api_sports_key,
+                "x-rapidapi-host": "v3.football.api-sports.io"
+            }
+
+            req = urllib.request.Request(full_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode())
+
+                if not data.get("response") or len(data.get("response", [])) == 0:
+                    # Se non ci sono odds live, prova endpoint odds normale
+                    logger.debug(f"⚠️  Nessuna quota live per fixture {fixture_id}, provo endpoint odds normale...")
+                    return self._fetch_odds_from_api_sports_prematch(fixture_id)
+
+                # Estrai quote dal bookmaker preferito (o primo disponibile)
+                fixture_odds = data["response"][0]
+                bookmakers = fixture_odds.get("bookmakers", [])
+
+                if not bookmakers:
+                    logger.debug(f"⚠️  Nessun bookmaker disponibile per fixture {fixture_id}")
+                    return None
+
+                # 🎯 Bookmaker IDs preferiti (in ordine di preferenza)
+                # Bet365 (8), Pinnacle (12), William Hill (3), 1xBet (5), Betfair (11)
+                preferred_bookmaker_ids = [8, 12, 3, 5, 11]
+
+                # Cerca bookmaker preferito
+                selected_bookmaker = None
+                for pref_id in preferred_bookmaker_ids:
+                    for bookmaker in bookmakers:
+                        if bookmaker.get("id") == pref_id:
+                            selected_bookmaker = bookmaker
+                            logger.info(f"💰 Usando bookmaker: {bookmaker.get('name', 'N/A')} (ID: {pref_id}) per fixture {fixture_id}")
+                            break
+                    if selected_bookmaker:
+                        break
+
+                # Se nessun preferito trovato, usa il primo disponibile
+                if not selected_bookmaker:
+                    selected_bookmaker = bookmakers[0]
+                    logger.info(f"💰 Usando bookmaker di default: {selected_bookmaker.get('name', 'N/A')} (ID: {selected_bookmaker.get('id')}) per fixture {fixture_id}")
+
+                # Usa il bookmaker selezionato
+                odds_dict = {}
+                bookmaker = selected_bookmaker
+                bets = bookmaker.get("bets", [])
+
+                for bet in bets:
+                    bet_name = bet.get("name", "")
+                    bet_id = bet.get("id", 0)
+                    values = bet.get("values", [])
+
+                    # Match Winner (1X2)
+                    if bet_name == "Match Winner" or bet_id == 1:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                if outcome == "Home":
+                                    odds_dict['odds_1'] = float(odd)
+                                elif outcome == "Draw":
+                                    odds_dict['odds_x'] = float(odd)
+                                elif outcome == "Away":
+                                    odds_dict['odds_2'] = float(odd)
+
+                    # Goals Over/Under
+                    elif "Goals Over/Under" in bet_name or bet_id == 5:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                # Over/Under 0.5
+                                if "Over 0.5" in outcome:
+                                    odds_dict['odds_over_0_5'] = float(odd)
+                                elif "Under 0.5" in outcome:
+                                    odds_dict['odds_under_0_5'] = float(odd)
+                                # Over/Under 1.5
+                                elif "Over 1.5" in outcome:
+                                    odds_dict['odds_over_1_5'] = float(odd)
+                                elif "Under 1.5" in outcome:
+                                    odds_dict['odds_under_1_5'] = float(odd)
+                                # Over/Under 2.5
+                                elif "Over 2.5" in outcome:
+                                    odds_dict['odds_over_2_5'] = float(odd)
+                                elif "Under 2.5" in outcome:
+                                    odds_dict['odds_under_2_5'] = float(odd)
+                                # Over/Under 3.5
+                                elif "Over 3.5" in outcome:
+                                    odds_dict['odds_over_3_5'] = float(odd)
+                                elif "Under 3.5" in outcome:
+                                    odds_dict['odds_under_3_5'] = float(odd)
+
+                    # Both Teams Score (BTTS)
+                    elif "Both Teams Score" in bet_name or "BTTS" in bet_name or bet_id == 8:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                if "Yes" in outcome:
+                                    odds_dict['odds_btts_yes'] = float(odd)
+                                elif "No" in outcome:
+                                    odds_dict['odds_btts_no'] = float(odd)
+
+                    # Double Chance (1X, X2, 12)
+                    elif "Double Chance" in bet_name or bet_id == 3:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                if "Home/Draw" in outcome or "1X" in outcome:
+                                    odds_dict['odds_1x'] = float(odd)
+                                elif "Draw/Away" in outcome or "X2" in outcome:
+                                    odds_dict['odds_x2'] = float(odd)
+                                elif "Home/Away" in outcome or "12" in outcome:
+                                    odds_dict['odds_12'] = float(odd)
+
+                    # Draw No Bet (DNB)
+                    elif "Draw No Bet" in bet_name or "DNB" in bet_name:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                if "Home" in outcome:
+                                    odds_dict['odds_dnb_home'] = float(odd)
+                                elif "Away" in outcome:
+                                    odds_dict['odds_dnb_away'] = float(odd)
+
+                    # First Half Result / Half Time Result
+                    elif ("First Half" in bet_name or "Half Time Result" in bet_name or "HT Result" in bet_name) and "FT" not in bet_name:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                if "Home" in outcome:
+                                    odds_dict['odds_ht_1'] = float(odd)
+                                elif "Draw" in outcome:
+                                    odds_dict['odds_ht_x'] = float(odd)
+                                elif "Away" in outcome:
+                                    odds_dict['odds_ht_2'] = float(odd)
+
+                    # Second Half Result
+                    elif "Second Half" in bet_name or "2nd Half Result" in bet_name:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                if "Home" in outcome:
+                                    odds_dict['odds_2h_1'] = float(odd)
+                                elif "Draw" in outcome:
+                                    odds_dict['odds_2h_x'] = float(odd)
+                                elif "Away" in outcome:
+                                    odds_dict['odds_2h_2'] = float(odd)
+
+                    # Goals Odd/Even
+                    elif "Odd/Even" in bet_name or "Goals Odd or Even" in bet_name:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                if "Odd" in outcome:
+                                    odds_dict['odds_goals_odd'] = float(odd)
+                                elif "Even" in outcome:
+                                    odds_dict['odds_goals_even'] = float(odd)
+
+                # Quote recuperate con successo
+                if odds_dict:
+                    logger.info(f"✅ Quote recuperate per fixture {fixture_id}: {list(odds_dict.keys())}")
+                    return odds_dict
+                else:
+                    logger.debug(f"⚠️  Nessuna quota utile trovata per fixture {fixture_id}")
+                    return None
+
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                logger.warning(f"⚠️  Rate limit raggiunto per quote fixture {fixture_id}")
+            else:
+                logger.debug(f"⚠️  Errore HTTP ottenendo quote per fixture {fixture_id}: {e.code}")
+            return None
+        except Exception as e:
+            logger.debug(f"⚠️  Errore ottenendo quote per fixture {fixture_id}: {e}")
+            return None
+
+    def _fetch_odds_from_api_sports_prematch(self, fixture_id: int) -> Optional[Dict[str, Any]]:
+        """Fallback: prova endpoint odds pre-match se live non disponibile"""
+        if not self.api_sports_key or not fixture_id:
+            return None
+
+        try:
+            url = "https://v3.football.api-sports.io/odds"
+            params = {
+                "fixture": str(fixture_id)
+            }
+
+            query = urllib.parse.urlencode(params)
+            full_url = f"{url}?{query}"
+
+            headers = {
+                "x-rapidapi-key": self.api_sports_key,
+                "x-rapidapi-host": "v3.football.api-sports.io"
+            }
+
+            req = urllib.request.Request(full_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode())
+
+                if not data.get("response") or len(data.get("response", [])) == 0:
+                    return None
+
+                # Usa stessa logica di parsing del metodo principale
+                fixture_odds = data["response"][0]
+                bookmakers = fixture_odds.get("bookmakers", [])
+
+                if not bookmakers:
+                    return None
+
+                odds_dict = {}
+
+                for bookmaker in bookmakers:
+                    bets = bookmaker.get("bets", [])
+
+                    for bet in bets:
+                        bet_name = bet.get("name", "")
+                        bet_id = bet.get("id", 0)
+                        values = bet.get("values", [])
+
+                        if bet_name == "Match Winner" or bet_id == 1:
+                            for value in values:
+                                outcome = value.get("value", "")
+                                odd = value.get("odd")
+                                if odd:
+                                    if outcome == "Home":
+                                        odds_dict['odds_1'] = float(odd)
+                                    elif outcome == "Draw":
+                                        odds_dict['odds_x'] = float(odd)
+                                    elif outcome == "Away":
+                                        odds_dict['odds_2'] = float(odd)
+
+                        elif "Goals Over/Under" in bet_name or bet_id == 5:
+                            for value in values:
+                                outcome = value.get("value", "")
+                                odd = value.get("odd")
+                                if odd:
+                                    if "Over 0.5" in outcome:
+                                        odds_dict['odds_over_0_5'] = float(odd)
+                                    elif "Under 0.5" in outcome:
+                                        odds_dict['odds_under_0_5'] = float(odd)
+                                    elif "Over 1.5" in outcome:
+                                        odds_dict['odds_over_1_5'] = float(odd)
+                                    elif "Under 1.5" in outcome:
+                                        odds_dict['odds_under_1_5'] = float(odd)
+                                    elif "Over 2.5" in outcome:
+                                        odds_dict['odds_over_2_5'] = float(odd)
+                                    elif "Under 2.5" in outcome:
+                                        odds_dict['odds_under_2_5'] = float(odd)
+                                    elif "Over 3.5" in outcome:
+                                        odds_dict['odds_over_3_5'] = float(odd)
+                                    elif "Under 3.5" in outcome:
+                                        odds_dict['odds_under_3_5'] = float(odd)
+
+                        elif "Both Teams Score" in bet_name or "BTTS" in bet_name or bet_id == 8:
+                            for value in values:
+                                outcome = value.get("value", "")
+                                odd = value.get("odd")
+                                if odd:
+                                    if "Yes" in outcome:
+                                        odds_dict['odds_btts_yes'] = float(odd)
+                                    elif "No" in outcome:
+                                        odds_dict['odds_btts_no'] = float(odd)
+
+                    if len(odds_dict) >= 3:
+                        break
+
+                if odds_dict:
+                    logger.debug(f"✅ Quote pre-match recuperate per fixture {fixture_id}")
+                    return odds_dict
+                else:
+                    return None
+
+        except Exception as e:
+            logger.debug(f"⚠️  Errore ottenendo quote pre-match per fixture {fixture_id}: {e}")
+            return None
+
     def _fetch_from_football_data(
         self,
         days_ahead: int,
