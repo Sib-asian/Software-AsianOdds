@@ -1152,6 +1152,17 @@ class Automation24H:
                 'odds_1': match.get('odds_1'),
                 'odds_x': match.get('odds_x'),
                 'odds_2': match.get('odds_2'),
+                # 🆕 NUOVO: Quote Over/Under e BTTS da API-SPORTS
+                'odds_over_0_5': match.get('odds_over_0_5'),
+                'odds_under_0_5': match.get('odds_under_0_5'),
+                'odds_over_1_5': match.get('odds_over_1_5'),
+                'odds_under_1_5': match.get('odds_under_1_5'),
+                'odds_over_2_5': match.get('odds_over_2_5'),
+                'odds_under_2_5': match.get('odds_under_2_5'),
+                'odds_over_3_5': match.get('odds_over_3_5'),
+                'odds_under_3_5': match.get('odds_under_3_5'),
+                'odds_btts_yes': match.get('odds_btts_yes'),
+                'odds_btts_no': match.get('odds_btts_no'),
             }
             
             # Prepara live_data (dati live partita)

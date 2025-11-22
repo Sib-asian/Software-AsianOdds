@@ -1643,22 +1643,28 @@ class LiveBettingAdvisor:
                     base_confidence = 72 + (minute - 60) * 0.4
                     confidence = min(91, base_confidence + ai_boost)
                     
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='under_2.5_general', market='under_2.5',
-                        recommendation="Punta Under 2.5 Gol",
-                        reasoning=(
-                            f"🎯 UNDER 2.5!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• Partita CHIUSA:\n"
-                            f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min - bassa)\n"
-                            f"• Alta probabilità max 2 gol totale\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        confidence=confidence, odds=1.5, stake_suggestion=2.5,
-                        timestamp=datetime.now()
-                    )
-                    opportunities.append(opportunity)
+                    # 🆕 Usa quota reale da match_data se disponibile
+                    odds_under_2_5 = match_data.get('odds_under_2_5')
+                    if not odds_under_2_5:
+                        # Se non c'è quota reale, salta questa opportunità (NON fidarsi di quote stimate)
+                        logger.warning(f"⏭️ Under 2.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                    else:
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='under_2.5_general', market='under_2.5',
+                            recommendation="Punta Under 2.5 Gol",
+                            reasoning=(
+                                f"🎯 UNDER 2.5!\n\n"
+                                f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                f"• Partita CHIUSA:\n"
+                                f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min - bassa)\n"
+                                f"• Alta probabilità max 2 gol totale\n"
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=odds_under_2_5, stake_suggestion=2.5,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
             
             # UNDER 3.5: Partita chiusa, max 3 gol
             elif total_goals <= 3 and minute >= 70 and minute <= 85:
