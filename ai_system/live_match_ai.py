@@ -57,7 +57,26 @@ class LiveMatchAI:
         self._cache_ttl = 30  # 30 secondi TTL
         
         logger.info("✅ Live Match AI initialized")
-    
+
+    def _safe_get(self, data: Dict[str, Any], key: str, default: Any) -> Any:
+        """
+        Estrae valore da dizionario gestendo correttamente None.
+
+        Il metodo dict.get() ritorna il default solo se la chiave non esiste.
+        Se la chiave esiste ma il valore è None, ritorna None.
+        Questa funzione ritorna il default anche quando il valore è None.
+
+        Args:
+            data: Dizionario da cui estrarre il valore
+            key: Chiave da cercare
+            default: Valore di default se chiave non esiste o valore è None
+
+        Returns:
+            Valore estratto o default se None/mancante
+        """
+        value = data.get(key)
+        return value if value is not None else default
+
     def analyze_live_match(
         self,
         match_data: Dict[str, Any],
@@ -151,24 +170,25 @@ class LiveMatchAI:
     ) -> Dict[str, Any]:
         """
         Analizza situazione corrente della partita.
-        
+
         Returns:
             Dict con analisi situazione (momentum, pressione, equilibrio, etc.)
         """
-        score_home = live_data.get('score_home', 0)
-        score_away = live_data.get('score_away', 0)
-        minute = live_data.get('minute', 0)
+        # Estrai dati con gestione sicura di None
+        score_home = live_data.get('score_home') if live_data.get('score_home') is not None else 0
+        score_away = live_data.get('score_away') if live_data.get('score_away') is not None else 0
+        minute = live_data.get('minute') if live_data.get('minute') is not None else 0
         total_goals = score_home + score_away
-        
+
         # Possesso palla
-        possession_home = live_data.get('possession_home', 50)
+        possession_home = live_data.get('possession_home') if live_data.get('possession_home') is not None else 50
         possession_away = 100 - possession_home
-        
+
         # Tiri
-        shots_home = live_data.get('shots_home', 0)
-        shots_away = live_data.get('shots_away', 0)
-        shots_on_target_home = live_data.get('shots_on_target_home', 0)
-        shots_on_target_away = live_data.get('shots_on_target_away', 0)
+        shots_home = live_data.get('shots_home') if live_data.get('shots_home') is not None else 0
+        shots_away = live_data.get('shots_away') if live_data.get('shots_away') is not None else 0
+        shots_on_target_home = live_data.get('shots_on_target_home') if live_data.get('shots_on_target_home') is not None else 0
+        shots_on_target_away = live_data.get('shots_on_target_away') if live_data.get('shots_on_target_away') is not None else 0
         
         # Calcoli
         goal_difference = score_home - score_away
@@ -240,13 +260,14 @@ class LiveMatchAI:
     ) -> Dict[str, Any]:
         """
         Rileva pattern specifici nella partita.
-        
+
         Returns:
             Dict con pattern rilevati
         """
-        score_home = live_data.get('score_home', 0)
-        score_away = live_data.get('score_away', 0)
-        minute = live_data.get('minute', 0)
+        # Estrai dati con gestione sicura di None
+        score_home = live_data.get('score_home') if live_data.get('score_home') is not None else 0
+        score_away = live_data.get('score_away') if live_data.get('score_away') is not None else 0
+        minute = live_data.get('minute') if live_data.get('minute') is not None else 0
         goal_difference = score_home - score_away
         
         patterns = {
@@ -547,10 +568,10 @@ class LiveMatchAI:
             # 1. Quanto la probabilità è lontana da 0.5 (più estremo = più confidence)
             # 2. Minuto partita (più avanti = più confidence)
             # 3. Qualità dati live disponibili
-            
-            minute = live_data.get('minute', 0)
+
+            minute = live_data.get('minute') if live_data.get('minute') is not None else 0
             data_quality = self._assess_data_quality(live_data)
-            
+
             # Confidence base
             prob_extremity = abs(prob - 0.5) * 2  # 0 (50%) a 1 (0% o 100%)
             minute_factor = min(1.0, minute / 90)  # Più avanti = più confidence
@@ -598,22 +619,22 @@ class LiveMatchAI:
         """
         home_team = match_data.get('home', 'Home')
         away_team = match_data.get('away', 'Away')
-        
-        # Estrai dati base
-        score_home = live_data.get('score_home', 0)
-        score_away = live_data.get('score_away', 0)
-        minute = live_data.get('minute', 0)
+
+        # Estrai dati base con gestione sicura di None
+        score_home = live_data.get('score_home') if live_data.get('score_home') is not None else 0
+        score_away = live_data.get('score_away') if live_data.get('score_away') is not None else 0
+        minute = live_data.get('minute') if live_data.get('minute') is not None else 0
         total_goals = score_home + score_away
-        
-        # Statistiche
-        possession_home = live_data.get('possession_home', 50)
+
+        # Statistiche con gestione sicura di None
+        possession_home = live_data.get('possession_home') if live_data.get('possession_home') is not None else 50
         possession_away = 100 - possession_home
-        shots_home = live_data.get('shots_home', 0)
-        shots_away = live_data.get('shots_away', 0)
-        shots_on_target_home = live_data.get('shots_on_target_home', 0)
-        shots_on_target_away = live_data.get('shots_on_target_away', 0)
-        corners_home = live_data.get('corners_home', 0)
-        corners_away = live_data.get('corners_away', 0)
+        shots_home = live_data.get('shots_home') if live_data.get('shots_home') is not None else 0
+        shots_away = live_data.get('shots_away') if live_data.get('shots_away') is not None else 0
+        shots_on_target_home = live_data.get('shots_on_target_home') if live_data.get('shots_on_target_home') is not None else 0
+        shots_on_target_away = live_data.get('shots_on_target_away') if live_data.get('shots_on_target_away') is not None else 0
+        corners_home = live_data.get('corners_home') if live_data.get('corners_home') is not None else 0
+        corners_away = live_data.get('corners_away') if live_data.get('corners_away') is not None else 0
         
         # Analisi situazione se disponibile
         goal_difference = score_home - score_away
@@ -1107,10 +1128,10 @@ class LiveMatchAI:
             reasoning_parts.append(f"• Valore: {'✅ ALTO' if probability > 1/odds else '⚠️ BASSO'}")
         
         elif 'CARD' in market.upper() or 'CARTELLIN' in market.upper():
-            yellow_home = live_data.get('yellow_cards_home', 0)
-            yellow_away = live_data.get('yellow_cards_away', 0)
-            red_home = live_data.get('red_cards_home', 0)
-            red_away = live_data.get('red_cards_away', 0)
+            yellow_home = live_data.get('yellow_cards_home') if live_data.get('yellow_cards_home') is not None else 0
+            yellow_away = live_data.get('yellow_cards_away') if live_data.get('yellow_cards_away') is not None else 0
+            red_home = live_data.get('red_cards_home') if live_data.get('red_cards_home') is not None else 0
+            red_away = live_data.get('red_cards_away') if live_data.get('red_cards_away') is not None else 0
             total_cards = yellow_home + yellow_away + red_home + red_away
             reasoning_parts.append(f"🎯 ANALISI CARTELLINI:")
             reasoning_parts.append(f"")
