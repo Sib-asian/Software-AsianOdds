@@ -72,7 +72,11 @@ class MultiSourceMatchFinder:
         """
         all_matches = []
         self.found_match_ids.clear()
-        
+
+        # 🆕 RESET contatori API per questo ciclo (per log accurati)
+        self.api_calls_count = 0
+        self.api_calls_saved_by_cache = 0
+
         # 🆕 OTTIMIZZAZIONE: Usa API-SPORTS come primario (7500 chiamate/giorno)
         # TheOddsAPI solo come supplemento per quote (500 chiamate/mese limitate)
         
