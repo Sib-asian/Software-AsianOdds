@@ -3912,6 +3912,8 @@ class LiveBettingAdvisor:
 
         # Calcola EV
         ev_raw = self._calculate_expected_value(opportunity)
+        confidence_original = opportunity.confidence
+        ev_was_capped = False
 
         # 🛡️ SANITY CHECK 1: Limita EV massimo
         if ev_raw > MAX_EV_ALLOWED:
@@ -3920,6 +3922,7 @@ class LiveBettingAdvisor:
                 f"(confidence: {opportunity.confidence:.1f}%, odds: {opportunity.odds:.2f})"
             )
             ev_raw = MAX_EV_ALLOWED
+            ev_was_capped = True
 
         # 🛡️ SANITY CHECK 2: Limita confidence massima
         if opportunity.confidence > MAX_CONFIDENCE_ALLOWED:
@@ -3931,6 +3934,7 @@ class LiveBettingAdvisor:
             ev_raw = self._calculate_expected_value(opportunity)
             if ev_raw > MAX_EV_ALLOWED:
                 ev_raw = MAX_EV_ALLOWED
+                ev_was_capped = True
 
         # 🛡️ SANITY CHECK 3: Verifica deviazione probabilità vs quote
         prob_ai = opportunity.confidence / 100.0
@@ -3948,6 +3952,18 @@ class LiveBettingAdvisor:
             ev_raw = self._calculate_expected_value(opportunity)
             if ev_raw > MAX_EV_ALLOWED:
                 ev_raw = MAX_EV_ALLOWED
+                ev_was_capped = True
+
+        # 🛡️ SANITY CHECK 4: Ricalcola confidence per coerenza matematica se EV è stato cappato
+        # Se EV è stato limitato, aggiusta la confidence per mantenere coerenza: confidence = ((EV + 1) / odds) * 100
+        if ev_was_capped and opportunity.odds > 1.0:
+            confidence_adjusted = ((ev_raw / 100.0 + 1.0) / opportunity.odds) * 100.0
+            if abs(confidence_adjusted - opportunity.confidence) > 1.0:  # Solo se differenza significativa
+                logger.info(
+                    f"🔧 COERENZA: {opportunity.market} confidence aggiustata da {opportunity.confidence:.1f}% a {confidence_adjusted:.1f}% "
+                    f"per coerenza con EV cappato {ev_raw:.1f}% (odds: {opportunity.odds:.2f})"
+                )
+                opportunity.confidence = confidence_adjusted
 
         opportunity.ev = ev_raw
         opportunity.has_live_stats = self._has_meaningful_live_stats(live_data)

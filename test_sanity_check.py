@@ -24,6 +24,12 @@ def calculate_ev(confidence_pct, odds):
     ev_decimal = (prob * odds) - 1.0
     return ev_decimal * 100.0
 
+def calculate_adjusted_confidence(ev_pct, odds):
+    """Calcola confidence aggiustata per coerenza con EV cappato"""
+    ev_decimal = ev_pct / 100.0
+    confidence = ((ev_decimal + 1.0) / odds) * 100.0
+    return confidence
+
 def simulate_sanity_check(market, confidence_initial, odds):
     """Simula l'applicazione dei SANITY CHECK"""
     print(f"\n{'='*70}")
@@ -40,6 +46,7 @@ def simulate_sanity_check(market, confidence_initial, odds):
     # Applica SANITY CHECK (stessa logica di live_betting_advisor.py)
     confidence = confidence_initial
     ev = ev_initial
+    ev_was_capped = False
 
     print(f"\n🛡️ SANITY CHECK:")
 
@@ -47,6 +54,7 @@ def simulate_sanity_check(market, confidence_initial, odds):
     if ev > MAX_EV_ALLOWED:
         print(f"   ⚠️ CHECK 1: EV {ev:.1f}% > {MAX_EV_ALLOWED:.1f}% → LIMITATO a {MAX_EV_ALLOWED:.1f}%")
         ev = MAX_EV_ALLOWED
+        ev_was_capped = True
     else:
         print(f"   ✅ CHECK 1: EV {ev:.1f}% ≤ {MAX_EV_ALLOWED:.1f}% → OK")
 
@@ -58,6 +66,7 @@ def simulate_sanity_check(market, confidence_initial, odds):
         ev = calculate_ev(confidence, odds)
         if ev > MAX_EV_ALLOWED:
             ev = MAX_EV_ALLOWED
+            ev_was_capped = True
         print(f"   ↳ EV ricalcolato: {ev:.1f}%")
     else:
         print(f"   ✅ CHECK 2: Confidence {confidence:.1f}% ≤ {MAX_CONFIDENCE_ALLOWED:.1f}% → OK")
@@ -80,9 +89,27 @@ def simulate_sanity_check(market, confidence_initial, odds):
         ev = calculate_ev(confidence, odds)
         if ev > MAX_EV_ALLOWED:
             ev = MAX_EV_ALLOWED
+            ev_was_capped = True
         print(f"   ↳ EV ricalcolato: {ev:.1f}%")
     else:
         print(f"   ✅ CHECK 3: Deviazione {prob_deviation*100:.1f}% ≤ {MAX_PROB_DEVIATION*100:.1f}% → OK")
+
+    # CHECK 4: Ricalcola confidence per coerenza matematica se EV è stato cappato
+    if ev_was_capped and odds > 1.0:
+        confidence_adjusted = calculate_adjusted_confidence(ev, odds)
+        if abs(confidence_adjusted - confidence) > 1.0:  # Solo se differenza significativa
+            print(f"   🔧 CHECK 4: COERENZA - Confidence aggiustata per far tornare i conti")
+            print(f"      - Confidence prima: {confidence:.1f}%")
+            print(f"      - Confidence dopo: {confidence_adjusted:.1f}%")
+            print(f"      - Motivo: EV cappato a {ev:.1f}% → confidence deve essere ({ev:.1f}/100 + 1) / {odds:.2f} × 100")
+            confidence = confidence_adjusted
+            # Verifica finale
+            ev_verify = calculate_ev(confidence, odds)
+            print(f"      - ✅ Verifica: ({confidence/100:.4f} × {odds:.2f}) - 1 = {ev_verify:+.1f}%")
+        else:
+            print(f"   ✅ CHECK 4: COERENZA - Nessun aggiustamento necessario (differenza < 1%)")
+    else:
+        print(f"   ✅ CHECK 4: COERENZA - Nessun aggiustamento necessario (EV non cappato)")
 
     # OUTPUT FINALE
     print(f"\n📤 OUTPUT FINALE:")
