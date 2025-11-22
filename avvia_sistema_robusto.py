@@ -49,10 +49,10 @@ except Exception as e:
 # Configurazione
 telegram_token = os.getenv('TELEGRAM_BOT_TOKEN', "8530766126:AAHs1ZoLwrwvT7JuPyn_9ymNVyddPtUXi-g")
 telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID', "-1003278011521")
-update_interval = int(os.getenv('AUTOMATION_UPDATE_INTERVAL', '300'))
+update_interval = int(os.getenv('AUTOMATION_UPDATE_INTERVAL', '1200'))
 
 logger.info(f"📊 Configurazione:")
-logger.info(f"   Update Interval: {update_interval}s (5 minuti)")
+logger.info(f"   Update Interval: {update_interval}s (20 minuti)")
 logger.info(f"   Telegram Token: {'***' + telegram_token[-10:] if len(telegram_token) > 10 else '***'}")
 logger.info(f"   Telegram Chat ID: {telegram_chat_id}")
 
