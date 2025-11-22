@@ -12,10 +12,11 @@ Notifica ricevuta:
 Verifica che i SANITY CHECK limitino correttamente EV e confidence.
 """
 
-# Costanti SANITY CHECK (uguali a quelle in live_betting_advisor.py)
+# Costanti SANITY CHECK - OPZIONE B (uguali a quelle in live_betting_advisor.py)
 MAX_EV_ALLOWED = 15.0
 MAX_CONFIDENCE_ALLOWED = 80.0
-MAX_PROB_DEVIATION = 0.15
+MAX_PROB_DEVIATION = 0.20  # OPZIONE B: 20% invece di 15%
+CONFIDENCE_PENALTY = 0.10  # OPZIONE B: -10% invece di -20%
 
 def calculate_ev(confidence_pct, odds):
     """Calcola EV% da confidence% e quota"""
@@ -72,8 +73,8 @@ def simulate_sanity_check(market, confidence_initial, odds):
     print(f"      - Deviazione: {prob_deviation*100:.1f}%")
 
     if prob_deviation > MAX_PROB_DEVIATION:
-        print(f"   ⚠️ CHECK 3: Deviazione {prob_deviation*100:.1f}% > {MAX_PROB_DEVIATION*100:.1f}% → PENALIZZO confidence -20%")
-        confidence *= 0.8
+        print(f"   ⚠️ CHECK 3: Deviazione {prob_deviation*100:.1f}% > {MAX_PROB_DEVIATION*100:.1f}% → PENALIZZO confidence -{CONFIDENCE_PENALTY*100:.0f}%")
+        confidence *= (1 - CONFIDENCE_PENALTY)
         print(f"   ↳ Confidence penalizzata: {confidence:.1f}%")
         # Ricalcola EV
         ev = calculate_ev(confidence, odds)

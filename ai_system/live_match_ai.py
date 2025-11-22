@@ -35,10 +35,11 @@ class LiveMatchAI:
     """
 
     # 🛡️ SANITY CHECK - Costanti per filtrare opportunità irrealistiche
-    # AGGIORNATO: Soglie più conservative per ridurre notifiche irrealistiche
+    # OPZIONE B (BILANCIATA): Permette value betting dove AI trova valore sottostimato dal mercato
     MAX_EV_ALLOWED = 15.0  # Max 15% EV (betting reale raramente supera 5-8%)
     MAX_CONFIDENCE_ALLOWED = 80.0  # Max 80% confidence (nel betting difficile superare 75%)
-    MAX_PROB_DEVIATION = 0.15  # Max 15% differenza da quote bookmaker
+    MAX_PROB_DEVIATION = 0.20  # Max 20% differenza da quote bookmaker (era 15%)
+    CONFIDENCE_PENALTY = 0.10  # Penalizzazione -10% se deviazione eccessiva (era -20%)
 
     def __init__(
         self,
@@ -589,13 +590,17 @@ class LiveMatchAI:
             prob_implied = 1.0 / odds if odds > 1.0 else 0.5
             prob_deviation = abs(prob - prob_implied)
 
-            # 🛡️ SANITY CHECK 2: Scarta opportunità con deviazione eccessiva
+            # 🛡️ SANITY CHECK 2: Penalizza probabilità se deviazione eccessiva (OPZIONE B)
+            # Invece di scartare completamente, penalizza la probabilità
+            prob_adjusted = prob
             if prob_deviation > self.MAX_PROB_DEVIATION:
                 logger.debug(
-                    f"❌ SANITY CHECK: {market} scartato - deviazione {prob_deviation*100:.1f}% "
-                    f"(prob AI: {prob*100:.1f}% vs prob quote: {prob_implied*100:.1f}%)"
+                    f"⚠️ SANITY CHECK: {market} deviazione {prob_deviation*100:.1f}% "
+                    f"(prob AI: {prob*100:.1f}% vs prob quote: {prob_implied*100:.1f}%) "
+                    f"- penalizzo probabilità -{self.CONFIDENCE_PENALTY*100:.0f}%"
                 )
-                continue  # Scarta questa opportunità
+                # Penalizza probabilità invece di scartare completamente
+                prob_adjusted = prob * (1 - self.CONFIDENCE_PENALTY)
 
             # 🛡️ SANITY CHECK 3: Situazioni "già decise" (es: Under 2.5 con 3+ gol)
             score_home = live_data.get('score_home') if live_data.get('score_home') is not None else 0
@@ -620,16 +625,16 @@ class LiveMatchAI:
 
             data_quality = self._assess_data_quality(live_data)
 
-            # Confidence base (PIÙ CONSERVATIVA)
-            prob_extremity = abs(prob - 0.5) * 2  # 0 (50%) a 1 (0% o 100%)
+            # Confidence base (PIÙ CONSERVATIVA) - usa prob_adjusted se penalizzata
+            prob_extremity = abs(prob_adjusted - 0.5) * 2  # 0 (50%) a 1 (0% o 100%)
             minute_factor = min(1.0, minute / 90)  # Più avanti = più confidence
 
             # 🔧 RIDOTTO: da 30+15+5 a 20+10+5 per essere più conservativi
             confidence = 50 + (prob_extremity * 20) + (minute_factor * 10) + (data_quality * 5)
             confidence = max(50, min(self.MAX_CONFIDENCE_ALLOWED, confidence))
 
-            # Ricalcola EV con confidence
-            ev = (prob * odds - 1) * 100
+            # Ricalcola EV con probabilità (penalizzata se necessario)
+            ev = (prob_adjusted * odds - 1) * 100
 
             # 🛡️ SANITY CHECK 4: Limita EV massimo
             if ev > self.MAX_EV_ALLOWED:
