@@ -140,7 +140,7 @@ class Automation24H:
         telegram_chat_id: Optional[str] = None,
         min_ev: float = 8.0,  # EV minimo 8%
         min_confidence: float = 70.0,  # Confidence minima 70%
-        update_interval: int = 600,  # 10 minuti (600 secondi)
+        update_interval: int = 1200,  # 20 minuti (1200 secondi)
         api_budget_per_day: int = 7500,  # Piano Pro: 7500 chiamate/giorno
         max_notifications_per_cycle: int = 1  # Max notifiche per ciclo (solo la migliore in assoluto)
     ):
