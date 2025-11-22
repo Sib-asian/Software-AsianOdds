@@ -24,6 +24,21 @@ except ImportError:
     LIVE_MATCH_AI_AVAILABLE = False
     logger.warning("⚠️  LiveMatchAI non disponibile - analisi AI base verrà utilizzata")
 
+# 🎯 NUOVO: Importa sistema di quality control avanzato
+try:
+    from ai_system.live_data_quality import (
+        LiveDataValidator,
+        AdvancedStatsCalculator,
+        DynamicConfidenceCalculator,
+        SignalQualityScorer,
+        DataQualityReport,
+        AdvancedStats
+    )
+    QUALITY_CONTROL_AVAILABLE = True
+except ImportError:
+    QUALITY_CONTROL_AVAILABLE = False
+    logger.warning("⚠️  Quality Control System non disponibile - verrà utilizzata validazione base")
+
 
 @dataclass
 class LiveBettingOpportunity:
@@ -45,6 +60,11 @@ class LiveBettingOpportunity:
     ev: float = 0.0  # Valore atteso (%)
     has_live_stats: bool = True  # Se false, non notifichiamo (mancano dati live)
     live_data: Dict[str, Any] = field(default_factory=dict)  # 🎯 NUOVO: Dati live per time suitability
+    # 🎯 NUOVO: Quality control metrics
+    data_quality_score: float = 0.0  # 0-100: qualità dati live
+    signal_quality_score: float = 0.0  # 0-100: qualità complessiva segnale
+    quality_grade: str = "N/A"  # A+, A, B, C, D
+    advanced_stats: Optional[Any] = None  # AdvancedStats object
 
 
 class LiveBettingAdvisor:
@@ -154,7 +174,45 @@ class LiveBettingAdvisor:
                 logger.info("✅ LiveMatchAI inizializzata - analisi AI dedicata ai match live attiva")
             except Exception as e:
                 logger.warning(f"⚠️  Errore inizializzazione LiveMatchAI: {e} - utilizzerò analisi AI base")
-        
+
+        # 🎯 NUOVO: Inizializza sistema Quality Control avanzato
+        self.data_validator = None
+        self.stats_calculator = None
+        self.confidence_calculator = None
+        self.quality_scorer = None
+        self.quality_control_enabled = False
+
+        if QUALITY_CONTROL_AVAILABLE:
+            try:
+                self.data_validator = LiveDataValidator()
+                self.stats_calculator = AdvancedStatsCalculator()
+                self.confidence_calculator = DynamicConfidenceCalculator()
+                self.quality_scorer = SignalQualityScorer()
+                self.quality_control_enabled = True
+                logger.info("=" * 60)
+                logger.info("✅ QUALITY CONTROL SYSTEM: ATTIVO")
+                logger.info("=" * 60)
+                logger.info("📊 Modalità: PRECISION MODE")
+                logger.info("🎯 Confidence dinamico: ATTIVO (basato su statistiche reali)")
+                logger.info("✅ Data validation: ATTIVA (coerenza + outlier + range)")
+                logger.info("🔍 Quality scoring: ATTIVO (solo segnali >= 60/100)")
+                logger.info("🚫 Anti-banality filter: ATTIVO (penalizza segnali ovvi)")
+                logger.info("=" * 60)
+            except Exception as e:
+                logger.error(f"❌ Errore inizializzazione Quality Control: {e}")
+                logger.error("⚠️  Modalità BASE attiva - precisione ridotta!")
+                self.quality_control_enabled = False
+        else:
+            logger.warning("=" * 60)
+            logger.warning("⚠️  QUALITY CONTROL MODULES NON DISPONIBILI")
+            logger.warning("=" * 60)
+            logger.warning("Modalità: BASE (precisione ridotta)")
+            logger.warning("Per massima precisione, verifica che:")
+            logger.warning("  1. ai_system/live_data_quality.py esista")
+            logger.warning("  2. Tutte le dipendenze siano installate")
+            logger.warning("=" * 60)
+            self.quality_control_enabled = False
+
         self.monitored_matches: Dict[str, Dict] = {}
         self.last_analysis: Dict[str, datetime] = {}
         
@@ -221,7 +279,85 @@ class LiveBettingAdvisor:
             'btts_first_half': 76.0,  # 🆕 AUMENTATO: 76% invece di 73%
             'half_time_result': 76.0,  # 🆕 AUMENTATO: 76% invece di 73%
         }
-    
+
+    def health_check(self) -> Dict[str, Any]:
+        """
+        🎯 NUOVO: Health check completo del sistema.
+
+        Verifica:
+        - Quality Control attivo
+        - Componenti inizializzati
+        - Configurazione corretta
+
+        Returns:
+            Dict con status e dettagli
+        """
+        status = {
+            'quality_control_enabled': self.quality_control_enabled,
+            'components': {
+                'data_validator': self.data_validator is not None,
+                'stats_calculator': self.stats_calculator is not None,
+                'confidence_calculator': self.confidence_calculator is not None,
+                'quality_scorer': self.quality_scorer is not None,
+                'live_match_ai': self.live_match_ai is not None
+            },
+            'config': {
+                'min_confidence': self.min_confidence,
+                'min_ev': self.min_ev,
+                'max_opportunities_per_match': self.max_opportunities_per_match
+            },
+            'status': 'OK' if self.quality_control_enabled else 'DEGRADED'
+        }
+
+        # Log status
+        if self.quality_control_enabled:
+            logger.info("🎯 Health Check: SISTEMA AL 100% - Quality Control ATTIVO")
+        else:
+            logger.warning("⚠️  Health Check: SISTEMA IN MODALITÀ BASE - Quality Control NON ATTIVO")
+
+        return status
+
+    def _calculate_dynamic_confidence(
+        self,
+        market_type: str,
+        situation: str,
+        live_data: Dict[str, Any],
+        base_confidence: float = 70.0
+    ) -> float:
+        """
+        🎯 NUOVO: Calcola confidence dinamicamente basandosi su dati live reali.
+
+        Args:
+            market_type: Tipo mercato (over_2.5, under_2.5, ecc.)
+            situation: Situazione (under_early_goal, over_no_goals, ecc.)
+            live_data: Dati live
+            base_confidence: Confidence base (usato se quality control non disponibile)
+
+        Returns:
+            Confidence dinamico 0-100
+        """
+        # Se quality control disponibile, usa calcolo avanzato
+        if self.data_validator and self.confidence_calculator:
+            # Valida dati
+            data_quality = self.data_validator.validate_and_score(live_data)
+
+            # Calcola stats avanzate
+            advanced_stats = self.stats_calculator.calculate(live_data) if self.stats_calculator else None
+
+            # Calcola confidence dinamico
+            dynamic_conf = self.confidence_calculator.calculate(
+                market_type=market_type,
+                situation=situation,
+                live_data=live_data,
+                advanced_stats=advanced_stats,
+                data_quality=data_quality
+            )
+
+            return dynamic_conf
+        else:
+            # Fallback: usa confidence base
+            return base_confidence
+
     def analyze_live_match(
         self,
         match_id: str,
@@ -253,11 +389,36 @@ class LiveBettingAdvisor:
             
             if not live_data:
                 return opportunities
-            
-            # 🆕 FILTRO: Verifica qualità dati live
-            if not self._has_sufficient_live_data(live_data):
-                logger.debug(f"⏭️  Partita saltata (dati live insufficienti): {match_data.get('home', '?')} vs {match_data.get('away', '?')}")
-                return opportunities
+
+            # 🎯 NUOVO: Validazione avanzata dati live (se disponibile)
+            data_quality_report = None
+            advanced_stats = None
+            if self.data_validator and self.stats_calculator:
+                # Valida dati live
+                data_quality_report = self.data_validator.validate_and_score(live_data)
+
+                if not data_quality_report.is_valid:
+                    logger.warning(
+                        f"⏭️  Partita saltata (dati live non validi): "
+                        f"{match_data.get('home', '?')} vs {match_data.get('away', '?')} - "
+                        f"Quality Score: {data_quality_report.quality_score:.1f}/100"
+                    )
+                    if data_quality_report.errors:
+                        logger.debug(f"   Errori: {', '.join(data_quality_report.errors[:3])}")
+                    return opportunities
+
+                # Calcola statistiche avanzate
+                advanced_stats = self.stats_calculator.calculate(live_data)
+
+                logger.debug(
+                    f"✅ Dati live validati: {match_data.get('home', '?')} vs {match_data.get('away', '?')} - "
+                    f"Quality: {data_quality_report.quality_score:.1f}/100"
+                )
+            else:
+                # Fallback: usa validazione base
+                if not self._has_sufficient_live_data(live_data):
+                    logger.debug(f"⏭️  Partita saltata (dati live insufficienti): {match_data.get('home', '?')} vs {match_data.get('away', '?')}")
+                    return opportunities
             
             # 🆕 OTTIMIZZATO: Verifica status partita (escludi sospese/interrotte)
             status = str(live_data.get('status', '')).lower()
@@ -413,6 +574,59 @@ class LiveBettingAdvisor:
             for opp in opportunities:
                 if not hasattr(opp, 'live_data') or not opp.live_data:
                     opp.live_data = live_data
+
+            # 🎯 NUOVO: Quality Scoring finale e filtro
+            if self.quality_scorer and opportunities:
+                logger.info(f"🎯 Applicando Quality Scoring a {len(opportunities)} opportunità...")
+
+                # Calcola quality score per ogni opportunità
+                for opp in opportunities:
+                    quality_result = self.quality_scorer.score_signal(
+                        market_type=opp.market,
+                        situation=opp.situation,
+                        live_data=live_data,
+                        confidence=opp.confidence,
+                        ev=opp.ev
+                    )
+
+                    # Aggiungi quality metrics all'opportunità
+                    opp.signal_quality_score = quality_result['total_score']
+                    opp.quality_grade = quality_result['grade']
+                    if data_quality_report:
+                        opp.data_quality_score = data_quality_report.quality_score
+                    if advanced_stats:
+                        opp.advanced_stats = advanced_stats
+
+                    logger.debug(
+                        f"   {opp.market}: Quality Score = {quality_result['total_score']:.1f}/100 "
+                        f"({quality_result['grade']}) - "
+                        f"Conf: {opp.confidence:.0f}%, EV: {opp.ev:.1f}%"
+                    )
+
+                # FILTRO: Mantieni solo opportunità con quality score >= 60/100
+                MIN_QUALITY_SCORE = 60.0
+                before_quality_filter = len(opportunities)
+                opportunities = [
+                    opp for opp in opportunities
+                    if opp.signal_quality_score >= MIN_QUALITY_SCORE
+                ]
+                after_quality_filter = len(opportunities)
+
+                if before_quality_filter > after_quality_filter:
+                    filtered_count = before_quality_filter - after_quality_filter
+                    logger.info(
+                        f"🎯 QUALITY FILTER: {filtered_count} opportunità filtrate "
+                        f"(quality score < {MIN_QUALITY_SCORE}/100)"
+                    )
+
+                # Log opportunità che passano
+                if opportunities:
+                    logger.info(f"✅ {len(opportunities)} opportunità passano Quality Scoring:")
+                    for opp in opportunities[:5]:  # Prime 5
+                        logger.info(
+                            f"   ✓ {opp.market}: Quality={opp.signal_quality_score:.1f} "
+                            f"({opp.quality_grade}), Conf={opp.confidence:.0f}%, EV={opp.ev:.1f}%"
+                        )
 
             # 🎯 NUOVO: Aggiorna tracking diversità mercati per le opportunità selezionate
             for opp in opportunities:
@@ -649,8 +863,13 @@ class LiveBettingAdvisor:
             # 🔧 FIX: Under 2.5 solo se c'è ESATTAMENTE 1 gol (non 2+!)
             if minute <= 15 and total_goals == 1:  # Cambiato da >= 1 a == 1
                 # Gol subito → se partita sembra chiusa, punta Under
-                # (da implementare analisi pattern partita)
-                confidence = 70
+                # 🎯 NUOVO: Usa confidence dinamico basato su dati reali
+                confidence = self._calculate_dynamic_confidence(
+                    market_type='under_2.5',
+                    situation='under_early_goal',
+                    live_data=live_data,
+                    base_confidence=70.0
+                )
 
                 opportunity = LiveBettingOpportunity(
                     match_id=match_id,
@@ -675,8 +894,14 @@ class LiveBettingAdvisor:
             # Situazione: Nessun gol (primi 30 minuti)
             elif minute >= 25 and minute <= 35 and total_goals == 0:
                 # Nessun gol → se partita sembra aperta, punta Over
-                confidence = 65
-                
+                # 🎯 NUOVO: Usa confidence dinamico basato su dati reali
+                confidence = self._calculate_dynamic_confidence(
+                    market_type='over_1.5',
+                    situation='over_no_goals',
+                    live_data=live_data,
+                    base_confidence=65.0
+                )
+
                 opportunity = LiveBettingOpportunity(
                     match_id=match_id,
                     match_data=match_data,

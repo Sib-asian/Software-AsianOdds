@@ -214,6 +214,27 @@ class Automation24H:
                 )
                 logger.info(f"   LiveBettingAdvisor: min_confidence={min_confidence}%, min_ev={live_min_ev}% (abbassato per live betting)")
                 logger.info("✅ LiveBettingAdvisor initialized")
+
+                # 🎯 NUOVO: Health Check all'avvio
+                logger.info("\n" + "=" * 60)
+                logger.info("🔍 RUNNING HEALTH CHECK...")
+                logger.info("=" * 60)
+                health_status = self.live_betting_advisor.health_check()
+
+                # Verifica che tutto sia OK
+                if health_status['status'] != 'OK':
+                    logger.warning("\n⚠️  ATTENZIONE: Sistema in modalità DEGRADATA")
+                    logger.warning("Componenti mancanti:")
+                    for comp, available in health_status['components'].items():
+                        status_icon = "✅" if available else "❌"
+                        logger.warning(f"  {status_icon} {comp}: {'OK' if available else 'MANCANTE'}")
+                    logger.warning("\nPer massima precisione, verifica configurazione!\n")
+                else:
+                    logger.info("\n✅ HEALTH CHECK PASSED - Sistema al 100%")
+                    logger.info("Componenti attivi:")
+                    for comp, available in health_status['components'].items():
+                        logger.info(f"  ✅ {comp}")
+                    logger.info("")
             except Exception as e:
                 logger.warning(f"⚠️  LiveBettingAdvisor error: {e}")
                 self.live_betting_advisor = None
