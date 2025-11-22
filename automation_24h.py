@@ -173,6 +173,10 @@ class Automation24H:
         self.last_progress_notification = {}  # {threshold: datetime}
         self.last_signal_count = 0  # Ultimo conteggio segnali per rilevare nuovi
         self.start_time = datetime.now()  # Per calcolo stima giorni
+
+        # 🔧 FIX: Path fisso per file di stato - scegli UNA VOLTA e usa sempre quello
+        self.state_file_path = self._get_state_file_path()
+
         self.api_usage_today = 0
         self.last_api_reset = datetime.now().date()
         self.last_daily_report = datetime.now().date()
@@ -2405,15 +2409,45 @@ class Automation24H:
         # Forza uscita immediata (non aspetta sleep)
         logger.info("✅ Shutdown signal processed, exiting...")
     
+    def _get_state_file_path(self) -> Path:
+        """
+        Determina il path del file di stato UNA volta sola per evitare inconsistenze.
+
+        PRIORITÀ (con migrazione automatica):
+        1. Se file esiste in ./automation_state.json E /data esiste → migra a /data
+        2. Se /data esiste → usa /data/automation_state.json
+        3. Altrimenti → usa ./automation_state.json
+
+        Returns:
+            Path fisso da usare sempre per salvataggio/caricamento
+        """
+        local_path = Path("automation_state.json")
+        persistent_path = Path("/data/automation_state.json")
+
+        # Controlla se /data esiste (Render persistent disk)
+        if os.path.exists('/data') and os.path.isdir('/data'):
+            # Migrazione: se file esiste in locale ma non in /data, spostalo
+            if local_path.exists() and not persistent_path.exists():
+                try:
+                    import shutil
+                    shutil.copy2(local_path, persistent_path)
+                    logger.info(f"🔄 Migrato file stato da {local_path} a {persistent_path}")
+                    # Rimuovi vecchio file
+                    local_path.unlink()
+                except Exception as e:
+                    logger.warning(f"⚠️  Errore migrazione file stato: {e}")
+
+            logger.info(f"📁 Path file stato: {persistent_path} (persistent disk)")
+            return persistent_path
+        else:
+            logger.debug(f"📄 Path file stato: {local_path} (directory corrente)")
+            return local_path
+
     def _load_last_global_notification_time(self):
         """Carica ultimo timestamp notifica globale da file JSON persistente"""
         try:
-            # 🔧 FIX: Usa file JSON invece di database per maggiore robustezza
-            state_file = Path("automation_state.json")
-
-            # Se esiste /data (Render persistent disk), usa quello
-            if os.path.exists('/data') and os.path.isdir('/data'):
-                state_file = Path("/data/automation_state.json")
+            # 🔧 FIX: Usa path fisso determinato all'init
+            state_file = self.state_file_path
 
             if state_file.exists():
                 with open(state_file, 'r') as f:
@@ -2434,12 +2468,8 @@ class Automation24H:
         """Salva ultimo timestamp notifica globale in file JSON persistente"""
         try:
             if self.last_global_notification_time:
-                # 🔧 FIX: Usa file JSON invece di database per maggiore robustezza
-                state_file = Path("automation_state.json")
-
-                # Se esiste /data (Render persistent disk), usa quello
-                if os.path.exists('/data') and os.path.isdir('/data'):
-                    state_file = Path("/data/automation_state.json")
+                # 🔧 FIX: Usa path fisso determinato all'init
+                state_file = self.state_file_path
 
                 # Carica stato esistente (se presente)
                 state = {}
