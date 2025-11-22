@@ -1613,22 +1613,27 @@ class LiveBettingAdvisor:
                     base_confidence = 75 + (minute - 50) * 0.5
                     confidence = min(93, base_confidence + ai_boost)
                     
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='under_1.5_general', market='under_1.5',
-                        recommendation="Punta Under 1.5 Gol",
-                        reasoning=(
-                            f"🎯 UNDER 1.5!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• Partita CHIUSA:\n"
-                            f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min - bassa)\n"
-                            f"• Alta probabilità max 1 gol totale\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        confidence=confidence, odds=1.8, stake_suggestion=2.5,
-                        timestamp=datetime.now()
-                    )
-                    opportunities.append(opportunity)
+                    # 🆕 Usa quota reale da match_data se disponibile
+                    odds_under_1_5 = match_data.get('odds_under_1_5')
+                    if not odds_under_1_5:
+                        logger.warning(f"⏭️ Under 1.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                    else:
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='under_1.5_general', market='under_1.5',
+                            recommendation="Punta Under 1.5 Gol",
+                            reasoning=(
+                                f"🎯 UNDER 1.5!\n\n"
+                                f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                f"• Partita CHIUSA:\n"
+                                f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min - bassa)\n"
+                                f"• Alta probabilità max 1 gol totale\n"
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=odds_under_1_5, stake_suggestion=2.5,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
             
             # UNDER 2.5: Partita chiusa, max 2 gol
             # 🚫 FIX: Blocca Under 2.5 se c'è già 1 gol e siamo prima del 30' (troppo rischioso)
@@ -1674,22 +1679,27 @@ class LiveBettingAdvisor:
                     base_confidence = 80 + (minute - 70) * 0.5
                     confidence = min(95, base_confidence + ai_boost)
                     
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='under_3.5_general', market='under_3.5',
-                        recommendation="Punta Under 3.5 Gol",
-                        reasoning=(
-                            f"🎯 UNDER 3.5!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• Partita CHIUSA:\n"
-                            f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min)\n"
-                            f"• Alta probabilità max 3 gol totale\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        confidence=confidence, odds=1.3, stake_suggestion=2.0,
-                        timestamp=datetime.now()
-                    )
-                    opportunities.append(opportunity)
+                    # 🆕 Usa quota reale da match_data se disponibile
+                    odds_under_3_5 = match_data.get('odds_under_3_5')
+                    if not odds_under_3_5:
+                        logger.warning(f"⏭️ Under 3.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                    else:
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='under_3.5_general', market='under_3.5',
+                            recommendation="Punta Under 3.5 Gol",
+                            reasoning=(
+                                f"🎯 UNDER 3.5!\n\n"
+                                f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                f"• Partita CHIUSA:\n"
+                                f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min)\n"
+                                f"• Alta probabilità max 3 gol totale\n"
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=odds_under_3_5, stake_suggestion=2.0,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
                     
         except Exception as e:
             logger.debug(f"⚠️  Errore check over/under markets: {e}")
@@ -1848,24 +1858,29 @@ class LiveBettingAdvisor:
                             base_confidence = 65 + min(15, (minute - 25) * 0.3) + min(10, (shots_on_target_home + shots_on_target_away) * 2)
                             confidence = min(85, base_confidence + ai_boost)
                             
-                            opportunity = LiveBettingOpportunity(
-                                match_id=match_id, match_data=match_data,
-                                situation='btts_yes_0_0', market='btts_yes',
-                                recommendation="Punta Both Teams To Score (BTTS) - Sì (0-0 aperta)",
-                                reasoning=(
-                                    f"🎯 BTTS 0-0 OPPORTUNITY!\n\n"
-                                    f"• Score: 0-0 al {minute}'\n"
-                                    f"• Partita APERTA:\n"
-                                    f"  - Casa: {shots_on_target_home} tiri in porta\n"
-                                    f"  - Ospite: {shots_on_target_away} tiri in porta\n"
-                                    f"  - Media: {shots_per_minute:.2f} tiri/min\n"
-                                    f"• Entrambe le squadre stanno creando occasioni\n"
-                                    f"• Alta probabilità che entrambe segnino"
-                                ),
-                                confidence=confidence, odds=2.1, stake_suggestion=2.0,
-                                timestamp=datetime.now()
-                            )
-                            opportunities.append(opportunity)
+                            # 🆕 Usa quota reale da match_data se disponibile
+                            odds_btts_yes = match_data.get('odds_btts_yes')
+                            if not odds_btts_yes:
+                                logger.warning(f"⏭️ BTTS Yes saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                            else:
+                                opportunity = LiveBettingOpportunity(
+                                    match_id=match_id, match_data=match_data,
+                                    situation='btts_yes_0_0', market='btts_yes',
+                                    recommendation="Punta Both Teams To Score (BTTS) - Sì (0-0 aperta)",
+                                    reasoning=(
+                                        f"🎯 BTTS 0-0 OPPORTUNITY!\n\n"
+                                        f"• Score: 0-0 al {minute}'\n"
+                                        f"• Partita APERTA:\n"
+                                        f"  - Casa: {shots_on_target_home} tiri in porta\n"
+                                        f"  - Ospite: {shots_on_target_away} tiri in porta\n"
+                                        f"  - Media: {shots_per_minute:.2f} tiri/min\n"
+                                        f"• Entrambe le squadre stanno creando occasioni\n"
+                                        f"• Alta probabilità che entrambe segnino"
+                                    ),
+                                    confidence=confidence, odds=odds_btts_yes, stake_suggestion=2.0,
+                                    timestamp=datetime.now()
+                                )
+                                opportunities.append(opportunity)
                 
                 elif (score_home > 0 and score_away == 0) or (score_home == 0 and score_away > 0):
                     # 🔧 FILTRO: Se la squadra che deve ancora segnare ha cartellino rosso, NON generare BTTS
@@ -1880,21 +1895,26 @@ class LiveBettingAdvisor:
                     if (score_home > 0 and shots_on_target_away >= 2) or (score_away > 0 and shots_on_target_home >= 2):
                         ai_boost = self._get_ai_market_confidence(match_data, live_data, 'btts_yes') if self.ai_pipeline else 0
                         confidence = 75 + ai_boost
-                        
-                        opportunity = LiveBettingOpportunity(
-                            match_id=match_id, match_data=match_data,
-                            situation='btts_yes', market='btts_yes',
-                            recommendation="Punta Both Teams To Score (BTTS) - Sì",
-                            reasoning=(
-                                f"🎯 BTTS OPPORTUNITY!\n\n"
-                                f"• Score: {score_home}-{score_away} al {minute}'\n"
-                                f"• Una squadra ha segnato, l'altra ha {shots_on_target_home if score_away > 0 else shots_on_target_away} tiri in porta\n"
-                                f"• Alta probabilità che anche l'altra squadra segni"
-                            ),
-                            confidence=confidence, odds=1.9, stake_suggestion=2.5,
-                            timestamp=datetime.now()
-                        )
-                        opportunities.append(opportunity)
+
+                        # 🆕 Usa quota reale da match_data se disponibile
+                        odds_btts_yes = match_data.get('odds_btts_yes')
+                        if not odds_btts_yes:
+                            logger.warning(f"⏭️ BTTS Yes saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                        else:
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation='btts_yes', market='btts_yes',
+                                recommendation="Punta Both Teams To Score (BTTS) - Sì",
+                                reasoning=(
+                                    f"🎯 BTTS OPPORTUNITY!\n\n"
+                                    f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                    f"• Una squadra ha segnato, l'altra ha {shots_on_target_home if score_away > 0 else shots_on_target_away} tiri in porta\n"
+                                    f"• Alta probabilità che anche l'altra squadra segni"
+                                ),
+                                confidence=confidence, odds=odds_btts_yes, stake_suggestion=2.5,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
         except Exception as e:
             logger.debug(f"⚠️  Errore check BTTS markets: {e}")
         return opportunities

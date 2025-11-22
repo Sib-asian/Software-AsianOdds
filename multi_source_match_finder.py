@@ -848,6 +848,20 @@ class MultiSourceMatchFinder:
                         odds_under_3_5 = odds_data.get('odds_under_3_5') if odds_data else None
                         odds_btts_yes = odds_data.get('odds_btts_yes') if odds_data else None
                         odds_btts_no = odds_data.get('odds_btts_no') if odds_data else None
+                        # 🆕 NUOVO: Quote Double Chance, DNB, HT/FT, Odd/Even
+                        odds_1x = odds_data.get('odds_1x') if odds_data else None
+                        odds_x2 = odds_data.get('odds_x2') if odds_data else None
+                        odds_12 = odds_data.get('odds_12') if odds_data else None
+                        odds_dnb_home = odds_data.get('odds_dnb_home') if odds_data else None
+                        odds_dnb_away = odds_data.get('odds_dnb_away') if odds_data else None
+                        odds_ht_1 = odds_data.get('odds_ht_1') if odds_data else None
+                        odds_ht_x = odds_data.get('odds_ht_x') if odds_data else None
+                        odds_ht_2 = odds_data.get('odds_ht_2') if odds_data else None
+                        odds_2h_1 = odds_data.get('odds_2h_1') if odds_data else None
+                        odds_2h_x = odds_data.get('odds_2h_x') if odds_data else None
+                        odds_2h_2 = odds_data.get('odds_2h_2') if odds_data else None
+                        odds_goals_odd = odds_data.get('odds_goals_odd') if odds_data else None
+                        odds_goals_even = odds_data.get('odds_goals_even') if odds_data else None
 
                         # 🔧 LOG: Verifica prima di aggiungere
                         logger.debug(f"🔍 Aggiungendo partita LIVE: {home_team} vs {away_team} (id: {match_id})")
@@ -874,6 +888,20 @@ class MultiSourceMatchFinder:
                             'odds_under_3_5': odds_under_3_5,
                             'odds_btts_yes': odds_btts_yes,
                             'odds_btts_no': odds_btts_no,
+                            # 🆕 Quote aggiuntive
+                            'odds_1x': odds_1x,
+                            'odds_x2': odds_x2,
+                            'odds_12': odds_12,
+                            'odds_dnb_home': odds_dnb_home,
+                            'odds_dnb_away': odds_dnb_away,
+                            'odds_ht_1': odds_ht_1,
+                            'odds_ht_x': odds_ht_x,
+                            'odds_ht_2': odds_ht_2,
+                            'odds_2h_1': odds_2h_1,
+                            'odds_2h_x': odds_2h_x,
+                            'odds_2h_2': odds_2h_2,
+                            'odds_goals_odd': odds_goals_odd,
+                            'odds_goals_even': odds_goals_even,
                             'source': 'api-sports',
                             'league_id': league_id,
                             'is_live': True,  # Marca come live
@@ -1118,6 +1146,67 @@ class MultiSourceMatchFinder:
                                     odds_dict['odds_btts_yes'] = float(odd)
                                 elif "No" in outcome:
                                     odds_dict['odds_btts_no'] = float(odd)
+
+                    # Double Chance (1X, X2, 12)
+                    elif "Double Chance" in bet_name or bet_id == 3:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                if "Home/Draw" in outcome or "1X" in outcome:
+                                    odds_dict['odds_1x'] = float(odd)
+                                elif "Draw/Away" in outcome or "X2" in outcome:
+                                    odds_dict['odds_x2'] = float(odd)
+                                elif "Home/Away" in outcome or "12" in outcome:
+                                    odds_dict['odds_12'] = float(odd)
+
+                    # Draw No Bet (DNB)
+                    elif "Draw No Bet" in bet_name or "DNB" in bet_name:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                if "Home" in outcome:
+                                    odds_dict['odds_dnb_home'] = float(odd)
+                                elif "Away" in outcome:
+                                    odds_dict['odds_dnb_away'] = float(odd)
+
+                    # First Half Result / Half Time Result
+                    elif ("First Half" in bet_name or "Half Time Result" in bet_name or "HT Result" in bet_name) and "FT" not in bet_name:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                if "Home" in outcome:
+                                    odds_dict['odds_ht_1'] = float(odd)
+                                elif "Draw" in outcome:
+                                    odds_dict['odds_ht_x'] = float(odd)
+                                elif "Away" in outcome:
+                                    odds_dict['odds_ht_2'] = float(odd)
+
+                    # Second Half Result
+                    elif "Second Half" in bet_name or "2nd Half Result" in bet_name:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                if "Home" in outcome:
+                                    odds_dict['odds_2h_1'] = float(odd)
+                                elif "Draw" in outcome:
+                                    odds_dict['odds_2h_x'] = float(odd)
+                                elif "Away" in outcome:
+                                    odds_dict['odds_2h_2'] = float(odd)
+
+                    # Goals Odd/Even
+                    elif "Odd/Even" in bet_name or "Goals Odd or Even" in bet_name:
+                        for value in values:
+                            outcome = value.get("value", "")
+                            odd = value.get("odd")
+                            if odd:
+                                if "Odd" in outcome:
+                                    odds_dict['odds_goals_odd'] = float(odd)
+                                elif "Even" in outcome:
+                                    odds_dict['odds_goals_even'] = float(odd)
 
                 # Quote recuperate con successo
                 if odds_dict:
