@@ -26,14 +26,19 @@ logger = logging.getLogger(__name__)
 class LiveMatchAI:
     """
     Sistema AI dedicato esclusivamente all'analisi di match live.
-    
+
     Caratteristiche:
     - Analisi in tempo reale basata su score, statistiche, eventi
     - Rilevamento pattern specifici (momentum, pressione, situazioni critiche)
     - Predizioni adattive che si aggiornano con il progredire della partita
     - Ottimizzato per velocità (analisi in < 1 secondo)
     """
-    
+
+    # 🛡️ SANITY CHECK - Costanti per filtrare opportunità irrealistiche
+    MAX_EV_ALLOWED = 30.0  # Max 30% EV (già molto generoso)
+    MAX_CONFIDENCE_ALLOWED = 85.0  # Max 85% confidence (nel betting reale è difficile superare 75%)
+    MAX_PROB_DEVIATION = 0.15  # Max 15% differenza da quote bookmaker
+
     def __init__(
         self,
         ai_pipeline=None,
@@ -42,7 +47,7 @@ class LiveMatchAI:
     ):
         """
         Inizializza Live Match AI.
-        
+
         Args:
             ai_pipeline: Pipeline AI opzionale per analisi avanzate
             min_confidence: Confidence minima per segnali (default: 70%)
@@ -51,11 +56,11 @@ class LiveMatchAI:
         self.ai_pipeline = ai_pipeline
         self.min_confidence = min_confidence
         self.min_ev = min_ev
-        
+
         # Cache per analisi recenti (evita ricalcoli inutili)
         self._analysis_cache: Dict[str, Tuple[Dict, float]] = {}
         self._cache_ttl = 30  # 30 secondi TTL
-        
+
         logger.info("✅ Live Match AI initialized")
 
     def _safe_get(self, data: Dict[str, Any], key: str, default: Any) -> Any:
@@ -343,22 +348,26 @@ class LiveMatchAI:
         minute = situation['minute']
         goal_difference = situation['goal_difference']
         momentum = situation['momentum_score']
-        
-        # Aggiustamento per score corrente
+
+        # 🔧 CALIBRAZIONE: Aggiustamenti più conservativi (ridotti del 50%)
+        # I bookmaker già hanno queste informazioni nelle quote live, quindi
+        # non dobbiamo essere troppo aggressivi negli aggiustamenti
+
+        # Aggiustamento per score corrente (RIDOTTO del 50%)
         if goal_difference > 0:
             # Home in vantaggio
-            prob_home_base += 0.15 * (minute / 90)  # Più probabile se avanti
-            prob_draw_base -= 0.10 * (minute / 90)
-            prob_away_base -= 0.05 * (minute / 90)
+            prob_home_base += 0.075 * (minute / 90)  # Era 0.15, ora 0.075
+            prob_draw_base -= 0.050 * (minute / 90)  # Era 0.10, ora 0.050
+            prob_away_base -= 0.025 * (minute / 90)  # Era 0.05, ora 0.025
         elif goal_difference < 0:
             # Away in vantaggio
-            prob_home_base -= 0.05 * (minute / 90)
-            prob_draw_base -= 0.10 * (minute / 90)
-            prob_away_base += 0.15 * (minute / 90)
-        
-        # Aggiustamento per momentum
-        prob_home_base += momentum * 0.10
-        prob_away_base -= momentum * 0.10
+            prob_home_base -= 0.025 * (minute / 90)  # Era 0.05, ora 0.025
+            prob_draw_base -= 0.050 * (minute / 90)  # Era 0.10, ora 0.050
+            prob_away_base += 0.075 * (minute / 90)  # Era 0.15, ora 0.075
+
+        # Aggiustamento per momentum (RIDOTTO del 50%)
+        prob_home_base += momentum * 0.05  # Era 0.10, ora 0.05
+        prob_away_base -= momentum * 0.05  # Era 0.10, ora 0.05
         
         # Normalizza
         total = prob_home_base + prob_draw_base + prob_away_base
@@ -375,21 +384,31 @@ class LiveMatchAI:
         # Probabilità Over/Under basate su gol attuali e minuto
         total_goals = score_home + score_away
         minutes_remaining = max(1, 90 - minute)
-        
-        # Stima gol attesi rimanenti (basata su media gol/minuto)
-        avg_goals_per_minute = total_goals / max(1, minute) if minute > 0 else 0.02
+
+        # 🔧 CALIBRAZIONE: Stima gol attesi rimanenti più conservativa
+        # Se pochi minuti giocati, usa una media più generale
+        if minute < 15:
+            # Primi 15 minuti: usa media standard (2.5 gol per partita)
+            avg_goals_per_minute = 2.5 / 90
+        else:
+            # Dopo 15 minuti: usa media effettiva ma con shrinkage verso media standard
+            avg_actual = total_goals / max(1, minute)
+            avg_standard = 2.5 / 90
+            # Shrinkage: 70% actual + 30% standard (più conservativo)
+            avg_goals_per_minute = 0.7 * avg_actual + 0.3 * avg_standard
+
         expected_remaining_goals = avg_goals_per_minute * minutes_remaining
-        
-        # Probabilità Over 2.5
+
+        # Probabilità Over 2.5 (PIÙ CONSERVATIVA)
         goals_needed_for_over_2_5 = max(0, 3 - total_goals)
         if goals_needed_for_over_2_5 == 0:
-            prob_over_2_5 = 1.0
+            prob_over_2_5 = 0.95  # Era 1.0, ora 0.95 (più conservativo)
         elif goals_needed_for_over_2_5 > expected_remaining_goals * 2:
             prob_over_2_5 = 0.1
         else:
-            # Stima probabilistica
-            prob_over_2_5 = min(0.9, 0.3 + (expected_remaining_goals / goals_needed_for_over_2_5) * 0.4)
-        
+            # Stima probabilistica (RIDOTTA: coefficiente da 0.4 a 0.3)
+            prob_over_2_5 = min(0.85, 0.25 + (expected_remaining_goals / goals_needed_for_over_2_5) * 0.3)
+
         prob_under_2_5 = 1.0 - prob_over_2_5
         
         return {
@@ -556,40 +575,79 @@ class LiveMatchAI:
     ) -> List[Dict[str, Any]]:
         """
         Aggiunge confidence e migliora calcolo EV per ogni opportunità.
+        Applica SANITY CHECK per filtrare opportunità irrealistiche.
         """
         enhanced = []
-        
+
         for opp in opportunities:
             market = opp['market']
             prob = opp['probability']
             odds = opp['odds']
-            
+
+            # 🛡️ SANITY CHECK 1: Probabilità implicita dalle quote
+            prob_implied = 1.0 / odds if odds > 1.0 else 0.5
+            prob_deviation = abs(prob - prob_implied)
+
+            # 🛡️ SANITY CHECK 2: Scarta opportunità con deviazione eccessiva
+            if prob_deviation > self.MAX_PROB_DEVIATION:
+                logger.debug(
+                    f"❌ SANITY CHECK: {market} scartato - deviazione {prob_deviation*100:.1f}% "
+                    f"(prob AI: {prob*100:.1f}% vs prob quote: {prob_implied*100:.1f}%)"
+                )
+                continue  # Scarta questa opportunità
+
+            # 🛡️ SANITY CHECK 3: Situazioni "già decise" (es: Under 2.5 con 3+ gol)
+            score_home = live_data.get('score_home') if live_data.get('score_home') is not None else 0
+            score_away = live_data.get('score_away') if live_data.get('score_away') is not None else 0
+            total_goals = score_home + score_away
+
+            # Scarta Under 2.5 se già 3+ gol
+            if 'UNDER' in market.upper() and '2' in market and total_goals >= 3:
+                logger.debug(f"❌ SANITY CHECK: {market} scartato - già {total_goals} gol (Under impossibile)")
+                continue
+
+            # Scarta Over 2.5 se troppo tardi e pochi gol (es: minuto 85 con 0 gol)
+            minute = live_data.get('minute') if live_data.get('minute') is not None else 0
+            if 'OVER' in market.upper() and '2' in market and minute > 80 and total_goals == 0:
+                logger.debug(f"❌ SANITY CHECK: {market} scartato - minuto {minute} con 0 gol (Over irrealistico)")
+                continue
+
             # Calcola confidence basata su:
             # 1. Quanto la probabilità è lontana da 0.5 (più estremo = più confidence)
             # 2. Minuto partita (più avanti = più confidence)
             # 3. Qualità dati live disponibili
 
-            minute = live_data.get('minute') if live_data.get('minute') is not None else 0
             data_quality = self._assess_data_quality(live_data)
 
-            # Confidence base
+            # Confidence base (PIÙ CONSERVATIVA)
             prob_extremity = abs(prob - 0.5) * 2  # 0 (50%) a 1 (0% o 100%)
             minute_factor = min(1.0, minute / 90)  # Più avanti = più confidence
-            
-            confidence = 50 + (prob_extremity * 30) + (minute_factor * 15) + (data_quality * 5)
-            confidence = max(50, min(95, confidence))
-            
+
+            # 🔧 RIDOTTO: da 30+15+5 a 20+10+5 per essere più conservativi
+            confidence = 50 + (prob_extremity * 20) + (minute_factor * 10) + (data_quality * 5)
+            confidence = max(50, min(self.MAX_CONFIDENCE_ALLOWED, confidence))
+
             # Ricalcola EV con confidence
             ev = (prob * odds - 1) * 100
+
+            # 🛡️ SANITY CHECK 4: Limita EV massimo
+            if ev > self.MAX_EV_ALLOWED:
+                logger.debug(
+                    f"⚠️ SANITY CHECK: {market} EV limitato da {ev:.1f}% a {self.MAX_EV_ALLOWED:.1f}%"
+                )
+                ev = self.MAX_EV_ALLOWED
+
             ev_adjusted = ev * (confidence / 100)  # EV aggiustato per confidence
-            
+
             opp['confidence'] = confidence
             opp['ev'] = ev
             opp['ev_adjusted'] = ev_adjusted
             opp['data_quality'] = data_quality
-            
+            opp['prob_implied'] = prob_implied
+            opp['prob_deviation'] = prob_deviation
+
             enhanced.append(opp)
-        
+
         return enhanced
     
     def _generate_reasoning(
