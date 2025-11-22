@@ -236,32 +236,50 @@ class MultiSourceMatchFinder:
             # API-SPORTS endpoint per fixtures
             # Possiamo cercare per data o per competizione
             url = "https://v3.football.api-sports.io/fixtures"
-            
+
             # Cerca partite per data
             date_str = target_date.strftime("%Y-%m-%d")
             params = {
                 "date": date_str
             }
-            
+
             # Se specificati paesi, filtra per competizioni di quei paesi
             # (API-SPORTS supporta filtri per country)
             if countries:
                 # Per ora prendiamo tutte, poi filtriamo
                 pass
-            
+
             query = urllib.parse.urlencode(params)
             full_url = f"{url}?{query}"
-            
+
             headers = {
                 "x-rapidapi-key": self.api_sports_key,
                 "x-rapidapi-host": "v3.football.api-sports.io"
             }
-            
+
+            # 🔧 DEBUG: Log della chiamata API
+            logger.info(f"📡 Chiamando API-SPORTS fixtures per data {date_str}")
+            logger.debug(f"   Full URL: {full_url}")
+
             req = urllib.request.Request(full_url, headers=headers)
             with urllib.request.urlopen(req, timeout=15) as response:
-                data = json.loads(response.read().decode())
-                
+                # 🔧 DEBUG: Log dello status code
+                status_code = response.status
+                logger.info(f"✅ API-SPORTS fixtures ha risposto con status code: {status_code}")
+
+                response_body = response.read().decode()
+                data = json.loads(response_body)
+
+                # 🔧 DEBUG: Log della struttura della risposta
+                logger.info(f"📊 Struttura risposta API-SPORTS fixtures: keys={list(data.keys())}")
+                if "errors" in data and data["errors"]:
+                    logger.error(f"❌ API-SPORTS fixtures ha restituito errori: {data['errors']}")
+                if "results" in data:
+                    logger.info(f"   results={data.get('results', 'N/A')}")
+
                 if not data.get("response"):
+                    logger.warning(f"⚠️  Nessuna partita restituita da API-SPORTS per data {date_str}")
+                    logger.warning(f"   Response: {json.dumps(data, indent=2)[:500]}...")
                     return []
                 
                 for fixture_data in data["response"]:
@@ -351,8 +369,29 @@ class MultiSourceMatchFinder:
                         continue
                 
                 return matches
+        except urllib.error.HTTPError as e:
+            # 🔧 DEBUG: Log dettagliato degli errori HTTP
+            logger.error(f"❌ Errore HTTP API-SPORTS fixtures: {e.code} - {e.reason}")
+            logger.error(f"   URL: {full_url}")
+            try:
+                error_body = e.read().decode()
+                logger.error(f"   Error body: {error_body[:500]}")
+            except:
+                pass
+            if e.code == 401:
+                logger.error("❌ API key non valida o non autorizzata!")
+            elif e.code == 429:
+                logger.error("❌ Rate limit superato!")
+            elif e.code == 403:
+                logger.error("❌ Accesso negato! Verifica il tuo piano API-SPORTS")
+            return []
+        except urllib.error.URLError as e:
+            logger.error(f"❌ Errore connessione API-SPORTS fixtures: {e.reason}")
+            return []
         except Exception as e:
-            logger.error(f"❌ Errore API-SPORTS: {e}")
+            logger.error(f"❌ Errore API-SPORTS fixtures: {e}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
             return []
     
     def _fetch_live_from_api_sports(
@@ -374,23 +413,50 @@ class MultiSourceMatchFinder:
             params = {
                 "live": "all"  # Tutte le partite live
             }
-            
+
             query = urllib.parse.urlencode(params)
             full_url = f"{url}?{query}"
-            
+
             headers = {
                 "x-rapidapi-key": self.api_sports_key,
                 "x-rapidapi-host": "v3.football.api-sports.io"
             }
-            
+
+            # 🔧 DEBUG: Log della chiamata API
+            logger.info(f"📡 Chiamando API-SPORTS live: {url}")
+            logger.debug(f"   Headers: x-rapidapi-key={self.api_sports_key[:15]}..., x-rapidapi-host=v3.football.api-sports.io")
+            logger.debug(f"   Full URL: {full_url}")
+
             req = urllib.request.Request(full_url, headers=headers)
             with urllib.request.urlopen(req, timeout=15) as response:
-                data = json.loads(response.read().decode())
-                
+                # 🔧 DEBUG: Log dello status code
+                status_code = response.status
+                logger.info(f"✅ API-SPORTS live ha risposto con status code: {status_code}")
+
+                # 🔧 DEBUG: Log degli headers della risposta
+                response_headers = dict(response.headers)
+                logger.debug(f"   Response headers: {response_headers}")
+
+                # 🔧 DEBUG: Leggi e logga la risposta raw
+                response_body = response.read().decode()
+                logger.debug(f"   Response body length: {len(response_body)} bytes")
+
+                data = json.loads(response_body)
+
+                # 🔧 DEBUG: Log della struttura della risposta
+                logger.info(f"📊 Struttura risposta API-SPORTS live: keys={list(data.keys())}")
+                if "errors" in data and data["errors"]:
+                    logger.error(f"❌ API-SPORTS live ha restituito errori: {data['errors']}")
+                if "results" in data:
+                    logger.info(f"   results={data.get('results', 'N/A')}")
+                if "paging" in data:
+                    logger.info(f"   paging={data.get('paging', 'N/A')}")
+
                 if not data.get("response"):
-                    logger.debug("⚠️  Nessuna partita LIVE restituita da API-SPORTS (response vuoto)")
+                    logger.warning(f"⚠️  Nessuna partita LIVE restituita da API-SPORTS")
+                    logger.warning(f"   Response completa: {json.dumps(data, indent=2)[:500]}...")  # Prime 500 chars
                     return []
-                
+
                 logger.info(f"📡 API-SPORTS ha restituito {len(data.get('response', []))} partite LIVE")
                 
                 processed_count = 0
@@ -956,8 +1022,29 @@ class MultiSourceMatchFinder:
                 # 🔧 LOG FINALE: Mostra quante partite sono state processate
                 logger.info(f"📊 Partite LIVE processate: {processed_count} aggiunte, {filtered_count} filtrate, {len(matches)} totali in lista")
                 return matches
+        except urllib.error.HTTPError as e:
+            # 🔧 DEBUG: Log dettagliato degli errori HTTP
+            logger.error(f"❌ Errore HTTP API-SPORTS live: {e.code} - {e.reason}")
+            logger.error(f"   URL: {full_url}")
+            try:
+                error_body = e.read().decode()
+                logger.error(f"   Error body: {error_body[:500]}")  # Prime 500 chars
+            except:
+                pass
+            if e.code == 401:
+                logger.error("❌ API key non valida o non autorizzata!")
+            elif e.code == 429:
+                logger.error("❌ Rate limit superato!")
+            elif e.code == 403:
+                logger.error("❌ Accesso negato! Verifica il tuo piano API-SPORTS")
+            return []
+        except urllib.error.URLError as e:
+            logger.error(f"❌ Errore connessione API-SPORTS live: {e.reason}")
+            return []
         except Exception as e:
             logger.error(f"❌ Errore API-SPORTS live: {e}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
             return []
     
     def _fetch_statistics_from_api_sports(self, fixture_id: int) -> Optional[List[Dict[str, Any]]]:

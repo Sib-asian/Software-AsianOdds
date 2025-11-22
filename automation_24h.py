@@ -827,8 +827,10 @@ class Automation24H:
         if self.multi_source_finder:
             try:
                 logger.info("🔍 Usando sistema multi-fonte per trovare partite (TheOddsAPI + API-SPORTS + Football-Data.org)...")
+                # 🔧 FIX: Cerca partite per OGGI (days_ahead=0) invece di domani
+                # Include anche partite live tramite include_live=True
                 matches = self.multi_source_finder.find_all_matches(
-                    days_ahead=1,
+                    days_ahead=0,  # 🔧 Cambiato da 1 a 0 per cercare partite di OGGI
                     include_minor_leagues=True,
                     include_live=True
                 )
