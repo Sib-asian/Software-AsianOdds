@@ -25,16 +25,26 @@ class MultiSourceMatchFinder:
     """
     Trova partite da multiple fonti per massima copertura.
     """
-    
+
     def __init__(self):
         # 🆕 Prova multiple variabili d'ambiente per API-SPORTS
         self.api_sports_key = os.getenv("API_FOOTBALL_KEY", "") or os.getenv("RAPIDAPI_KEY", "") or "95c43f936816cd4389a747fd2cfe061a"
         self.football_data_key = os.getenv("FOOTBALL_DATA_KEY", "")
         self.theodds_key = os.getenv("THEODDS_API_KEY", "")
-        
+
         # Cache per evitare duplicati
         self.found_match_ids: Set[str] = set()
-        
+
+        # 🆕 CACHE per statistiche e quote live (per ridurre chiamate API)
+        # Formato: {fixture_id: {'data': {...}, 'timestamp': float}}
+        self.statistics_cache: Dict[int, Dict[str, Any]] = {}
+        self.odds_cache: Dict[int, Dict[str, Any]] = {}
+        self.cache_ttl_seconds = 300  # 5 minuti di cache per dati live
+
+        # 🆕 CONTATORI API per monitoraggio consumo
+        self.api_calls_count = 0  # Totale chiamate API nella sessione
+        self.api_calls_saved_by_cache = 0  # Chiamate risparmiate grazie alla cache
+
         # Log per debug
         if self.api_sports_key:
             logger.debug(f"✅ API-SPORTS key configurata: {self.api_sports_key[:15]}...")
@@ -119,8 +129,52 @@ class MultiSourceMatchFinder:
         
         logger.info(f"📊 Totale partite uniche trovate: {len(unique_matches)}")
         logger.info(f"🎯 Partite LIVE: {live_count}")
+
+        # 🆕 LOG statistiche utilizzo API
+        logger.info(
+            f"📡 API Calls questo ciclo: {self.api_calls_count} chiamate "
+            f"(Risparmiate dalla cache: {self.api_calls_saved_by_cache})"
+        )
+
+        # 🆕 Pulizia cache scadute (ogni 10 cicli per evitare overhead)
+        if not hasattr(self, '_cache_cleanup_counter'):
+            self._cache_cleanup_counter = 0
+        self._cache_cleanup_counter += 1
+        if self._cache_cleanup_counter >= 10:
+            self._cleanup_expired_cache()
+            self._cache_cleanup_counter = 0
+
         return unique_matches
-    
+
+    def _cleanup_expired_cache(self):
+        """
+        Pulisce le cache scadute per evitare crescita indefinita della memoria.
+        Rimuove entry più vecchie di cache_ttl_seconds.
+        """
+        now = time.time()
+
+        # Pulizia statistics_cache
+        expired_stats = [
+            fixture_id for fixture_id, entry in self.statistics_cache.items()
+            if (now - entry['timestamp']) > self.cache_ttl_seconds
+        ]
+        for fixture_id in expired_stats:
+            del self.statistics_cache[fixture_id]
+
+        # Pulizia odds_cache
+        expired_odds = [
+            fixture_id for fixture_id, entry in self.odds_cache.items()
+            if (now - entry['timestamp']) > self.cache_ttl_seconds
+        ]
+        for fixture_id in expired_odds:
+            del self.odds_cache[fixture_id]
+
+        if expired_stats or expired_odds:
+            logger.info(
+                f"🧹 Cache cleanup: rimossi {len(expired_stats)} statistiche scadute, "
+                f"{len(expired_odds)} quote scadute"
+            )
+
     def _fetch_from_theodds(self) -> List[Dict[str, Any]]:
         """Recupera partite da TheOddsAPI"""
         if not self.theodds_key:
@@ -263,6 +317,7 @@ class MultiSourceMatchFinder:
 
             req = urllib.request.Request(full_url, headers=headers)
             with urllib.request.urlopen(req, timeout=15) as response:
+                self.api_calls_count += 1  # 🆕 Conta chiamata API
                 # 🔧 DEBUG: Log dello status code
                 status_code = response.status
                 logger.info(f"✅ API-SPORTS fixtures ha risposto con status code: {status_code}")
@@ -429,6 +484,7 @@ class MultiSourceMatchFinder:
 
             req = urllib.request.Request(full_url, headers=headers)
             with urllib.request.urlopen(req, timeout=15) as response:
+                self.api_calls_count += 1  # 🆕 Conta chiamata API
                 # 🔧 DEBUG: Log dello status code
                 status_code = response.status
                 logger.info(f"✅ API-SPORTS live ha risposto con status code: {status_code}")
@@ -1051,10 +1107,23 @@ class MultiSourceMatchFinder:
         """
         Recupera statistiche per una specifica partita da API-SPORTS.
         Endpoint separato: /fixtures/statistics
+        🆕 CON CACHE di 5 minuti per ridurre chiamate API
         """
         if not self.api_sports_key or not fixture_id:
             return None
-        
+
+        # 🆕 CACHE CHECK: Restituisci dati cached se ancora validi
+        now = time.time()
+        if fixture_id in self.statistics_cache:
+            cached_entry = self.statistics_cache[fixture_id]
+            age_seconds = now - cached_entry['timestamp']
+            if age_seconds < self.cache_ttl_seconds:
+                self.api_calls_saved_by_cache += 1  # 🆕 Conta chiamata risparmiata
+                logger.debug(f"✅ Statistics CACHE HIT for fixture {fixture_id} (age: {age_seconds:.0f}s)")
+                return cached_entry['data']
+            else:
+                logger.debug(f"⏰ Statistics cache expired for fixture {fixture_id} (age: {age_seconds:.0f}s)")
+
         try:
             url = "https://v3.football.api-sports.io/fixtures/statistics"
             params = {
@@ -1071,8 +1140,9 @@ class MultiSourceMatchFinder:
             
             req = urllib.request.Request(full_url, headers=headers)
             with urllib.request.urlopen(req, timeout=10) as response:
+                self.api_calls_count += 1  # 🆕 Conta chiamata API
                 data = json.loads(response.read().decode())
-                
+
                 if not data.get("response"):
                     return None
                 
@@ -1080,6 +1150,11 @@ class MultiSourceMatchFinder:
                 statistics = data.get("response", [])
                 if len(statistics) >= 2:
                     logger.debug(f"✅ Statistiche ottenute da endpoint separato per fixture {fixture_id}")
+                    # 🆕 SALVA IN CACHE
+                    self.statistics_cache[fixture_id] = {
+                        'data': statistics,
+                        'timestamp': time.time()
+                    }
                     return statistics
                 else:
                     logger.debug(f"⚠️  Statistiche incomplete per fixture {fixture_id}")
@@ -1099,6 +1174,7 @@ class MultiSourceMatchFinder:
         """
         Recupera quote live per una specifica partita da API-SPORTS.
         Endpoint: /odds/live
+        🆕 CON CACHE di 5 minuti per ridurre chiamate API
 
         Returns:
             Dizionario con quote per vari mercati:
@@ -1121,6 +1197,18 @@ class MultiSourceMatchFinder:
         if not self.api_sports_key or not fixture_id:
             return None
 
+        # 🆕 CACHE CHECK: Restituisci quote cached se ancora valide
+        now = time.time()
+        if fixture_id in self.odds_cache:
+            cached_entry = self.odds_cache[fixture_id]
+            age_seconds = now - cached_entry['timestamp']
+            if age_seconds < self.cache_ttl_seconds:
+                self.api_calls_saved_by_cache += 1  # 🆕 Conta chiamata risparmiata
+                logger.debug(f"✅ Odds CACHE HIT for fixture {fixture_id} (age: {age_seconds:.0f}s)")
+                return cached_entry['data']
+            else:
+                logger.debug(f"⏰ Odds cache expired for fixture {fixture_id} (age: {age_seconds:.0f}s)")
+
         try:
             # Prova prima odds/live (per partite in corso)
             url = "https://v3.football.api-sports.io/odds/live"
@@ -1138,6 +1226,7 @@ class MultiSourceMatchFinder:
 
             req = urllib.request.Request(full_url, headers=headers)
             with urllib.request.urlopen(req, timeout=10) as response:
+                self.api_calls_count += 1  # 🆕 Conta chiamata API
                 data = json.loads(response.read().decode())
 
                 if not data.get("response") or len(data.get("response", [])) == 0:
@@ -1298,6 +1387,11 @@ class MultiSourceMatchFinder:
                 # Quote recuperate con successo
                 if odds_dict:
                     logger.info(f"✅ Quote recuperate per fixture {fixture_id}: {list(odds_dict.keys())}")
+                    # 🆕 SALVA IN CACHE
+                    self.odds_cache[fixture_id] = {
+                        'data': odds_dict,
+                        'timestamp': time.time()
+                    }
                     return odds_dict
                 else:
                     logger.debug(f"⚠️  Nessuna quota utile trovata per fixture {fixture_id}")
@@ -1334,6 +1428,7 @@ class MultiSourceMatchFinder:
 
             req = urllib.request.Request(full_url, headers=headers)
             with urllib.request.urlopen(req, timeout=10) as response:
+                self.api_calls_count += 1  # 🆕 Conta chiamata API
                 data = json.loads(response.read().decode())
 
                 if not data.get("response") or len(data.get("response", [])) == 0:
@@ -1405,6 +1500,11 @@ class MultiSourceMatchFinder:
 
                 if odds_dict:
                     logger.debug(f"✅ Quote pre-match recuperate per fixture {fixture_id}")
+                    # 🆕 SALVA IN CACHE
+                    self.odds_cache[fixture_id] = {
+                        'data': odds_dict,
+                        'timestamp': time.time()
+                    }
                     return odds_dict
                 else:
                     return None
