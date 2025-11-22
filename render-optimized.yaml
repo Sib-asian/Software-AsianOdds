@@ -21,5 +21,5 @@ services:
       - key: AUTOMATION_MIN_CONFIDENCE
         value: "70.0"
       - key: AUTOMATION_UPDATE_INTERVAL
-        value: "300"
+        value: "1200"  # 20 minuti (1200 secondi)
 
