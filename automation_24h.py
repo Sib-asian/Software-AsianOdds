@@ -721,9 +721,17 @@ class Automation24H:
         # 2. Analizza ogni partita e raccogli tutte le opportunità
         all_opportunities = []  # Raccogli tutte le opportunità per selezionare le migliori
         opportunities_found = 0
+        matches_analyzed = 0
+        matches_with_opportunities = 0
+        matches_without_opportunities = 0
+        
+        logger.info(f"📊 Inizio analisi di {len(matches)} partite LIVE...")
         
         for match in matches:
             try:
+                matches_analyzed += 1
+                match_name = f"{match.get('home', '?')} vs {match.get('away', '?')}"
+                
                 # 🔧 FIX: Disabilitato arbitraggio per partite LIVE (l'utente vuole solo live betting)
                 # if self.arbitrage_detector:
                 #     self._check_arbitrage(match)
@@ -735,27 +743,41 @@ class Automation24H:
                 
                 opportunities = self._analyze_live_match(match)
                 if opportunities:
-                    logger.info(f"📊 {match.get('home')} vs {match.get('away')}: trovate {len(opportunities)} opportunità")
+                    matches_with_opportunities += 1
+                    logger.info(f"📊 {match_name}: trovate {len(opportunities)} opportunità")
                     for opp in opportunities:
                         if opp:
                             opportunities_found += 1
                             all_opportunities.append(opp)  # Raccogli invece di inviare subito
-                            logger.debug(f"   - {opp.market}: EV={opp.ev:.1f}%, Conf={opp.confidence:.1f}%")
+                            logger.info(f"   ✅ {opp.market}: EV={opp.ev:.1f}%, Conf={opp.confidence:.1f}%, Quality={getattr(opp, 'signal_quality_score', 0):.1f}")
                 else:
-                    logger.debug(f"📊 {match.get('home')} vs {match.get('away')}: nessuna opportunità trovata")
+                    matches_without_opportunities += 1
+                    logger.info(f"📊 {match_name}: nessuna opportunità trovata")
             except Exception as e:
                 logger.error(f"❌ Error analyzing match {match.get('id', 'unknown')}: {e}")
                 continue
         
+        logger.info(f"📊 Riepilogo analisi partite:")
+        logger.info(f"   - Partite analizzate: {matches_analyzed}")
+        logger.info(f"   - Partite con opportunità: {matches_with_opportunities}")
+        logger.info(f"   - Partite senza opportunità: {matches_without_opportunities}")
+        logger.info(f"   - Opportunità totali generate: {opportunities_found}")
+        
         # 🆕 NUOVO: Seleziona e invia solo le migliori opportunità
         notified_count = 0
         if all_opportunities:
+            logger.info(f"📊 Prima della selezione: {opportunities_found} opportunità totali")
             best_opportunities = self._select_best_opportunities(all_opportunities)
-            logger.info(f"📊 Trovate {opportunities_found} opportunità, selezionate le migliori {len(best_opportunities)} per notifica")
+            logger.info(f"📊 Dopo la selezione: {len(best_opportunities)} opportunità selezionate per notifica")
+            
+            if len(best_opportunities) < opportunities_found:
+                logger.info(f"📊 Opportunità scartate: {opportunities_found - len(best_opportunities)} (selezionata solo la migliore)")
             
             for opp_dict in best_opportunities:
                 self._handle_live_opportunity(opp_dict)
                 notified_count += 1
+        else:
+            logger.info(f"📊 Nessuna opportunità trovata in questo ciclo")
         
         logger.info(f"✅ Cycle complete: {opportunities_found} opportunities found, {notified_count} notified")
     
