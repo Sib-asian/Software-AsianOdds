@@ -1587,6 +1587,21 @@ class Automation24H:
             'other_markets': {}  # Altri mercati non categorizzati
         }
         
+        # 🔧 NUOVO: Traccia quale bookmaker fornisce ogni quota
+        bookmaker_tracker = {
+            'match_winner': {'home': None, 'draw': None, 'away': None},
+            'over_under': {},
+            'over_under_ht': {},
+            'btts': {'yes': None, 'no': None},
+            'btts_ht': {'yes': None, 'no': None},
+            'double_chance': {'1x': None, '12': None, 'x2': None},
+            'draw_no_bet': {'home': None, 'away': None},
+            'asian_handicap': {},
+            'first_half_goals': {},
+            'second_half_goals': {},
+            'other_markets': {}
+        }
+        
         if not odds_list:
             return all_odds
         
@@ -1615,12 +1630,15 @@ class Automation24H:
                             if outcome in ["home", "1"]:
                                 if all_odds['match_winner']['home'] is None or odd > all_odds['match_winner']['home']:
                                     all_odds['match_winner']['home'] = odd
+                                    bookmaker_tracker['match_winner']['home'] = bookmaker_name
                             elif outcome in ["draw", "x"]:
                                 if all_odds['match_winner']['draw'] is None or odd > all_odds['match_winner']['draw']:
                                     all_odds['match_winner']['draw'] = odd
+                                    bookmaker_tracker['match_winner']['draw'] = bookmaker_name
                             elif outcome in ["away", "2"]:
                                 if all_odds['match_winner']['away'] is None or odd > all_odds['match_winner']['away']:
                                     all_odds['match_winner']['away'] = odd
+                                    bookmaker_tracker['match_winner']['away'] = bookmaker_name
                 
                 # Over/Under - id: 5 (può essere FT o HT)
                 elif bet_id == 5 or "over/under" in bet_name or "total goals" in bet_name:
@@ -1648,16 +1666,23 @@ class Automation24H:
                             threshold = threshold_match.group(1)
                         
                         if threshold and odd:
+                            # Traccia bookmaker per over/under
+                            tracker_key = 'over_under_ht' if is_ht else 'over_under'
+                            if threshold not in bookmaker_tracker[tracker_key]:
+                                bookmaker_tracker[tracker_key][threshold] = {'over': None, 'under': None}
+                            
                             if "over" in outcome:
                                 if threshold not in target_dict:
                                     target_dict[threshold] = {'over': None, 'under': None}
                                 if target_dict[threshold]['over'] is None or odd > target_dict[threshold]['over']:
                                     target_dict[threshold]['over'] = odd
+                                    bookmaker_tracker[tracker_key][threshold]['over'] = bookmaker_name
                             elif "under" in outcome:
                                 if threshold not in target_dict:
                                     target_dict[threshold] = {'over': None, 'under': None}
                                 if target_dict[threshold]['under'] is None or odd > target_dict[threshold]['under']:
                                     target_dict[threshold]['under'] = odd
+                                    bookmaker_tracker[tracker_key][threshold]['under'] = bookmaker_name
                 
                 # First Half Goals - id: 16 o varianti
                 elif bet_id == 16 or "first half goals" in bet_name or "1st half goals" in bet_name:
@@ -1674,16 +1699,21 @@ class Automation24H:
                         if threshold_match:
                             threshold = threshold_match.group(1)
                             if threshold and odd:
+                                if threshold not in bookmaker_tracker['first_half_goals']:
+                                    bookmaker_tracker['first_half_goals'][threshold] = {'over': None, 'under': None}
+                                
                                 if "over" in outcome:
                                     if threshold not in all_odds['first_half_goals']:
                                         all_odds['first_half_goals'][threshold] = {'over': None, 'under': None}
                                     if all_odds['first_half_goals'][threshold]['over'] is None or odd > all_odds['first_half_goals'][threshold]['over']:
                                         all_odds['first_half_goals'][threshold]['over'] = odd
+                                        bookmaker_tracker['first_half_goals'][threshold]['over'] = bookmaker_name
                                 elif "under" in outcome:
                                     if threshold not in all_odds['first_half_goals']:
                                         all_odds['first_half_goals'][threshold] = {'over': None, 'under': None}
                                     if all_odds['first_half_goals'][threshold]['under'] is None or odd > all_odds['first_half_goals'][threshold]['under']:
                                         all_odds['first_half_goals'][threshold]['under'] = odd
+                                        bookmaker_tracker['first_half_goals'][threshold]['under'] = bookmaker_name
                 
                 # Second Half Goals - id: 17 o varianti
                 elif bet_id == 17 or "second half goals" in bet_name or "2nd half goals" in bet_name:
@@ -1700,16 +1730,21 @@ class Automation24H:
                         if threshold_match:
                             threshold = threshold_match.group(1)
                             if threshold and odd:
+                                if threshold not in bookmaker_tracker['second_half_goals']:
+                                    bookmaker_tracker['second_half_goals'][threshold] = {'over': None, 'under': None}
+                                
                                 if "over" in outcome:
                                     if threshold not in all_odds['second_half_goals']:
                                         all_odds['second_half_goals'][threshold] = {'over': None, 'under': None}
                                     if all_odds['second_half_goals'][threshold]['over'] is None or odd > all_odds['second_half_goals'][threshold]['over']:
                                         all_odds['second_half_goals'][threshold]['over'] = odd
+                                        bookmaker_tracker['second_half_goals'][threshold]['over'] = bookmaker_name
                                 elif "under" in outcome:
                                     if threshold not in all_odds['second_half_goals']:
                                         all_odds['second_half_goals'][threshold] = {'over': None, 'under': None}
                                     if all_odds['second_half_goals'][threshold]['under'] is None or odd > all_odds['second_half_goals'][threshold]['under']:
                                         all_odds['second_half_goals'][threshold]['under'] = odd
+                                        bookmaker_tracker['second_half_goals'][threshold]['under'] = bookmaker_name
                 
                 # BTTS - id: 8 (può essere FT o HT)
                 elif bet_id == 8 or "both teams to score" in bet_name or "btts" in bet_name:
