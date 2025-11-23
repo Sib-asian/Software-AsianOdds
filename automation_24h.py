@@ -140,7 +140,7 @@ class Automation24H:
         telegram_chat_id: Optional[str] = None,
         min_ev: float = 8.0,  # EV minimo 8%
         min_confidence: float = 70.0,  # Confidence minima 70%
-        update_interval: int = 1200,  # 20 minuti (1200 secondi)
+        update_interval: int = 600,  # 10 minuti (600 secondi)
         api_budget_per_day: int = 7500,  # Piano Pro: 7500 chiamate/giorno
         max_notifications_per_cycle: int = 1  # Max notifiche per ciclo (solo la migliore in assoluto)
     ):
@@ -157,9 +157,8 @@ class Automation24H:
         self.notified_opportunities: Set[str] = set()  # Evita duplicati
         self.notified_opportunities_timestamps: Dict[str, datetime] = {}  # Timestamp delle notifiche
         self.notified_matches_timestamps: Dict[str, datetime] = {}  # Timestamp per partita (max 1 notifica ogni 30 min per partita)
-        self.last_global_notification_time: Optional[datetime] = None  # 🆕 Limite globale 20 minuti tra BETTING notifications
-        # 🔧 FIX: Caricamento timestamp spostato alla fine di _init_components (dopo init signal_quality_learner)
-        self.last_system_notification_time: Optional[datetime] = None  # 🎯 NUOVO: Limite 1 ora tra SYSTEM notifications (stats, reports, progress)
+        self.last_global_notification_time: Optional[datetime] = None  # 🆕 Limite globale 10 minuti tra qualsiasi notifica
+        self._load_last_global_notification_time()  # 🆕 Carica timestamp persistente
         # 🔧 OPZIONE 4: Tracking mercati già suggeriti per partita (per penalizzazione/bonus)
         self.match_markets_history: Dict[str, List[Dict[str, Any]]] = {}  # match_id -> lista di {market, timestamp}
         # 🆕 Cache Quality Score per evitare doppio calcolo
@@ -173,10 +172,6 @@ class Automation24H:
         self.last_progress_notification = {}  # {threshold: datetime}
         self.last_signal_count = 0  # Ultimo conteggio segnali per rilevare nuovi
         self.start_time = datetime.now()  # Per calcolo stima giorni
-
-        # 🔧 FIX: Path fisso per file di stato - scegli UNA VOLTA e usa sempre quello
-        self.state_file_path = self._get_state_file_path()
-
         self.api_usage_today = 0
         self.last_api_reset = datetime.now().date()
         self.last_daily_report = datetime.now().date()
@@ -214,27 +209,6 @@ class Automation24H:
                 )
                 logger.info(f"   LiveBettingAdvisor: min_confidence={min_confidence}%, min_ev={live_min_ev}% (abbassato per live betting)")
                 logger.info("✅ LiveBettingAdvisor initialized")
-
-                # 🎯 NUOVO: Health Check all'avvio
-                logger.info("\n" + "=" * 60)
-                logger.info("🔍 RUNNING HEALTH CHECK...")
-                logger.info("=" * 60)
-                health_status = self.live_betting_advisor.health_check()
-
-                # Verifica che tutto sia OK
-                if health_status['status'] != 'OK':
-                    logger.warning("\n⚠️  ATTENZIONE: Sistema in modalità DEGRADATA")
-                    logger.warning("Componenti mancanti:")
-                    for comp, available in health_status['components'].items():
-                        status_icon = "✅" if available else "❌"
-                        logger.warning(f"  {status_icon} {comp}: {'OK' if available else 'MANCANTE'}")
-                    logger.warning("\nPer massima precisione, verifica configurazione!\n")
-                else:
-                    logger.info("\n✅ HEALTH CHECK PASSED - Sistema al 100%")
-                    logger.info("Componenti attivi:")
-                    for comp, available in health_status['components'].items():
-                        logger.info(f"  ✅ {comp}")
-                    logger.info("")
             except Exception as e:
                 logger.warning(f"⚠️  LiveBettingAdvisor error: {e}")
                 self.live_betting_advisor = None
@@ -315,11 +289,10 @@ class Automation24H:
         
         # Sistemi avanzati 24/7 (dopo notifier e api_manager)
         if ADVANCED_SYSTEMS_AVAILABLE:
-            # 🔇 DISABILITATO: Odds monitor e arbitrage per ridurre spam notifiche
-            self.odds_monitor = None  # OddsMonitor() - DISABILITATO per evitare notifiche extra
+            self.odds_monitor = OddsMonitor()
             self.result_tracker_auto = ResultTrackerAuto(api_manager=self.api_manager)
             self.pre_match_alerter = PreMatchAlerter(notifier=self.notifier)
-            self.arbitrage_detector = None  # ArbitrageDetectorAuto(min_profit_pct=1.0) - DISABILITATO per evitare notifiche extra
+            self.arbitrage_detector = ArbitrageDetectorAuto(min_profit_pct=1.0)
             
             # News analyzer (richiede sentiment analyzer se disponibile)
             sentiment_analyzer = None
@@ -402,10 +375,7 @@ class Automation24H:
             self.match_filters = None
             self.bankroll_manager = None
             self.automated_reports = None
-
-        # 🔧 FIX: Carica timestamp globale DOPO l'inizializzazione di signal_quality_learner
-        self._load_last_global_notification_time()
-
+    
     def start(self, single_run: bool = False):
         """
         Avvia sistema 24/7
@@ -424,6 +394,11 @@ class Automation24H:
         try:
             # Loop principale
             while self.running:
+                # 🔧 NUOVO: Controlla se il servizio è attivo prima di ogni ciclo
+                if not self._is_service_active():
+                    logger.warning("⚠️  Servizio non attivo, interrompendo loop")
+                    break
+                
                 try:
                     self._run_cycle()
                 except Exception as e:
@@ -442,6 +417,11 @@ class Automation24H:
                 sleep_interval = min(60, self.update_interval)  # Max 60 secondi per controllo
                 elapsed = 0
                 while elapsed < self.update_interval and self.running:
+                    # 🔧 NUOVO: Controlla servizio attivo anche durante il sleep
+                    if not self._is_service_active():
+                        logger.warning("⚠️  Servizio non attivo durante sleep, interrompendo")
+                        self.running = False
+                        break
                     time.sleep(sleep_interval)
                     elapsed += sleep_interval
                 
@@ -452,6 +432,12 @@ class Automation24H:
     
     def _run_cycle(self):
         """Esegue un ciclo di analisi"""
+        # 🔧 NUOVO: Controlla se il servizio è attivo prima di iniziare
+        if not self._is_service_active():
+            logger.warning("⚠️  Servizio non attivo, interrompendo ciclo")
+            self.running = False
+            return
+        
         logger.info("🔄 Running analysis cycle...")
         
         # Reset API usage se nuovo giorno
@@ -555,12 +541,8 @@ class Automation24H:
                                 status = "✅" if was_approved else "❌"
                                 message += f"{status} {match_id[:20]}/{market} (QS: {quality_score:.1f})\n"
                         
-                        # 🎯 Usa metodo sistema con limite 1 ora
-                        sent = self._send_system_notification(message, parse_mode="HTML", min_interval_minutes=60)
-                        if sent:
-                            logger.info(f"📊 Notifica statistiche database: {total_signals} totali ({approved_count} approvati, {blocked_count} bloccati)")
-                        else:
-                            logger.debug(f"📊 Notifica statistiche database bloccata da limite temporale")
+                        self.notifier._send_message(message, parse_mode="HTML")
+                        logger.info(f"📊 Notifica statistiche database: {total_signals} totali ({approved_count} approvati, {blocked_count} bloccati)")
                     except Exception as e:
                         logger.debug(f"⚠️  Errore notifica statistiche database: {e}")
                     
@@ -605,14 +587,10 @@ class Automation24H:
                             filled = int(progress_percent / 100 * bar_length)
                             bar = "█" * filled + "░" * (bar_length - filled)
                             message += f"<code>{bar}</code> {progress_percent:.0f}%"
-
-                            # 🎯 Usa metodo sistema con limite 1 ora
-                            sent = self._send_system_notification(message, parse_mode="HTML", min_interval_minutes=60)
-                            if sent:
-                                self.last_progress_notification[threshold_key] = datetime.now()
-                                logger.info(f"📊 Notifica progresso: {signals_with_results}/{min_samples} ({progress_percent:.1f}%)")
-                            else:
-                                logger.debug(f"📊 Notifica progresso bloccata da limite temporale")
+                            
+                            self.notifier._send_message(message, parse_mode="HTML")
+                            self.last_progress_notification[threshold_key] = datetime.now()
+                            logger.info(f"📊 Notifica progresso: {signals_with_results}/{min_samples} ({progress_percent:.1f}%)")
                         except Exception as e:
                             logger.debug(f"⚠️  Errore notifica progresso: {e}")
             except Exception as e:
@@ -627,15 +605,14 @@ class Automation24H:
                 try:
                     logger.info("🧠 Eseguendo apprendimento automatico Signal Quality Gate...")
                     
-                    # 🆕 Notifica inizio apprendimento (sistema, limite 1 ora)
+                    # 🆕 Notifica inizio apprendimento
                     if self.notifier:
                         try:
-                            self._send_system_notification(
+                            self.notifier._send_message(
                                 "🧠 <b>IA: Apprendimento Automatico</b>\n\n"
                                 "🔄 Inizio apprendimento Signal Quality Gate...\n"
                                 "📊 Analizzando risultati segnali precedenti...",
-                                parse_mode="HTML",
-                                min_interval_minutes=60
+                                parse_mode="HTML"
                             )
                         except Exception as e:
                             logger.debug(f"⚠️  Errore notifica inizio apprendimento: {e}")
@@ -671,8 +648,7 @@ class Automation24H:
                                     f"🎯 <b>Nuova Soglia Minima:</b> {results['min_quality_score']:.1f}/100\n\n"
                                     f"📈 Sistema aggiornato e pronto!"
                                 )
-                                # 🎯 Usa metodo sistema con limite 1 ora
-                                self._send_system_notification(message, parse_mode="HTML", min_interval_minutes=60)
+                                self.notifier._send_message(message, parse_mode="HTML")
                             except Exception as e:
                                 logger.debug(f"⚠️  Errore notifica completamento apprendimento: {e}")
                         
@@ -687,15 +663,14 @@ class Automation24H:
                     elif results.get('status') == 'insufficient_samples':
                         logger.info(f"ℹ️  Campioni insufficienti per apprendere ({results['samples']} < {results['min_samples']})")
                         
-                        # 🆕 Notifica campioni insufficienti (sistema, limite 1 ora)
+                        # 🆕 Notifica campioni insufficienti
                         if self.notifier:
                             try:
-                                self._send_system_notification(
+                                self.notifier._send_message(
                                     f"⚠️ <b>IA: Apprendimento Posticipato</b>\n\n"
                                     f"📊 Campioni insufficienti: {results['samples']}/{results['min_samples']}\n"
                                     f"⏳ Attendo più dati per apprendere...",
-                                    parse_mode="HTML",
-                                    min_interval_minutes=60
+                                    parse_mode="HTML"
                                 )
                             except Exception as e:
                                 logger.debug(f"⚠️  Errore notifica campioni insufficienti: {e}")
@@ -704,15 +679,14 @@ class Automation24H:
                 except Exception as e:
                     logger.error(f"❌ Errore apprendimento automatico: {e}")
                     
-                    # 🆕 Notifica errore apprendimento (sistema, limite 1 ora)
+                    # 🆕 Notifica errore apprendimento
                     if self.notifier:
                         try:
-                            self._send_system_notification(
+                            self.notifier._send_message(
                                 f"❌ <b>IA: Errore Apprendimento</b>\n\n"
                                 f"⚠️ Errore durante l'apprendimento automatico:\n"
                                 f"<code>{str(e)[:200]}</code>",
-                                parse_mode="HTML",
-                                min_interval_minutes=60
+                                parse_mode="HTML"
                             )
                         except:
                             pass
@@ -796,12 +770,17 @@ class Automation24H:
             return self._get_mock_matches()
         
         try:
+            # 🔧 NUOVO: Controlla se il servizio è attivo prima di fare chiamate API
+            if not self._is_service_active():
+                logger.warning("⚠️  Servizio non attivo, skip get matches")
+                return []
+            
             # Reset quota se nuovo giorno
             if self.api_usage_today >= self.api_budget_per_day:
                 logger.warning(f"⚠️  API quota exhausted ({self.api_usage_today}/{self.api_budget_per_day})")
                 return []
             
-            # Prova a ottenere partite reali da TheOddsAPI
+            # Prova a ottenere partite reali da API-Football
             matches = self._fetch_real_matches()
             
             # Se non ci sono partite reali, usa mock per testing
@@ -818,156 +797,814 @@ class Automation24H:
     
     def _fetch_real_matches(self) -> List[Dict]:
         """
-        Ottiene partite reali da multiple fonti (API-SPORTS, TheOddsAPI, ecc.).
+        Ottiene partite reali da API-Football con TUTTE le quote disponibili.
         
-        🆕 PRIORITÀ: Usa MultiSourceMatchFinder (API-SPORTS) come primario.
-        TheOddsAPI come fallback se MultiSource non disponibile.
+        🔧 MODIFICATO: Usa API-Football come fonte principale per le quote.
+        Estrae TUTTI i mercati disponibili (1X2, Over/Under, BTTS, Asian Handicap, ecc.).
         """
-        # 🆕 NUOVO: Usa MultiSourceMatchFinder come primario (API-SPORTS)
-        if self.multi_source_finder:
-            try:
-                logger.info("🔍 Usando sistema multi-fonte per trovare partite (TheOddsAPI + API-SPORTS + Football-Data.org)...")
-                # 🔧 FIX: Cerca partite per OGGI (days_ahead=0) invece di domani
-                # Include anche partite live tramite include_live=True
-                matches = self.multi_source_finder.find_all_matches(
-                    days_ahead=0,  # 🔧 Cambiato da 1 a 0 per cercare partite di OGGI
-                    include_minor_leagues=True,
-                    include_live=True
-                )
-                
-                if matches:
-                    logger.info(f"✅ Trovate {len(matches)} partite da sistema multi-fonte")
-                    self.api_usage_today += 1  # Conta chiamata API
-                    return matches
-                else:
-                    logger.info("ℹ️  Nessuna partita trovata da sistema multi-fonte")
-            except Exception as e:
-                logger.warning(f"⚠️  Errore sistema multi-fonte: {e}, fallback a TheOddsAPI")
+        # Controlla se il servizio è attivo (evita chiamate quando Render è sospeso)
+        if not self._is_service_active():
+            logger.warning("⚠️  Servizio non attivo, skip fetch matches")
+            return []
         
-        # Fallback a TheOddsAPI se MultiSource non disponibile o fallisce
+        # Usa API-Football per ottenere partite con tutte le quote
+        if not self.api_manager:
+            logger.warning("⚠️  API Manager not available, using mock data")
+            return self._get_mock_matches()
+        
+        try:
+            # Ottieni partite da API-Football con tutte le quote
+            matches = self._fetch_matches_with_odds_from_api_football()
+            
+            if matches:
+                logger.info(f"✅ Trovate {len(matches)} partite con quote da API-Football")
+                return matches
+            else:
+                logger.info("ℹ️  Nessuna partita trovata da API-Football")
+                return []
+            
+        except Exception as e:
+            logger.error(f"❌ Error fetching matches from API-Football: {e}")
+            return []
+    
+    def _fetch_matches_with_odds_from_api_football(self) -> List[Dict]:
+        """
+        Estrae partite da API-Football con TUTTE le quote disponibili.
+        
+        Cerca tutti i mercati possibili:
+        - Match Winner (1X2)
+        - Over/Under (0.5, 1.5, 2.5, 3.5, 4.5, 5.5)
+        - BTTS (Both Teams To Score)
+        - Asian Handicap
+        - Double Chance
+        - Draw No Bet
+        - Altri mercati disponibili
+        """
         import os
-        import requests
+        import urllib.request
+        import urllib.parse
+        import json
         from datetime import datetime, timedelta
         
-        theodds_api_key = os.getenv("THEODDS_API_KEY", "")
-        if not theodds_api_key:
-            logger.debug("ℹ️  THEODDS_API_KEY non configurata, usando mock data")
+        api_key = os.getenv("API_FOOTBALL_KEY", "")
+        if not api_key:
+            logger.warning("⚠️  API_FOOTBALL_KEY non configurata")
             return []
         
         try:
-            # TheOddsAPI endpoint per partite di calcio
-            # Sport key: "soccer" per calcio
-            url = "https://api.the-odds-api.com/v4/sports/soccer/odds"
+            base_url = "https://v3.football.api-sports.io"
+            now = datetime.now(timezone.utc)
+            
+            # Ottieni partite nelle prossime 24h e live (ultime 2h)
+            today = now.date()
+            tomorrow = (now + timedelta(days=1)).date()
+            
+            # Parametri per ottenere partite con quote
             params = {
-                "apiKey": theodds_api_key,
-                "regions": "eu",  # Regione EU (include bookmaker italiani)
-                "markets": "h2h",  # Head-to-head (1X2)
-                "oddsFormat": "decimal",
-                "dateFormat": "iso"
+                "date": today.strftime("%Y-%m-%d"),
+                "odds": "1"  # Include tutte le quote disponibili
             }
             
-            logger.debug(f"📡 Fetching matches from TheOddsAPI...")
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
+            # Fai richiesta per oggi
+            query = urllib.parse.urlencode(params)
+            url = f"{base_url}/fixtures?{query}"
+            headers = {
+                "x-rapidapi-key": api_key,
+                "x-rapidapi-host": "v3.football.api-sports.io"
+            }
             
-            events = response.json()
-            if not events:
-                logger.info("ℹ️  Nessuna partita trovata su TheOddsAPI")
+            logger.info(f"📡 Fetching fixtures with odds from API-Football (date: {today})...")
+            self.api_usage_today += 1  # Conta chiamata API per fixtures
+            req = urllib.request.Request(url, headers=headers)
+            
+            with urllib.request.urlopen(req, timeout=15) as response:
+                data = json.loads(response.read().decode())
+            
+            if not data.get("response"):
+                logger.warning(f"⚠️  Nessuna partita trovata per oggi ({today})")
                 return []
             
-            # Converti eventi TheOddsAPI in formato interno
-            matches = []
-            now = datetime.now(timezone.utc)  # Use timezone-aware UTC datetime
-            max_future = now + timedelta(hours=24)  # Prossime 24h
-            min_past = now - timedelta(hours=2)  # Partite iniziate nelle ultime 2h (live)
+            logger.info(f"📊 Trovate {len(data['response'])} partite totali per oggi")
             
-            for event in events:
+            matches = []
+            live_count = 0
+            skipped_finished = 0
+            skipped_not_live = 0
+            skipped_no_stats = 0
+            skipped_no_odds = 0
+            
+            for fixture in data["response"]:
                 try:
-                    # Estrai data partita
-                    commence_time_str = event.get("commence_time")
-                    if not commence_time_str:
+                    fixture_data = fixture.get("fixture", {})
+                    teams_data = fixture.get("teams", {})
+                    league_data = fixture.get("league", {})
+                    odds_data = fixture.get("odds", [])  # Lista di bookmaker con quote
+                    
+                    # Estrai informazioni base
+                    fixture_id = fixture_data.get("id")
+                    if not fixture_id:
                         continue
                     
-                    # Parse ISO datetime as timezone-aware (UTC)
-                    commence_time = datetime.fromisoformat(commence_time_str.replace("Z", "+00:00"))
+                    date_str = fixture_data.get("date")
+                    if not date_str:
+                        continue
                     
-                    # Determina se è live o pre-match (compare timezone-aware datetimes)
-                    is_live = commence_time < now
-                    is_prematch = commence_time >= now
+                    # Parse datetime
+                    fixture_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
                     
-                    # Filtra:
-                    # - Pre-match: partite nelle prossime 24h
-                    # - Live: partite iniziate nelle ultime 2h (per evitare partite già finite)
-                    if is_prematch:
-                        if commence_time > max_future:
-                            continue  # Troppo in futuro
-                    elif is_live:
-                        if commence_time < min_past:
-                            continue  # Troppo tempo fa (probabilmente finita)
-                    else:
-                        continue  # Non dovrebbe succedere
+                    # Determina se è live o pre-match
+                    status_short = fixture_data.get("status", {}).get("short", "")
+                    is_live = status_short in ["1H", "HT", "2H", "ET", "P", "LIVE"]
+                    is_finished = status_short in ["FT", "AET", "PEN"]
                     
-                    # Estrai quote migliori da tutti i bookmaker
-                    bookmakers = event.get("bookmakers", [])
-                    best_odds = {"home": None, "draw": None, "away": None}
+                    if is_finished:
+                        skipped_finished += 1
+                        continue  # Salta partite finite
                     
-                    for bookmaker in bookmakers:
-                        markets = bookmaker.get("markets", [])
-                        h2h_market = next((m for m in markets if m.get("key") == "h2h"), None)
-                        if not h2h_market:
-                            continue
-                        
-                        outcomes = h2h_market.get("outcomes", [])
-                        for outcome in outcomes:
-                            name = outcome.get("name", "").lower()
-                            price = outcome.get("price")
-                            
-                            if price is None:
-                                continue
-                            
-                            # Identifica outcome (home/away/draw)
-                            home_team = event.get("home_team", "").lower()
-                            away_team = event.get("away_team", "").lower()
-                            
-                            if name == home_team and (best_odds["home"] is None or price > best_odds["home"]):
-                                best_odds["home"] = price
-                            elif name == away_team and (best_odds["away"] is None or price > best_odds["away"]):
-                                best_odds["away"] = price
-                            elif name in ["draw", "pareggio", "x"] and (best_odds["draw"] is None or price > best_odds["draw"]):
-                                best_odds["draw"] = price
+                    # 🔧 FIX: Cerca SOLO partite LIVE di oggi
+                    if not is_live:
+                        skipped_not_live += 1
+                        continue  # Salta tutte le partite non-LIVE
                     
-                    # Crea match solo se ha quote valide
-                    if best_odds["home"] and best_odds["away"] and best_odds["draw"]:
-                        match = {
-                            'id': event.get("id", f"match_{len(matches)}"),
-                            'home': event.get("home_team", ""),
-                            'away': event.get("away_team", ""),
-                            'league': event.get("sport_title", "Soccer"),
-                            'date': commence_time,  # Keep timezone-aware datetime
-                            'odds_1': best_odds["home"],
-                            'odds_x': best_odds["draw"],
-                            'odds_2': best_odds["away"],
-                            'sport_key': event.get("sport_key", "soccer"),
-                            'is_live': is_live,  # Flag per distinguere live/pre-match
-                            'match_status': 'LIVE' if is_live else 'PRE-MATCH'
-                        }
+                    live_count += 1
+                    
+                    home_team = teams_data.get("home", {}).get("name", "")
+                    away_team = teams_data.get("away", {}).get("name", "")
+                    league_name = league_data.get("name", "Unknown League")
+                    
+                    if not home_team or not away_team:
+                        continue
+                    
+                    # 🔧 FIX: Verifica che la partita sia di oggi (controllo aggiuntivo)
+                    fixture_date_only = fixture_date.date()
+                    if fixture_date_only != today:
+                        skipped_not_live += 1
+                        logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} non è di oggi ({fixture_date_only}), skip")
+                        continue
+                    
+                    # 🔧 FIX: Unificato controllo e fetch statistiche in una sola chiamata
+                    # Recupera statistiche direttamente (se disponibili) invece di fare 2 chiamate
+                    # IMPORTANTE: Fa chiamata API solo per partite LIVE di oggi
+                    statistics = self._fetch_statistics_from_api_football(fixture_id, api_key, base_url)
+                    if not statistics:
+                        skipped_no_stats += 1
+                        logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} (status: {status_short}) senza statistiche disponibili, skip estrazione quote")
+                        continue  # Salta questa partita, non estrarre quote
+                    logger.info(f"✅ Statistiche disponibili per {home_team} vs {away_team} (status: {status_short}), procedo con estrazione quote")
+                    
+                    # Estrai TUTTE le quote disponibili
+                    all_odds = self._extract_all_odds_from_api_football(odds_data)
+                    
+                    # Log quanti mercati sono stati trovati
+                    markets_found = []
+                    if all_odds.get('match_winner', {}).get('home'):
+                        markets_found.append('1X2')
+                    if all_odds.get('over_under'):
+                        markets_found.append(f"Over/Under FT ({len(all_odds['over_under'])} thresholds)")
+                    if all_odds.get('over_under_ht'):
+                        markets_found.append(f"Over/Under HT ({len(all_odds['over_under_ht'])} thresholds)")
+                    if all_odds.get('first_half_goals'):
+                        markets_found.append(f"First Half Goals ({len(all_odds['first_half_goals'])} thresholds)")
+                    if all_odds.get('second_half_goals'):
+                        markets_found.append(f"Second Half Goals ({len(all_odds['second_half_goals'])} thresholds)")
+                    if all_odds.get('btts', {}).get('yes'):
+                        markets_found.append('BTTS FT')
+                    if all_odds.get('btts_ht', {}).get('yes'):
+                        markets_found.append('BTTS HT')
+                    if all_odds.get('double_chance', {}).get('1x'):
+                        markets_found.append('Double Chance')
+                    if all_odds.get('draw_no_bet', {}).get('home'):
+                        markets_found.append('Draw No Bet')
+                    if all_odds.get('asian_handicap'):
+                        markets_found.append(f"Asian Handicap ({len(all_odds['asian_handicap'])} options)")
+                    if all_odds.get('other_markets'):
+                        markets_found.append(f"Altri mercati ({len(all_odds['other_markets'])} markets)")
+                    
+                    if markets_found:
+                        logger.info(f"📊 Mercati trovati per {home_team} vs {away_team}: {', '.join(markets_found)}")
+                    
+                    # Estrai score e minute dalla fixture
+                    score_data = fixture_data.get("score", {})
+                    score_home = score_data.get("fulltime", {}).get("home") or score_data.get("halftime", {}).get("home") or 0
+                    score_away = score_data.get("fulltime", {}).get("away") or score_data.get("halftime", {}).get("away") or 0
+                    minute = fixture_data.get("status", {}).get("elapsed") or 0
+                    status_short = fixture_data.get("status", {}).get("short", "")
+                    
+                    # Crea match dict con tutte le quote
+                    match = {
+                        'id': str(fixture_id),
+                        'home': home_team,
+                        'away': away_team,
+                        'league': league_name,
+                        'date': fixture_date,
+                        'is_live': is_live,
+                        'match_status': 'LIVE' if is_live else 'PRE-MATCH',
+                        'status': status_short,
+                        'fixture_id': fixture_id,
+                        # Score e minute
+                        'score_home': score_home,
+                        'score_away': score_away,
+                        'minute': minute,
+                        # Quote base 1X2 (sempre presenti se disponibili)
+                        'odds_1': all_odds.get('match_winner', {}).get('home'),
+                        'odds_x': all_odds.get('match_winner', {}).get('draw'),
+                        'odds_2': all_odds.get('match_winner', {}).get('away'),
+                        # Tutte le altre quote disponibili
+                        'all_odds': all_odds
+                    }
+                    
+                    # Aggiungi quote specifiche per compatibilità con codice esistente
+                    if all_odds.get('over_under'):
+                        for threshold, odds in all_odds['over_under'].items():
+                            match[f'over_{threshold}'] = odds.get('over')
+                            match[f'under_{threshold}'] = odds.get('under')
+                    
+                    # Aggiungi quote HT
+                    if all_odds.get('over_under_ht'):
+                        for threshold, odds in all_odds['over_under_ht'].items():
+                            match[f'over_{threshold}_ht'] = odds.get('over')
+                            match[f'under_{threshold}_ht'] = odds.get('under')
+                    
+                    # Aggiungi First Half Goals
+                    if all_odds.get('first_half_goals'):
+                        for threshold, odds in all_odds['first_half_goals'].items():
+                            match[f'over_{threshold}_1h'] = odds.get('over')
+                            match[f'under_{threshold}_1h'] = odds.get('under')
+                    
+                    # Aggiungi Second Half Goals
+                    if all_odds.get('second_half_goals'):
+                        for threshold, odds in all_odds['second_half_goals'].items():
+                            match[f'over_{threshold}_2h'] = odds.get('over')
+                            match[f'under_{threshold}_2h'] = odds.get('under')
+                    
+                    if all_odds.get('btts'):
+                        match['btts_yes'] = all_odds['btts'].get('yes')
+                        match['btts_no'] = all_odds['btts'].get('no')
+                    
+                    if all_odds.get('btts_ht'):
+                        match['btts_yes_ht'] = all_odds['btts_ht'].get('yes')
+                        match['btts_no_ht'] = all_odds['btts_ht'].get('no')
+                    
+                    if all_odds.get('double_chance'):
+                        match['odds_1x'] = all_odds['double_chance'].get('1x')
+                        match['odds_12'] = all_odds['double_chance'].get('12')
+                        match['odds_x2'] = all_odds['double_chance'].get('x2')
+                    
+                    if all_odds.get('draw_no_bet'):
+                        match['dnb_home'] = all_odds['draw_no_bet'].get('home')
+                        match['dnb_away'] = all_odds['draw_no_bet'].get('away')
+                    
+                    if all_odds.get('asian_handicap'):
+                        match['asian_handicap'] = all_odds['asian_handicap']
+                    
+                    # 🔧 FIX: Statistiche già recuperate sopra, aggiungile al match dict
+                    if statistics:
+                        # Estrai statistiche e aggiungile al match dict
+                        stats_dict = self._parse_statistics_from_api_football(statistics)
+                        match.update(stats_dict)
+                        logger.debug(f"✅ Statistiche aggiunte per {home_team} vs {away_team}")
+                    
+                    # Aggiungi match solo se ha almeno le quote base 1X2
+                    if match.get('odds_1') and match.get('odds_x') and match.get('odds_2'):
                         matches.append(match)
+                    else:
+                        skipped_no_odds += 1
+                        logger.warning(f"⚠️  Match {home_team} vs {away_team} senza quote 1X2 complete, skip")
                 
                 except Exception as e:
-                    logger.debug(f"⚠️  Error processing event: {e}")
+                    logger.debug(f"⚠️  Error processing fixture: {e}")
                     continue
             
-            logger.info(f"✅ Trovate {len(matches)} partite reali da TheOddsAPI")
-            self.api_usage_today += 1  # Conta chiamata API
-            
+            logger.info(f"✅ Riepilogo estrazione partite:")
+            logger.info(f"   - Partite totali oggi: {len(data['response'])}")
+            logger.info(f"   - Partite LIVE trovate: {live_count}")
+            logger.info(f"   - Partite finite (skipped): {skipped_finished}")
+            logger.info(f"   - Partite non-LIVE (skipped): {skipped_not_live}")
+            logger.info(f"   - Partite LIVE senza statistiche (skipped): {skipped_no_stats}")
+            logger.info(f"   - Partite LIVE senza quote 1X2 (skipped): {skipped_no_odds}")
+            logger.info(f"   - Partite LIVE con quote e statistiche: {len(matches)}")
             return matches
             
-        except requests.RequestException as e:
-            logger.warning(f"⚠️  TheOddsAPI request failed: {e}")
+        except urllib.error.HTTPError as e:
+            logger.error(f"❌ API-Football HTTP error: {e.code} - {e.reason}")
             return []
         except Exception as e:
-            logger.error(f"❌ Error fetching real matches: {e}")
+            logger.error(f"❌ Error fetching from API-Football: {e}")
             return []
+    
+    def _extract_all_odds_from_api_football(self, odds_list: List[Dict]) -> Dict[str, Any]:
+        """
+        Estrae TUTTE le quote disponibili da API-Football.
+        
+        API-Football restituisce una lista di bookmaker, ognuno con i suoi mercati.
+        Estrae le migliori quote per ogni mercato disponibile.
+        
+        Mercati cercati:
+        - Match Winner (1X2) - id: 1
+        - Over/Under FT/HT - id: 5
+        - BTTS FT/HT - id: 8
+        - First Half Goals - id: 16
+        - Second Half Goals - id: 17
+        - Asian Handicap - id: 2
+        - Double Chance - id: 12
+        - Draw No Bet - id: 13
+        """
+        import re  # Import una sola volta
+        
+        all_odds = {
+            'match_winner': {'home': None, 'draw': None, 'away': None},
+            'over_under': {},  # FT (Full Time)
+            'over_under_ht': {},  # HT (First Half)
+            'btts': {'yes': None, 'no': None},
+            'btts_ht': {'yes': None, 'no': None},  # BTTS First Half
+            'double_chance': {'1x': None, '12': None, 'x2': None},
+            'draw_no_bet': {'home': None, 'away': None},
+            'asian_handicap': {},
+            'first_half_goals': {},  # First Half Goals Over/Under
+            'second_half_goals': {},  # Second Half Goals Over/Under
+            'other_markets': {}  # Altri mercati non categorizzati
+        }
+        
+        if not odds_list:
+            return all_odds
+        
+        # Itera su tutti i bookmaker per trovare le migliori quote
+        for bookmaker in odds_list:
+            bookmaker_name = bookmaker.get("bookmaker", {}).get("name", "")
+            bets = bookmaker.get("bets", [])
+            
+            for bet in bets:
+                bet_id = bet.get("id")
+                bet_name = bet.get("name", "").lower()
+                values = bet.get("values", [])
+                
+                # Match Winner (1X2) - id: 1
+                if bet_id == 1 or "match winner" in bet_name or "1x2" in bet_name:
+                    for value in values:
+                        outcome = value.get("value", "").lower()
+                        odd = value.get("odd")
+                        # Converti odd a float se è stringa
+                        if odd:
+                            try:
+                                odd = float(odd) if isinstance(odd, str) else odd
+                            except (ValueError, TypeError):
+                                continue
+                            
+                            if outcome in ["home", "1"]:
+                                if all_odds['match_winner']['home'] is None or odd > all_odds['match_winner']['home']:
+                                    all_odds['match_winner']['home'] = odd
+                            elif outcome in ["draw", "x"]:
+                                if all_odds['match_winner']['draw'] is None or odd > all_odds['match_winner']['draw']:
+                                    all_odds['match_winner']['draw'] = odd
+                            elif outcome in ["away", "2"]:
+                                if all_odds['match_winner']['away'] is None or odd > all_odds['match_winner']['away']:
+                                    all_odds['match_winner']['away'] = odd
+                
+                # Over/Under - id: 5 (può essere FT o HT)
+                elif bet_id == 5 or "over/under" in bet_name or "total goals" in bet_name:
+                    # Determina se è FT o HT
+                    is_ht = "first half" in bet_name or "1st half" in bet_name or "ht" in bet_name or "half time" in bet_name
+                    is_ft = "full time" in bet_name or "ft" in bet_name or (not is_ht and "over/under" in bet_name)
+                    
+                    target_dict = all_odds['over_under_ht'] if is_ht else all_odds['over_under']
+                    
+                    for value in values:
+                        outcome = value.get("value", "").lower()
+                        odd = value.get("odd")
+                        # Converti odd a float se è stringa
+                        if odd:
+                            try:
+                                odd = float(odd) if isinstance(odd, str) else odd
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        # Estrai threshold da qualsiasi valore (non solo hardcoded)
+                        threshold = None
+                        # Cerca pattern numerici come "0.5", "1.5", "2.5", ecc.
+                        threshold_match = re.search(r'(\d+\.?\d*)', outcome)
+                        if threshold_match:
+                            threshold = threshold_match.group(1)
+                        
+                        if threshold and odd:
+                            if "over" in outcome:
+                                if threshold not in target_dict:
+                                    target_dict[threshold] = {'over': None, 'under': None}
+                                if target_dict[threshold]['over'] is None or odd > target_dict[threshold]['over']:
+                                    target_dict[threshold]['over'] = odd
+                            elif "under" in outcome:
+                                if threshold not in target_dict:
+                                    target_dict[threshold] = {'over': None, 'under': None}
+                                if target_dict[threshold]['under'] is None or odd > target_dict[threshold]['under']:
+                                    target_dict[threshold]['under'] = odd
+                
+                # First Half Goals - id: 16 o varianti
+                elif bet_id == 16 or "first half goals" in bet_name or "1st half goals" in bet_name:
+                    for value in values:
+                        outcome = value.get("value", "").lower()
+                        odd = value.get("odd")
+                        if odd:
+                            try:
+                                odd = float(odd) if isinstance(odd, str) else odd
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        threshold_match = re.search(r'(\d+\.?\d*)', outcome)
+                        if threshold_match:
+                            threshold = threshold_match.group(1)
+                            if threshold and odd:
+                                if "over" in outcome:
+                                    if threshold not in all_odds['first_half_goals']:
+                                        all_odds['first_half_goals'][threshold] = {'over': None, 'under': None}
+                                    if all_odds['first_half_goals'][threshold]['over'] is None or odd > all_odds['first_half_goals'][threshold]['over']:
+                                        all_odds['first_half_goals'][threshold]['over'] = odd
+                                elif "under" in outcome:
+                                    if threshold not in all_odds['first_half_goals']:
+                                        all_odds['first_half_goals'][threshold] = {'over': None, 'under': None}
+                                    if all_odds['first_half_goals'][threshold]['under'] is None or odd > all_odds['first_half_goals'][threshold]['under']:
+                                        all_odds['first_half_goals'][threshold]['under'] = odd
+                
+                # Second Half Goals - id: 17 o varianti
+                elif bet_id == 17 or "second half goals" in bet_name or "2nd half goals" in bet_name:
+                    for value in values:
+                        outcome = value.get("value", "").lower()
+                        odd = value.get("odd")
+                        if odd:
+                            try:
+                                odd = float(odd) if isinstance(odd, str) else odd
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        threshold_match = re.search(r'(\d+\.?\d*)', outcome)
+                        if threshold_match:
+                            threshold = threshold_match.group(1)
+                            if threshold and odd:
+                                if "over" in outcome:
+                                    if threshold not in all_odds['second_half_goals']:
+                                        all_odds['second_half_goals'][threshold] = {'over': None, 'under': None}
+                                    if all_odds['second_half_goals'][threshold]['over'] is None or odd > all_odds['second_half_goals'][threshold]['over']:
+                                        all_odds['second_half_goals'][threshold]['over'] = odd
+                                elif "under" in outcome:
+                                    if threshold not in all_odds['second_half_goals']:
+                                        all_odds['second_half_goals'][threshold] = {'over': None, 'under': None}
+                                    if all_odds['second_half_goals'][threshold]['under'] is None or odd > all_odds['second_half_goals'][threshold]['under']:
+                                        all_odds['second_half_goals'][threshold]['under'] = odd
+                
+                # BTTS - id: 8 (può essere FT o HT)
+                elif bet_id == 8 or "both teams to score" in bet_name or "btts" in bet_name:
+                    # Determina se è FT o HT
+                    is_ht = "first half" in bet_name or "1st half" in bet_name or "ht" in bet_name
+                    target_dict = all_odds['btts_ht'] if is_ht else all_odds['btts']
+                    
+                    for value in values:
+                        outcome = value.get("value", "").lower()
+                        odd = value.get("odd")
+                        # Converti odd a float se è stringa
+                        if odd:
+                            try:
+                                odd = float(odd) if isinstance(odd, str) else odd
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        if odd:
+                            if "yes" in outcome or "1" in outcome:
+                                if target_dict['yes'] is None or odd > target_dict['yes']:
+                                    target_dict['yes'] = odd
+                            elif "no" in outcome or "0" in outcome:
+                                if target_dict['no'] is None or odd > target_dict['no']:
+                                    target_dict['no'] = odd
+                
+                # Double Chance - id: 12
+                elif bet_id == 12 or "double chance" in bet_name:
+                    for value in values:
+                        outcome = value.get("value", "").lower()
+                        odd = value.get("odd")
+                        # Converti odd a float se è stringa
+                        if odd:
+                            try:
+                                odd = float(odd) if isinstance(odd, str) else odd
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        if odd:
+                            if "1x" in outcome or "home or draw" in outcome:
+                                if all_odds['double_chance']['1x'] is None or odd > all_odds['double_chance']['1x']:
+                                    all_odds['double_chance']['1x'] = odd
+                            elif "12" in outcome or "home or away" in outcome:
+                                if all_odds['double_chance']['12'] is None or odd > all_odds['double_chance']['12']:
+                                    all_odds['double_chance']['12'] = odd
+                            elif "x2" in outcome or "draw or away" in outcome:
+                                if all_odds['double_chance']['x2'] is None or odd > all_odds['double_chance']['x2']:
+                                    all_odds['double_chance']['x2'] = odd
+                
+                # Draw No Bet - id: 13
+                elif bet_id == 13 or "draw no bet" in bet_name:
+                    for value in values:
+                        outcome = value.get("value", "").lower()
+                        odd = value.get("odd")
+                        # Converti odd a float se è stringa
+                        if odd:
+                            try:
+                                odd = float(odd) if isinstance(odd, str) else odd
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        if odd:
+                            if "home" in outcome or "1" in outcome:
+                                if all_odds['draw_no_bet']['home'] is None or odd > all_odds['draw_no_bet']['home']:
+                                    all_odds['draw_no_bet']['home'] = odd
+                            elif "away" in outcome or "2" in outcome:
+                                if all_odds['draw_no_bet']['away'] is None or odd > all_odds['draw_no_bet']['away']:
+                                    all_odds['draw_no_bet']['away'] = odd
+                
+                # Asian Handicap - id: 2
+                elif bet_id == 2 or "asian handicap" in bet_name:
+                    for value in values:
+                        outcome = value.get("value", "")
+                        odd = value.get("odd")
+                        # Converti odd a float se è stringa
+                        if odd:
+                            try:
+                                odd = float(odd) if isinstance(odd, str) else odd
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        if odd and outcome:
+                            # Salva con il valore dell'handicap come chiave
+                            if outcome not in all_odds['asian_handicap']:
+                                all_odds['asian_handicap'][outcome] = odd
+                            elif odd > all_odds['asian_handicap'][outcome]:
+                                all_odds['asian_handicap'][outcome] = odd
+                
+                # Altri mercati non categorizzati - salva per riferimento futuro
+                else:
+                    # Salva il mercato per riferimento futuro
+                    market_key = f"{bet_id}_{bet_name}"
+                    if market_key not in all_odds['other_markets']:
+                        all_odds['other_markets'][market_key] = {
+                            'id': bet_id,
+                            'name': bet_name,
+                            'values': []
+                        }
+                    # Aggiungi valori se interessanti
+                    for value in values:
+                        outcome = value.get("value", "")
+                        odd = value.get("odd")
+                        if odd:
+                            try:
+                                odd = float(odd) if isinstance(odd, str) else odd
+                                all_odds['other_markets'][market_key]['values'].append({
+                                    'outcome': outcome,
+                                    'odd': odd
+                                })
+                            except (ValueError, TypeError):
+                                continue
+        
+        return all_odds
+    
+    def _fetch_statistics_from_api_football(self, fixture_id: int, api_key: str, base_url: str) -> Optional[List[Dict]]:
+        """
+        Recupera le statistiche complete per una partita da API-Football.
+        Restituisce None se le statistiche non sono disponibili o non valide.
+        Fa UNA SOLA chiamata API invece di due (controllo + fetch).
+        
+        🔧 FIX: Conta la chiamata API solo se le statistiche sono valide.
+        """
+        try:
+            import urllib.request
+            
+            url = f"{base_url}/fixtures/statistics?fixture={fixture_id}"
+            headers = {
+                "x-rapidapi-key": api_key,
+                "x-rapidapi-host": "v3.football.api-sports.io"
+            }
+            
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode())
+            
+            # Verifica se ci sono statistiche disponibili e valide
+            if data.get("response") and len(data["response"]) > 0:
+                # Controlla se ci sono statistiche valide (non tutte a 0)
+                for team_stats in data["response"]:
+                    stats_list = team_stats.get("statistics", [])
+                    if stats_list:
+                        # Verifica se almeno una statistica ha un valore > 0
+                        for stat in stats_list:
+                            value = stat.get("value")
+                            if value and value != "0" and value != 0:
+                                # 🔧 FIX: Conta chiamata API solo se statistiche valide
+                                self.api_usage_today += 1
+                                logger.debug(f"✅ Statistiche valide trovate per fixture {fixture_id}, chiamata API conteggiata")
+                                return data["response"]  # Restituisce le statistiche se valide
+                # Statistiche presenti ma tutte a 0 - NON contare chiamata API
+                logger.debug(f"⚠️  Statistiche presenti ma tutte a 0 per fixture {fixture_id}, chiamata API NON conteggiata")
+                return None
+            # Nessuna statistica disponibile - NON contare chiamata API
+            logger.debug(f"⚠️  Nessuna statistica disponibile per fixture {fixture_id}, chiamata API NON conteggiata")
+            return None
+            
+        except urllib.error.HTTPError as e:
+            # Errore HTTP (es. 404, 429) - NON contare chiamata API se errore
+            logger.debug(f"⚠️  HTTP error recupero statistiche per fixture {fixture_id}: {e.code} - {e.reason}")
+            return None
+        except Exception as e:
+            logger.debug(f"⚠️  Errore recupero statistiche per fixture {fixture_id}: {e}")
+            return None
+    
+    def _parse_statistics_from_api_football(self, statistics: List[Dict]) -> Dict[str, Any]:
+        """
+        Estrae le statistiche da API-Football e le converte nel formato interno.
+        """
+        stats_dict = {
+            'score_home': 0,
+            'score_away': 0,
+            'minute': 0,
+            'status': 'LIVE',
+            'home_total_shots': 0,
+            'away_total_shots': 0,
+            'home_shots_on_target': 0,
+            'away_shots_on_target': 0,
+            'home_possession': None,
+            'away_possession': None,
+            'home_xg': 0.0,
+            'away_xg': 0.0,
+            'home_dangerous_attacks': 0,
+            'away_dangerous_attacks': 0,
+            'home_corners': 0,
+            'away_corners': 0,
+            'home_yellow_cards': 0,
+            'away_yellow_cards': 0,
+            'home_red_cards': 0,
+            'away_red_cards': 0,
+            'home_fouls': 0,
+            'away_fouls': 0,
+        }
+        
+        if not statistics or len(statistics) < 2:
+            return stats_dict
+        
+        home_stats = statistics[0].get("statistics", [])
+        away_stats = statistics[1].get("statistics", [])
+        
+        # Estrai statistiche home
+        for stat in home_stats:
+            stat_type = stat.get("type", "").lower()
+            value = stat.get("value")
+            
+            if "shots on goal" in stat_type or "shots on target" in stat_type:
+                try:
+                    stats_dict['home_shots_on_target'] = int(value) if value else 0
+                except:
+                    pass
+            elif "total shots" in stat_type or "shots total" in stat_type or stat_type == "shots":
+                try:
+                    stats_dict['home_total_shots'] = int(value) if value else 0
+                except:
+                    pass
+            elif "ball possession" in stat_type or stat_type == "possession":
+                try:
+                    if isinstance(value, str):
+                        stats_dict['home_possession'] = float(value.replace("%", "").strip())
+                    else:
+                        stats_dict['home_possession'] = float(value) if value else None
+                except:
+                    pass
+            elif "expected goals" in stat_type or stat_type == "xg":
+                try:
+                    stats_dict['home_xg'] = float(value) if value else 0.0
+                except:
+                    pass
+            elif "dangerous attacks" in stat_type or stat_type == "attacks":
+                try:
+                    stats_dict['home_dangerous_attacks'] = int(value) if value else 0
+                except:
+                    pass
+            elif "corner kicks" in stat_type or stat_type == "corners":
+                try:
+                    stats_dict['home_corners'] = int(value) if value else 0
+                except:
+                    pass
+            elif "yellow cards" in stat_type or stat_type == "yellow":
+                try:
+                    stats_dict['home_yellow_cards'] = int(value) if value else 0
+                except:
+                    pass
+            elif "red cards" in stat_type or stat_type == "red":
+                try:
+                    stats_dict['home_red_cards'] = int(value) if value else 0
+                except:
+                    pass
+            elif "fouls" in stat_type:
+                try:
+                    stats_dict['home_fouls'] = int(value) if value else 0
+                except:
+                    pass
+        
+        # Estrai statistiche away
+        for stat in away_stats:
+            stat_type = stat.get("type", "").lower()
+            value = stat.get("value")
+            
+            if "shots on goal" in stat_type or "shots on target" in stat_type:
+                try:
+                    stats_dict['away_shots_on_target'] = int(value) if value else 0
+                except:
+                    pass
+            elif "total shots" in stat_type or "shots total" in stat_type or stat_type == "shots":
+                try:
+                    stats_dict['away_total_shots'] = int(value) if value else 0
+                except:
+                    pass
+            elif "ball possession" in stat_type or stat_type == "possession":
+                try:
+                    if isinstance(value, str):
+                        stats_dict['away_possession'] = float(value.replace("%", "").strip())
+                    else:
+                        stats_dict['away_possession'] = float(value) if value else None
+                except:
+                    pass
+            elif "expected goals" in stat_type or stat_type == "xg":
+                try:
+                    stats_dict['away_xg'] = float(value) if value else 0.0
+                except:
+                    pass
+            elif "dangerous attacks" in stat_type or stat_type == "attacks":
+                try:
+                    stats_dict['away_dangerous_attacks'] = int(value) if value else 0
+                except:
+                    pass
+            elif "corner kicks" in stat_type or stat_type == "corners":
+                try:
+                    stats_dict['away_corners'] = int(value) if value else 0
+                except:
+                    pass
+            elif "yellow cards" in stat_type or stat_type == "yellow":
+                try:
+                    stats_dict['away_yellow_cards'] = int(value) if value else 0
+                except:
+                    pass
+            elif "red cards" in stat_type or stat_type == "red":
+                try:
+                    stats_dict['away_red_cards'] = int(value) if value else 0
+                except:
+                    pass
+            elif "fouls" in stat_type:
+                try:
+                    stats_dict['away_fouls'] = int(value) if value else 0
+                except:
+                    pass
+        
+        return stats_dict
+    
+    def _is_service_active(self) -> bool:
+        """
+        Verifica se il servizio è attivo (non sospeso su Render).
+        
+        Controlla se il processo può continuare a funzionare.
+        Se Render sospende il servizio, questo controllo dovrebbe rilevarlo.
+        
+        Strategia:
+        1. Controlla flag self.running
+        2. Controlla variabile d'ambiente Render (se disponibile)
+        3. Verifica se il processo può ancora eseguire operazioni base
+        """
+        # Controlla se self.running è False (fermato manualmente)
+        if not self.running:
+            return False
+        
+        # Controlla variabile d'ambiente Render (se disponibile)
+        import os
+        render_service_status = os.getenv("RENDER_SERVICE_STATUS", "").lower()
+        if render_service_status == "suspended":
+            logger.warning("⚠️  Render service is suspended (env var), stopping operations")
+            self.running = False
+            return False
+        
+        # Controlla se c'è un file di stato che indica sospensione
+        # (utile se Render crea un file quando sospende)
+        try:
+            status_file = os.getenv("RENDER_STATUS_FILE", "/tmp/render_status")
+            if os.path.exists(status_file):
+                with open(status_file, 'r') as f:
+                    status = f.read().strip().lower()
+                    if status == "suspended":
+                        logger.warning("⚠️  Render service is suspended (status file), stopping operations")
+                        self.running = False
+                        return False
+        except:
+            pass  # Ignora errori di lettura file
+        
+        # Verifica se il processo può ancora eseguire operazioni base
+        # (se Render sospende, alcune operazioni potrebbero fallire)
+        try:
+            # Test semplice: verifica se possiamo accedere a una variabile d'ambiente
+            # Se il processo è completamente sospeso, anche questo potrebbe fallire
+            _ = os.getenv("PATH")
+        except:
+            logger.warning("⚠️  Processo non può eseguire operazioni base, potrebbe essere sospeso")
+            return False
+        
+        return True
     
     def _get_mock_matches(self) -> List[Dict]:
         """Mock matches per testing"""
@@ -1147,6 +1784,7 @@ class Automation24H:
             match_id = str(match.get('id', ''))
             
             # Prepara match_data (dati base partita)
+            # 🔧 FIX: Passa TUTTE le quote disponibili, incluse HT/FT e tutti i threshold
             match_data = {
                 'home': match.get('home', ''),
                 'away': match.get('away', ''),
@@ -1154,31 +1792,47 @@ class Automation24H:
                 'odds_1': match.get('odds_1'),
                 'odds_x': match.get('odds_x'),
                 'odds_2': match.get('odds_2'),
-                # 🆕 NUOVO: Quote Over/Under e BTTS da API-SPORTS
-                'odds_over_0_5': match.get('odds_over_0_5'),
-                'odds_under_0_5': match.get('odds_under_0_5'),
-                'odds_over_1_5': match.get('odds_over_1_5'),
-                'odds_under_1_5': match.get('odds_under_1_5'),
-                'odds_over_2_5': match.get('odds_over_2_5'),
-                'odds_under_2_5': match.get('odds_under_2_5'),
-                'odds_over_3_5': match.get('odds_over_3_5'),
-                'odds_under_3_5': match.get('odds_under_3_5'),
-                'odds_btts_yes': match.get('odds_btts_yes'),
-                'odds_btts_no': match.get('odds_btts_no'),
-                # 🆕 NUOVO: Quote Double Chance, DNB, HT/FT, Odd/Even
+                # 🆕 NUOVO: Quote Over/Under FT (tutti i threshold disponibili)
+                'odds_over_0_5': match.get('over_0.5'),
+                'odds_under_0_5': match.get('under_0.5'),
+                'odds_over_1_5': match.get('over_1.5'),
+                'odds_under_1_5': match.get('under_1.5'),
+                'odds_over_2_5': match.get('over_2.5'),
+                'odds_under_2_5': match.get('under_2.5'),
+                'odds_over_3_5': match.get('over_3.5'),
+                'odds_under_3_5': match.get('under_3.5'),
+                'odds_over_4_5': match.get('over_4.5'),
+                'odds_under_4_5': match.get('under_4.5'),
+                # 🆕 NUOVO: Quote Over/Under HT (tutti i threshold disponibili)
+                'odds_over_0_5_ht': match.get('over_0.5_ht'),
+                'odds_under_0_5_ht': match.get('under_0.5_ht'),
+                'odds_over_1_5_ht': match.get('over_1.5_ht'),
+                'odds_under_1_5_ht': match.get('under_1.5_ht'),
+                'odds_over_2_5_ht': match.get('over_2.5_ht'),
+                'odds_under_2_5_ht': match.get('under_2.5_ht'),
+                # 🆕 NUOVO: Quote First Half Goals (tutti i threshold)
+                'odds_over_0_5_1h': match.get('over_0.5_1h'),
+                'odds_under_0_5_1h': match.get('under_0.5_1h'),
+                'odds_over_1_5_1h': match.get('over_1.5_1h'),
+                'odds_under_1_5_1h': match.get('under_1.5_1h'),
+                # 🆕 NUOVO: Quote Second Half Goals (tutti i threshold)
+                'odds_over_0_5_2h': match.get('over_0.5_2h'),
+                'odds_under_0_5_2h': match.get('under_0.5_2h'),
+                'odds_over_1_5_2h': match.get('over_1.5_2h'),
+                'odds_under_1_5_2h': match.get('under_1.5_2h'),
+                # BTTS
+                'odds_btts_yes': match.get('btts_yes'),
+                'odds_btts_no': match.get('btts_no'),
+                'odds_btts_yes_ht': match.get('btts_yes_ht'),
+                'odds_btts_no_ht': match.get('btts_no_ht'),
+                # 🆕 NUOVO: Quote Double Chance, DNB
                 'odds_1x': match.get('odds_1x'),
                 'odds_x2': match.get('odds_x2'),
                 'odds_12': match.get('odds_12'),
-                'odds_dnb_home': match.get('odds_dnb_home'),
-                'odds_dnb_away': match.get('odds_dnb_away'),
-                'odds_ht_1': match.get('odds_ht_1'),
-                'odds_ht_x': match.get('odds_ht_x'),
-                'odds_ht_2': match.get('odds_ht_2'),
-                'odds_2h_1': match.get('odds_2h_1'),
-                'odds_2h_x': match.get('odds_2h_x'),
-                'odds_2h_2': match.get('odds_2h_2'),
-                'odds_goals_odd': match.get('odds_goals_odd'),
-                'odds_goals_even': match.get('odds_goals_even'),
+                'odds_dnb_home': match.get('dnb_home'),
+                'odds_dnb_away': match.get('dnb_away'),
+                # 🆕 NUOVO: Passa anche all_odds per accesso completo a tutti i mercati
+                'all_odds': match.get('all_odds', {}),
             }
             
             # Prepara live_data (dati live partita)
@@ -1267,10 +1921,18 @@ class Automation24H:
             logger.info(f"   xg_home: {live_data.get('xg_home', 0.0)}, xg_away: {live_data.get('xg_away', 0.0)}")
             logger.info(f"   match.get('home_shots_on_target'): {match.get('home_shots_on_target', 'NOT_FOUND')}")
             logger.info(f"   match.get('away_shots_on_target'): {match.get('away_shots_on_target', 'NOT_FOUND')}")
-            logger.info(f"   score_home: {live_data.get('score_home', 'N/A')}")
-            logger.info(f"   score_away: {live_data.get('score_away', 'N/A')}")
+            logger.info(f"   score_home: {live_data.get('score_home', 'N/A')}, score_away: {live_data.get('score_away', 'N/A')}")
             logger.info(f"   minute: {live_data.get('minute', 'N/A')}")
-            logger.info(f"   shots_on_target_home: {live_data.get('shots_on_target_home', 'N/A')}")
+            # Verifica se le statistiche sono presenti
+            has_stats = any([
+                live_data.get('shots_on_target_home', 0) > 0,
+                live_data.get('shots_on_target_away', 0) > 0,
+                live_data.get('shots_home', 0) > 0,
+                live_data.get('shots_away', 0) > 0,
+                live_data.get('xg_home', 0.0) > 0,
+                live_data.get('xg_away', 0.0) > 0
+            ])
+            logger.info(f"   Statistiche presenti: {has_stats}")
             
             # Analizza con LiveBettingAdvisor
             opportunities = self.live_betting_advisor.analyze_live_match(
@@ -1496,6 +2158,8 @@ class Automation24H:
             
             # Salta opportunità senza statistiche live significative
             if hasattr(live_opp, "has_live_stats") and not live_opp.has_live_stats:
+                logger.warning(f"⚠️  Opportunità {opp_dict.get('match_id', '?')}/{live_opp.market} saltata in _select_best_opportunities: has_live_stats=False")
+                logger.warning(f"   Statistiche disponibili nel match: shots_on_target_home={match_data.get('home_shots_on_target', 'N/A')}, shots_home={match_data.get('home_total_shots', 'N/A')}")
                 continue
             
             valid_opportunities.append(opp_dict)
@@ -1916,7 +2580,10 @@ class Automation24H:
         # NOTA: Questo controllo è ridondante ora che filtriamo in _select_best_opportunities,
         # ma lo manteniamo come sicurezza aggiuntiva
         if hasattr(live_opp, "has_live_stats") and not live_opp.has_live_stats:
-            logger.debug(f"⏭️  Opportunità {match_id}/{live_opp.market} saltata: nessuna statistica live disponibile (dovrebbe essere già filtrata)")
+            logger.warning(f"⚠️  Opportunità {match_id}/{live_opp.market} saltata in _notify_opportunity: has_live_stats=False")
+            match_data = opportunity.get('match_data', {})
+            logger.warning(f"   Statistiche disponibili nel match: shots_on_target_home={match_data.get('home_shots_on_target', 'N/A')}, shots_home={match_data.get('home_total_shots', 'N/A')}")
+            logger.warning(f"   live_opp.has_live_stats={live_opp.has_live_stats}, live_opp.match_stats={getattr(live_opp, 'match_stats', 'N/A')}")
             return
         
         # 🆕 AI SIGNAL QUALITY GATE: Validazione finale qualità segnale
@@ -2138,15 +2805,9 @@ class Automation24H:
         # 🔧 FIX: Definisci 'now' prima di usarlo
         now = datetime.now()
         
-        # 🆕 FIX: Limite globale 20 minuti tra qualsiasi notifica (CONTROLLO PRIMA DI TUTTO)
-        if hasattr(self, 'last_global_notification_time') and self.last_global_notification_time:
-            time_since_global = (now - self.last_global_notification_time).total_seconds() / 60
-            if time_since_global < 20:  # Blocco globale 20 minuti
-                logger.info(f"⏭️  Notifica globale bloccata: ultima notifica {time_since_global:.1f} minuti fa (minimo 20 minuti richiesti) - Match: {match_id}, Market: {market}")
-                logger.debug(f"   Timestamp ultima notifica: {self.last_global_notification_time}, Ora attuale: {now}")
-                return
-        else:
-            logger.debug(f"ℹ️  Nessun timestamp globale precedente, prima notifica consentita - Match: {match_id}, Market: {market}")
+        # 🔧 FIX: Rimosso controllo globale troppo restrittivo - ora usa solo controlli per partita/mercato
+        # Il controllo globale di 10 minuti bloccava TUTTE le notifiche, anche per partite diverse
+        # Ora usiamo solo controlli più specifici (per partita, mercato, opportunità)
         
         # 🆕 NUOVO: Blocca partita per 15 minuti (max 1 notifica ogni 15 minuti per partita)
         if match_id in self.notified_matches_timestamps:
@@ -2224,20 +2885,13 @@ class Automation24H:
                         logger.info(f"      ... (altre {remaining_lines} righe)")
                     
                     # Usa _send_message (metodo privato ma usato in altri punti del codice)
-                    # 🆕 FIX: Aggiorna timestamp globale PRIMA di inviare (così il limite funziona anche se la notifica fallisce)
-                    now_notification = datetime.now()
-                    old_timestamp = self.last_global_notification_time
-                    self.last_global_notification_time = now_notification  # 🆕 Aggiorna timestamp globale
-                    self._save_last_global_notification_time()  # 🆕 Salva in modo persistente
-                    logger.info(f"⏰ Timestamp globale aggiornato: {old_timestamp} -> {now_notification} (Match: {match_id}, Market: {market})")
-                    
+                    # 🔧 FIX: Rimosso aggiornamento timestamp globale (non più necessario)
                     success = self.notifier._send_message(message, parse_mode="HTML")
                     if success:
                         self.notified_opportunities.add(opp_key)
                         self.notified_opportunities_timestamps[opp_key] = datetime.now()
                         self.notified_matches_timestamps[match_id] = datetime.now()  # Traccia anche per partita
                         logger.info(f"✅ Notifica inviata con successo: {opp_key}")
-                        logger.info(f"✅ Notifica inviata e timestamp globale aggiornato: {self.last_global_notification_time}")
                         
                         # 🔧 OPZIONE 4: Traccia mercato suggerito per questa partita
                         if match_id not in self.match_markets_history:
@@ -2306,8 +2960,7 @@ class Automation24H:
                         # Se non supporta additional_content, invia normale e poi invia enhanced separatamente
                         self.automated_reports.send_daily_report()
                         if enhanced_report and self.notifier:
-                            # 🎯 Usa metodo sistema con limite 1 ora
-                            self._send_system_notification(f"📊 AI Insights Daily:\n{enhanced_report}", min_interval_minutes=60)
+                            self.notifier.send_message(f"📊 AI Insights Daily:\n{enhanced_report}")
                     self.last_daily_report = today
                     logger.info("✅ Daily report sent (with AI insights)")
                 except Exception as e:
@@ -2327,8 +2980,7 @@ class Automation24H:
                             # Se non supporta additional_content, invia normale e poi invia enhanced separatamente
                             self.automated_reports.send_weekly_report()
                             if enhanced_report and self.notifier:
-                                # 🎯 Usa metodo sistema con limite 1 ora
-                                self._send_system_notification(f"📊 AI Insights Weekly:\n{enhanced_report}", min_interval_minutes=60)
+                                self.notifier.send_message(f"📊 AI Insights Weekly:\n{enhanced_report}")
                         self.last_weekly_report = datetime.now()
                         logger.info("✅ Weekly report sent (with AI insights)")
                     except Exception as e:
@@ -2643,15 +3295,13 @@ class Automation24H:
                 if news.importance in ['HIGH', 'CRITICAL']
             ]
             
-            # Invia alert per notizie importanti (sistema, limite 1 ora)
+            # Invia alert per notizie importanti
             for news in important_news:
                 if self.notifier:
                     message = self.news_analyzer.format_news_alert(news)
                     try:
-                        # 🎯 Usa metodo sistema con limite 1 ora
-                        sent = self._send_system_notification(message, min_interval_minutes=60)
-                        if sent:
-                            logger.info(f"📰 News importante notificata: {news.title[:50]}")
+                        self.notifier._send_message(message)
+                        logger.info(f"📰 News importante notificata: {news.title[:50]}")
                     except Exception as e:
                         logger.debug(f"Failed to send news alert notification: {e}")
         except Exception as e:
@@ -2665,127 +3315,65 @@ class Automation24H:
         # Forza uscita immediata (non aspetta sleep)
         logger.info("✅ Shutdown signal processed, exiting...")
     
-    def _get_state_file_path(self) -> Path:
-        """
-        Determina il path del file di stato UNA volta sola per evitare inconsistenze.
-
-        PRIORITÀ (con migrazione automatica):
-        1. Se file esiste in ./automation_state.json E /data esiste → migra a /data
-        2. Se /data esiste → usa /data/automation_state.json
-        3. Altrimenti → usa ./automation_state.json
-
-        Returns:
-            Path fisso da usare sempre per salvataggio/caricamento
-        """
-        local_path = Path("automation_state.json")
-        persistent_path = Path("/data/automation_state.json")
-
-        # Controlla se /data esiste (Render persistent disk)
-        if os.path.exists('/data') and os.path.isdir('/data'):
-            # Migrazione: se file esiste in locale ma non in /data, spostalo
-            if local_path.exists() and not persistent_path.exists():
-                try:
-                    import shutil
-                    shutil.copy2(local_path, persistent_path)
-                    logger.info(f"🔄 Migrato file stato da {local_path} a {persistent_path}")
-                    # Rimuovi vecchio file
-                    local_path.unlink()
-                except Exception as e:
-                    logger.warning(f"⚠️  Errore migrazione file stato: {e}")
-
-            logger.info(f"📁 Path file stato: {persistent_path} (persistent disk)")
-            return persistent_path
-        else:
-            logger.debug(f"📄 Path file stato: {local_path} (directory corrente)")
-            return local_path
-
     def _load_last_global_notification_time(self):
-        """Carica ultimo timestamp notifica globale da file JSON persistente"""
+        """Carica ultimo timestamp notifica globale da database persistente"""
         try:
-            # 🔧 FIX: Usa path fisso determinato all'init
-            state_file = self.state_file_path
-
-            if state_file.exists():
-                with open(state_file, 'r') as f:
-                    state = json.load(f)
-                    timestamp_str = state.get('last_global_notification_time')
-                    if timestamp_str:
-                        self.last_global_notification_time = datetime.fromisoformat(timestamp_str)
-                        logger.info(f"📥 Caricato timestamp globale da {state_file}: {self.last_global_notification_time}")
-                    else:
-                        logger.debug("ℹ️  Nessun timestamp trovato nel file di stato")
-            else:
-                logger.debug(f"ℹ️  File di stato non trovato: {state_file}")
+            if hasattr(self, 'signal_quality_learner') and self.signal_quality_learner:
+                conn = sqlite3.connect(self.signal_quality_learner.db_path)
+                cursor = conn.cursor()
+                
+                # Crea tabella se non esiste
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS automation_state (
+                        key TEXT PRIMARY KEY,
+                        value TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Carica timestamp
+                cursor.execute("SELECT value FROM automation_state WHERE key = 'last_global_notification_time'")
+                result = cursor.fetchone()
+                conn.close()
+                
+                if result and result[0]:
+                    timestamp_str = result[0]
+                    self.last_global_notification_time = datetime.fromisoformat(timestamp_str)
+                    logger.info(f"📥 Caricato timestamp globale persistente da database: {self.last_global_notification_time}")
+                else:
+                    logger.debug("ℹ️  Nessun timestamp globale persistente trovato nel database")
         except Exception as e:
             logger.debug(f"⚠️  Errore caricamento stato persistente: {e}")
             self.last_global_notification_time = None
     
     def _save_last_global_notification_time(self):
-        """Salva ultimo timestamp notifica globale in file JSON persistente"""
+        """Salva ultimo timestamp notifica globale in database persistente"""
         try:
-            if self.last_global_notification_time:
-                # 🔧 FIX: Usa path fisso determinato all'init
-                state_file = self.state_file_path
-
-                # Carica stato esistente (se presente)
-                state = {}
-                if state_file.exists():
-                    try:
-                        with open(state_file, 'r') as f:
-                            state = json.load(f)
-                    except:
-                        pass  # Se fallisce, usa dict vuoto
-
-                # Aggiorna timestamp
-                state['last_global_notification_time'] = self.last_global_notification_time.isoformat()
-                state['updated_at'] = datetime.now().isoformat()
-
-                # Salva
-                with open(state_file, 'w') as f:
-                    json.dump(state, f, indent=2)
-
-                logger.debug(f"💾 Timestamp globale salvato in {state_file}: {self.last_global_notification_time}")
+            if hasattr(self, 'signal_quality_learner') and self.signal_quality_learner and self.last_global_notification_time:
+                conn = sqlite3.connect(self.signal_quality_learner.db_path)
+                cursor = conn.cursor()
+                
+                # Crea tabella se non esiste
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS automation_state (
+                        key TEXT PRIMARY KEY,
+                        value TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Salva timestamp
+                timestamp_str = self.last_global_notification_time.isoformat()
+                cursor.execute("""
+                    INSERT OR REPLACE INTO automation_state (key, value, updated_at)
+                    VALUES ('last_global_notification_time', ?, CURRENT_TIMESTAMP)
+                """, (timestamp_str,))
+                conn.commit()
+                conn.close()
+                logger.debug(f"💾 Timestamp globale salvato nel database: {self.last_global_notification_time}")
         except Exception as e:
             logger.debug(f"⚠️  Errore salvataggio stato persistente: {e}")
-
-    def _send_system_notification(self, message: str, parse_mode: str = "HTML", min_interval_minutes: int = 60) -> bool:
-        """
-        🎯 NUOVO: Invia notifica di SISTEMA (stats, reports, progress) con controllo limite temporale.
-
-        Args:
-            message: Messaggio da inviare
-            parse_mode: Formato messaggio (default: HTML)
-            min_interval_minutes: Minuti minimi tra notifiche sistema (default: 60 = 1 ora)
-
-        Returns:
-            True se inviata, False se bloccata da limite temporale
-        """
-        if not self.notifier:
-            return False
-
-        now = datetime.now()
-
-        # Controlla limite temporale
-        if self.last_system_notification_time:
-            minutes_since = (now - self.last_system_notification_time).total_seconds() / 60
-            if minutes_since < min_interval_minutes:
-                logger.debug(
-                    f"⏭️  Notifica sistema bloccata: ultima notifica sistema {minutes_since:.1f} min fa "
-                    f"(minimo {min_interval_minutes} min richiesti)"
-                )
-                return False
-
-        # Invia notifica
-        try:
-            success = self.notifier._send_message(message, parse_mode=parse_mode)
-            if success:
-                self.last_system_notification_time = now
-                logger.info(f"✅ Notifica sistema inviata (prossima tra {min_interval_minutes} min)")
-            return success
-        except Exception as e:
-            logger.error(f"❌ Errore invio notifica sistema: {e}")
-            return False
-
+    
     def stop(self):
         """Ferma sistema"""
         logger.info("🛑 Stopping Automation24H system...")
