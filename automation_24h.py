@@ -2469,7 +2469,8 @@ class Automation24H:
             
             # Salta opportunità senza statistiche live significative
             if hasattr(live_opp, "has_live_stats") and not live_opp.has_live_stats:
-                logger.warning(f"⚠️  Opportunità {opp_dict.get('match_id', '?')}/{live_opp.market} saltata in _select_best_opportunities: has_live_stats=False")
+                market_name = getattr(live_opp, 'market', opp_dict.get('market', 'unknown'))
+                logger.warning(f"⚠️  Opportunità {opp_dict.get('match_id', '?')}/{market_name} saltata in _select_best_opportunities: has_live_stats=False")
                 logger.warning(f"   Statistiche disponibili nel match: shots_on_target_home={match_data.get('home_shots_on_target', 'N/A')}, shots_home={match_data.get('home_total_shots', 'N/A')}")
                 continue
             
@@ -2496,8 +2497,15 @@ class Automation24H:
                 continue
             
             match_id = opp_dict.get('match_id', 'unknown')
-            market = getattr(live_opp, 'market', 'unknown')
+            market = getattr(live_opp, 'market', opp_dict.get('market', 'unknown'))
             market_type = market.split('_')[0] if '_' in market else market
+            
+            # 🔧 FIX: Estrai stats da live_opp.match_stats o opp_dict
+            stats = {}
+            if hasattr(live_opp, 'match_stats') and live_opp.match_stats:
+                stats = live_opp.match_stats if isinstance(live_opp.match_stats, dict) else {}
+            elif 'match_stats' in opp_dict:
+                stats = opp_dict['match_stats'] if isinstance(opp_dict['match_stats'], dict) else {}
             
             # 1. 🆕 MIGLIORATO: Calcola EV e Confidence con normalizzazione intelligente
             ev = getattr(live_opp, 'ev', 0.0)
@@ -2891,7 +2899,8 @@ class Automation24H:
         # NOTA: Questo controllo è ridondante ora che filtriamo in _select_best_opportunities,
         # ma lo manteniamo come sicurezza aggiuntiva
         if hasattr(live_opp, "has_live_stats") and not live_opp.has_live_stats:
-            logger.warning(f"⚠️  Opportunità {match_id}/{live_opp.market} saltata in _notify_opportunity: has_live_stats=False")
+            market_name = getattr(live_opp, 'market', opportunity.get('market', 'unknown'))
+            logger.warning(f"⚠️  Opportunità {match_id}/{market_name} saltata in _notify_opportunity: has_live_stats=False")
             match_data = opportunity.get('match_data', {})
             logger.warning(f"   Statistiche disponibili nel match: shots_on_target_home={match_data.get('home_shots_on_target', 'N/A')}, shots_home={match_data.get('home_total_shots', 'N/A')}")
             logger.warning(f"   live_opp.has_live_stats={live_opp.has_live_stats}, live_opp.match_stats={getattr(live_opp, 'match_stats', 'N/A')}")
@@ -2899,10 +2908,11 @@ class Automation24H:
         
         # 🆕 AI SIGNAL QUALITY GATE: Validazione finale qualità segnale
         # 🆕 Ottimizzazione: Usa cache se disponibile per evitare doppio calcolo
-        market = live_opp.market
+        market = getattr(live_opp, 'market', opportunity.get('market', 'unknown'))
         minute = 0
-        if live_opp.match_stats:
-            minute = live_opp.match_stats.get('minute', 0)
+        if hasattr(live_opp, 'match_stats') and live_opp.match_stats:
+            if isinstance(live_opp.match_stats, dict):
+                minute = live_opp.match_stats.get('minute', 0)
         minute_rounded = (minute // 5) * 5
         opp_key = f"{match_id}_{market}_{minute_rounded}"
         
