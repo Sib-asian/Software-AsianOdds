@@ -498,8 +498,11 @@ class LiveBettingAdvisor:
             before_obvious_filter = len(opportunities)
             opportunities = self._filter_obvious_opportunities(opportunities, live_data)
             after_obvious_filter = len(opportunities)
-            if before_obvious_filter > 0 and before_obvious_filter > after_obvious_filter:
-                logger.debug(f"🔍 {match_id}: {before_obvious_filter} opportunità prima filtro ovvie, {after_obvious_filter} dopo")
+            if before_obvious_filter > 0:
+                if before_obvious_filter > after_obvious_filter:
+                    logger.info(f"📊 Filtro opportunità ovvie per {match_id}: {before_obvious_filter} opportunità, {before_obvious_filter - after_obvious_filter} ovvie rimosse, {after_obvious_filter} rimaste")
+                else:
+                    logger.info(f"📊 {match_id}: {before_obvious_filter} opportunità generate, nessuna ovvia rimossa")
             
             opportunities = self._apply_market_specific_rules(opportunities, match_data, live_data)
             opportunities = self._apply_market_min_confidence(opportunities)
