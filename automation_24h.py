@@ -1101,6 +1101,12 @@ class Automation24H:
                     score_home = score_data.get("fulltime", {}).get("home") or score_data.get("halftime", {}).get("home") or 0
                     score_away = score_data.get("fulltime", {}).get("away") or score_data.get("halftime", {}).get("away") or 0
                     
+                    # 🔧 DEBUG: Log RAW fixture_data per capire struttura completa
+                    logger.info(f"🔍 RAW fixture_data per {home_team} vs {away_team}:")
+                    logger.info(f"   fixture_data.keys(): {list(fixture_data.keys())}")
+                    logger.info(f"   fixture_data['status']: {fixture_data.get('status', 'NOT_FOUND')}")
+                    logger.info(f"   fixture_data['date']: {fixture_data.get('date', 'NOT_FOUND')}")
+                    
                     # 🔧 FIX: Estrai minuto da status - prova diversi campi
                     status_data = fixture_data.get("status", {})
                     minute = status_data.get("elapsed") or status_data.get("elapsed_time") or 0
@@ -1109,7 +1115,8 @@ class Automation24H:
                     
                     # 🔧 DEBUG: Log dettagliato status (INFO per vedere nei log di produzione)
                     logger.info(f"🔍 Status per {home_team} vs {away_team}: short={status_short}, long={status_long}, elapsed={status_data.get('elapsed')}, elapsed_time={status_data.get('elapsed_time')}, minute_iniziale={minute}")
-                    logger.info(f"   fixture_data['status'] completo: {status_data}")
+                    logger.info(f"   status_data completo: {status_data}")
+                    logger.info(f"   status_data.keys(): {list(status_data.keys()) if isinstance(status_data, dict) else 'NOT_DICT'}")
                     
                     # 🔧 FIX: Se minute è 0 ma status è LIVE, calcola dalla data
                     if minute == 0 and status_short in ["1H", "HT", "2H", "ET", "P", "LIVE"]:
@@ -2087,18 +2094,31 @@ class Automation24H:
             # Estrai minute e status
             minute = match.get('minute', 0)
             match_status = match.get('status', 'LIVE')
+            
+            # 🔧 DEBUG: Log minuto estratto da match
+            logger.info(f"🔍 Minuto estratto da match per {match.get('home', '?')} vs {match.get('away', '?')}:")
+            logger.info(f"   match.get('minute'): {match.get('minute')}")
+            logger.info(f"   match.get('status'): {match.get('status')}")
+            logger.info(f"   match.get('match_status'): {match.get('match_status')}")
+            
             if minute is None:
                 minute = 0
             elif isinstance(minute, str):
                 try:
                     minute = int(minute.replace("'", "").replace("+", "").split()[0])
+                    logger.info(f"   Minuto convertito da stringa: {minute}'")
                 except:
                     minute = 0
+                    logger.warning(f"   ⚠️ Errore conversione minuto da stringa: {match.get('minute')}")
             elif not isinstance(minute, int):
                 try:
                     minute = int(minute)
+                    logger.info(f"   Minuto convertito da numero: {minute}'")
                 except:
                     minute = 0
+                    logger.warning(f"   ⚠️ Errore conversione minuto da numero: {match.get('minute')}")
+            
+            logger.info(f"   Minuto finale dopo conversione: {minute}'")
             
             # 🔧 FILTRO: Escludi partite finite prima di analizzarle
             if minute > 90 or (match_status and match_status.upper() in ["FINISHED", "FT", "AET", "PEN"]):
