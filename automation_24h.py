@@ -989,47 +989,77 @@ class Automation24H:
                     # 🔧 FIX: Unificato controllo e fetch statistiche in una sola chiamata
                     # Recupera statistiche direttamente (se disponibili) invece di fare 2 chiamate
                     # IMPORTANTE: Fa chiamata API solo per partite LIVE di oggi
+                    logger.debug(f"🔍 Verificando statistiche per {home_team} vs {away_team} (fixture {fixture_id}, status: {status_short})...")
                     statistics = self._fetch_statistics_from_api_football(fixture_id, api_key, base_url)
                     if not statistics:
                         skipped_no_stats += 1
-                        logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} (status: {status_short}) senza statistiche disponibili, skip estrazione quote")
+                        logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} (status: {status_short}) senza statistiche disponibili, skip")
                         continue  # Salta questa partita, non estrarre quote
                     logger.info(f"✅ Statistiche disponibili per {home_team} vs {away_team} (status: {status_short}), procedo con estrazione quote")
                     
                     # 🔧 FIX: Per partite LIVE, dobbiamo fare una chiamata separata per le quote
                     # L'endpoint /fixtures non include sempre le quote per partite LIVE, dobbiamo richiederle
+                    logger.debug(f"🔍 Verificando quote per {home_team} vs {away_team} (fixture {fixture_id})...")
+                    logger.debug(f"   Quote iniziali da /fixtures: {len(odds_data) if odds_data else 0} bookmaker")
+                    
                     if not odds_data or len(odds_data) == 0:
                         # Prova a recuperare le quote per questa partita LIVE
+                        logger.debug(f"   Nessuna quota in /fixtures, provo a recuperare con /odds?fixture={fixture_id}")
                         try:
                             odds_url = f"{base_url}/odds?fixture={fixture_id}"
                             odds_req = urllib.request.Request(odds_url, headers=headers)
                             with urllib.request.urlopen(odds_req, timeout=10) as odds_response:
                                 odds_data_response = json.loads(odds_response.read().decode())
+                                
+                                # 🔧 DEBUG: Log struttura risposta
+                                logger.debug(f"   Risposta /odds: {json.dumps(odds_data_response, indent=2)[:500]}")
+                                
                                 if odds_data_response.get("response") and len(odds_data_response["response"]) > 0:
-                                    # La risposta è una lista di bookmaker, ognuno con le sue quote
-                                    # Prendi tutti i bookmaker disponibili
+                                    # La struttura della risposta può variare
+                                    # Prova diverse strutture possibili
                                     odds_data = []
-                                    for bookmaker_data in odds_data_response["response"]:
-                                        if "bookmakers" in bookmaker_data:
-                                            odds_data.extend(bookmaker_data["bookmakers"])
+                                    
+                                    # Struttura 1: response è lista di bookmaker
+                                    first_item = odds_data_response["response"][0]
+                                    if isinstance(first_item, dict):
+                                        if "bookmakers" in first_item:
+                                            # Struttura: [{"bookmakers": [...]}]
+                                            odds_data = first_item["bookmakers"]
+                                        elif "bookmaker" in first_item:
+                                            # Struttura: [{"bookmaker": {...}, "bets": [...]}]
+                                            odds_data = [first_item]
                                         else:
-                                            # Se la struttura è diversa, prova a usare direttamente
-                                            odds_data.append(bookmaker_data)
+                                            # Struttura: [{"id": ..., "name": ..., "bets": [...]}]
+                                            odds_data = odds_data_response["response"]
                                     
                                     if odds_data:
                                         self.api_usage_today += 1  # Conta chiamata API per quote
                                         logger.info(f"✅ Quote recuperate per {home_team} vs {away_team} (fixture {fixture_id}, {len(odds_data)} bookmaker)")
                                     else:
-                                        logger.debug(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (struttura risposta inattesa)")
+                                        logger.warning(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (struttura risposta inattesa: {list(first_item.keys()) if isinstance(first_item, dict) else 'non-dict'})")
                                 else:
-                                    logger.debug(f"⚠️  Nessuna quota disponibile per fixture {fixture_id}")
+                                    logger.debug(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (response vuoto o None)")
                         except urllib.error.HTTPError as e:
-                            logger.debug(f"⚠️  HTTP error recupero quote per fixture {fixture_id}: {e.code} - {e.reason}")
+                            error_body = ""
+                            try:
+                                error_body = e.read().decode()[:200]
+                            except:
+                                pass
+                            logger.warning(f"⚠️  HTTP error recupero quote per fixture {fixture_id}: {e.code} - {e.reason} - {error_body}")
                         except Exception as e:
-                            logger.debug(f"⚠️  Errore recupero quote per fixture {fixture_id}: {e}")
+                            logger.warning(f"⚠️  Errore recupero quote per fixture {fixture_id}: {e}")
+                    else:
+                        logger.debug(f"✅ Quote già presenti in /fixtures per {home_team} vs {away_team} ({len(odds_data)} bookmaker)")
                     
                     # Estrai TUTTE le quote disponibili
+                    logger.debug(f"🔍 Estraendo quote per {home_team} vs {away_team} (fixture {fixture_id})...")
                     all_odds = self._extract_all_odds_from_api_football(odds_data)
+                    
+                    # 🔧 DEBUG: Log dettagliato quote estratte
+                    logger.debug(f"   Quote 1X2: home={all_odds.get('match_winner', {}).get('home')}, draw={all_odds.get('match_winner', {}).get('draw')}, away={all_odds.get('match_winner', {}).get('away')}")
+                    logger.debug(f"   Over/Under FT: {len(all_odds.get('over_under', {}))} thresholds")
+                    logger.debug(f"   Over/Under HT: {len(all_odds.get('over_under_ht', {}))} thresholds")
+                    logger.debug(f"   BTTS: {all_odds.get('btts', {}).get('yes')} (yes) / {all_odds.get('btts', {}).get('no')} (no)")
                     
                     # Log quanti mercati sono stati trovati
                     markets_found = []
@@ -1058,6 +1088,8 @@ class Automation24H:
                     
                     if markets_found:
                         logger.info(f"📊 Mercati trovati per {home_team} vs {away_team}: {', '.join(markets_found)}")
+                    else:
+                        logger.warning(f"⚠️  Nessun mercato trovato per {home_team} vs {away_team} (fixture {fixture_id})")
                     
                     # Estrai score e minute dalla fixture
                     score_data = fixture_data.get("score", {})
@@ -1140,20 +1172,35 @@ class Automation24H:
                         match.update(stats_dict)
                         logger.debug(f"✅ Statistiche aggiunte per {home_team} vs {away_team}")
                     
-                    # 🔧 FIX: Per partite LIVE, accetta anche se non ha tutte le quote 1X2
-                    # Le quote LIVE possono essere incomplete, ma se ha statistiche e almeno alcune quote, va bene
-                    has_any_odds = (
-                        match.get('odds_1') or match.get('odds_x') or match.get('odds_2') or
-                        all_odds.get('over_under') or all_odds.get('over_under_ht') or
-                        all_odds.get('btts', {}).get('yes') or all_odds.get('double_chance', {}).get('1x')
+                    # 🔧 FIX: Controllo quote meno restrittivo - accetta se ha almeno 2 quote 1X2 su 3
+                    # O se ha altre quote disponibili (over/under, BTTS, ecc.)
+                    odds_1 = match.get('odds_1')
+                    odds_x = match.get('odds_x')
+                    odds_2 = match.get('odds_2')
+                    has_1x2_complete = odds_1 and odds_x and odds_2
+                    has_1x2_partial = sum([bool(odds_1), bool(odds_x), bool(odds_2)]) >= 2  # Almeno 2 su 3
+                    has_other_odds = (
+                        bool(all_odds.get('over_under')) or 
+                        bool(all_odds.get('over_under_ht')) or 
+                        bool(all_odds.get('btts', {}).get('yes')) or 
+                        bool(all_odds.get('double_chance', {}).get('1x'))
                     )
                     
-                    if has_any_odds:
+                    if has_1x2_complete:
                         matches.append(match)
-                        logger.debug(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e almeno alcune quote)")
+                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e quote 1X2 complete)")
+                    elif has_1x2_partial and has_other_odds:
+                        matches.append(match)
+                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche, quote 1X2 parziali e altre quote)")
+                    elif has_1x2_partial:
+                        matches.append(match)
+                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e almeno 2 quote 1X2 su 3)")
+                    elif has_other_odds:
+                        matches.append(match)
+                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e altre quote disponibili)")
                     else:
                         skipped_no_odds += 1
-                        logger.debug(f"⚠️  Match {home_team} vs {away_team} senza quote disponibili, skip")
+                        logger.warning(f"⚠️  Match {home_team} vs {away_team} senza quote sufficienti (1X2: {bool(odds_1)}/{bool(odds_x)}/{bool(odds_2)}, altre: {has_other_odds}), skip")
                 
                 except Exception as e:
                     logger.debug(f"⚠️  Error processing fixture: {e}")
