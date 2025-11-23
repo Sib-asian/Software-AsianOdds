@@ -1279,31 +1279,47 @@ class Automation24H:
                             # Se la partita è iniziata (time_diff positivo) e siamo entro 2 ore
                             if time_diff > 0 and time_diff < 120:
                                 calculated_minute = int(time_diff)
-                                # Per 1H, minimo 1 minuto
-                                if status_short == "1H":
-                                    minute = max(1, min(45, calculated_minute))  # Tra 1 e 45 per primo tempo
-                                else:
-                                    minute = calculated_minute
                                 
-                                # Usa il minuto calcolato se è maggiore di quello estratto o se quello estratto è 0
-                                if calculated_minute > minute or minute == 0:
-                                    minute = calculated_minute
-                                    logger.info(f"⏰ Minuto calcolato dalla data per {home_team} vs {away_team}: {minute}' (partita iniziata {time_diff:.1f} minuti fa)")
+                                # 🔧 FIX: Se il minuto estratto è già presente e valido, usalo come base
+                                # Altrimenti usa quello calcolato
+                                minute_extracted = minute  # Minuto estratto da status_data
+                                
+                                if status_short == "1H":
+                                    # Per 1H: usa il minuto estratto se valido (tra 1-45), altrimenti calcola
+                                    if minute_extracted > 0 and 1 <= minute_extracted <= 45:
+                                        # Minuto estratto valido, usalo
+                                        minute = minute_extracted
+                                        logger.info(f"⏰ Minuto per 1H da status_data: {minute}' (valido)")
+                                    else:
+                                        # Minuto estratto non valido o 0, calcola dalla data ma limita a 45
+                                        minute = max(1, min(45, calculated_minute))
+                                        logger.info(f"⏰ Minuto per 1H calcolato dalla data: {minute}' (limitato a 45')")
+                                else:
+                                    # Per ET, P, LIVE: usa il minuto estratto se valido, altrimenti calcola
+                                    if minute_extracted > 0:
+                                        # Se il minuto estratto è valido, usalo solo se è maggiore di quello calcolato
+                                        # (il minuto estratto potrebbe essere più recente)
+                                        minute = max(minute_extracted, calculated_minute)
+                                        logger.info(f"⏰ Minuto per {status_short}: {minute}' (estratto: {minute_extracted}', calcolato: {calculated_minute}')")
+                                    else:
+                                        # Minuto estratto non valido, usa quello calcolato
+                                        minute = calculated_minute
+                                        logger.info(f"⏰ Minuto per {status_short} calcolato dalla data: {minute}'")
                             elif time_diff < 0:
                                 # Partita non ancora iniziata - ma se status è LIVE, potrebbe essere un problema di timezone
                                 logger.warning(f"   ⚠️ Partita {home_team} vs {away_team} con status {status_short} ma time_diff negativo ({time_diff:.1f} minuti) - possibile problema timezone")
-                                if status_short == "1H":
-                                    minute = 1  # Fallback minimo per 1H
+                                if status_short == "1H" and minute == 0:
+                                    minute = 1  # Fallback minimo per 1H solo se minuto è 0
                             else:
                                 logger.info(f"   Partita {home_team} vs {away_team} iniziata più di 2 ore fa ({time_diff:.1f} minuti)")
-                                if status_short == "1H":
+                                if status_short == "1H" and minute == 0:
                                     minute = 45  # Se è 1H ma partita iniziata più di 2 ore fa, probabilmente è finita
                         except Exception as e:
                             logger.warning(f"   ⚠️ Errore calcolo minuto dalla data: {e}")
                             import traceback
                             logger.debug(f"   Traceback: {traceback.format_exc()}")
-                            if status_short == "1H":
-                                minute = 1  # Fallback minimo
+                            if status_short == "1H" and minute == 0:
+                                minute = 1  # Fallback minimo solo se minuto è 0
                     
                     # 🔧 FIX: Se ancora 0, prova a dedurlo dallo status (fallback finale)
                     if minute == 0:
