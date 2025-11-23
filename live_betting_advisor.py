@@ -626,18 +626,26 @@ class LiveBettingAdvisor:
                 # FILTRO: Mantieni solo opportunità con quality score >= 60/100
                 MIN_QUALITY_SCORE = 60.0
                 before_quality_filter = len(opportunities)
-                opportunities = [
+                opportunities_after_quality = [
                     opp for opp in opportunities
                     if opp.signal_quality_score >= MIN_QUALITY_SCORE
                 ]
-                after_quality_filter = len(opportunities)
+                after_quality_filter = len(opportunities_after_quality)
+                quality_rejected = before_quality_filter - after_quality_filter
+                opportunities = opportunities_after_quality
 
-                if before_quality_filter > after_quality_filter:
-                    filtered_count = before_quality_filter - after_quality_filter
+                if quality_rejected > 0:
                     logger.info(
-                        f"🎯 QUALITY FILTER: {filtered_count} opportunità filtrate "
-                        f"(quality score < {MIN_QUALITY_SCORE}/100)"
+                        f"📊 Filtro Quality Score: {before_quality_filter} opportunità, {quality_rejected} scartate "
+                        f"(Quality < {MIN_QUALITY_SCORE}/100), {after_quality_filter} rimaste"
                     )
+                    # Log dettagli delle opportunità scartate
+                    for opp in opportunities[:5]:  # Prime 5 scartate (ma opportunities ora contiene solo quelle che passano)
+                        if hasattr(opp, 'signal_quality_score') and opp.signal_quality_score < MIN_QUALITY_SCORE:
+                            logger.info(
+                                f"   ❌ {opp.market}: Quality={opp.signal_quality_score:.1f}/100 "
+                                f"< {MIN_QUALITY_SCORE} (Conf: {opp.confidence:.0f}%, EV: {opp.ev:.1f}%)"
+                            )
 
                 # Log opportunità che passano
                 if opportunities:
@@ -647,6 +655,8 @@ class LiveBettingAdvisor:
                             f"   ✓ {opp.market}: Quality={opp.signal_quality_score:.1f} "
                             f"({opp.quality_grade}), Conf={opp.confidence:.0f}%, EV={opp.ev:.1f}%"
                         )
+                else:
+                    logger.info(f"📊 Nessuna opportunità passa Quality Scoring (min: {MIN_QUALITY_SCORE}/100)")
 
             # 🎯 NUOVO: Aggiorna tracking diversità mercati per le opportunità selezionate
             for opp in opportunities:
