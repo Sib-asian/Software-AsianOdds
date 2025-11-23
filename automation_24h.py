@@ -1107,8 +1107,9 @@ class Automation24H:
                     status_short = status_data.get("short", "")
                     status_long = status_data.get("long", "")
                     
-                    # 🔧 DEBUG: Log dettagliato status
-                    logger.debug(f"🔍 Status per {home_team} vs {away_team}: short={status_short}, long={status_long}, elapsed={status_data.get('elapsed')}, elapsed_time={status_data.get('elapsed_time')}")
+                    # 🔧 DEBUG: Log dettagliato status (INFO per vedere nei log di produzione)
+                    logger.info(f"🔍 Status per {home_team} vs {away_team}: short={status_short}, long={status_long}, elapsed={status_data.get('elapsed')}, elapsed_time={status_data.get('elapsed_time')}, minute_iniziale={minute}")
+                    logger.info(f"   fixture_data['status'] completo: {status_data}")
                     
                     # 🔧 FIX: Se minute è 0 ma status è LIVE, calcola dalla data
                     if minute == 0 and status_short in ["1H", "HT", "2H", "ET", "P", "LIVE"]:
@@ -1117,31 +1118,35 @@ class Automation24H:
                             now = datetime.now(timezone.utc)
                             time_diff = (now - fixture_date).total_seconds() / 60  # Differenza in minuti
                             
+                            logger.info(f"   Calcolo minuto dalla data: now={now}, fixture_date={fixture_date}, time_diff={time_diff:.1f} minuti")
+                            
                             # Se la partita è iniziata (time_diff positivo) e siamo entro 2 ore
                             if time_diff > 0 and time_diff < 120:
                                 minute = int(time_diff)
                                 logger.info(f"⏰ Minuto calcolato dalla data per {home_team} vs {away_team}: {minute}' (partita iniziata {time_diff:.1f} minuti fa)")
                             elif time_diff < 0:
                                 # Partita non ancora iniziata
-                                logger.debug(f"   Partita {home_team} vs {away_team} non ancora iniziata (inizia tra {abs(time_diff):.1f} minuti)")
+                                logger.info(f"   Partita {home_team} vs {away_team} non ancora iniziata (inizia tra {abs(time_diff):.1f} minuti)")
                             else:
-                                logger.debug(f"   Partita {home_team} vs {away_team} iniziata più di 2 ore fa ({time_diff:.1f} minuti)")
+                                logger.info(f"   Partita {home_team} vs {away_team} iniziata più di 2 ore fa ({time_diff:.1f} minuti)")
                         except Exception as e:
-                            logger.debug(f"   Errore calcolo minuto dalla data: {e}")
+                            logger.warning(f"   Errore calcolo minuto dalla data: {e}")
                     
                     # 🔧 FIX: Se ancora 0, prova a dedurlo dallo status
                     if minute == 0:
                         if status_short == "HT":
                             minute = 45
-                            logger.debug(f"   Minuto dedotto da status HT: 45'")
+                            logger.info(f"⏰ Minuto dedotto da status HT: 45'")
                         elif status_short == "2H":
                             # Secondo tempo, almeno 46 minuti
                             minute = 46
-                            logger.debug(f"   Minuto dedotto da status 2H: 46' (minimo)")
+                            logger.info(f"⏰ Minuto dedotto da status 2H: 46' (minimo)")
                         elif status_short == "1H":
                             # Primo tempo, almeno 1 minuto
                             minute = 1
-                            logger.debug(f"   Minuto dedotto da status 1H: 1' (minimo)")
+                            logger.info(f"⏰ Minuto dedotto da status 1H: 1' (minimo)")
+                        else:
+                            logger.warning(f"⚠️ Minuto ancora 0 per {home_team} vs {away_team} con status={status_short}")
                     
                     # Crea match dict con tutte le quote
                     match = {
@@ -1214,11 +1219,21 @@ class Automation24H:
                     if statistics:
                         # Estrai statistiche e aggiungile al match dict
                         stats_dict = self._parse_statistics_from_api_football(statistics)
+                        
+                        # 🔧 DEBUG: Log statistiche raw per capire struttura (solo primi 500 caratteri)
+                        try:
+                            stats_preview = json.dumps(statistics[:2] if len(statistics) >= 2 else statistics, indent=2, default=str)[:500]
+                            logger.info(f"📊 Statistiche raw per {home_team} vs {away_team}: {stats_preview}...")
+                        except:
+                            logger.info(f"📊 Statistiche presenti per {home_team} vs {away_team} ma non serializzabili")
+                        
                         match.update(stats_dict)
                         
                         # 🔧 FIX: Se il minuto dalle statistiche è diverso da quello della fixture, usa quello delle statistiche
                         # Ma solo se è maggiore (le statistiche potrebbero essere più aggiornate)
                         stats_minute = stats_dict.get('minute', 0)
+                        logger.info(f"🔍 Minuto da statistiche per {home_team} vs {away_team}: stats_minute={stats_minute}, minute_fixture={minute}")
+                        
                         if stats_minute > 0:
                             if stats_minute > minute:
                                 old_minute = minute
@@ -1231,7 +1246,7 @@ class Automation24H:
                                 match['minute'] = minute
                                 logger.info(f"⏰ Minuto impostato da statistiche per {home_team} vs {away_team}: {minute}'")
                         
-                        logger.debug(f"✅ Statistiche aggiunte per {home_team} vs {away_team}")
+                        logger.info(f"✅ Statistiche aggiunte per {home_team} vs {away_team}, minuto finale: {minute}'")
                     
                     # 🔧 FIX: Controllo quote meno restrittivo - accetta se ha almeno 2 quote 1X2 su 3
                     # O se ha altre quote disponibili (over/under, BTTS, ecc.)
@@ -1643,6 +1658,26 @@ class Automation24H:
         
         if not statistics or len(statistics) < 2:
             return stats_dict
+        
+        # 🔧 FIX: Prova a estrarre minuto e score dalle statistiche se disponibili
+        # Le statistiche potrebbero contenere informazioni sul minuto corrente
+        try:
+            # Cerca in tutti gli elementi delle statistiche
+            for team_stat in statistics:
+                team_info = team_stat.get("team", {})
+                # Prova a estrarre da vari campi possibili
+                if "minute" in team_stat:
+                    stats_dict['minute'] = int(team_stat.get("minute", 0))
+                if "elapsed" in team_stat:
+                    stats_dict['minute'] = int(team_stat.get("elapsed", 0))
+                if "time" in team_stat:
+                    time_val = team_stat.get("time")
+                    if isinstance(time_val, (int, float)):
+                        stats_dict['minute'] = int(time_val)
+                    elif isinstance(time_val, str) and time_val.isdigit():
+                        stats_dict['minute'] = int(time_val)
+        except Exception as e:
+            logger.debug(f"   Errore estrazione minuto da statistiche: {e}")
         
         home_stats = statistics[0].get("statistics", [])
         away_stats = statistics[1].get("statistics", [])
