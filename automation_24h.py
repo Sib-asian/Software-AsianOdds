@@ -1109,17 +1109,43 @@ class Automation24H:
                     
                     # 🔧 FIX: Estrai minuto da status - prova diversi campi
                     status_data = fixture_data.get("status", {})
-                    minute = status_data.get("elapsed") or status_data.get("elapsed_time") or 0
-                    status_short = status_data.get("short", "")
-                    status_long = status_data.get("long", "")
                     
-                    # 🔧 DEBUG: Log dettagliato status (INFO per vedere nei log di produzione)
-                    logger.info(f"🔍 Status per {home_team} vs {away_team}: short={status_short}, long={status_long}, elapsed={status_data.get('elapsed')}, elapsed_time={status_data.get('elapsed_time')}, minute_iniziale={minute}")
-                    logger.info(f"   status_data completo: {status_data}")
-                    logger.info(f"   status_data.keys(): {list(status_data.keys()) if isinstance(status_data, dict) else 'NOT_DICT'}")
+                    # 🔧 DEBUG: Log RAW status PRIMA di estrarre
+                    logger.info(f"🔍 RAW status_data per {home_team} vs {away_team}:")
+                    logger.info(f"   type(status_data): {type(status_data)}")
+                    if isinstance(status_data, dict):
+                        logger.info(f"   status_data.keys(): {list(status_data.keys())}")
+                        logger.info(f"   status_data completo: {json.dumps(status_data, indent=2, default=str)}")
+                    else:
+                        logger.warning(f"   ⚠️ status_data non è un dict: {status_data}")
                     
-                    # 🔧 FIX: Se minute è 0 ma status è LIVE, calcola dalla data
-                    if minute == 0 and status_short in ["1H", "HT", "2H", "ET", "P", "LIVE"]:
+                    # Estrai minuto - prova TUTTI i possibili campi
+                    minute = 0
+                    if isinstance(status_data, dict):
+                        # Prova tutti i possibili nomi di campo
+                        minute = (status_data.get("elapsed") or 
+                                 status_data.get("elapsed_time") or 
+                                 status_data.get("elapsedTime") or
+                                 status_data.get("minute") or
+                                 status_data.get("time") or 0)
+                        
+                        # Se è None, converti a 0
+                        if minute is None:
+                            minute = 0
+                        else:
+                            try:
+                                minute = int(minute)
+                            except (ValueError, TypeError):
+                                minute = 0
+                    
+                    status_short = status_data.get("short", "") if isinstance(status_data, dict) else ""
+                    status_long = status_data.get("long", "") if isinstance(status_data, dict) else ""
+                    
+                    logger.info(f"🔍 Minuto estratto: {minute}' (status: {status_short}, long: {status_long})")
+                    
+                    # 🔧 FIX CRITICO: Se minute è 0 ma status è LIVE, calcola SEMPRE dalla data
+                    # Non aspettare che sia 0, calcolalo sempre se la partita è in corso
+                    if status_short in ["1H", "HT", "2H", "ET", "P", "LIVE"]:
                         # Calcola minuto approssimativo dalla data della partita
                         try:
                             now = datetime.now(timezone.utc)
@@ -1129,17 +1155,22 @@ class Automation24H:
                             
                             # Se la partita è iniziata (time_diff positivo) e siamo entro 2 ore
                             if time_diff > 0 and time_diff < 120:
-                                minute = int(time_diff)
-                                logger.info(f"⏰ Minuto calcolato dalla data per {home_team} vs {away_team}: {minute}' (partita iniziata {time_diff:.1f} minuti fa)")
+                                calculated_minute = int(time_diff)
+                                # Usa il minuto calcolato se è maggiore di quello estratto o se quello estratto è 0
+                                if calculated_minute > minute or minute == 0:
+                                    minute = calculated_minute
+                                    logger.info(f"⏰ Minuto calcolato dalla data per {home_team} vs {away_team}: {minute}' (partita iniziata {time_diff:.1f} minuti fa)")
                             elif time_diff < 0:
-                                # Partita non ancora iniziata
-                                logger.info(f"   Partita {home_team} vs {away_team} non ancora iniziata (inizia tra {abs(time_diff):.1f} minuti)")
+                                # Partita non ancora iniziata - ma se status è LIVE, potrebbe essere un problema di timezone
+                                logger.warning(f"   ⚠️ Partita {home_team} vs {away_team} con status LIVE ma time_diff negativo ({time_diff:.1f} minuti) - possibile problema timezone")
                             else:
                                 logger.info(f"   Partita {home_team} vs {away_team} iniziata più di 2 ore fa ({time_diff:.1f} minuti)")
                         except Exception as e:
-                            logger.warning(f"   Errore calcolo minuto dalla data: {e}")
+                            logger.warning(f"   ⚠️ Errore calcolo minuto dalla data: {e}")
+                            import traceback
+                            logger.debug(f"   Traceback: {traceback.format_exc()}")
                     
-                    # 🔧 FIX: Se ancora 0, prova a dedurlo dallo status
+                    # 🔧 FIX: Se ancora 0, prova a dedurlo dallo status (fallback)
                     if minute == 0:
                         if status_short == "HT":
                             minute = 45
@@ -1152,8 +1183,14 @@ class Automation24H:
                             # Primo tempo, almeno 1 minuto
                             minute = 1
                             logger.info(f"⏰ Minuto dedotto da status 1H: 1' (minimo)")
+                        elif status_short == "LIVE":
+                            # Se è LIVE ma non abbiamo il minuto, usa almeno 1
+                            minute = 1
+                            logger.info(f"⏰ Minuto dedotto da status LIVE: 1' (minimo)")
                         else:
                             logger.warning(f"⚠️ Minuto ancora 0 per {home_team} vs {away_team} con status={status_short}")
+                    
+                    logger.info(f"✅ Minuto FINALE per {home_team} vs {away_team}: {minute}'")
                     
                     # Crea match dict con tutte le quote
                     match = {
