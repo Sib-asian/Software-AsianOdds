@@ -1,4 +1,7 @@
 services:
+  # ========================================
+  # 🤖 WORKER: Automation 24/7
+  # ========================================
   - type: worker
     name: automation-24h
     env: docker
@@ -18,17 +21,17 @@ services:
       # Variabili di sistema
       - key: PYTHONUNBUFFERED
         value: 1
-      
+
       # Variabili Telegram (OBBLIGATORIE)
       - key: TELEGRAM_BOT_TOKEN
         sync: false  # NON sincronizzare - ogni service ha il suo
       - key: TELEGRAM_CHAT_ID
         sync: false
-      
+
       # Variabili API (OBBLIGATORIE)
       - key: API_FOOTBALL_KEY
         sync: false  # Chiave API-SPORTS (v3.football.api-sports.io)
-      
+
       # Variabili configurazione (OPZIONALI - hanno default)
       - key: AUTOMATION_MIN_EV
         value: 8.0
@@ -36,7 +39,7 @@ services:
         value: 70.0
       - key: AUTOMATION_UPDATE_INTERVAL
         value: 1200  # 20 minuti (1200 secondi)
-      
+
       # Variabili API opzionali
       - key: THEODDS_API_KEY
         sync: false  # Opzionale - per TheOddsAPI
@@ -44,6 +47,43 @@ services:
         sync: false  # Opzionale - per Football-Data.org
       - key: NEWSAPI_KEY
         sync: false  # Opzionale - per analisi news
+
+  # ========================================
+  # 🌐 WEB SERVICE: Streamlit Dashboard
+  # ========================================
+  - type: web
+    name: streamlit-dashboard
+    env: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter  # Starter Plan ($7/mese) per uptime 24/7
+    region: frankfurt  # Stessa regione del worker per bassa latency
+    autoDeploy: false  # 🚫 Disabilita deploy automatici
+
+    # 🔧 PERSISTENT DISK condiviso con worker
+    disk:
+      name: automation-data
+      mountPath: /data
+      sizeGB: 1  # Condivide gli stessi dati del worker
+
+    envVars:
+      # Variabili di sistema
+      - key: PYTHONUNBUFFERED
+        value: 1
+      - key: PORT
+        value: 8501  # Porta Streamlit
+
+      # Variabili API (OBBLIGATORIE - condivise con worker)
+      - key: API_FOOTBALL_KEY
+        sync: false  # Stessa chiave del worker
+
+      # Variabili API opzionali
+      - key: THEODDS_API_KEY
+        sync: false
+      - key: FOOTBALL_DATA_KEY
+        sync: false
+      - key: NEWSAPI_KEY
+        sync: false
 
 
 
