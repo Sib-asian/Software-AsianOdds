@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """
 Script per avviare sistema automazione 24/7
+
+⚠️  AUTOMAZIONE DISABILITATA - Non eseguire questo script!
 """
 
-import os
+# 🛑 AUTOMAZIONE DISABILITATA - Decommenta per riabilitare
 import sys
+print("🛑 AUTOMAZIONE DISABILITATA - start_automation.py terminato")
+print("   Per riabilitare, rimuovi le righe 'sys.exit(0)' da start_automation.py")
+sys.exit(0)
+
+import os
 from pathlib import Path
 from dotenv import load_dotenv
 
