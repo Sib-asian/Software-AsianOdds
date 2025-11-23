@@ -855,73 +855,71 @@ class Automation24H:
             base_url = "https://v3.football.api-sports.io"
             now = datetime.now(timezone.utc)
             today = now.date()
-            yesterday = (now - timedelta(days=1)).date()
             
-            # 🔧 FIX: L'endpoint /fixtures/live non esiste in API-Football
-            # Usiamo /fixtures con date di oggi e ieri per trovare partite LIVE
-            # API-Football restituisce partite con status LIVE se sono in corso
+            # 🔧 FIX: Cerca SOLO partite di OGGI (non ieri)
+            # Le partite LIVE devono essere di oggi e avere status LIVE
             matches_found = []
             
-            # Cerca partite di oggi e ieri
-            for search_date in [today, yesterday]:
-                params = {
-                    "date": search_date.strftime("%Y-%m-%d"),
-                    "timezone": "UTC"
-                }
-                
-                query = urllib.parse.urlencode(params)
-                url = f"{base_url}/fixtures?{query}"
-                headers = {
-                    "x-rapidapi-key": api_key,
-                    "x-rapidapi-host": "v3.football.api-sports.io"
-                }
-                
-                logger.info(f"📡 Fetching fixtures from API-Football (date: {search_date}, timezone: UTC)...")
-                self.api_usage_today += 1  # Conta chiamata API per fixtures
-                req = urllib.request.Request(url, headers=headers)
-                
-                try:
-                    with urllib.request.urlopen(req, timeout=15) as response:
-                        response_data = response.read().decode()
-                        data = json.loads(response_data)
-                        
-                        if data.get("errors"):
-                            logger.warning(f"⚠️  API-Football ha restituito errori per {search_date}: {data.get('errors')}")
-                            continue
-                        
-                        if data.get("response"):
-                            matches_found.extend(data["response"])
-                            logger.info(f"📊 Trovate {len(data['response'])} partite per {search_date}")
-                        
-                except urllib.error.HTTPError as e:
-                    error_body = ""
-                    try:
-                        error_body = e.read().decode()
-                        logger.error(f"❌ API-Football HTTP error per {search_date}: {e.code} - {e.reason}")
-                        logger.error(f"   Response body: {error_body[:500]}")
-                    except:
-                        pass
-                    if e.code == 429:
-                        logger.error("⚠️  Rate limit raggiunto, aspetta prima di riprovare")
-                        break  # Non continuare se rate limit
-                    elif e.code == 401:
-                        logger.error("⚠️  API key non valida o scaduta")
-                        return []
-                    elif e.code == 403:
-                        logger.error("⚠️  Accesso negato - verifica API key e permessi")
-                        return []
-                    continue  # Continua con la prossima data
-                except Exception as e:
-                    logger.error(f"❌ Errore chiamata API-Football per {search_date}: {e}")
-                    continue  # Continua con la prossima data
+            # Cerca SOLO partite di oggi
+            search_date = today
+            params = {
+                "date": search_date.strftime("%Y-%m-%d"),
+                "timezone": "UTC"
+            }
             
-            # Ora filtra solo le partite LIVE
-            if not matches_found:
-                logger.info(f"ℹ️  Nessuna partita trovata per oggi/ieri")
-                logger.info(f"ℹ️  Questo è normale se non ci sono partite programmate")
+            query = urllib.parse.urlencode(params)
+            url = f"{base_url}/fixtures?{query}"
+            headers = {
+                "x-rapidapi-key": api_key,
+                "x-rapidapi-host": "v3.football.api-sports.io"
+            }
+            
+            logger.info(f"📡 Fetching fixtures from API-Football (date: {search_date}, timezone: UTC)...")
+            self.api_usage_today += 1  # Conta chiamata API per fixtures
+            req = urllib.request.Request(url, headers=headers)
+            
+            try:
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    response_data = response.read().decode()
+                    data = json.loads(response_data)
+                    
+                    if data.get("errors"):
+                        logger.warning(f"⚠️  API-Football ha restituito errori per {search_date}: {data.get('errors')}")
+                        return []
+                    
+                    if data.get("response"):
+                        matches_found = data["response"]
+                        logger.info(f"📊 Trovate {len(matches_found)} partite per {search_date}")
+                    else:
+                        logger.info(f"ℹ️  Nessuna partita trovata per oggi ({search_date})")
+                        logger.info(f"ℹ️  Questo è normale se non ci sono partite programmate per oggi")
+                        return []
+                    
+            except urllib.error.HTTPError as e:
+                error_body = ""
+                try:
+                    error_body = e.read().decode()
+                    logger.error(f"❌ API-Football HTTP error per {search_date}: {e.code} - {e.reason}")
+                    logger.error(f"   Response body: {error_body[:500]}")
+                except:
+                    pass
+                if e.code == 429:
+                    logger.error("⚠️  Rate limit raggiunto, aspetta prima di riprovare")
+                elif e.code == 401:
+                    logger.error("⚠️  API key non valida o scaduta")
+                elif e.code == 403:
+                    logger.error("⚠️  Accesso negato - verifica API key e permessi")
+                return []
+            except Exception as e:
+                logger.error(f"❌ Errore chiamata API-Football per {search_date}: {e}")
                 return []
             
-            logger.info(f"📊 Trovate {len(matches_found)} partite totali (oggi + ieri), filtrando per LIVE...")
+            # Ora filtra solo le partite LIVE di oggi
+            if not matches_found:
+                logger.info(f"ℹ️  Nessuna partita trovata per oggi")
+                return []
+            
+            logger.info(f"📊 Trovate {len(matches_found)} partite totali per oggi, filtrando per LIVE...")
             
             # Usa matches_found invece di data["response"]
             data = {"response": matches_found}
@@ -951,18 +949,34 @@ class Automation24H:
                     
                     # Parse datetime
                     fixture_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                    fixture_date_only = fixture_date.date()
                     
-                    # 🔧 FIX: Endpoint /fixtures/live restituisce SOLO partite LIVE
-                    # Quindi tutte le partite qui sono già LIVE, non serve controllare
+                    # 🔧 FIX CRITICO: Verifica che la partita sia di OGGI
+                    if fixture_date_only != today:
+                        skipped_not_live += 1
+                        continue  # Salta partite non di oggi
+                    
+                    # 🔧 FIX CRITICO: Filtra SOLO partite con status LIVE
+                    # Status LIVE validi: 1H (First Half), HT (Half Time), 2H (Second Half), ET (Extra Time), P (Penalties), LIVE
+                    # Escludi: NS (Not Started), TBD (To Be Determined), CANC (Cancelled), SUSP (Suspended), INT (Interrupted), PST (Postponed)
                     status_short = fixture_data.get("status", {}).get("short", "")
+                    is_live = status_short in ["1H", "HT", "2H", "ET", "P", "LIVE"]
                     is_finished = status_short in ["FT", "AET", "PEN"]
+                    is_not_started = status_short in ["NS", "TBD", "CANC", "SUSP", "INT", "PST", "ABAN"]
                     
                     if is_finished:
                         skipped_finished += 1
-                        logger.debug(f"⏭️  Partita con status {status_short} considerata finita, skip")
                         continue  # Salta partite finite
                     
-                    # Tutte le partite da /fixtures/live sono LIVE
+                    if is_not_started:
+                        skipped_not_live += 1
+                        continue  # Salta partite non iniziate o sospese
+                    
+                    # 🔧 FIX: Solo partite con status LIVE
+                    if not is_live:
+                        skipped_not_live += 1
+                        continue  # Salta partite non LIVE
+                    
                     live_count += 1
                     
                     home_team = teams_data.get("home", {}).get("name", "")
@@ -971,19 +985,6 @@ class Automation24H:
                     
                     if not home_team or not away_team:
                         continue
-                    
-                    # 🔧 FIX: Endpoint /fixtures/live restituisce partite LIVE indipendentemente dalla data
-                    # Verifichiamo solo che la partita non sia troppo vecchia (es. iniziata più di 2 giorni fa)
-                    fixture_date_only = fixture_date.date()
-                    two_days_ago = (now - timedelta(days=2)).date()
-                    if fixture_date_only < two_days_ago:
-                        skipped_not_live += 1
-                        logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} troppo vecchia ({fixture_date_only}), skip")
-                        continue
-                    
-                    # Log se partita di ieri ancora in corso
-                    if fixture_date_only < today:
-                        logger.info(f"ℹ️  Partita LIVE di {fixture_date_only} ancora in corso: {home_team} vs {away_team} (status: {status_short})")
                     
                     # 🔧 FIX: Unificato controllo e fetch statistiche in una sola chiamata
                     # Recupera statistiche direttamente (se disponibili) invece di fare 2 chiamate
