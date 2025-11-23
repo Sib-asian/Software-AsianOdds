@@ -871,21 +871,44 @@ class Automation24H:
             
             try:
                 with urllib.request.urlopen(req, timeout=15) as response:
-                    data = json.loads(response.read().decode())
+                    response_data = response.read().decode()
+                    data = json.loads(response_data)
+                    
+                    # 🔧 DEBUG: Log risposta API per capire cosa restituisce
+                    logger.debug(f"📡 Risposta API /fixtures/live: status={response.status}, length={len(response_data)} bytes")
+                    if data.get("errors"):
+                        logger.warning(f"⚠️  API-Football ha restituito errori: {data.get('errors')}")
+                    if data.get("results") is not None:
+                        logger.info(f"📊 API-Football results: {data.get('results')}")
+                    
             except urllib.error.HTTPError as e:
-                logger.error(f"❌ API-Football HTTP error: {e.code} - {e.reason}")
+                error_body = ""
+                try:
+                    error_body = e.read().decode()
+                    logger.error(f"❌ API-Football HTTP error: {e.code} - {e.reason}")
+                    logger.error(f"   Response body: {error_body[:500]}")
+                except:
+                    pass
                 if e.code == 429:
                     logger.error("⚠️  Rate limit raggiunto, aspetta prima di riprovare")
                 elif e.code == 401:
                     logger.error("⚠️  API key non valida o scaduta")
+                elif e.code == 403:
+                    logger.error("⚠️  Accesso negato - verifica API key e permessi")
                 return []
             except Exception as e:
-                logger.error(f"❌ Errore chiamata API-Football: {e}")
+                logger.error(f"❌ Errore chiamata API-Football: {e}", exc_info=True)
+                return []
+            
+            # Verifica struttura risposta
+            if "response" not in data:
+                logger.warning(f"⚠️  Risposta API non contiene 'response': {list(data.keys())}")
                 return []
             
             if not data.get("response"):
                 logger.info(f"ℹ️  Nessuna partita LIVE trovata in questo momento")
                 logger.info(f"ℹ️  Questo è normale se non ci sono partite in corso")
+                logger.debug(f"   Dati API completi: {json.dumps(data, indent=2)[:500]}")
                 return []
             
             logger.info(f"📊 Trovate {len(data['response'])} partite LIVE totali")
