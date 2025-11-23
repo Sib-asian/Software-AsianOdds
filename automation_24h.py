@@ -3,6 +3,9 @@
 Sistema Automazione 24/7
 ========================
 
+⚠️  AUTOMAZIONE DISABILITATA - Non eseguire questo script!
+    Per riabilitare, rimuovi le righe sys.exit(0) qui sotto.
+
 Sistema completamente autonomo che:
 1. Monitora partite 24/7
 2. Analizza solo VALUE BET reali (non consigli basati su score)
@@ -13,6 +16,12 @@ Sistema completamente autonomo che:
 Usage:
     python automation_24h.py --config config.json
 """
+
+# 🛑 AUTOMAZIONE DISABILITATA - Decommenta per riabilitare
+import sys
+print("🛑 AUTOMAZIONE DISABILITATA - Script terminato")
+print("   Per riabilitare, rimuovi le righe 'import sys' e 'sys.exit(0)' da automation_24h.py")
+sys.exit(0)
 
 import asyncio
 import logging
