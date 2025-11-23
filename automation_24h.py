@@ -725,7 +725,10 @@ class Automation24H:
         matches_with_opportunities = 0
         matches_without_opportunities = 0
         
-        logger.info(f"📊 Inizio analisi di {len(matches)} partite LIVE...")
+        # 🔧 LOG VISIBILE: Inizio ciclo analisi
+        logger.info("=" * 80)
+        logger.info(f"📊 CICLO ANALISI LIVE BETTING - {len(matches)} partite da analizzare")
+        logger.info("=" * 80)
         
         for match in matches:
             try:
@@ -757,21 +760,25 @@ class Automation24H:
                 logger.error(f"❌ Error analyzing match {match.get('id', 'unknown')}: {e}")
                 continue
         
-        logger.info(f"📊 Riepilogo analisi partite:")
+        # 🔧 LOG VISIBILE: Riepilogo analisi
+        logger.info("=" * 80)
+        logger.info(f"📊 RIEPILOGO ANALISI PARTITE:")
         logger.info(f"   - Partite analizzate: {matches_analyzed}")
         logger.info(f"   - Partite con opportunità: {matches_with_opportunities}")
         logger.info(f"   - Partite senza opportunità: {matches_without_opportunities}")
         logger.info(f"   - Opportunità totali generate: {opportunities_found}")
+        logger.info("=" * 80)
         
         # 🆕 NUOVO: Seleziona e invia solo le migliori opportunità
         notified_count = 0
         if all_opportunities:
-            logger.info(f"📊 Prima della selezione: {opportunities_found} opportunità totali")
+            logger.info(f"📊 SELEZIONE OPPORTUNITÀ:")
+            logger.info(f"   - Prima della selezione: {opportunities_found} opportunità totali")
             best_opportunities = self._select_best_opportunities(all_opportunities)
-            logger.info(f"📊 Dopo la selezione: {len(best_opportunities)} opportunità selezionate per notifica")
+            logger.info(f"   - Dopo la selezione: {len(best_opportunities)} opportunità selezionate per notifica")
             
             if len(best_opportunities) < opportunities_found:
-                logger.info(f"📊 Opportunità scartate: {opportunities_found - len(best_opportunities)} (selezionata solo la migliore)")
+                logger.info(f"   - Opportunità scartate dalla selezione: {opportunities_found - len(best_opportunities)} (selezionata solo la migliore)")
             
             for opp_dict in best_opportunities:
                 self._handle_live_opportunity(opp_dict)
@@ -779,7 +786,9 @@ class Automation24H:
         else:
             logger.info(f"📊 Nessuna opportunità trovata in questo ciclo")
         
-        logger.info(f"✅ Cycle complete: {opportunities_found} opportunities found, {notified_count} notified")
+        logger.info("=" * 80)
+        logger.info(f"✅ CYCLE COMPLETE: {opportunities_found} opportunities found, {notified_count} notified")
+        logger.info("=" * 80)
     
     def _get_matches_to_monitor(self) -> List[Dict]:
         """
