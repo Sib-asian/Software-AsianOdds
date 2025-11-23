@@ -1383,43 +1383,55 @@ class Automation24H:
                         match.update(stats_dict_filtered)
                         logger.info(f"✅ Statistiche aggiunte per {home_team} vs {away_team}, minuto finale: {match.get('minute', 0)}', score finale: {match.get('score_home', 0)}-{match.get('score_away', 0)}")
                     
-                    # 🔧 FIX CRITICO: Accetta partita se ha statistiche - le quote sono opzionali per analisi live
-                    # Per partite LIVE, possiamo analizzare anche senza quote complete (usiamo statistiche)
+                    # 🔧 FIX: Accetta partita se ha statistiche E almeno alcune quote (non tutte, ma almeno qualcosa)
+                    # Le quote sono necessarie per calcolare EV, quindi dobbiamo avere almeno qualche quota disponibile
                     odds_1 = match.get('odds_1')
                     odds_x = match.get('odds_x')
                     odds_2 = match.get('odds_2')
                     has_1x2_complete = odds_1 and odds_x and odds_2
                     has_1x2_partial = sum([bool(odds_1), bool(odds_x), bool(odds_2)]) >= 1
+                    
+                    # Verifica TUTTE le quote disponibili
+                    has_over_under_ft = bool(all_odds.get('over_under'))
+                    has_over_under_ht = bool(all_odds.get('over_under_ht'))
+                    has_first_half_goals = bool(all_odds.get('first_half_goals'))
+                    has_second_half_goals = bool(all_odds.get('second_half_goals'))
+                    has_btts = bool(all_odds.get('btts', {}).get('yes'))
+                    has_btts_ht = bool(all_odds.get('btts_ht', {}).get('yes'))
+                    has_double_chance = bool(all_odds.get('double_chance', {}).get('1x'))
+                    has_dnb = bool(all_odds.get('draw_no_bet', {}).get('home'))
+                    has_asian_handicap = bool(all_odds.get('asian_handicap'))
+                    
                     has_other_odds = (
-                        bool(all_odds.get('over_under')) or 
-                        bool(all_odds.get('over_under_ht')) or 
-                        bool(all_odds.get('first_half_goals')) or
-                        bool(all_odds.get('second_half_goals')) or
-                        bool(all_odds.get('btts', {}).get('yes')) or 
-                        bool(all_odds.get('btts_ht', {}).get('yes')) or
-                        bool(all_odds.get('double_chance', {}).get('1x')) or
-                        bool(all_odds.get('draw_no_bet', {}).get('home')) or
-                        bool(all_odds.get('asian_handicap'))
+                        has_over_under_ft or 
+                        has_over_under_ht or 
+                        has_first_half_goals or
+                        has_second_half_goals or
+                        has_btts or 
+                        has_btts_ht or
+                        has_double_chance or
+                        has_dnb or
+                        has_asian_handicap
                     )
                     
                     # 🔧 DEBUG: Log dettagliato quote disponibili
                     logger.info(f"📊 Quote disponibili per {home_team} vs {away_team}:")
                     logger.info(f"   1X2: {bool(odds_1)}/{bool(odds_x)}/{bool(odds_2)} (complete: {has_1x2_complete}, partial: {has_1x2_partial})")
-                    logger.info(f"   Over/Under FT: {bool(all_odds.get('over_under'))}")
-                    logger.info(f"   Over/Under HT: {bool(all_odds.get('over_under_ht'))}")
-                    logger.info(f"   First Half Goals: {bool(all_odds.get('first_half_goals'))}")
-                    logger.info(f"   Second Half Goals: {bool(all_odds.get('second_half_goals'))}")
-                    logger.info(f"   BTTS: {bool(all_odds.get('btts', {}).get('yes'))}")
-                    logger.info(f"   BTTS HT: {bool(all_odds.get('btts_ht', {}).get('yes'))}")
-                    logger.info(f"   Double Chance: {bool(all_odds.get('double_chance', {}).get('1x'))}")
-                    logger.info(f"   Draw No Bet: {bool(all_odds.get('draw_no_bet', {}).get('home'))}")
-                    logger.info(f"   Asian Handicap: {bool(all_odds.get('asian_handicap'))}")
-                    logger.info(f"   Altre quote: {has_other_odds}")
+                    logger.info(f"   Over/Under FT: {has_over_under_ft}")
+                    logger.info(f"   Over/Under HT: {has_over_under_ht}")
+                    logger.info(f"   First Half Goals: {has_first_half_goals}")
+                    logger.info(f"   Second Half Goals: {has_second_half_goals}")
+                    logger.info(f"   BTTS: {has_btts}")
+                    logger.info(f"   BTTS HT: {has_btts_ht}")
+                    logger.info(f"   Double Chance: {has_double_chance}")
+                    logger.info(f"   Draw No Bet: {has_dnb}")
+                    logger.info(f"   Asian Handicap: {has_asian_handicap}")
                     logger.info(f"   Ha statistiche: {bool(statistics)}")
+                    logger.info(f"   Ha almeno qualche quota: {has_1x2_partial or has_other_odds}")
                     
-                    # 🔧 FIX CRITICO: Accetta partita se ha statistiche (quote sono opzionali per analisi live)
-                    # Le quote servono solo per calcolare EV/confidence, ma possiamo analizzare anche senza
-                    if statistics:  # Se ha statistiche, accetta sempre
+                    # 🔧 FIX: Accetta partita se ha statistiche E almeno alcune quote (necessarie per calcolare EV)
+                    # Genereremo opportunità solo per i mercati dove abbiamo le quote disponibili
+                    if statistics and (has_1x2_partial or has_other_odds):
                         matches.append(match)
                         if has_1x2_complete:
                             logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e quote 1X2 complete)")
@@ -1429,11 +1441,12 @@ class Automation24H:
                             logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e almeno 1 quota 1X2)")
                         elif has_other_odds:
                             logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e altre quote disponibili)")
-                        else:
-                            logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche, quote opzionali per analisi)")
-                    else:
+                    elif not statistics:
                         skipped_no_stats += 1
                         logger.warning(f"⚠️  Match {home_team} vs {away_team} senza statistiche, skip")
+                    else:
+                        skipped_no_odds += 1
+                        logger.warning(f"⚠️  Match {home_team} vs {away_team} senza quote sufficienti (1X2: {bool(odds_1)}/{bool(odds_x)}/{bool(odds_2)}, altre: {has_other_odds}), skip")
                 
                 except Exception as e:
                     logger.debug(f"⚠️  Error processing fixture: {e}")
