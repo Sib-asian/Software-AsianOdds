@@ -498,11 +498,20 @@ class LiveBettingAdvisor:
             before_obvious_filter = len(opportunities)
             opportunities = self._filter_obvious_opportunities(opportunities, live_data)
             after_obvious_filter = len(opportunities)
-            if before_obvious_filter > 0 and before_obvious_filter > after_obvious_filter:
-                logger.debug(f"🔍 {match_id}: {before_obvious_filter} opportunità prima filtro ovvie, {after_obvious_filter} dopo")
+            if before_obvious_filter > 0:
+                if before_obvious_filter > after_obvious_filter:
+                    logger.info(f"📊 Filtro opportunità ovvie per {match_id}: {before_obvious_filter} opportunità, {before_obvious_filter - after_obvious_filter} ovvie rimosse, {after_obvious_filter} rimaste")
+                else:
+                    logger.info(f"📊 {match_id}: {before_obvious_filter} opportunità generate, nessuna ovvia rimossa")
             
             opportunities = self._apply_market_specific_rules(opportunities, match_data, live_data)
             opportunities = self._apply_market_min_confidence(opportunities)
+            
+            # 🔧 LOG: Opportunità prima dei filtri
+            if len(opportunities) > 0:
+                logger.info(f"📊 {match_id}: {len(opportunities)} opportunità generate prima dei filtri")
+                for opp in opportunities[:3]:  # Prime 3
+                    logger.info(f"   - {opp.market}: EV={opp.ev:.1f}%, Conf={opp.confidence:.1f}%")
             
             # 🆕 OTTIMIZZATO: Filtra solo opportunità con EV molto negativo (non tutte quelle negative)
             before_ev_filter = len(opportunities)
@@ -511,7 +520,7 @@ class LiveBettingAdvisor:
             ev_rejected = before_ev_filter - after_ev_filter
             opportunities = opportunities_after_ev
             
-            if ev_rejected > 0:
+            if before_ev_filter > 0:
                 logger.info(f"📊 Filtro EV per {match_id}: {before_ev_filter} opportunità, {ev_rejected} scartate (EV < {self.min_ev}%), {after_ev_filter} rimaste")
             
             # Filtra solo opportunità con alta confidence
@@ -525,19 +534,28 @@ class LiveBettingAdvisor:
                 logger.info(f"📊 Filtro Confidence per {match_id}: {before_confidence_filter} opportunità, {confidence_rejected} scartate (confidence < {self.min_confidence}%), {after_confidence_filter} rimaste")
                 if confidence_rejected > 0:
                     # Log confidence delle opportunità filtrate
-                    filtered_opps = [opp for opp in opportunities if opp.confidence < self.min_confidence] if before_confidence_filter > after_confidence_filter else []
+                    all_opps_before = opportunities_after_ev  # Opportunità dopo EV filter
+                    filtered_opps = [opp for opp in all_opps_before if opp.confidence < self.min_confidence]
                     if filtered_opps:
-                        confidences = [f"{opp.confidence:.0f}%" for opp in filtered_opps[:5]]  # Prime 5
+                        confidences = [f"{opp.market}:{opp.confidence:.0f}%" for opp in filtered_opps[:5]]  # Prime 5
                         logger.info(f"   📊 Confidence filtrate: {', '.join(confidences)}")
             elif before_obvious_filter == 0:
                 # 🔍 NUOVO: Log quando non vengono trovate opportunità iniziali
                 logger.info(f"🔍 {match_id}: Nessuna opportunità iniziale trovata (score: {live_data.get('score_home', 0)}-{live_data.get('score_away', 0)}, min: {live_data.get('minute', 0)})")
             
             # 🆕 OTTIMIZZATO: Deduplica opportunità per match_id + market (PRIMA del limite)
+            before_dedup = len(opportunities)
             opportunities = self._deduplicate_opportunities(opportunities)
+            after_dedup = len(opportunities)
+            if before_dedup > after_dedup:
+                logger.info(f"📊 Deduplicazione per {match_id}: {before_dedup} opportunità, {before_dedup - after_dedup} duplicate rimosse, {after_dedup} rimaste")
             
             # 🆕 OTTIMIZZATO: Filtra segnali contrastanti (es. Under + Ribaltone sulla stessa partita)
+            before_contradictory = len(opportunities)
             opportunities = self._filter_contradictory_signals(opportunities, live_data)
+            after_contradictory = len(opportunities)
+            if before_contradictory > after_contradictory:
+                logger.info(f"📊 Filtro segnali contrastanti per {match_id}: {before_contradictory} opportunità, {before_contradictory - after_contradictory} contrastanti rimosse, {after_contradictory} rimaste")
             
             # 🆕 OTTIMIZZATO: Ordina per mix di Expected Value e Confidence (non solo EV)
             opportunities.sort(key=lambda x: self._calculate_combined_score(x), reverse=True)
