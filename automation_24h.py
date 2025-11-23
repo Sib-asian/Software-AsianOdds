@@ -1383,20 +1383,40 @@ class Automation24H:
                         match.update(stats_dict_filtered)
                         logger.info(f"✅ Statistiche aggiunte per {home_team} vs {away_team}, minuto finale: {match.get('minute', 0)}', score finale: {match.get('score_home', 0)}-{match.get('score_away', 0)}")
                     
-                    # 🔧 FIX: Controllo quote meno restrittivo - accetta se ha almeno 2 quote 1X2 su 3
-                    # O se ha altre quote disponibili (over/under, BTTS, ecc.)
+                    # 🔧 FIX: Controllo quote MENO restrittivo - accetta se ha statistiche E almeno qualche quota
+                    # Per partite LIVE, le quote potrebbero essere incomplete, ma se abbiamo statistiche possiamo analizzare
                     odds_1 = match.get('odds_1')
                     odds_x = match.get('odds_x')
                     odds_2 = match.get('odds_2')
                     has_1x2_complete = odds_1 and odds_x and odds_2
-                    has_1x2_partial = sum([bool(odds_1), bool(odds_x), bool(odds_2)]) >= 2  # Almeno 2 su 3
+                    has_1x2_partial = sum([bool(odds_1), bool(odds_x), bool(odds_2)]) >= 1  # 🔧 CAMBIATO: almeno 1 su 3 invece di 2
                     has_other_odds = (
                         bool(all_odds.get('over_under')) or 
                         bool(all_odds.get('over_under_ht')) or 
+                        bool(all_odds.get('first_half_goals')) or
+                        bool(all_odds.get('second_half_goals')) or
                         bool(all_odds.get('btts', {}).get('yes')) or 
-                        bool(all_odds.get('double_chance', {}).get('1x'))
+                        bool(all_odds.get('btts_ht', {}).get('yes')) or
+                        bool(all_odds.get('double_chance', {}).get('1x')) or
+                        bool(all_odds.get('draw_no_bet', {}).get('home')) or
+                        bool(all_odds.get('asian_handicap'))
                     )
                     
+                    # 🔧 DEBUG: Log dettagliato quote disponibili
+                    logger.info(f"📊 Quote disponibili per {home_team} vs {away_team}:")
+                    logger.info(f"   1X2: {bool(odds_1)}/{bool(odds_x)}/{bool(odds_2)} (complete: {has_1x2_complete}, partial: {has_1x2_partial})")
+                    logger.info(f"   Over/Under FT: {bool(all_odds.get('over_under'))}")
+                    logger.info(f"   Over/Under HT: {bool(all_odds.get('over_under_ht'))}")
+                    logger.info(f"   First Half Goals: {bool(all_odds.get('first_half_goals'))}")
+                    logger.info(f"   Second Half Goals: {bool(all_odds.get('second_half_goals'))}")
+                    logger.info(f"   BTTS: {bool(all_odds.get('btts', {}).get('yes'))}")
+                    logger.info(f"   BTTS HT: {bool(all_odds.get('btts_ht', {}).get('yes'))}")
+                    logger.info(f"   Double Chance: {bool(all_odds.get('double_chance', {}).get('1x'))}")
+                    logger.info(f"   Draw No Bet: {bool(all_odds.get('draw_no_bet', {}).get('home'))}")
+                    logger.info(f"   Asian Handicap: {bool(all_odds.get('asian_handicap'))}")
+                    logger.info(f"   Altre quote: {has_other_odds}")
+                    
+                    # 🔧 FIX: Accetta partita se ha statistiche E almeno qualche quota (anche solo 1X2 parziale o altre quote)
                     if has_1x2_complete:
                         matches.append(match)
                         logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e quote 1X2 complete)")
@@ -1405,7 +1425,7 @@ class Automation24H:
                         logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche, quote 1X2 parziali e altre quote)")
                     elif has_1x2_partial:
                         matches.append(match)
-                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e almeno 2 quote 1X2 su 3)")
+                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e almeno 1 quota 1X2)")
                     elif has_other_odds:
                         matches.append(match)
                         logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e altre quote disponibili)")
