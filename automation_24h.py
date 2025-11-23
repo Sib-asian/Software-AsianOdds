@@ -1111,34 +1111,74 @@ class Automation24H:
                     # 🔧 FIX CRITICO: Per partite LIVE, lo score potrebbe essere in diversi campi
                     score_data = fixture_data.get("score", {})
                     
+                    # 🔧 DEBUG: Log RAW score_data completo
+                    logger.info(f"⚽ RAW score_data per {home_team} vs {away_team}:")
+                    logger.info(f"   score_data type: {type(score_data)}")
+                    if isinstance(score_data, dict):
+                        logger.info(f"   score_data completo: {json.dumps(score_data, indent=2, default=str)}")
+                    else:
+                        logger.warning(f"   ⚠️ score_data non è un dict: {score_data}")
+                    
                     # Prova a estrarre lo score in ordine di priorità:
                     # 1. fulltime (se partita finita)
                     # 2. extratime (se in tempi supplementari)
                     # 3. halftime (se ancora nel primo tempo)
                     # 4. goals (score corrente per partite LIVE)
-                    score_home = (
-                        score_data.get("fulltime", {}).get("home") or
-                        score_data.get("extratime", {}).get("home") or
-                        score_data.get("halftime", {}).get("home") or
-                        score_data.get("goals", {}).get("home") or
-                        0
-                    )
-                    score_away = (
-                        score_data.get("fulltime", {}).get("away") or
-                        score_data.get("extratime", {}).get("away") or
-                        score_data.get("halftime", {}).get("away") or
-                        score_data.get("goals", {}).get("away") or
-                        0
-                    )
+                    score_home = 0
+                    score_away = 0
                     
-                    # 🔧 DEBUG: Log score estratto
-                    logger.info(f"⚽ Score estratto per {home_team} vs {away_team}:")
-                    logger.info(f"   score_data keys: {list(score_data.keys()) if isinstance(score_data, dict) else 'NOT_DICT'}")
-                    logger.info(f"   fulltime: {score_data.get('fulltime', {})}")
-                    logger.info(f"   halftime: {score_data.get('halftime', {})}")
-                    logger.info(f"   extratime: {score_data.get('extratime', {})}")
-                    logger.info(f"   goals: {score_data.get('goals', {})}")
-                    logger.info(f"   Score finale: {score_home}-{score_away}")
+                    if isinstance(score_data, dict):
+                        # Prova fulltime
+                        fulltime = score_data.get("fulltime", {})
+                        if isinstance(fulltime, dict):
+                            score_home = fulltime.get("home") or score_home
+                            score_away = fulltime.get("away") or score_away
+                            if score_home or score_away:
+                                logger.info(f"   ⚽ Score da fulltime: {score_home}-{score_away}")
+                        
+                        # Prova extratime
+                        extratime = score_data.get("extratime", {})
+                        if isinstance(extratime, dict):
+                            et_home = extratime.get("home")
+                            et_away = extratime.get("away")
+                            if et_home is not None or et_away is not None:
+                                score_home = et_home or score_home
+                                score_away = et_away or score_away
+                                logger.info(f"   ⚽ Score da extratime: {score_home}-{score_away}")
+                        
+                        # Prova halftime
+                        halftime = score_data.get("halftime", {})
+                        if isinstance(halftime, dict):
+                            ht_home = halftime.get("home")
+                            ht_away = halftime.get("away")
+                            if ht_home is not None or ht_away is not None:
+                                score_home = ht_home or score_home
+                                score_away = ht_away or score_away
+                                logger.info(f"   ⚽ Score da halftime: {score_home}-{score_away}")
+                        
+                        # Prova goals (score corrente)
+                        goals = score_data.get("goals", {})
+                        if isinstance(goals, dict):
+                            g_home = goals.get("home")
+                            g_away = goals.get("away")
+                            if g_home is not None or g_away is not None:
+                                score_home = g_home or score_home
+                                score_away = g_away or score_away
+                                logger.info(f"   ⚽ Score da goals: {score_home}-{score_away}")
+                        
+                        # Prova anche altri campi possibili
+                        for key in ["current", "live", "result"]:
+                            if key in score_data:
+                                val = score_data[key]
+                                if isinstance(val, dict):
+                                    c_home = val.get("home")
+                                    c_away = val.get("away")
+                                    if c_home is not None or c_away is not None:
+                                        score_home = c_home or score_home
+                                        score_away = c_away or score_away
+                                        logger.info(f"   ⚽ Score da {key}: {score_home}-{score_away}")
+                    
+                    logger.info(f"   ⚽ Score FINALE estratto: {score_home}-{score_away}")
                     
                     # 🔧 DEBUG: Log RAW fixture_data per capire struttura completa
                     logger.info(f"🔍 RAW fixture_data per {home_team} vs {away_team}:")
