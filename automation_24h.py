@@ -724,9 +724,9 @@ class Automation24H:
         
         for match in matches:
             try:
-                # 🆕 NUOVO: Rileva arbitraggi prima di analisi normale
-                if self.arbitrage_detector:
-                    self._check_arbitrage(match)
+                # 🔧 FIX: Disabilitato arbitraggio per partite LIVE (l'utente vuole solo live betting)
+                # if self.arbitrage_detector:
+                #     self._check_arbitrage(match)
                 
                 # 🆕 SOLO LIVE BETTING: Analizza solo partite live
                 if not self.live_betting_advisor:
@@ -734,10 +734,15 @@ class Automation24H:
                     continue
                 
                 opportunities = self._analyze_live_match(match)
-                for opp in opportunities:
-                    if opp:
-                        opportunities_found += 1
-                        all_opportunities.append(opp)  # Raccogli invece di inviare subito
+                if opportunities:
+                    logger.info(f"📊 {match.get('home')} vs {match.get('away')}: trovate {len(opportunities)} opportunità")
+                    for opp in opportunities:
+                        if opp:
+                            opportunities_found += 1
+                            all_opportunities.append(opp)  # Raccogli invece di inviare subito
+                            logger.debug(f"   - {opp.market}: EV={opp.ev:.1f}%, Conf={opp.confidence:.1f}%")
+                else:
+                    logger.debug(f"📊 {match.get('home')} vs {match.get('away')}: nessuna opportunità trovata")
             except Exception as e:
                 logger.error(f"❌ Error analyzing match {match.get('id', 'unknown')}: {e}")
                 continue
@@ -3410,13 +3415,17 @@ class Automation24H:
                 bookmaker_odds=bookmaker_odds
             )
             
-            if arbitrage and self.notifier:
-                message = self.arbitrage_detector.format_arbitrage_message(arbitrage)
-                try:
-                    self.notifier._send_message(message)
-                    logger.info(f"💰 Arbitraggio trovato e notificato: {match.get('id')}")
-                except Exception as e:
-                    logger.debug(f"Failed to send arbitrage notification: {e}")
+            # 🔧 FIX: Disabilitato invio notifiche arbitraggio (l'utente vuole solo live betting)
+            if arbitrage:
+                logger.debug(f"💰 Arbitraggio trovato (NON notificato): {match.get('id')} - Profitto: {arbitrage.get('profit_pct', 0):.2f}%")
+                # Non inviare notifica arbitraggio
+                # if self.notifier:
+                #     message = self.arbitrage_detector.format_arbitrage_message(arbitrage)
+                #     try:
+                #         self.notifier._send_message(message)
+                #         logger.info(f"💰 Arbitraggio trovato e notificato: {match.get('id')}")
+                #     except Exception as e:
+                #         logger.debug(f"Failed to send arbitrage notification: {e}")
         except Exception as e:
             logger.debug(f"⚠️  Error checking arbitrage: {e}")
     

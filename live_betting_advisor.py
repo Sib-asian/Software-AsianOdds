@@ -446,6 +446,13 @@ class LiveBettingAdvisor:
             if after_initial_checks == initial_count:
                 # 🔍 LOG: Nessuna opportunità trovata dalle funzioni iniziali
                 logger.info(f"🔍 {match_id}: Nessuna opportunità dalle funzioni iniziali (score: {live_data.get('score_home', 0)}-{live_data.get('score_away', 0)}, min: {live_data.get('minute', 0)})")
+                # 🔧 DEBUG: Log dettagliato per capire perché
+                minute = live_data.get('minute', 0)
+                if minute < 20:
+                    logger.debug(f"   ⚠️  Partita al minuto {minute} - molti filtri richiedono minuto >= 20")
+                shots_home = live_data.get('shots_home', 0)
+                shots_away = live_data.get('shots_away', 0)
+                logger.debug(f"   Statistiche: shots={shots_home}/{shots_away}, on_target={live_data.get('shots_on_target_home', 0)}/{live_data.get('shots_on_target_away', 0)}")
             
             # 🆕 NUOVO: Mercati avanzati
             opportunities.extend(self._check_corner_markets(match_id, match_data, live_data))
