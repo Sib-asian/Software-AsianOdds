@@ -506,23 +506,29 @@ class LiveBettingAdvisor:
             
             # 🆕 OTTIMIZZATO: Filtra solo opportunità con EV molto negativo (non tutte quelle negative)
             before_ev_filter = len(opportunities)
-            opportunities = self._filter_by_expected_value(opportunities)
-            after_ev_filter = len(opportunities)
-            if before_ev_filter > 0 and before_ev_filter > after_ev_filter:
-                logger.debug(f"🔍 {match_id}: {before_ev_filter} opportunità prima filtro EV, {after_ev_filter} dopo")
+            opportunities_after_ev = self._filter_by_expected_value(opportunities)
+            after_ev_filter = len(opportunities_after_ev)
+            ev_rejected = before_ev_filter - after_ev_filter
+            opportunities = opportunities_after_ev
+            
+            if ev_rejected > 0:
+                logger.info(f"📊 Filtro EV per {match_id}: {before_ev_filter} opportunità, {ev_rejected} scartate (EV < {self.min_ev}%), {after_ev_filter} rimaste")
             
             # Filtra solo opportunità con alta confidence
             before_confidence_filter = len(opportunities)
-            opportunities = [opp for opp in opportunities if opp.confidence >= self.min_confidence]
-            after_confidence_filter = len(opportunities)
+            opportunities_after_conf = [opp for opp in opportunities if opp.confidence >= self.min_confidence]
+            after_confidence_filter = len(opportunities_after_conf)
+            confidence_rejected = before_confidence_filter - after_confidence_filter
+            opportunities = opportunities_after_conf
+            
             if before_confidence_filter > 0:
-                logger.info(f"📊 LiveBettingAdvisor: {before_confidence_filter} opportunità trovate, {after_confidence_filter} passano filtro confidence (min: {self.min_confidence}%)")
-                if before_confidence_filter > after_confidence_filter:
+                logger.info(f"📊 Filtro Confidence per {match_id}: {before_confidence_filter} opportunità, {confidence_rejected} scartate (confidence < {self.min_confidence}%), {after_confidence_filter} rimaste")
+                if confidence_rejected > 0:
                     # Log confidence delle opportunità filtrate
                     filtered_opps = [opp for opp in opportunities if opp.confidence < self.min_confidence] if before_confidence_filter > after_confidence_filter else []
                     if filtered_opps:
                         confidences = [f"{opp.confidence:.0f}%" for opp in filtered_opps[:5]]  # Prime 5
-                        logger.debug(f"   Confidence filtrate: {', '.join(confidences)}")
+                        logger.info(f"   📊 Confidence filtrate: {', '.join(confidences)}")
             elif before_obvious_filter == 0:
                 # 🔍 NUOVO: Log quando non vengono trovate opportunità iniziali
                 logger.info(f"🔍 {match_id}: Nessuna opportunità iniziale trovata (score: {live_data.get('score_home', 0)}-{live_data.get('score_away', 0)}, min: {live_data.get('minute', 0)})")
@@ -590,6 +596,7 @@ class LiveBettingAdvisor:
                     opp.live_data = live_data
 
             # 🎯 NUOVO: Quality Scoring finale e filtro
+            before_quality_scoring = len(opportunities)
             if self.quality_scorer and opportunities:
                 logger.info(f"🎯 Applicando Quality Scoring a {len(opportunities)} opportunità...")
 
@@ -611,27 +618,34 @@ class LiveBettingAdvisor:
                     if advanced_stats:
                         opp.advanced_stats = advanced_stats
 
-                    logger.debug(
-                        f"   {opp.market}: Quality Score = {quality_result['total_score']:.1f}/100 "
-                        f"({quality_result['grade']}) - "
-                        f"Conf: {opp.confidence:.0f}%, EV: {opp.ev:.1f}%"
+                    logger.info(
+                        f"   📊 {opp.market}: Quality={quality_result['total_score']:.1f}/100 "
+                        f"({quality_result['grade']}), Conf={opp.confidence:.0f}%, EV={opp.ev:.1f}%"
                     )
 
                 # FILTRO: Mantieni solo opportunità con quality score >= 60/100
                 MIN_QUALITY_SCORE = 60.0
                 before_quality_filter = len(opportunities)
-                opportunities = [
+                opportunities_after_quality = [
                     opp for opp in opportunities
                     if opp.signal_quality_score >= MIN_QUALITY_SCORE
                 ]
-                after_quality_filter = len(opportunities)
+                after_quality_filter = len(opportunities_after_quality)
+                quality_rejected = before_quality_filter - after_quality_filter
+                opportunities = opportunities_after_quality
 
-                if before_quality_filter > after_quality_filter:
-                    filtered_count = before_quality_filter - after_quality_filter
+                if quality_rejected > 0:
                     logger.info(
-                        f"🎯 QUALITY FILTER: {filtered_count} opportunità filtrate "
-                        f"(quality score < {MIN_QUALITY_SCORE}/100)"
+                        f"📊 Filtro Quality Score: {before_quality_filter} opportunità, {quality_rejected} scartate "
+                        f"(Quality < {MIN_QUALITY_SCORE}/100), {after_quality_filter} rimaste"
                     )
+                    # Log dettagli delle opportunità scartate
+                    for opp in opportunities[:5]:  # Prime 5 scartate (ma opportunities ora contiene solo quelle che passano)
+                        if hasattr(opp, 'signal_quality_score') and opp.signal_quality_score < MIN_QUALITY_SCORE:
+                            logger.info(
+                                f"   ❌ {opp.market}: Quality={opp.signal_quality_score:.1f}/100 "
+                                f"< {MIN_QUALITY_SCORE} (Conf: {opp.confidence:.0f}%, EV: {opp.ev:.1f}%)"
+                            )
 
                 # Log opportunità che passano
                 if opportunities:
@@ -641,6 +655,8 @@ class LiveBettingAdvisor:
                             f"   ✓ {opp.market}: Quality={opp.signal_quality_score:.1f} "
                             f"({opp.quality_grade}), Conf={opp.confidence:.0f}%, EV={opp.ev:.1f}%"
                         )
+                else:
+                    logger.info(f"📊 Nessuna opportunità passa Quality Scoring (min: {MIN_QUALITY_SCORE}/100)")
 
             # 🎯 NUOVO: Aggiorna tracking diversità mercati per le opportunità selezionate
             for opp in opportunities:
