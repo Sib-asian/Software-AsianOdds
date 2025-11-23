@@ -942,6 +942,13 @@ class Automation24H:
                     teams_data = fixture.get("teams", {})
                     league_data = fixture.get("league", {})
                     odds_data = fixture.get("odds", [])  # Lista di bookmaker con quote
+                    goals_data = fixture.get("goals", {})  # 🔧 FIX: Score potrebbe essere qui!
+                    
+                    # 🔧 DEBUG: Log struttura completa fixture per vedere dove è lo score
+                    logger.info(f"🔍 RAW fixture completo per {teams_data.get('home', {}).get('name', '?')} vs {teams_data.get('away', {}).get('name', '?')}:")
+                    logger.info(f"   fixture.keys(): {list(fixture.keys())}")
+                    logger.info(f"   fixture['goals']: {goals_data}")
+                    logger.info(f"   fixture['teams']: {teams_data}")
                     
                     # Estrai informazioni base
                     fixture_id = fixture_data.get("id")
@@ -1108,7 +1115,7 @@ class Automation24H:
                         logger.warning(f"⚠️  Nessun mercato trovato per {home_team} vs {away_team} (fixture {fixture_id})")
                     
                     # Estrai score e minute dalla fixture
-                    # 🔧 FIX CRITICO: Per partite LIVE, lo score potrebbe essere in diversi campi
+                    # 🔧 FIX CRITICO: Lo score NON è in fixture_data['score'] ma probabilmente in fixture['goals']
                     score_data = fixture_data.get("score", {})
                     
                     # 🔧 DEBUG: Log RAW score_data completo
@@ -1119,21 +1126,29 @@ class Automation24H:
                     else:
                         logger.warning(f"   ⚠️ score_data non è un dict: {score_data}")
                     
-                    # Prova a estrarre lo score in ordine di priorità:
-                    # 1. fulltime (se partita finita)
-                    # 2. extratime (se in tempi supplementari)
-                    # 3. halftime (se ancora nel primo tempo)
-                    # 4. goals (score corrente per partite LIVE)
+                    # 🔧 FIX CRITICO: Prova a estrarre lo score da fixture['goals'] (non fixture_data['score'])
                     score_home = 0
                     score_away = 0
                     
-                    if isinstance(score_data, dict):
+                    # 1. Prova da fixture['goals'] (score corrente LIVE)
+                    if isinstance(goals_data, dict):
+                        g_home = goals_data.get("home")
+                        g_away = goals_data.get("away")
+                        if g_home is not None or g_away is not None:
+                            score_home = g_home or 0
+                            score_away = g_away or 0
+                            logger.info(f"   ⚽ Score da fixture['goals']: {score_home}-{score_away}")
+                    
+                    # 2. Prova da fixture_data['score'] (se presente)
+                    if isinstance(score_data, dict) and score_data:
                         # Prova fulltime
                         fulltime = score_data.get("fulltime", {})
                         if isinstance(fulltime, dict):
-                            score_home = fulltime.get("home") or score_home
-                            score_away = fulltime.get("away") or score_away
-                            if score_home or score_away:
+                            ft_home = fulltime.get("home")
+                            ft_away = fulltime.get("away")
+                            if ft_home is not None or ft_away is not None:
+                                score_home = ft_home or score_home
+                                score_away = ft_away or score_away
                                 logger.info(f"   ⚽ Score da fulltime: {score_home}-{score_away}")
                         
                         # Prova extratime
@@ -1155,28 +1170,6 @@ class Automation24H:
                                 score_home = ht_home or score_home
                                 score_away = ht_away or score_away
                                 logger.info(f"   ⚽ Score da halftime: {score_home}-{score_away}")
-                        
-                        # Prova goals (score corrente)
-                        goals = score_data.get("goals", {})
-                        if isinstance(goals, dict):
-                            g_home = goals.get("home")
-                            g_away = goals.get("away")
-                            if g_home is not None or g_away is not None:
-                                score_home = g_home or score_home
-                                score_away = g_away or score_away
-                                logger.info(f"   ⚽ Score da goals: {score_home}-{score_away}")
-                        
-                        # Prova anche altri campi possibili
-                        for key in ["current", "live", "result"]:
-                            if key in score_data:
-                                val = score_data[key]
-                                if isinstance(val, dict):
-                                    c_home = val.get("home")
-                                    c_away = val.get("away")
-                                    if c_home is not None or c_away is not None:
-                                        score_home = c_home or score_home
-                                        score_away = c_away or score_away
-                                        logger.info(f"   ⚽ Score da {key}: {score_home}-{score_away}")
                     
                     logger.info(f"   ⚽ Score FINALE estratto: {score_home}-{score_away}")
                     
