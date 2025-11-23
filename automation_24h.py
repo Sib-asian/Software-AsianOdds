@@ -1383,13 +1383,13 @@ class Automation24H:
                         match.update(stats_dict_filtered)
                         logger.info(f"✅ Statistiche aggiunte per {home_team} vs {away_team}, minuto finale: {match.get('minute', 0)}', score finale: {match.get('score_home', 0)}-{match.get('score_away', 0)}")
                     
-                    # 🔧 FIX: Controllo quote MENO restrittivo - accetta se ha statistiche E almeno qualche quota
-                    # Per partite LIVE, le quote potrebbero essere incomplete, ma se abbiamo statistiche possiamo analizzare
+                    # 🔧 FIX CRITICO: Accetta partita se ha statistiche - le quote sono opzionali per analisi live
+                    # Per partite LIVE, possiamo analizzare anche senza quote complete (usiamo statistiche)
                     odds_1 = match.get('odds_1')
                     odds_x = match.get('odds_x')
                     odds_2 = match.get('odds_2')
                     has_1x2_complete = odds_1 and odds_x and odds_2
-                    has_1x2_partial = sum([bool(odds_1), bool(odds_x), bool(odds_2)]) >= 1  # 🔧 CAMBIATO: almeno 1 su 3 invece di 2
+                    has_1x2_partial = sum([bool(odds_1), bool(odds_x), bool(odds_2)]) >= 1
                     has_other_odds = (
                         bool(all_odds.get('over_under')) or 
                         bool(all_odds.get('over_under_ht')) or 
@@ -1415,23 +1415,25 @@ class Automation24H:
                     logger.info(f"   Draw No Bet: {bool(all_odds.get('draw_no_bet', {}).get('home'))}")
                     logger.info(f"   Asian Handicap: {bool(all_odds.get('asian_handicap'))}")
                     logger.info(f"   Altre quote: {has_other_odds}")
+                    logger.info(f"   Ha statistiche: {bool(statistics)}")
                     
-                    # 🔧 FIX: Accetta partita se ha statistiche E almeno qualche quota (anche solo 1X2 parziale o altre quote)
-                    if has_1x2_complete:
+                    # 🔧 FIX CRITICO: Accetta partita se ha statistiche (quote sono opzionali per analisi live)
+                    # Le quote servono solo per calcolare EV/confidence, ma possiamo analizzare anche senza
+                    if statistics:  # Se ha statistiche, accetta sempre
                         matches.append(match)
-                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e quote 1X2 complete)")
-                    elif has_1x2_partial and has_other_odds:
-                        matches.append(match)
-                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche, quote 1X2 parziali e altre quote)")
-                    elif has_1x2_partial:
-                        matches.append(match)
-                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e almeno 1 quota 1X2)")
-                    elif has_other_odds:
-                        matches.append(match)
-                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e altre quote disponibili)")
+                        if has_1x2_complete:
+                            logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e quote 1X2 complete)")
+                        elif has_1x2_partial and has_other_odds:
+                            logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche, quote 1X2 parziali e altre quote)")
+                        elif has_1x2_partial:
+                            logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e almeno 1 quota 1X2)")
+                        elif has_other_odds:
+                            logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e altre quote disponibili)")
+                        else:
+                            logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche, quote opzionali per analisi)")
                     else:
-                        skipped_no_odds += 1
-                        logger.warning(f"⚠️  Match {home_team} vs {away_team} senza quote sufficienti (1X2: {bool(odds_1)}/{bool(odds_x)}/{bool(odds_2)}, altre: {has_other_odds}), skip")
+                        skipped_no_stats += 1
+                        logger.warning(f"⚠️  Match {home_team} vs {away_team} senza statistiche, skip")
                 
                 except Exception as e:
                     logger.debug(f"⚠️  Error processing fixture: {e}")
