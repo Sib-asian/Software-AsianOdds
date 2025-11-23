@@ -1057,14 +1057,25 @@ class Automation24H:
                         logger.debug(f"✅ Quote già presenti in /fixtures per {home_team} vs {away_team} ({len(odds_data)} bookmaker)")
                     
                     # Estrai TUTTE le quote disponibili
-                    logger.debug(f"🔍 Estraendo quote per {home_team} vs {away_team} (fixture {fixture_id})...")
+                    logger.info(f"🔍 Estraendo quote per {home_team} vs {away_team} (fixture {fixture_id})...")
+                    logger.info(f"   odds_data type: {type(odds_data)}, length: {len(odds_data) if isinstance(odds_data, list) else 'N/A'}")
+                    if odds_data and len(odds_data) > 0:
+                        logger.info(f"   Primo bookmaker keys: {list(odds_data[0].keys()) if isinstance(odds_data[0], dict) else 'NOT_DICT'}")
+                    
                     all_odds = self._extract_all_odds_from_api_football(odds_data)
                     
-                    # 🔧 DEBUG: Log dettagliato quote estratte
-                    logger.debug(f"   Quote 1X2: home={all_odds.get('match_winner', {}).get('home')}, draw={all_odds.get('match_winner', {}).get('draw')}, away={all_odds.get('match_winner', {}).get('away')}")
-                    logger.debug(f"   Over/Under FT: {len(all_odds.get('over_under', {}))} thresholds")
-                    logger.debug(f"   Over/Under HT: {len(all_odds.get('over_under_ht', {}))} thresholds")
-                    logger.debug(f"   BTTS: {all_odds.get('btts', {}).get('yes')} (yes) / {all_odds.get('btts', {}).get('no')} (no)")
+                    # 🔧 DEBUG: Log dettagliato quote estratte (INFO per vedere nei log)
+                    logger.info(f"📊 Quote estratte per {home_team} vs {away_team}:")
+                    logger.info(f"   Quote 1X2: home={all_odds.get('match_winner', {}).get('home')}, draw={all_odds.get('match_winner', {}).get('draw')}, away={all_odds.get('match_winner', {}).get('away')}")
+                    logger.info(f"   Over/Under FT: {list(all_odds.get('over_under', {}).keys())} ({len(all_odds.get('over_under', {}))} thresholds)")
+                    logger.info(f"   Over/Under HT: {list(all_odds.get('over_under_ht', {}).keys())} ({len(all_odds.get('over_under_ht', {}))} thresholds)")
+                    logger.info(f"   First Half Goals: {list(all_odds.get('first_half_goals', {}).keys())} ({len(all_odds.get('first_half_goals', {}))} thresholds)")
+                    logger.info(f"   Second Half Goals: {list(all_odds.get('second_half_goals', {}).keys())} ({len(all_odds.get('second_half_goals', {}))} thresholds)")
+                    logger.info(f"   BTTS: {all_odds.get('btts', {}).get('yes')} (yes) / {all_odds.get('btts', {}).get('no')} (no)")
+                    logger.info(f"   BTTS HT: {all_odds.get('btts_ht', {}).get('yes')} (yes) / {all_odds.get('btts_ht', {}).get('no')} (no)")
+                    logger.info(f"   Double Chance: {all_odds.get('double_chance', {})}")
+                    logger.info(f"   Draw No Bet: {all_odds.get('draw_no_bet', {})}")
+                    logger.info(f"   Asian Handicap: {bool(all_odds.get('asian_handicap'))}")
                     
                     # Log quanti mercati sono stati trovati
                     markets_found = []
@@ -1259,7 +1270,9 @@ class Automation24H:
                     if all_odds.get('asian_handicap'):
                         match['asian_handicap'] = all_odds['asian_handicap']
                     
-                    # 🔧 FIX: Statistiche già recuperate sopra, aggiungile al match dict
+                    # 🔧 FIX CRITICO: Statistiche già recuperate sopra, aggiungile al match dict
+                    # ⚠️ ATTENZIONE: match.update(stats_dict) sovrascrive TUTTI i campi, incluso minute!
+                    # Devo salvare il minuto PRIMA di fare update e ripristinarlo dopo se stats_dict['minute'] è 0
                     if statistics:
                         # Estrai statistiche e aggiungile al match dict
                         stats_dict = self._parse_statistics_from_api_football(statistics)
@@ -1271,26 +1284,31 @@ class Automation24H:
                         except:
                             logger.info(f"📊 Statistiche presenti per {home_team} vs {away_team} ma non serializzabili")
                         
-                        match.update(stats_dict)
+                        # 🔧 FIX CRITICO: Salva il minuto corrente PRIMA di fare update
+                        minute_before_update = match.get('minute', 0)
+                        logger.info(f"🔍 Minuto PRIMA di update statistiche: {minute_before_update}'")
                         
-                        # 🔧 FIX: Se il minuto dalle statistiche è diverso da quello della fixture, usa quello delle statistiche
-                        # Ma solo se è maggiore (le statistiche potrebbero essere più aggiornate)
+                        # 🔧 FIX CRITICO: Rimuovi 'minute' da stats_dict se è 0 per evitare sovrascrittura
                         stats_minute = stats_dict.get('minute', 0)
-                        logger.info(f"🔍 Minuto da statistiche per {home_team} vs {away_team}: stats_minute={stats_minute}, minute_fixture={minute}")
-                        
-                        if stats_minute > 0:
-                            if stats_minute > minute:
-                                old_minute = minute
+                        if stats_minute == 0:
+                            # Non sovrascrivere il minuto se stats_dict['minute'] è 0
+                            stats_dict_without_minute = {k: v for k, v in stats_dict.items() if k != 'minute'}
+                            match.update(stats_dict_without_minute)
+                            logger.info(f"🔍 Minuto rimosso da stats_dict (era 0), mantenuto minuto fixture: {minute_before_update}'")
+                        else:
+                            # Se stats_dict['minute'] > 0, aggiorna solo se è maggiore
+                            if stats_minute > minute_before_update:
+                                match.update(stats_dict)
                                 minute = stats_minute
                                 match['minute'] = minute
-                                logger.info(f"⏰ Minuto aggiornato da statistiche per {home_team} vs {away_team}: {old_minute}' -> {minute}'")
-                            elif minute == 0 and stats_minute > 0:
-                                # Se minute era 0, usa quello delle statistiche
-                                minute = stats_minute
-                                match['minute'] = minute
-                                logger.info(f"⏰ Minuto impostato da statistiche per {home_team} vs {away_team}: {minute}'")
+                                logger.info(f"⏰ Minuto aggiornato da statistiche per {home_team} vs {away_team}: {minute_before_update}' -> {minute}'")
+                            else:
+                                # Stats minute non è migliore, mantieni quello della fixture
+                                stats_dict_without_minute = {k: v for k, v in stats_dict.items() if k != 'minute'}
+                                match.update(stats_dict_without_minute)
+                                logger.info(f"🔍 Minuto statistiche ({stats_minute}') non migliore di fixture ({minute_before_update}'), mantenuto fixture")
                         
-                        logger.info(f"✅ Statistiche aggiunte per {home_team} vs {away_team}, minuto finale: {minute}'")
+                        logger.info(f"✅ Statistiche aggiunte per {home_team} vs {away_team}, minuto finale: {match.get('minute', 0)}'")
                     
                     # 🔧 FIX: Controllo quote meno restrittivo - accetta se ha almeno 2 quote 1X2 su 3
                     # O se ha altre quote disponibili (over/under, BTTS, ecc.)
