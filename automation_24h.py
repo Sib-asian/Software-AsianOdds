@@ -1103,6 +1103,18 @@ class Automation24H:
                     minute = fixture_data.get("status", {}).get("elapsed") or 0
                     status_short = fixture_data.get("status", {}).get("short", "")
                     
+                    # 🔧 FIX: Se minute è 0 ma status è LIVE, prova a calcolarlo dalla data
+                    if minute == 0 and status_short in ["1H", "HT", "2H", "ET", "P", "LIVE"]:
+                        # Calcola minuto approssimativo dalla data della partita
+                        try:
+                            now = datetime.now(timezone.utc)
+                            time_diff = (now - fixture_date).total_seconds() / 60  # Differenza in minuti
+                            if 0 < time_diff < 120:  # Partita iniziata da meno di 2 ore
+                                minute = int(time_diff)
+                                logger.debug(f"   Minuto calcolato dalla data: {minute}' (differenza: {time_diff:.1f} minuti)")
+                        except:
+                            pass
+                    
                     # Crea match dict con tutte le quote
                     match = {
                         'id': str(fixture_id),
@@ -1175,6 +1187,14 @@ class Automation24H:
                         # Estrai statistiche e aggiungile al match dict
                         stats_dict = self._parse_statistics_from_api_football(statistics)
                         match.update(stats_dict)
+                        
+                        # 🔧 FIX: Se il minuto dalle statistiche è diverso da quello della fixture, usa quello delle statistiche
+                        if stats_dict.get('minute', 0) > 0 and stats_dict.get('minute', 0) != minute:
+                            old_minute = minute
+                            minute = stats_dict.get('minute', 0)
+                            match['minute'] = minute
+                            logger.debug(f"   Minuto aggiornato da statistiche: {old_minute}' -> {minute}'")
+                        
                         logger.debug(f"✅ Statistiche aggiunte per {home_team} vs {away_team}")
                     
                     # 🔧 FIX: Controllo quote meno restrittivo - accetta se ha almeno 2 quote 1X2 su 3
