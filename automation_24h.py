@@ -1455,12 +1455,28 @@ class Automation24H:
             market = getattr(live_opp, 'market', 'unknown')
             market_type = market.split('_')[0] if '_' in market else market
             
-            # 1. Calcola EV e Confidence
+            # 1. 🆕 MIGLIORATO: Calcola EV e Confidence con normalizzazione intelligente
             ev = getattr(live_opp, 'ev', 0.0)
             confidence = getattr(live_opp, 'confidence', 0.0)
+            odds = getattr(live_opp, 'odds', 1.0)
+            minute = stats.get('minute', 0) if isinstance(stats, dict) else opp_dict.get('minute', 0)
             
-            # Normalizza EV (può essere negativo)
-            ev_normalized = (ev / 100.0) + 1.0
+            # 🆕 Normalizzazione EV intelligente (funzione sigmoide/logaritmica)
+            # EV positivo alto → più peso, EV negativo → penalità forte
+            if ev > 0:
+                # EV positivo: usa funzione logaritmica per dare più peso a valori alti
+                # EV 5% → ~1.05, EV 15% → ~1.25, EV 25% → ~1.50
+                ev_normalized = 1.0 + (ev / 100.0) * (1.0 + ev / 50.0)  # Crescita più che lineare
+            elif ev < 0:
+                # EV negativo: penalità forte (esponenziale)
+                # EV -5% → ~0.70, EV -10% → ~0.50
+                ev_normalized = 1.0 + (ev / 100.0) * 1.5  # Penalità più forte
+            else:
+                ev_normalized = 1.0  # EV = 0 → neutro
+            
+            # Limita valori estremi
+            ev_normalized = max(0.3, min(2.0, ev_normalized))
+            
             confidence_normalized = confidence / 100.0
             
             # 2. 🆕 Calcola Quality Score (se disponibile)
@@ -1579,24 +1595,116 @@ class Automation24H:
                     score_modifier *= 1.2
                     modifier_reason = " (bonus +20%: mercato alternativo)"
             
-            # 5. 🆕 Calcola Final Score composito
+            # 5. 🆕 MIGLIORATO: Calcola Final Score con pesi dinamici e bonus sinergia
+            
+            # 🆕 5.1 Pesi dinamici basati su contesto
+            weight_ev = 0.30
+            weight_confidence = 0.30
+            weight_quality = 0.30
+            weight_stats = 0.10
+            
+            # Se EV è molto alto (>15%), dargli più peso
+            if ev > 15.0:
+                weight_ev = 0.40
+                weight_confidence = 0.25
+                weight_quality = 0.25
+                weight_stats = 0.10
+            # Se Confidence è molto alta (>85%), dargli più peso
+            elif confidence > 85.0:
+                weight_confidence = 0.40
+                weight_ev = 0.25
+                weight_quality = 0.25
+                weight_stats = 0.10
+            # Se Quality Score è molto alto (>90), dargli più peso
+            elif quality_score_obj and quality_score_obj.total_score > 90.0:
+                weight_quality = 0.40
+                weight_ev = 0.25
+                weight_confidence = 0.25
+                weight_stats = 0.10
+            
+            # 🆕 5.2 Calcola score base con pesi dinamici
+            base_score = (
+                ev_normalized * weight_ev +
+                confidence_normalized * weight_confidence +
+                quality_score_normalized * weight_quality +
+                stats_bonus * weight_stats
+            )
+            
+            # 🆕 5.3 Bonus sinergia (tutti i fattori alti insieme)
+            synergy_bonus = 1.0
+            synergy_factors = 0
+            
+            if ev > 10.0:
+                synergy_factors += 1
+            if confidence > 80.0:
+                synergy_factors += 1
+            if quality_score_obj and quality_score_obj.total_score > 85.0:
+                synergy_factors += 1
+            
+            # Bonus progressivo: 2 fattori alti = +10%, tutti e 3 = +20%
+            if synergy_factors == 2:
+                synergy_bonus = 1.10
+            elif synergy_factors == 3:
+                synergy_bonus = 1.20
+            
+            # 🆕 5.4 Fattore tempo (minuto del match)
+            time_factor = 1.0
+            if minute > 0:
+                if minute <= 20:
+                    # Minuti iniziali: statistiche meno affidabili
+                    time_factor = 0.90  # -10%
+                elif minute >= 60:
+                    # Minuti avanzati: statistiche più affidabili
+                    time_factor = 1.05  # +5%
+                # Minuti 20-60: neutro (time_factor = 1.0)
+            
+            # 🆕 5.5 Fattore qualità quote
+            odds_factor = 1.0
+            if odds > 0:
+                if odds >= 2.0:
+                    # Quote molto favorevoli: bonus
+                    odds_factor = 1.10  # +10%
+                elif odds < 1.3:
+                    # Quote troppo basse: penalità
+                    odds_factor = 0.95  # -5%
+                # Quote 1.3-2.0: neutro (odds_factor = 1.0)
+            
+            # 🆕 5.6 Penalità per EV negativo o troppo basso
+            ev_penalty = 1.0
+            if ev < 0:
+                # EV negativo: penalità forte
+                ev_penalty = 0.70  # -30%
+            elif ev < 5.0:
+                # EV troppo basso (<5%): penalità leggera
+                ev_penalty = 0.90  # -10%
+            
+            # 🆕 5.7 Calcola Final Score composito con tutti i fattori
             final_score = (
-                ev_normalized * 0.30 +
-                confidence_normalized * 0.30 +
-                quality_score_normalized * 0.30 +
-                stats_bonus * 0.10
-            ) * score_modifier
+                base_score * 
+                synergy_bonus * 
+                time_factor * 
+                odds_factor * 
+                ev_penalty * 
+                score_modifier
+            )
             
             minute = stats.get('minute', 0) if isinstance(stats, dict) else 0
             
             scored_opportunities.append({
                 'opportunity': opp_dict,
                 'score': final_score,
+                'score_original': final_score,  # 🆕 Salva score originale prima di diversificazione
                 'ev': ev,
                 'confidence': confidence,
                 'quality_score': quality_score_obj.total_score if quality_score_obj else 0.0,
                 'stats_bonus': stats_bonus,
                 'minute': minute,
+                'odds': odds,
+                'base_score': base_score,  # 🆕 Score base (prima di bonus/penalità)
+                'synergy_bonus': synergy_bonus,  # 🆕 Bonus sinergia
+                'time_factor': time_factor,  # 🆕 Fattore tempo
+                'odds_factor': odds_factor,  # 🆕 Fattore quote
+                'ev_penalty': ev_penalty,  # 🆕 Penalità EV
                 'score_modifier': score_modifier,
                 'modifier_reason': modifier_reason,
                 'opp_key': opp_key  # Per cache
@@ -1605,36 +1713,110 @@ class Automation24H:
         # Ordina per score decrescente
         scored_opportunities.sort(key=lambda x: x['score'], reverse=True)
         
-        # 🆕 FIX: Diversificazione mercati - penalizza mercati già inviati di recente
-        # Conta quante volte ogni mercato è stato inviato nelle ultime notifiche
-        market_counts = {}
+        # 🆕 FIX: Diversificazione intelligente per TIPO di mercato
+        # 1. Conta quante volte ogni TIPO di mercato è stato inviato di recente
+        market_type_counts = {}
         if hasattr(self, 'last_global_notification_time') and self.last_global_notification_time:
-            # Conta mercati inviati nelle ultime 30 minuti (circa 3 notifiche)
-            cutoff_time = datetime.now() - timedelta(minutes=30)
+            # Conta tipi di mercato inviati nelle ultime 60 minuti (circa 6 notifiche)
+            cutoff_time = datetime.now() - timedelta(minutes=60)
             for match_id_history, markets_list in self.match_markets_history.items():
                 for market_entry in markets_list:
                     if market_entry['timestamp'] > cutoff_time:
                         market = market_entry['market']
-                        market_counts[market] = market_counts.get(market, 0) + 1
+                        # Estrai tipo di mercato (over, under, btts, next_goal, cards, ecc.)
+                        market_type = market.split('_')[0] if '_' in market else market
+                        market_type_counts[market_type] = market_type_counts.get(market_type, 0) + 1
         
-        # Applica penalizzazione aggiuntiva per mercati già inviati di recente
+        # 2. Applica penalizzazione per TIPO di mercato già inviato di recente
         for opp in scored_opportunities:
             live_opp = opp['opportunity'].get('live_opportunity')
             if live_opp:
                 market = getattr(live_opp, 'market', None)
-                if market and market in market_counts:
-                    # Penalizza in base a quante volte è stato inviato
-                    penalty = 0.1 * market_counts[market]  # -10% per ogni volta inviato
-                    opp['score'] *= (1.0 - min(penalty, 0.5))  # Max -50% di penalizzazione
-                    current_reason = opp.get('modifier_reason', '')
-                    opp['modifier_reason'] = f"{current_reason} (penalizzato -{penalty*100:.0f}%: mercato già inviato {market_counts[market]} volte)"
+                if market:
+                    # Estrai tipo di mercato
+                    market_type = market.split('_')[0] if '_' in market else market
+                    
+                    # Penalizza tipo di mercato già inviato di recente
+                    if market_type in market_type_counts:
+                        type_count = market_type_counts[market_type]
+                        # Penalizzazione progressiva: -15% per ogni volta che il TIPO è stato inviato
+                        penalty = 0.15 * type_count
+                        opp['score'] *= (1.0 - min(penalty, 0.70))  # Max -70% di penalizzazione
+                        current_reason = opp.get('modifier_reason', '')
+                        opp['modifier_reason'] = f"{current_reason} (penalizzato -{penalty*100:.0f}%: tipo '{market_type}' già inviato {type_count} volte)"
+                    else:
+                        # Bonus per tipo di mercato non inviato di recente
+                        bonus = 1.15  # +15% bonus
+                        opp['score'] *= bonus
+                        current_reason = opp.get('modifier_reason', '')
+                        opp['modifier_reason'] = f"{current_reason} (bonus +15%: tipo '{market_type}' non inviato di recente)"
         
-        # Riordina dopo penalizzazioni
+        # 3. Riordina dopo penalizzazioni/bonus
         scored_opportunities.sort(key=lambda x: x['score'], reverse=True)
         
-        # 🆕 Seleziona SOLO la migliore in assoluto (max 1)
+        # 4. 🆕 NUOVO: Seleziona la migliore per ogni TIPO di mercato (diversificazione intelligente)
+        best_by_type = {}  # market_type -> best opportunity
+        for opp in scored_opportunities:
+            live_opp = opp['opportunity'].get('live_opportunity')
+            if live_opp:
+                market = getattr(live_opp, 'market', None)
+                if market:
+                    market_type = market.split('_')[0] if '_' in market else market
+                    # Se non abbiamo ancora una opportunità per questo tipo, o questa è migliore
+                    if market_type not in best_by_type or opp['score'] > best_by_type[market_type]['score']:
+                        best_by_type[market_type] = opp
+        
+        # 5. Seleziona la migliore tra le migliori di ogni tipo (diversificazione intelligente)
+        # IMPORTANTE: La diversificazione è solo un modificatore, la QUALITÀ rimane prioritaria
         best = []
-        if scored_opportunities:
+        if best_by_type:
+            # Ordina per score ORIGINALE (prima di diversificazione) per mantenere qualità come priorità
+            # Poi usa lo score finale (dopo diversificazione) come tie-breaker
+            sorted_by_type = sorted(
+                best_by_type.items(), 
+                key=lambda x: (
+                    x[1].get('score_original', x[1].get('score', 0)),  # Priorità: score originale (qualità)
+                    x[1].get('score', 0)  # Tie-breaker: score finale (diversificazione)
+                ),
+                reverse=True
+            )
+            
+            # Prendi la migliore in assoluto (basata su qualità originale)
+            # Ma verifica che lo score finale (dopo diversificazione) sia ancora ragionevole
+            for market_type, opp in sorted_by_type:
+                score_original = opp.get('score_original', opp.get('score', 0))
+                score_final = opp.get('score', 0)
+                
+                # Soglia minima: lo score finale deve essere almeno il 50% dello score originale
+                # Questo garantisce che anche dopo penalizzazione, l'opportunità mantenga qualità
+                min_score_threshold = score_original * 0.5
+                
+                if score_final >= min_score_threshold:
+                    best.append(opp)
+                    live_opp = opp['opportunity'].get('live_opportunity')
+                    market = getattr(live_opp, 'market', 'unknown') if live_opp else 'unknown'
+                    logger.info(f"   ✅ Selezionata opportunità tipo '{market_type}' ({market})")
+                    logger.info(f"      📊 Score originale: {score_original:.3f} | Score finale: {score_final:.3f}")
+                    logger.info(f"      📈 EV: {opp['ev']:.1f}% | Conf: {opp['confidence']:.1f}% | Quality: {opp.get('quality_score', 0):.1f} | Odds: {opp.get('odds', 0):.2f}")
+                    # 🆕 Log dettagliato dei fattori di calcolo
+                    logger.debug(f"      🔍 Dettagli calcolo: Base={opp.get('base_score', 0):.3f} | Sinergia={opp.get('synergy_bonus', 1.0):.2f}x | Tempo={opp.get('time_factor', 1.0):.2f}x | Quote={opp.get('odds_factor', 1.0):.2f}x | EV_penalty={opp.get('ev_penalty', 1.0):.2f}x")
+                    break
+            
+            # Se nessuna opportunità passa la soglia minima, prendi comunque la migliore per qualità originale
+            if not best and sorted_by_type:
+                best.append(sorted_by_type[0][1])
+                logger.warning(f"   ⚠️  Nessuna opportunità sopra soglia minima, selezionata la migliore per qualità originale")
+            
+            # Log delle migliori per tipo (per debug)
+            logger.debug(f"   📊 Top 5 opportunità per tipo di mercato:")
+            for market_type, opp in sorted(best_by_type.items(), key=lambda x: x[1].get('score_original', x[1].get('score', 0)), reverse=True)[:5]:
+                live_opp = opp['opportunity'].get('live_opportunity')
+                market = getattr(live_opp, 'market', 'unknown') if live_opp else 'unknown'
+                score_orig = opp.get('score_original', opp.get('score', 0))
+                score_fin = opp.get('score', 0)
+                logger.debug(f"      {market_type}: {market} | Score orig: {score_orig:.3f} | Score fin: {score_fin:.3f} | EV: {opp['ev']:.1f}%")
+        elif scored_opportunities:
+            # Fallback: se non riusciamo a categorizzare, prendi la migliore in assoluto
             best.append(scored_opportunities[0])
         
         # Log dettagliato
@@ -2081,13 +2263,24 @@ class Automation24H:
                     except Exception as e:
                         logger.warning(f"⚠️  Error sending weekly report: {e}")
             
+            # 🔧 NUOVO: Invia report giornaliero live betting
+            if hasattr(self, 'live_betting_reports') and self.live_betting_reports:
+                try:
+                    self.live_betting_reports.send_daily_report()
+                    logger.info("✅ Live betting daily report sent")
+                except Exception as e:
+                    logger.warning(f"⚠️  Errore invio report giornaliero live betting: {e}")
+            
             # 🔧 NUOVO: Invia report settimanale live betting
             if hasattr(self, 'live_betting_reports') and self.live_betting_reports:
                 try:
-                    self.live_betting_reports.send_weekly_report()
-                    # Verifica e invia alert se win rate basso
-                    self.live_betting_reports.check_and_send_alerts()
-                    logger.info("✅ Live betting weekly report sent")
+                    days_since_weekly = (datetime.now() - self.last_weekly_report).days
+                    if days_since_weekly >= 7:
+                        self.live_betting_reports.send_weekly_report()
+                        # Verifica e invia alert se win rate basso
+                        self.live_betting_reports.check_and_send_alerts()
+                        self.last_weekly_report = datetime.now()
+                        logger.info("✅ Live betting weekly report sent")
                 except Exception as e:
                     logger.warning(f"⚠️  Errore invio report settimanale live betting: {e}")
     
@@ -2314,6 +2507,20 @@ class Automation24H:
                         # Determina outcome scommessa (da implementare con logica specifica)
                         # self.result_tracker_auto.update_betting_results(...)
                         pass
+                    
+                    # 🔧 NUOVO: Aggiorna live performance tracker se partita finita
+                    if hasattr(self, 'live_performance_tracker') and self.live_performance_tracker:
+                        try:
+                            match_id = result.match_id if hasattr(result, 'match_id') else None
+                            if match_id and result.home_score is not None and result.away_score is not None:
+                                self.live_performance_tracker.update_live_result(
+                                    match_id=match_id,
+                                    final_score_home=result.home_score,
+                                    final_score_away=result.away_score
+                                )
+                                logger.info(f"✅ Live performance tracker aggiornato per match {match_id} (risultato: {result.home_score}-{result.away_score})")
+                        except Exception as e:
+                            logger.warning(f"⚠️  Errore aggiornamento live performance tracker: {e}")
         except Exception as e:
             logger.debug(f"⚠️  Error updating results: {e}")
     
