@@ -997,18 +997,34 @@ class Automation24H:
                     logger.info(f"✅ Statistiche disponibili per {home_team} vs {away_team} (status: {status_short}), procedo con estrazione quote")
                     
                     # 🔧 FIX: Per partite LIVE, dobbiamo fare una chiamata separata per le quote
-                    # L'endpoint /fixtures/live non include le quote, dobbiamo richiederle
+                    # L'endpoint /fixtures non include sempre le quote per partite LIVE, dobbiamo richiederle
                     if not odds_data or len(odds_data) == 0:
-                        # Prova a recuperare le quote per questa partita
+                        # Prova a recuperare le quote per questa partita LIVE
                         try:
                             odds_url = f"{base_url}/odds?fixture={fixture_id}"
                             odds_req = urllib.request.Request(odds_url, headers=headers)
                             with urllib.request.urlopen(odds_req, timeout=10) as odds_response:
                                 odds_data_response = json.loads(odds_response.read().decode())
-                                if odds_data_response.get("response"):
-                                    odds_data = odds_data_response["response"]
-                                    self.api_usage_today += 1  # Conta chiamata API per quote
-                                    logger.debug(f"✅ Quote recuperate per {home_team} vs {away_team}")
+                                if odds_data_response.get("response") and len(odds_data_response["response"]) > 0:
+                                    # La risposta è una lista di bookmaker, ognuno con le sue quote
+                                    # Prendi tutti i bookmaker disponibili
+                                    odds_data = []
+                                    for bookmaker_data in odds_data_response["response"]:
+                                        if "bookmakers" in bookmaker_data:
+                                            odds_data.extend(bookmaker_data["bookmakers"])
+                                        else:
+                                            # Se la struttura è diversa, prova a usare direttamente
+                                            odds_data.append(bookmaker_data)
+                                    
+                                    if odds_data:
+                                        self.api_usage_today += 1  # Conta chiamata API per quote
+                                        logger.info(f"✅ Quote recuperate per {home_team} vs {away_team} (fixture {fixture_id}, {len(odds_data)} bookmaker)")
+                                    else:
+                                        logger.debug(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (struttura risposta inattesa)")
+                                else:
+                                    logger.debug(f"⚠️  Nessuna quota disponibile per fixture {fixture_id}")
+                        except urllib.error.HTTPError as e:
+                            logger.debug(f"⚠️  HTTP error recupero quote per fixture {fixture_id}: {e.code} - {e.reason}")
                         except Exception as e:
                             logger.debug(f"⚠️  Errore recupero quote per fixture {fixture_id}: {e}")
                     
@@ -1124,12 +1140,20 @@ class Automation24H:
                         match.update(stats_dict)
                         logger.debug(f"✅ Statistiche aggiunte per {home_team} vs {away_team}")
                     
-                    # Aggiungi match solo se ha almeno le quote base 1X2
-                    if match.get('odds_1') and match.get('odds_x') and match.get('odds_2'):
+                    # 🔧 FIX: Per partite LIVE, accetta anche se non ha tutte le quote 1X2
+                    # Le quote LIVE possono essere incomplete, ma se ha statistiche e almeno alcune quote, va bene
+                    has_any_odds = (
+                        match.get('odds_1') or match.get('odds_x') or match.get('odds_2') or
+                        all_odds.get('over_under') or all_odds.get('over_under_ht') or
+                        all_odds.get('btts', {}).get('yes') or all_odds.get('double_chance', {}).get('1x')
+                    )
+                    
+                    if has_any_odds:
                         matches.append(match)
+                        logger.debug(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e almeno alcune quote)")
                     else:
                         skipped_no_odds += 1
-                        logger.warning(f"⚠️  Match {home_team} vs {away_team} senza quote 1X2 complete, skip")
+                        logger.debug(f"⚠️  Match {home_team} vs {away_team} senza quote disponibili, skip")
                 
                 except Exception as e:
                     logger.debug(f"⚠️  Error processing fixture: {e}")
