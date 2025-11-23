@@ -140,7 +140,7 @@ class Automation24H:
         telegram_chat_id: Optional[str] = None,
         min_ev: float = 8.0,  # EV minimo 8%
         min_confidence: float = 70.0,  # Confidence minima 70%
-        update_interval: int = 600,  # 10 minuti (600 secondi)
+        update_interval: int = 1200,  # 20 minuti (1200 secondi)
         api_budget_per_day: int = 7500,  # Piano Pro: 7500 chiamate/giorno
         max_notifications_per_cycle: int = 1  # Max notifiche per ciclo (solo la migliore in assoluto)
     ):
@@ -157,8 +157,9 @@ class Automation24H:
         self.notified_opportunities: Set[str] = set()  # Evita duplicati
         self.notified_opportunities_timestamps: Dict[str, datetime] = {}  # Timestamp delle notifiche
         self.notified_matches_timestamps: Dict[str, datetime] = {}  # Timestamp per partita (max 1 notifica ogni 30 min per partita)
-        self.last_global_notification_time: Optional[datetime] = None  # 🆕 Limite globale 10 minuti tra qualsiasi notifica
-        self._load_last_global_notification_time()  # 🆕 Carica timestamp persistente
+        self.last_global_notification_time: Optional[datetime] = None  # 🆕 Limite globale 20 minuti tra BETTING notifications
+        # 🔧 FIX: Caricamento timestamp spostato alla fine di _init_components (dopo init signal_quality_learner)
+        self.last_system_notification_time: Optional[datetime] = None  # 🎯 NUOVO: Limite 1 ora tra SYSTEM notifications (stats, reports, progress)
         # 🔧 OPZIONE 4: Tracking mercati già suggeriti per partita (per penalizzazione/bonus)
         self.match_markets_history: Dict[str, List[Dict[str, Any]]] = {}  # match_id -> lista di {market, timestamp}
         # 🆕 Cache Quality Score per evitare doppio calcolo
@@ -172,6 +173,10 @@ class Automation24H:
         self.last_progress_notification = {}  # {threshold: datetime}
         self.last_signal_count = 0  # Ultimo conteggio segnali per rilevare nuovi
         self.start_time = datetime.now()  # Per calcolo stima giorni
+
+        # 🔧 FIX: Path fisso per file di stato - scegli UNA VOLTA e usa sempre quello
+        self.state_file_path = self._get_state_file_path()
+
         self.api_usage_today = 0
         self.last_api_reset = datetime.now().date()
         self.last_daily_report = datetime.now().date()
@@ -209,6 +214,27 @@ class Automation24H:
                 )
                 logger.info(f"   LiveBettingAdvisor: min_confidence={min_confidence}%, min_ev={live_min_ev}% (abbassato per live betting)")
                 logger.info("✅ LiveBettingAdvisor initialized")
+
+                # 🎯 NUOVO: Health Check all'avvio
+                logger.info("\n" + "=" * 60)
+                logger.info("🔍 RUNNING HEALTH CHECK...")
+                logger.info("=" * 60)
+                health_status = self.live_betting_advisor.health_check()
+
+                # Verifica che tutto sia OK
+                if health_status['status'] != 'OK':
+                    logger.warning("\n⚠️  ATTENZIONE: Sistema in modalità DEGRADATA")
+                    logger.warning("Componenti mancanti:")
+                    for comp, available in health_status['components'].items():
+                        status_icon = "✅" if available else "❌"
+                        logger.warning(f"  {status_icon} {comp}: {'OK' if available else 'MANCANTE'}")
+                    logger.warning("\nPer massima precisione, verifica configurazione!\n")
+                else:
+                    logger.info("\n✅ HEALTH CHECK PASSED - Sistema al 100%")
+                    logger.info("Componenti attivi:")
+                    for comp, available in health_status['components'].items():
+                        logger.info(f"  ✅ {comp}")
+                    logger.info("")
             except Exception as e:
                 logger.warning(f"⚠️  LiveBettingAdvisor error: {e}")
                 self.live_betting_advisor = None
@@ -289,10 +315,11 @@ class Automation24H:
         
         # Sistemi avanzati 24/7 (dopo notifier e api_manager)
         if ADVANCED_SYSTEMS_AVAILABLE:
-            self.odds_monitor = OddsMonitor()
+            # 🔇 DISABILITATO: Odds monitor e arbitrage per ridurre spam notifiche
+            self.odds_monitor = None  # OddsMonitor() - DISABILITATO per evitare notifiche extra
             self.result_tracker_auto = ResultTrackerAuto(api_manager=self.api_manager)
             self.pre_match_alerter = PreMatchAlerter(notifier=self.notifier)
-            self.arbitrage_detector = ArbitrageDetectorAuto(min_profit_pct=1.0)
+            self.arbitrage_detector = None  # ArbitrageDetectorAuto(min_profit_pct=1.0) - DISABILITATO per evitare notifiche extra
             
             # News analyzer (richiede sentiment analyzer se disponibile)
             sentiment_analyzer = None
@@ -375,7 +402,10 @@ class Automation24H:
             self.match_filters = None
             self.bankroll_manager = None
             self.automated_reports = None
-    
+
+        # 🔧 FIX: Carica timestamp globale DOPO l'inizializzazione di signal_quality_learner
+        self._load_last_global_notification_time()
+
     def start(self, single_run: bool = False):
         """
         Avvia sistema 24/7
@@ -525,8 +555,12 @@ class Automation24H:
                                 status = "✅" if was_approved else "❌"
                                 message += f"{status} {match_id[:20]}/{market} (QS: {quality_score:.1f})\n"
                         
-                        self.notifier._send_message(message, parse_mode="HTML")
-                        logger.info(f"📊 Notifica statistiche database: {total_signals} totali ({approved_count} approvati, {blocked_count} bloccati)")
+                        # 🎯 Usa metodo sistema con limite 1 ora
+                        sent = self._send_system_notification(message, parse_mode="HTML", min_interval_minutes=60)
+                        if sent:
+                            logger.info(f"📊 Notifica statistiche database: {total_signals} totali ({approved_count} approvati, {blocked_count} bloccati)")
+                        else:
+                            logger.debug(f"📊 Notifica statistiche database bloccata da limite temporale")
                     except Exception as e:
                         logger.debug(f"⚠️  Errore notifica statistiche database: {e}")
                     
@@ -571,10 +605,14 @@ class Automation24H:
                             filled = int(progress_percent / 100 * bar_length)
                             bar = "█" * filled + "░" * (bar_length - filled)
                             message += f"<code>{bar}</code> {progress_percent:.0f}%"
-                            
-                            self.notifier._send_message(message, parse_mode="HTML")
-                            self.last_progress_notification[threshold_key] = datetime.now()
-                            logger.info(f"📊 Notifica progresso: {signals_with_results}/{min_samples} ({progress_percent:.1f}%)")
+
+                            # 🎯 Usa metodo sistema con limite 1 ora
+                            sent = self._send_system_notification(message, parse_mode="HTML", min_interval_minutes=60)
+                            if sent:
+                                self.last_progress_notification[threshold_key] = datetime.now()
+                                logger.info(f"📊 Notifica progresso: {signals_with_results}/{min_samples} ({progress_percent:.1f}%)")
+                            else:
+                                logger.debug(f"📊 Notifica progresso bloccata da limite temporale")
                         except Exception as e:
                             logger.debug(f"⚠️  Errore notifica progresso: {e}")
             except Exception as e:
@@ -589,14 +627,15 @@ class Automation24H:
                 try:
                     logger.info("🧠 Eseguendo apprendimento automatico Signal Quality Gate...")
                     
-                    # 🆕 Notifica inizio apprendimento
+                    # 🆕 Notifica inizio apprendimento (sistema, limite 1 ora)
                     if self.notifier:
                         try:
-                            self.notifier._send_message(
+                            self._send_system_notification(
                                 "🧠 <b>IA: Apprendimento Automatico</b>\n\n"
                                 "🔄 Inizio apprendimento Signal Quality Gate...\n"
                                 "📊 Analizzando risultati segnali precedenti...",
-                                parse_mode="HTML"
+                                parse_mode="HTML",
+                                min_interval_minutes=60
                             )
                         except Exception as e:
                             logger.debug(f"⚠️  Errore notifica inizio apprendimento: {e}")
@@ -632,7 +671,8 @@ class Automation24H:
                                     f"🎯 <b>Nuova Soglia Minima:</b> {results['min_quality_score']:.1f}/100\n\n"
                                     f"📈 Sistema aggiornato e pronto!"
                                 )
-                                self.notifier._send_message(message, parse_mode="HTML")
+                                # 🎯 Usa metodo sistema con limite 1 ora
+                                self._send_system_notification(message, parse_mode="HTML", min_interval_minutes=60)
                             except Exception as e:
                                 logger.debug(f"⚠️  Errore notifica completamento apprendimento: {e}")
                         
@@ -647,14 +687,15 @@ class Automation24H:
                     elif results.get('status') == 'insufficient_samples':
                         logger.info(f"ℹ️  Campioni insufficienti per apprendere ({results['samples']} < {results['min_samples']})")
                         
-                        # 🆕 Notifica campioni insufficienti
+                        # 🆕 Notifica campioni insufficienti (sistema, limite 1 ora)
                         if self.notifier:
                             try:
-                                self.notifier._send_message(
+                                self._send_system_notification(
                                     f"⚠️ <b>IA: Apprendimento Posticipato</b>\n\n"
                                     f"📊 Campioni insufficienti: {results['samples']}/{results['min_samples']}\n"
                                     f"⏳ Attendo più dati per apprendere...",
-                                    parse_mode="HTML"
+                                    parse_mode="HTML",
+                                    min_interval_minutes=60
                                 )
                             except Exception as e:
                                 logger.debug(f"⚠️  Errore notifica campioni insufficienti: {e}")
@@ -663,14 +704,15 @@ class Automation24H:
                 except Exception as e:
                     logger.error(f"❌ Errore apprendimento automatico: {e}")
                     
-                    # 🆕 Notifica errore apprendimento
+                    # 🆕 Notifica errore apprendimento (sistema, limite 1 ora)
                     if self.notifier:
                         try:
-                            self.notifier._send_message(
+                            self._send_system_notification(
                                 f"❌ <b>IA: Errore Apprendimento</b>\n\n"
                                 f"⚠️ Errore durante l'apprendimento automatico:\n"
                                 f"<code>{str(e)[:200]}</code>",
-                                parse_mode="HTML"
+                                parse_mode="HTML",
+                                min_interval_minutes=60
                             )
                         except:
                             pass
@@ -785,8 +827,10 @@ class Automation24H:
         if self.multi_source_finder:
             try:
                 logger.info("🔍 Usando sistema multi-fonte per trovare partite (TheOddsAPI + API-SPORTS + Football-Data.org)...")
+                # 🔧 FIX: Cerca partite per OGGI (days_ahead=0) invece di domani
+                # Include anche partite live tramite include_live=True
                 matches = self.multi_source_finder.find_all_matches(
-                    days_ahead=1,
+                    days_ahead=0,  # 🔧 Cambiato da 1 a 0 per cercare partite di OGGI
                     include_minor_leagues=True,
                     include_live=True
                 )
@@ -1110,6 +1154,31 @@ class Automation24H:
                 'odds_1': match.get('odds_1'),
                 'odds_x': match.get('odds_x'),
                 'odds_2': match.get('odds_2'),
+                # 🆕 NUOVO: Quote Over/Under e BTTS da API-SPORTS
+                'odds_over_0_5': match.get('odds_over_0_5'),
+                'odds_under_0_5': match.get('odds_under_0_5'),
+                'odds_over_1_5': match.get('odds_over_1_5'),
+                'odds_under_1_5': match.get('odds_under_1_5'),
+                'odds_over_2_5': match.get('odds_over_2_5'),
+                'odds_under_2_5': match.get('odds_under_2_5'),
+                'odds_over_3_5': match.get('odds_over_3_5'),
+                'odds_under_3_5': match.get('odds_under_3_5'),
+                'odds_btts_yes': match.get('odds_btts_yes'),
+                'odds_btts_no': match.get('odds_btts_no'),
+                # 🆕 NUOVO: Quote Double Chance, DNB, HT/FT, Odd/Even
+                'odds_1x': match.get('odds_1x'),
+                'odds_x2': match.get('odds_x2'),
+                'odds_12': match.get('odds_12'),
+                'odds_dnb_home': match.get('odds_dnb_home'),
+                'odds_dnb_away': match.get('odds_dnb_away'),
+                'odds_ht_1': match.get('odds_ht_1'),
+                'odds_ht_x': match.get('odds_ht_x'),
+                'odds_ht_2': match.get('odds_ht_2'),
+                'odds_2h_1': match.get('odds_2h_1'),
+                'odds_2h_x': match.get('odds_2h_x'),
+                'odds_2h_2': match.get('odds_2h_2'),
+                'odds_goals_odd': match.get('odds_goals_odd'),
+                'odds_goals_even': match.get('odds_goals_even'),
             }
             
             # Prepara live_data (dati live partita)
@@ -2069,11 +2138,11 @@ class Automation24H:
         # 🔧 FIX: Definisci 'now' prima di usarlo
         now = datetime.now()
         
-        # 🆕 FIX: Limite globale 10 minuti tra qualsiasi notifica (CONTROLLO PRIMA DI TUTTO)
+        # 🆕 FIX: Limite globale 20 minuti tra qualsiasi notifica (CONTROLLO PRIMA DI TUTTO)
         if hasattr(self, 'last_global_notification_time') and self.last_global_notification_time:
             time_since_global = (now - self.last_global_notification_time).total_seconds() / 60
-            if time_since_global < 10:  # Blocco globale 10 minuti
-                logger.info(f"⏭️  Notifica globale bloccata: ultima notifica {time_since_global:.1f} minuti fa (minimo 10 minuti richiesti) - Match: {match_id}, Market: {market}")
+            if time_since_global < 20:  # Blocco globale 20 minuti
+                logger.info(f"⏭️  Notifica globale bloccata: ultima notifica {time_since_global:.1f} minuti fa (minimo 20 minuti richiesti) - Match: {match_id}, Market: {market}")
                 logger.debug(f"   Timestamp ultima notifica: {self.last_global_notification_time}, Ora attuale: {now}")
                 return
         else:
@@ -2237,7 +2306,8 @@ class Automation24H:
                         # Se non supporta additional_content, invia normale e poi invia enhanced separatamente
                         self.automated_reports.send_daily_report()
                         if enhanced_report and self.notifier:
-                            self.notifier.send_message(f"📊 AI Insights Daily:\n{enhanced_report}")
+                            # 🎯 Usa metodo sistema con limite 1 ora
+                            self._send_system_notification(f"📊 AI Insights Daily:\n{enhanced_report}", min_interval_minutes=60)
                     self.last_daily_report = today
                     logger.info("✅ Daily report sent (with AI insights)")
                 except Exception as e:
@@ -2257,7 +2327,8 @@ class Automation24H:
                             # Se non supporta additional_content, invia normale e poi invia enhanced separatamente
                             self.automated_reports.send_weekly_report()
                             if enhanced_report and self.notifier:
-                                self.notifier.send_message(f"📊 AI Insights Weekly:\n{enhanced_report}")
+                                # 🎯 Usa metodo sistema con limite 1 ora
+                                self._send_system_notification(f"📊 AI Insights Weekly:\n{enhanced_report}", min_interval_minutes=60)
                         self.last_weekly_report = datetime.now()
                         logger.info("✅ Weekly report sent (with AI insights)")
                     except Exception as e:
@@ -2572,13 +2643,15 @@ class Automation24H:
                 if news.importance in ['HIGH', 'CRITICAL']
             ]
             
-            # Invia alert per notizie importanti
+            # Invia alert per notizie importanti (sistema, limite 1 ora)
             for news in important_news:
                 if self.notifier:
                     message = self.news_analyzer.format_news_alert(news)
                     try:
-                        self.notifier._send_message(message)
-                        logger.info(f"📰 News importante notificata: {news.title[:50]}")
+                        # 🎯 Usa metodo sistema con limite 1 ora
+                        sent = self._send_system_notification(message, min_interval_minutes=60)
+                        if sent:
+                            logger.info(f"📰 News importante notificata: {news.title[:50]}")
                     except Exception as e:
                         logger.debug(f"Failed to send news alert notification: {e}")
         except Exception as e:
@@ -2592,65 +2665,127 @@ class Automation24H:
         # Forza uscita immediata (non aspetta sleep)
         logger.info("✅ Shutdown signal processed, exiting...")
     
+    def _get_state_file_path(self) -> Path:
+        """
+        Determina il path del file di stato UNA volta sola per evitare inconsistenze.
+
+        PRIORITÀ (con migrazione automatica):
+        1. Se file esiste in ./automation_state.json E /data esiste → migra a /data
+        2. Se /data esiste → usa /data/automation_state.json
+        3. Altrimenti → usa ./automation_state.json
+
+        Returns:
+            Path fisso da usare sempre per salvataggio/caricamento
+        """
+        local_path = Path("automation_state.json")
+        persistent_path = Path("/data/automation_state.json")
+
+        # Controlla se /data esiste (Render persistent disk)
+        if os.path.exists('/data') and os.path.isdir('/data'):
+            # Migrazione: se file esiste in locale ma non in /data, spostalo
+            if local_path.exists() and not persistent_path.exists():
+                try:
+                    import shutil
+                    shutil.copy2(local_path, persistent_path)
+                    logger.info(f"🔄 Migrato file stato da {local_path} a {persistent_path}")
+                    # Rimuovi vecchio file
+                    local_path.unlink()
+                except Exception as e:
+                    logger.warning(f"⚠️  Errore migrazione file stato: {e}")
+
+            logger.info(f"📁 Path file stato: {persistent_path} (persistent disk)")
+            return persistent_path
+        else:
+            logger.debug(f"📄 Path file stato: {local_path} (directory corrente)")
+            return local_path
+
     def _load_last_global_notification_time(self):
-        """Carica ultimo timestamp notifica globale da database persistente"""
+        """Carica ultimo timestamp notifica globale da file JSON persistente"""
         try:
-            if hasattr(self, 'signal_quality_learner') and self.signal_quality_learner:
-                conn = sqlite3.connect(self.signal_quality_learner.db_path)
-                cursor = conn.cursor()
-                
-                # Crea tabella se non esiste
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS automation_state (
-                        key TEXT PRIMARY KEY,
-                        value TEXT,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
-                # Carica timestamp
-                cursor.execute("SELECT value FROM automation_state WHERE key = 'last_global_notification_time'")
-                result = cursor.fetchone()
-                conn.close()
-                
-                if result and result[0]:
-                    timestamp_str = result[0]
-                    self.last_global_notification_time = datetime.fromisoformat(timestamp_str)
-                    logger.info(f"📥 Caricato timestamp globale persistente da database: {self.last_global_notification_time}")
-                else:
-                    logger.debug("ℹ️  Nessun timestamp globale persistente trovato nel database")
+            # 🔧 FIX: Usa path fisso determinato all'init
+            state_file = self.state_file_path
+
+            if state_file.exists():
+                with open(state_file, 'r') as f:
+                    state = json.load(f)
+                    timestamp_str = state.get('last_global_notification_time')
+                    if timestamp_str:
+                        self.last_global_notification_time = datetime.fromisoformat(timestamp_str)
+                        logger.info(f"📥 Caricato timestamp globale da {state_file}: {self.last_global_notification_time}")
+                    else:
+                        logger.debug("ℹ️  Nessun timestamp trovato nel file di stato")
+            else:
+                logger.debug(f"ℹ️  File di stato non trovato: {state_file}")
         except Exception as e:
             logger.debug(f"⚠️  Errore caricamento stato persistente: {e}")
             self.last_global_notification_time = None
     
     def _save_last_global_notification_time(self):
-        """Salva ultimo timestamp notifica globale in database persistente"""
+        """Salva ultimo timestamp notifica globale in file JSON persistente"""
         try:
-            if hasattr(self, 'signal_quality_learner') and self.signal_quality_learner and self.last_global_notification_time:
-                conn = sqlite3.connect(self.signal_quality_learner.db_path)
-                cursor = conn.cursor()
-                
-                # Crea tabella se non esiste
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS automation_state (
-                        key TEXT PRIMARY KEY,
-                        value TEXT,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
-                # Salva timestamp
-                timestamp_str = self.last_global_notification_time.isoformat()
-                cursor.execute("""
-                    INSERT OR REPLACE INTO automation_state (key, value, updated_at)
-                    VALUES ('last_global_notification_time', ?, CURRENT_TIMESTAMP)
-                """, (timestamp_str,))
-                conn.commit()
-                conn.close()
-                logger.debug(f"💾 Timestamp globale salvato nel database: {self.last_global_notification_time}")
+            if self.last_global_notification_time:
+                # 🔧 FIX: Usa path fisso determinato all'init
+                state_file = self.state_file_path
+
+                # Carica stato esistente (se presente)
+                state = {}
+                if state_file.exists():
+                    try:
+                        with open(state_file, 'r') as f:
+                            state = json.load(f)
+                    except:
+                        pass  # Se fallisce, usa dict vuoto
+
+                # Aggiorna timestamp
+                state['last_global_notification_time'] = self.last_global_notification_time.isoformat()
+                state['updated_at'] = datetime.now().isoformat()
+
+                # Salva
+                with open(state_file, 'w') as f:
+                    json.dump(state, f, indent=2)
+
+                logger.debug(f"💾 Timestamp globale salvato in {state_file}: {self.last_global_notification_time}")
         except Exception as e:
             logger.debug(f"⚠️  Errore salvataggio stato persistente: {e}")
-    
+
+    def _send_system_notification(self, message: str, parse_mode: str = "HTML", min_interval_minutes: int = 60) -> bool:
+        """
+        🎯 NUOVO: Invia notifica di SISTEMA (stats, reports, progress) con controllo limite temporale.
+
+        Args:
+            message: Messaggio da inviare
+            parse_mode: Formato messaggio (default: HTML)
+            min_interval_minutes: Minuti minimi tra notifiche sistema (default: 60 = 1 ora)
+
+        Returns:
+            True se inviata, False se bloccata da limite temporale
+        """
+        if not self.notifier:
+            return False
+
+        now = datetime.now()
+
+        # Controlla limite temporale
+        if self.last_system_notification_time:
+            minutes_since = (now - self.last_system_notification_time).total_seconds() / 60
+            if minutes_since < min_interval_minutes:
+                logger.debug(
+                    f"⏭️  Notifica sistema bloccata: ultima notifica sistema {minutes_since:.1f} min fa "
+                    f"(minimo {min_interval_minutes} min richiesti)"
+                )
+                return False
+
+        # Invia notifica
+        try:
+            success = self.notifier._send_message(message, parse_mode=parse_mode)
+            if success:
+                self.last_system_notification_time = now
+                logger.info(f"✅ Notifica sistema inviata (prossima tra {min_interval_minutes} min)")
+            return success
+        except Exception as e:
+            logger.error(f"❌ Errore invio notifica sistema: {e}")
+            return False
+
     def stop(self):
         """Ferma sistema"""
         logger.info("🛑 Stopping Automation24H system...")
