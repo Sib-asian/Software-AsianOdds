@@ -1108,9 +1108,37 @@ class Automation24H:
                         logger.warning(f"⚠️  Nessun mercato trovato per {home_team} vs {away_team} (fixture {fixture_id})")
                     
                     # Estrai score e minute dalla fixture
+                    # 🔧 FIX CRITICO: Per partite LIVE, lo score potrebbe essere in diversi campi
                     score_data = fixture_data.get("score", {})
-                    score_home = score_data.get("fulltime", {}).get("home") or score_data.get("halftime", {}).get("home") or 0
-                    score_away = score_data.get("fulltime", {}).get("away") or score_data.get("halftime", {}).get("away") or 0
+                    
+                    # Prova a estrarre lo score in ordine di priorità:
+                    # 1. fulltime (se partita finita)
+                    # 2. extratime (se in tempi supplementari)
+                    # 3. halftime (se ancora nel primo tempo)
+                    # 4. goals (score corrente per partite LIVE)
+                    score_home = (
+                        score_data.get("fulltime", {}).get("home") or
+                        score_data.get("extratime", {}).get("home") or
+                        score_data.get("halftime", {}).get("home") or
+                        score_data.get("goals", {}).get("home") or
+                        0
+                    )
+                    score_away = (
+                        score_data.get("fulltime", {}).get("away") or
+                        score_data.get("extratime", {}).get("away") or
+                        score_data.get("halftime", {}).get("away") or
+                        score_data.get("goals", {}).get("away") or
+                        0
+                    )
+                    
+                    # 🔧 DEBUG: Log score estratto
+                    logger.info(f"⚽ Score estratto per {home_team} vs {away_team}:")
+                    logger.info(f"   score_data keys: {list(score_data.keys()) if isinstance(score_data, dict) else 'NOT_DICT'}")
+                    logger.info(f"   fulltime: {score_data.get('fulltime', {})}")
+                    logger.info(f"   halftime: {score_data.get('halftime', {})}")
+                    logger.info(f"   extratime: {score_data.get('extratime', {})}")
+                    logger.info(f"   goals: {score_data.get('goals', {})}")
+                    logger.info(f"   Score finale: {score_home}-{score_away}")
                     
                     # 🔧 DEBUG: Log RAW fixture_data per capire struttura completa
                     logger.info(f"🔍 RAW fixture_data per {home_team} vs {away_team}:")
@@ -1284,31 +1312,43 @@ class Automation24H:
                         except:
                             logger.info(f"📊 Statistiche presenti per {home_team} vs {away_team} ma non serializzabili")
                         
-                        # 🔧 FIX CRITICO: Salva il minuto corrente PRIMA di fare update
+                        # 🔧 FIX CRITICO: Salva il minuto e score correnti PRIMA di fare update
                         minute_before_update = match.get('minute', 0)
-                        logger.info(f"🔍 Minuto PRIMA di update statistiche: {minute_before_update}'")
+                        score_home_before = match.get('score_home', 0)
+                        score_away_before = match.get('score_away', 0)
+                        logger.info(f"🔍 PRIMA di update statistiche: minuto={minute_before_update}', score={score_home_before}-{score_away_before}")
                         
-                        # 🔧 FIX CRITICO: Rimuovi 'minute' da stats_dict se è 0 per evitare sovrascrittura
+                        # 🔧 FIX CRITICO: Rimuovi 'minute' e 'score' da stats_dict se sono 0 per evitare sovrascrittura
                         stats_minute = stats_dict.get('minute', 0)
-                        if stats_minute == 0:
-                            # Non sovrascrivere il minuto se stats_dict['minute'] è 0
-                            stats_dict_without_minute = {k: v for k, v in stats_dict.items() if k != 'minute'}
-                            match.update(stats_dict_without_minute)
-                            logger.info(f"🔍 Minuto rimosso da stats_dict (era 0), mantenuto minuto fixture: {minute_before_update}'")
-                        else:
-                            # Se stats_dict['minute'] > 0, aggiorna solo se è maggiore
-                            if stats_minute > minute_before_update:
-                                match.update(stats_dict)
-                                minute = stats_minute
-                                match['minute'] = minute
-                                logger.info(f"⏰ Minuto aggiornato da statistiche per {home_team} vs {away_team}: {minute_before_update}' -> {minute}'")
-                            else:
-                                # Stats minute non è migliore, mantieni quello della fixture
-                                stats_dict_without_minute = {k: v for k, v in stats_dict.items() if k != 'minute'}
-                                match.update(stats_dict_without_minute)
-                                logger.info(f"🔍 Minuto statistiche ({stats_minute}') non migliore di fixture ({minute_before_update}'), mantenuto fixture")
+                        stats_score_home = stats_dict.get('score_home', 0)
+                        stats_score_away = stats_dict.get('score_away', 0)
                         
-                        logger.info(f"✅ Statistiche aggiunte per {home_team} vs {away_team}, minuto finale: {match.get('minute', 0)}'")
+                        # Prepara stats_dict senza campi che non vogliamo sovrascrivere
+                        stats_dict_filtered = {}
+                        for k, v in stats_dict.items():
+                            if k == 'minute':
+                                # Aggiorna minuto solo se stats_minute > 0 e maggiore di quello corrente
+                                if stats_minute > 0 and (stats_minute > minute_before_update or minute_before_update == 0):
+                                    stats_dict_filtered[k] = stats_minute
+                                    logger.info(f"⏰ Minuto aggiornato da statistiche: {minute_before_update}' -> {stats_minute}'")
+                                else:
+                                    logger.info(f"🔍 Minuto statistiche ({stats_minute}') non migliore, mantenuto fixture ({minute_before_update}')")
+                            elif k in ['score_home', 'score_away']:
+                                # Aggiorna score solo se stats_score > 0 (score corrente dalle statistiche)
+                                if k == 'score_home' and stats_score_home > 0:
+                                    stats_dict_filtered[k] = stats_score_home
+                                    logger.info(f"⚽ Score home aggiornato da statistiche: {score_home_before} -> {stats_score_home}")
+                                elif k == 'score_away' and stats_score_away > 0:
+                                    stats_dict_filtered[k] = stats_score_away
+                                    logger.info(f"⚽ Score away aggiornato da statistiche: {score_away_before} -> {stats_score_away}")
+                                else:
+                                    logger.info(f"🔍 Score {k} statistiche ({stats_dict.get(k, 0)}) non migliore, mantenuto fixture ({match.get(k, 0)})")
+                            else:
+                                # Altri campi: aggiungi sempre
+                                stats_dict_filtered[k] = v
+                        
+                        match.update(stats_dict_filtered)
+                        logger.info(f"✅ Statistiche aggiunte per {home_team} vs {away_team}, minuto finale: {match.get('minute', 0)}', score finale: {match.get('score_home', 0)}-{match.get('score_away', 0)}")
                     
                     # 🔧 FIX: Controllo quote meno restrittivo - accetta se ha almeno 2 quote 1X2 su 3
                     # O se ha altre quote disponibili (over/under, BTTS, ecc.)
@@ -1749,6 +1789,17 @@ class Automation24H:
             stat_type = stat.get("type", "").lower()
             value = stat.get("value")
             
+            # 🔧 FIX: Estrai score dalle statistiche se disponibile
+            if "goals" in stat_type and "expected" not in stat_type:
+                try:
+                    # Se è il campo "Goals" delle statistiche, potrebbe essere lo score corrente
+                    goals_value = int(value) if value else 0
+                    if goals_value > stats_dict.get('score_home', 0):
+                        stats_dict['score_home'] = goals_value
+                        logger.debug(f"   Score home estratto da statistiche: {goals_value}")
+                except:
+                    pass
+            
             if "shots on goal" in stat_type or "shots on target" in stat_type:
                 try:
                     stats_dict['home_shots_on_target'] = int(value) if value else 0
@@ -1802,6 +1853,17 @@ class Automation24H:
         for stat in away_stats:
             stat_type = stat.get("type", "").lower()
             value = stat.get("value")
+            
+            # 🔧 FIX: Estrai score dalle statistiche se disponibile
+            if "goals" in stat_type and "expected" not in stat_type:
+                try:
+                    # Se è il campo "Goals" delle statistiche, potrebbe essere lo score corrente
+                    goals_value = int(value) if value else 0
+                    if goals_value > stats_dict.get('score_away', 0):
+                        stats_dict['score_away'] = goals_value
+                        logger.debug(f"   Score away estratto da statistiche: {goals_value}")
+                except:
+                    pass
             
             if "shots on goal" in stat_type or "shots on target" in stat_type:
                 try:
