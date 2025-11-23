@@ -1856,6 +1856,40 @@ class Automation24H:
                             except (ValueError, TypeError):
                                 continue
         
+        # 🔧 NUOVO: Aggiungi bookmaker_tracker a all_odds per logging e debug
+        all_odds['_bookmakers'] = bookmaker_tracker
+        
+        # 🔧 LOGGING: Mostra quale bookmaker fornisce le quote principali
+        logger.info(f"📊 Bookmaker utilizzati per le quote:")
+        if bookmaker_tracker['match_winner']['home']:
+            logger.info(f"   1X2 Home: {all_odds['match_winner']['home']} ({bookmaker_tracker['match_winner']['home']})")
+        if bookmaker_tracker['match_winner']['draw']:
+            logger.info(f"   1X2 Draw: {all_odds['match_winner']['draw']} ({bookmaker_tracker['match_winner']['draw']})")
+        if bookmaker_tracker['match_winner']['away']:
+            logger.info(f"   1X2 Away: {all_odds['match_winner']['away']} ({bookmaker_tracker['match_winner']['away']})")
+        
+        # Log Over/Under principali
+        for threshold in sorted(all_odds['over_under'].keys(), key=lambda x: float(x)):
+            over_odd = all_odds['over_under'][threshold].get('over')
+            under_odd = all_odds['over_under'][threshold].get('under')
+            over_bm = bookmaker_tracker['over_under'].get(threshold, {}).get('over', 'N/A')
+            under_bm = bookmaker_tracker['over_under'].get(threshold, {}).get('under', 'N/A')
+            if over_odd:
+                logger.info(f"   Over {threshold} FT: {over_odd} ({over_bm})")
+            if under_odd:
+                logger.info(f"   Under {threshold} FT: {under_odd} ({under_bm})")
+        
+        # Log Second Half Goals (quello che l'utente sta vedendo)
+        for threshold in sorted(all_odds['second_half_goals'].keys(), key=lambda x: float(x)):
+            over_odd = all_odds['second_half_goals'][threshold].get('over')
+            under_odd = all_odds['second_half_goals'][threshold].get('under')
+            over_bm = bookmaker_tracker['second_half_goals'].get(threshold, {}).get('over', 'N/A')
+            under_bm = bookmaker_tracker['second_half_goals'].get(threshold, {}).get('under', 'N/A')
+            if over_odd:
+                logger.info(f"   Over {threshold} 2H: {over_odd} ({over_bm})")
+            if under_odd:
+                logger.info(f"   Under {threshold} 2H: {under_odd} ({under_bm})")
+        
         return all_odds
     
     def _fetch_statistics_from_api_football(self, fixture_id: int, api_key: str, base_url: str) -> Optional[List[Dict]]:
