@@ -873,15 +873,25 @@ class Automation24H:
                 "x-rapidapi-host": "v3.football.api-sports.io"
             }
             
-            logger.info(f"📡 Fetching fixtures with odds from API-Football (date: {today})...")
+            logger.info(f"📡 Fetching fixtures with odds from API-Football (date: {today}, timezone: UTC)...")
             self.api_usage_today += 1  # Conta chiamata API per fixtures
             req = urllib.request.Request(url, headers=headers)
             
-            with urllib.request.urlopen(req, timeout=15) as response:
-                data = json.loads(response.read().decode())
+            try:
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    data = json.loads(response.read().decode())
+            except urllib.error.HTTPError as e:
+                logger.error(f"❌ API-Football HTTP error: {e.code} - {e.reason}")
+                if e.code == 429:
+                    logger.error("⚠️  Rate limit raggiunto, aspetta prima di riprovare")
+                return []
+            except Exception as e:
+                logger.error(f"❌ Errore chiamata API-Football: {e}")
+                return []
             
             if not data.get("response"):
                 logger.warning(f"⚠️  Nessuna partita trovata per oggi ({today})")
+                logger.info(f"ℹ️  Questo può essere normale se non ci sono partite programmate per oggi")
                 return []
             
             logger.info(f"📊 Trovate {len(data['response'])} partite totali per oggi")
@@ -936,11 +946,18 @@ class Automation24H:
                         continue
                     
                     # 🔧 FIX: Verifica che la partita sia di oggi (controllo aggiuntivo)
+                    # Nota: alcune partite LIVE potrebbero essere iniziate ieri e ancora in corso
+                    # Quindi accettiamo anche partite di ieri se sono LIVE
                     fixture_date_only = fixture_date.date()
-                    if fixture_date_only != today:
+                    yesterday = (now - timedelta(days=1)).date()
+                    if fixture_date_only != today and fixture_date_only != yesterday:
                         skipped_not_live += 1
-                        logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} non è di oggi ({fixture_date_only}), skip")
+                        logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} non è di oggi/ieri ({fixture_date_only}), skip")
                         continue
+                    
+                    # Se è di ieri ma LIVE, logga per debug
+                    if fixture_date_only == yesterday and is_live:
+                        logger.info(f"ℹ️  Partita LIVE di ieri ancora in corso: {home_team} vs {away_team} (status: {status_short})")
                     
                     # 🔧 FIX: Unificato controllo e fetch statistiche in una sola chiamata
                     # Recupera statistiche direttamente (se disponibili) invece di fare 2 chiamate
@@ -1083,6 +1100,15 @@ class Automation24H:
             logger.info(f"   - Partite LIVE senza statistiche (skipped): {skipped_no_stats}")
             logger.info(f"   - Partite LIVE senza quote 1X2 (skipped): {skipped_no_odds}")
             logger.info(f"   - Partite LIVE con quote e statistiche: {len(matches)}")
+            
+            if len(matches) == 0:
+                if live_count == 0:
+                    logger.info(f"ℹ️  Nessuna partita LIVE trovata per oggi ({today}). Questo è normale se non ci sono partite in corso.")
+                elif skipped_no_stats > 0:
+                    logger.warning(f"⚠️  {skipped_no_stats} partite LIVE trovate ma senza statistiche disponibili")
+                elif skipped_no_odds > 0:
+                    logger.warning(f"⚠️  {skipped_no_odds} partite LIVE trovate ma senza quote 1X2 disponibili")
+            
             return matches
             
         except urllib.error.HTTPError as e:
