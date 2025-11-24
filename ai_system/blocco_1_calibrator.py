@@ -482,24 +482,18 @@ class ProbabilityCalibrator:
             with torch.no_grad():
                 prob_calibrated = self.model(features_tensor).item()
 
-            # Apply bounds
-            prob_calibrated = np.clip(
-                prob_calibrated,
-                self.config.min_probability,
-                self.config.max_probability
-            )
+            # Apply only hard bounds to prevent numerical errors (0-1 range)
+            prob_calibrated = np.clip(prob_calibrated, 0.0, 1.0)
 
             # Calculate calibration shift
             calibration_shift = prob_calibrated - prob_raw
 
-            # Cap calibration shift
-            if abs(calibration_shift) > self.config.max_calibration_shift:
+            # Log large shifts as warning but DO NOT modify the value
+            if abs(calibration_shift) > 0.15:
                 logger.warning(
                     f"⚠️ Large calibration shift: {calibration_shift:.3f} "
-                    f"(capping to ±{self.config.max_calibration_shift})"
+                    f"(AI probability {prob_calibrated:.1%} vs raw {prob_raw:.1%}) - keeping exact value"
                 )
-                calibration_shift = np.sign(calibration_shift) * self.config.max_calibration_shift
-                prob_calibrated = prob_raw + calibration_shift
 
             # Estimate uncertainty (based on calibration shift magnitude)
             # Larger shifts = more uncertainty

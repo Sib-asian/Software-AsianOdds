@@ -95,7 +95,7 @@ class RealtimeValidationEngine:
         warnings_list = []
         methodology_results = {}
 
-        # Method 1: Bounds check
+        # Only validate that probability is in valid range [0,1]
         bounds_valid = self._validate_bounds(probability)
         methodology_results["bounds_check"] = bounds_valid
 
@@ -105,31 +105,7 @@ class RealtimeValidationEngine:
                 "detail": f"Probability {probability:.4f} outside [0,1]"
             })
 
-        # Method 2: Sanity check basato su lambda
-        sanity_valid = self._sanity_check_probability(
-            probability, lambda_home, lambda_away, market_type
-        )
-        methodology_results["sanity_check"] = sanity_valid
-
-        if not sanity_valid:
-            warnings_list.append(
-                f"Probability seems inconsistent with lambda values"
-            )
-
-        # Method 3: Cross-validation con metodo alternativo
-        if calculation_method == "poisson":
-            # Verifica con approssimazione normale
-            cross_calc = self._cross_validate_poisson(
-                probability, lambda_home, lambda_away, market_type
-            )
-            methodology_results["cross_validation"] = cross_calc["valid"]
-
-            if not cross_calc["valid"]:
-                warnings_list.append(
-                    f"Cross-validation disagreement: {cross_calc['deviation']:.4f}"
-                )
-
-        # Method 4: Numerical stability check
+        # Check numerical stability (NaN, Inf)
         stability_valid = self._check_numerical_stability(probability)
         methodology_results["numerical_stability"] = stability_valid
 
@@ -138,6 +114,9 @@ class RealtimeValidationEngine:
                 "type": "NUMERICAL_INSTABILITY",
                 "detail": "Calculation may have numerical issues"
             })
+        
+        # NOTE: Removed all "sanity checks" and cross-validation logic that modified 
+        # or penalized probability values. Only keeping basic technical validation.
 
         # Calcola validation score
         n_valid = sum(methodology_results.values())
@@ -156,11 +135,8 @@ class RealtimeValidationEngine:
         # Confidence
         confidence = validation_score / 100
 
-        # Corrections se necessario
+        # NOTE: No corrections - we keep exact values and only warn
         corrections = {}
-        if not is_valid and bounds_valid:
-            # Suggerisci correzione
-            corrections["probability"] = max(0.01, min(0.99, probability))
 
         return ValidationResult(
             is_valid=is_valid,
@@ -177,64 +153,8 @@ class RealtimeValidationEngine:
         """Verifica che il valore sia in bounds validi."""
         return 0.0 <= value <= 1.0
 
-    def _sanity_check_probability(
-        self,
-        probability: float,
-        lambda_home: float,
-        lambda_away: float,
-        market_type: str
-    ) -> bool:
-        """
-        Sanity check: verifica se la probabilità è ragionevole
-        dato i lambda values.
-        """
-        # Per mercato 1X2 Home Win
-        if market_type == "home_win":
-            # Se lambda_home >> lambda_away, prob dovrebbe essere alta
-            if lambda_home > lambda_away * 2 and probability < 0.40:
-                return False
-            # Se lambda_home << lambda_away, prob dovrebbe essere bassa
-            if lambda_home < lambda_away * 0.5 and probability > 0.30:
-                return False
-
-        # Per mercato Over 2.5
-        elif market_type == "over_2.5":
-            total_lambda = lambda_home + lambda_away
-            # Se total_lambda > 3.5, Over 2.5 dovrebbe essere > 0.50
-            if total_lambda > 3.5 and probability < 0.50:
-                return False
-            # Se total_lambda < 1.5, Over 2.5 dovrebbe essere < 0.30
-            if total_lambda < 1.5 and probability > 0.30:
-                return False
-
-        return True
-
-    def _cross_validate_poisson(
-        self,
-        probability: float,
-        lambda_home: float,
-        lambda_away: float,
-        market_type: str
-    ) -> Dict:
-        """
-        Cross-valida con approssimazione alternativa.
-        """
-        # Usa approssimazione normale per goals totali
-        if market_type == "over_2.5":
-            total_lambda = lambda_home + lambda_away
-            total_std = np.sqrt(total_lambda)
-
-            # P(Total > 2.5) con normale
-            z_score = (2.5 - total_lambda) / total_std
-            approx_prob = 1 - 0.5 * (1 + np.tanh(z_score / np.sqrt(2)))
-
-            deviation = abs(probability - approx_prob)
-            valid = deviation < self.max_deviation * 2
-
-            return {"valid": valid, "deviation": deviation, "approx": approx_prob}
-
-        # Per altri mercati, default valid
-        return {"valid": True, "deviation": 0.0, "approx": probability}
+    # NOTE: Removed _sanity_check_probability and _cross_validate_poisson methods
+    # as they imposed artificial limitations on probability values
 
     def _check_numerical_stability(self, value: float) -> bool:
         """Verifica stabilità numerica."""

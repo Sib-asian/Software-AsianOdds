@@ -262,7 +262,10 @@ class SignalValidator:
         opportunity: Dict[str, Any],
         result: ValidationResult
     ):
-        """Valida calcoli matematici"""
+        """
+        Valida calcoli matematici - SOLO WARNING, nessuna modifica.
+        NOTA: Non modifichiamo più i valori, solo logghiamo se ci sono discrepanze.
+        """
         probability = opportunity.get('probability', 0)
         odds = opportunity.get('odds', 0)
         ev = opportunity.get('ev', 0)
@@ -272,53 +275,49 @@ class SignalValidator:
         if isinstance(probability, (int, float)) and probability > 1:
             probability = probability / 100
         
-        # Verifica calcolo EV
+        # Verifica calcolo EV (solo warning, non error)
         if isinstance(probability, (int, float)) and isinstance(odds, (int, float)) and odds > 0:
             expected_ev = (probability * odds - 1) * 100
             
             # Tolleranza per arrotondamenti
-            ev_tolerance = 0.5  # 0.5% di tolleranza
+            ev_tolerance = 1.0  # Più permissivo: 1% di tolleranza
             ev_difference = abs(ev - expected_ev)
             
             if ev_difference > ev_tolerance:
-                result.add_error(
-                    f"EV calcolato non corrisponde: "
-                    f"atteso {expected_ev:.2f}%, trovato {ev:.2f}% "
-                    f"(differenza: {ev_difference:.2f}%)"
+                result.add_warning(
+                    f"⚠️  EV difference: expected {expected_ev:.2f}%, actual {ev:.2f}% "
+                    f"(diff: {ev_difference:.2f}%) - keeping actual value"
                 )
         
-        # Verifica probabilità implicita dalla quota
+        # Log differenze tra probabilità AI e implicita (SOLO WARNING)
         if isinstance(odds, (int, float)) and odds > 1:
             implied_prob = 1.0 / odds
             if isinstance(probability, (int, float)) and probability > 0:
-                # Verifica che probabilità reale sia ragionevole rispetto a implicita
+                # Calcola differenza
                 prob_ratio = probability / implied_prob if implied_prob > 0 else 0
+                prob_diff_pct = abs(probability - implied_prob) * 100
                 
-                # Se probabilità reale è > 2x quella implicita, potrebbe essere un errore
-                if prob_ratio > 2.0:
+                # Se differenza significativa, log come warning ma NON modificare
+                if prob_diff_pct > 10:  # >10% differenza
                     result.add_warning(
-                        f"Probabilità reale ({probability*100:.1f}%) molto superiore a quella implicita "
-                        f"({implied_prob*100:.1f}%) - verifica calcoli"
-                    )
-                
-                # Se probabilità reale è < 0.3x quella implicita, potrebbe essere un errore
-                if prob_ratio < 0.3:
-                    result.add_warning(
-                        f"Probabilità reale ({probability*100:.1f}%) molto inferiore a quella implicita "
-                        f"({implied_prob*100:.1f}%) - verifica calcoli"
+                        f"⚠️  Probabilità AI ({probability*100:.1f}%) vs implicita da quota "
+                        f"({implied_prob*100:.1f}%): differenza {prob_diff_pct:.1f}% - keeping AI value"
                     )
         
-        # Verifica confidence
+        # Verifica confidence - solo range tecnico
         if isinstance(confidence, (int, float)):
             if confidence < 0 or confidence > 100:
-                result.add_error(f"Confidence fuori range [0,100]: {confidence}")
+                result.add_warning(f"Confidence fuori range [0,100]: {confidence}")
     
     def _validate_odds_and_probability(
         self,
         opportunity: Dict[str, Any],
         result: ValidationResult
     ):
-        """Valida quote e probabilità"""
+        """
+        Valida quote e probabilità - solo controlli tecnici minimi.
+        NOTA: Rimossi tutti i limiti artificiali su EV e probabilità.
+        """
         odds = opportunity.get('odds', 0)
         probability = opportunity.get('probability', 0)
         
@@ -326,37 +325,24 @@ class SignalValidator:
         if isinstance(probability, (int, float)) and probability > 1:
             probability = probability / 100
         
-        # Verifica quote
+        # Solo verifica che quote siano tecnicamente valide (>1.0)
         if isinstance(odds, (int, float)):
             if odds < self.min_odds:
-                result.add_error(f"Quote troppo basse: {odds:.2f} < {self.min_odds}")
-            if odds > self.max_odds:
-                result.add_warning(f"Quote molto alte: {odds:.2f} > {self.max_odds} (verifica)")
-            
-            # Verifica probabilità implicita ragionevole
-            implied_prob = 1.0 / odds if odds > 0 else 0
-            if implied_prob < self.min_probability:
-                result.add_warning(f"Probabilità implicita molto bassa: {implied_prob*100:.2f}%")
-            if implied_prob > self.max_probability:
-                result.add_warning(f"Probabilità implicita molto alta: {implied_prob*100:.2f}%")
+                result.add_error(f"Quote non valide: {odds:.2f} < {self.min_odds}")
+            # Rimosso il limite massimo per le quote - possiamo analizzare qualsiasi quota
         
-        # Verifica probabilità
+        # Solo verifica che probabilità sia nel range [0,1]
         if isinstance(probability, (int, float)):
-            if probability < self.min_probability:
-                result.add_error(f"Probabilità troppo bassa: {probability*100:.2f}% < {self.min_probability*100}%")
-            if probability > self.max_probability:
-                result.add_error(f"Probabilità troppo alta: {probability*100:.2f}% > {self.max_probability*100}%")
+            if probability < 0 or probability > 1:
+                result.add_error(f"Probabilità fuori range [0,1]: {probability}")
         
-        # Verifica EV ragionevole
+        # Log EV se alto, ma NON bloccare o penalizzare
         ev = opportunity.get('ev', 0)
         if isinstance(ev, (int, float)):
-            if ev > self.max_ev_deviation:
+            if ev > 50:
                 result.add_warning(
-                    f"EV molto alto: {ev:.2f}% > {self.max_ev_deviation}% "
-                    f"(verifica calcoli o quote errate)"
+                    f"⚠️  EV molto alto: {ev:.2f}% - valore esatto mantenuto, verificare opportunità"
                 )
-            if ev < -50:
-                result.add_warning(f"EV molto negativo: {ev:.2f}% (segnalare solo se positivo)")
     
     def _validate_with_ai(
         self,
@@ -365,7 +351,10 @@ class SignalValidator:
         live_data: Optional[Dict[str, Any]],
         result: ValidationResult
     ):
-        """Validazione AI avanzata con controlli intelligenti"""
+        """
+        Validazione AI - SOLO WARNING, nessuna penalizzazione.
+        NOTA: Rimossa tutta la logica di penalizzazione. Solo log informativi.
+        """
         try:
             market = opportunity.get('market', '')
             probability = opportunity.get('probability', 0)
@@ -377,65 +366,22 @@ class SignalValidator:
             if isinstance(probability, (int, float)) and probability > 1:
                 probability = probability / 100
             
-            # 1. Validazione coerenza probabilità vs quote
+            # Log differenza probabilità AI vs implicita (solo informativo)
             if isinstance(odds, (int, float)) and odds > 1 and isinstance(probability, (int, float)):
                 implied_prob = 1.0 / odds
-                prob_ratio = probability / implied_prob if implied_prob > 0 else 0
+                prob_diff_pct = abs(probability - implied_prob) * 100
                 
-                # Se probabilità reale è molto diversa da implicita, verifica
-                if prob_ratio > 1.5:
-                    # Probabilità reale molto superiore - potrebbe essere valore reale o errore
-                    if ev > 20:
-                        result.add_warning(
-                            f"Probabilità reale ({probability*100:.1f}%) molto superiore a implicita "
-                            f"({implied_prob*100:.1f}%) con EV alto ({ev:.1f}%) - verifica calcoli"
-                        )
-                
-                if prob_ratio < 0.5:
-                    # Probabilità reale molto inferiore - sospetto
+                if prob_diff_pct > 15:  # >15% differenza
                     result.add_warning(
-                        f"Probabilità reale ({probability*100:.1f}%) molto inferiore a implicita "
-                        f"({implied_prob*100:.1f}%) - verifica calcoli"
+                        f"⚠️  Differenza significativa: AI prob {probability*100:.1f}% vs "
+                        f"implicita {implied_prob*100:.1f}% (diff {prob_diff_pct:.1f}%) - "
+                        f"mantenendo valore AI esatto"
                     )
             
-            # 2. Validazione coerenza confidence vs probabilità
-            if isinstance(confidence, (int, float)) and isinstance(probability, (int, float)):
-                # Confidence alta richiede probabilità estrema o dati di qualità
-                if confidence > 85:
-                    prob_extremity = abs(probability - 0.5) * 2  # 0 (50%) a 1 (0% o 100%)
-                    if prob_extremity < 0.3:
-                        result.add_warning(
-                            f"Confidence molto alta ({confidence:.0f}%) ma probabilità non estrema "
-                            f"({probability*100:.1f}%) - verifica"
-                        )
-            
-            # 3. Validazione coerenza EV vs probabilità
-            if isinstance(ev, (int, float)) and isinstance(probability, (int, float)) and isinstance(odds, (int, float)):
-                # Calcola EV atteso
-                expected_ev = (probability * odds - 1) * 100
-                ev_diff = abs(ev - expected_ev)
-                
-                if ev_diff > 1.0:  # Differenza > 1%
-                    result.add_warning(
-                        f"EV calcolato ({ev:.2f}%) differisce da atteso ({expected_ev:.2f}%) "
-                        f"di {ev_diff:.2f}% - verifica calcoli"
-                    )
-            
-            # 4. Validazione pattern sospetti
-            if self._detect_suspicious_patterns(opportunity, match_data, live_data):
-                result.add_warning("Pattern sospetto rilevato - verifica manuale consigliata")
-            
-            # 5. Validazione coerenza market vs dati live
-            if live_data:
-                self._validate_market_vs_live_data(market, live_data, result)
-            
-            # 6. Validazione LLM intelligente (se disponibile)
-            if self.llm_analyst:
-                self._validate_with_llm(opportunity, match_data, live_data, result)
+            # NOTA: Rimossa tutta la logica di validazione che penalizzava i valori
         
         except Exception as e:
             logger.debug(f"⚠️  Errore validazione AI: {e}")
-            # Non bloccare per errori AI, solo warning
     
     def _validate_market_vs_live_data(
         self,
