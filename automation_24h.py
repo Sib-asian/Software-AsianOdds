@@ -744,6 +744,13 @@ class Automation24H:
                     logger.warning("⚠️  LiveBettingAdvisor not available, skipping live match")
                     continue
                 
+                # 🔧 DEBUG: Verifica dati partita prima di analizzare
+                has_stats = bool(match.get('home_total_shots') is not None or match.get('home_shots_on_target') is not None)
+                has_odds = bool(match.get('odds_1') or match.get('over_0.5') or match.get('all_odds'))
+                score = f"{match.get('score_home', 0)}-{match.get('score_away', 0)}"
+                minute = match.get('minute', 0)
+                logger.info(f"🔍 Analizzando {match_name}: score={score}, min={minute}', stats={'✅' if has_stats else '❌'}, odds={'✅' if has_odds else '❌'}")
+                
                 opportunities = self._analyze_live_match(match)
                 if opportunities:
                     matches_with_opportunities += 1
@@ -755,7 +762,15 @@ class Automation24H:
                             logger.info(f"   ✅ {opp.market}: EV={opp.ev:.1f}%, Conf={opp.confidence:.1f}%, Quality={getattr(opp, 'signal_quality_score', 0):.1f}")
                 else:
                     matches_without_opportunities += 1
+                    # 🔧 DEBUG: Log dettagliato perché non ci sono opportunità
                     logger.info(f"📊 {match_name}: nessuna opportunità trovata")
+                    logger.info(f"   Dettagli: score={score}, min={minute}', stats={'✅' if has_stats else '❌'}, odds={'✅' if has_odds else '❌'}")
+                    if not has_stats:
+                        logger.info(f"   ⚠️  Motivo: partita senza statistiche disponibili")
+                    elif not has_odds:
+                        logger.info(f"   ⚠️  Motivo: partita senza quote disponibili")
+                    else:
+                        logger.info(f"   ℹ️  Motivo: partita analizzata ma filtri (EV/Confidence/Quality) troppo restrittivi o situazione non interessante")
             except Exception as e:
                 logger.error(f"❌ Error analyzing match {match.get('id', 'unknown')}: {e}")
                 continue
