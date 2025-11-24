@@ -4084,14 +4084,44 @@ class LiveBettingAdvisor:
 
         # 🛡️ SANITY CHECK 4: Ricalcola confidence per coerenza matematica se EV è stato cappato
         # Se EV è stato limitato, aggiusta la confidence per mantenere coerenza: confidence = ((EV + 1) / odds) * 100
+        # 🔧 MODIFICATO: Applica limite minimo per non distruggere opportunità valide
         if ev_was_capped and opportunity.odds > 1.0:
+            confidence_before_coherence = opportunity.confidence  # Dopo tutte le penalizzazioni
             confidence_adjusted = ((ev_raw / 100.0 + 1.0) / opportunity.odds) * 100.0
-            if abs(confidence_adjusted - opportunity.confidence) > 1.0:  # Solo se differenza significativa
-                logger.info(
-                    f"🔧 COERENZA: {opportunity.market} confidence aggiustata da {opportunity.confidence:.1f}% a {confidence_adjusted:.1f}% "
-                    f"per coerenza con EV cappato {ev_raw:.1f}% (odds: {opportunity.odds:.2f})"
-                )
+            
+            # Limite minimo: non scendere sotto il 60% della confidence originale (dopo penalizzazioni)
+            min_confidence_allowed = confidence_before_coherence * 0.60
+            
+            # Ricalcola solo se la differenza è significativa (> 15%)
+            diff = abs(confidence_adjusted - confidence_before_coherence)
+            
+            if diff > 15.0:  # Differenza significativa
+                # Applica limite minimo
+                confidence_adjusted = max(confidence_adjusted, min_confidence_allowed)
+                
+                # Se comunque troppo bassa (< 50% della originale), mantieni quella originale
+                if confidence_adjusted < confidence_before_coherence * 0.50:
+                    confidence_adjusted = confidence_before_coherence
+                    logger.info(
+                        f"🔧 COERENZA: {opportunity.market} confidence mantenuta a {confidence_adjusted:.1f}% "
+                        f"(ricalcolo avrebbe dato {((ev_raw / 100.0 + 1.0) / opportunity.odds) * 100.0:.1f}% ma troppo bassa, "
+                        f"limite minimo: {min_confidence_allowed:.1f}%)"
+                    )
+                else:
+                    logger.info(
+                        f"🔧 COERENZA: {opportunity.market} confidence aggiustata da {confidence_before_coherence:.1f}% a {confidence_adjusted:.1f}% "
+                        f"per coerenza con EV cappato {ev_raw:.1f}% (odds: {opportunity.odds:.2f}, limite minimo: {min_confidence_allowed:.1f}%)"
+                    )
                 opportunity.confidence = confidence_adjusted
+            elif diff > 1.0:  # Differenza piccola ma significativa (> 1%)
+                # Per differenze piccole, applica comunque il limite minimo
+                confidence_adjusted = max(confidence_adjusted, min_confidence_allowed)
+                if confidence_adjusted != confidence_before_coherence:
+                    logger.info(
+                        f"🔧 COERENZA: {opportunity.market} confidence aggiustata da {confidence_before_coherence:.1f}% a {confidence_adjusted:.1f}% "
+                        f"per coerenza con EV cappato {ev_raw:.1f}% (odds: {opportunity.odds:.2f})"
+                    )
+                    opportunity.confidence = confidence_adjusted
 
         opportunity.ev = ev_raw
         opportunity.has_live_stats = self._has_meaningful_live_stats(live_data)
