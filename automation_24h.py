@@ -947,16 +947,25 @@ class Automation24H:
                     logger.error("❌ Impossibile recuperare fixtures dopo retry")
                     return []
 
-                    if data.get("errors"):
-                        logger.error(f"❌ API-Football ha restituito errori: {data.get('errors')}")
-                        return []
+                if data.get("errors"):
+                    logger.error(f"❌ API-Football ha restituito errori: {data.get('errors')}")
+                    return []
 
-                    if not data.get("response"):
-                        logger.info(f"ℹ️  Nessuna partita LIVE trovata in questo momento")
-                        matches_found = []
-                    else:
-                        matches_found = data["response"]
-                        logger.info(f"📊 Trovate {len(matches_found)} partite LIVE in corso!")
+                if not data.get("response"):
+                    logger.info(f"ℹ️  Nessuna partita LIVE trovata in questo momento (response vuoto)")
+                    matches_found = []
+                else:
+                    matches_found = data["response"]
+                    logger.info(f"📊 Trovate {len(matches_found)} partite LIVE in corso dall'API!")
+                    
+                    # 🎯 DEBUG: Log dettagliato delle partite trovate
+                    for i, fixture in enumerate(matches_found[:3]):  # Prime 3 per debug
+                        fixture_data = fixture.get("fixture", {})
+                        teams_data = fixture.get("teams", {})
+                        status_short = fixture_data.get("status", {}).get("short", "N/A")
+                        home = teams_data.get("home", {}).get("name", "?")
+                        away = teams_data.get("away", {}).get("name", "?")
+                        logger.info(f"   Partita {i+1}: {home} vs {away} - Status: {status_short}")
 
             except urllib.error.HTTPError as e:
                 error_body = ""
@@ -1050,16 +1059,16 @@ class Automation24H:
                     if not home_team or not away_team:
                         continue
                     
-                    # 🔧 FIX: Unificato controllo e fetch statistiche in una sola chiamata
-                    # Recupera statistiche direttamente (se disponibili) invece di fare 2 chiamate
-                    # IMPORTANTE: Fa chiamata API solo per partite LIVE di oggi
+                    # 🎯 RIMOSSO FILTRO: Recupera statistiche ma non saltare se non disponibili
+                    # L'utente vuole calcolare confidence ed EV per tutte le partite LIVE
                     logger.debug(f"🔍 Verificando statistiche per {home_team} vs {away_team} (fixture {fixture_id}, status: {status_short})...")
                     statistics = self._fetch_statistics_from_api_football(fixture_id, api_key, base_url)
                     if not statistics:
                         skipped_no_stats += 1
-                        logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} (status: {status_short}) senza statistiche disponibili, skip")
-                        continue  # Salta questa partita, non estrarre quote
-                    logger.info(f"✅ Statistiche disponibili per {home_team} vs {away_team} (status: {status_short}), procedo con estrazione quote")
+                        logger.warning(f"⚠️  Partita LIVE {home_team} vs {away_team} (status: {status_short}) senza statistiche disponibili, continuo comunque")
+                        statistics = []  # Usa lista vuota invece di saltare
+                    else:
+                        logger.info(f"✅ Statistiche disponibili per {home_team} vs {away_team} (status: {status_short})")
                     
                     # 🔧 FIX: Per partite LIVE, dobbiamo fare una chiamata separata per le quote
                     # L'endpoint /fixtures non include sempre le quote per partite LIVE, dobbiamo richiederle
@@ -1080,37 +1089,39 @@ class Automation24H:
                             
                             odds_data_response = self._retry_api_call(_make_odds_request, max_retries=3, base_delay=1.0)
                             if odds_data_response is None:
-                                logger.warning(f"⚠️  Impossibile recuperare quote per fixture {fixture_id} dopo retry")
-                                continue
-                            
-                            # 🔧 DEBUG: Log struttura risposta
-                            logger.debug(f"   Risposta /odds: {json.dumps(odds_data_response, indent=2)[:500]}")
-                            
-                            if odds_data_response.get("response") and len(odds_data_response["response"]) > 0:
-                                # La struttura della risposta può variare
-                                # Prova diverse strutture possibili
-                                odds_data = []
-                                
-                                # Struttura 1: response è lista di bookmaker
-                                first_item = odds_data_response["response"][0]
-                                if isinstance(first_item, dict):
-                                    if "bookmakers" in first_item:
-                                        # Struttura: [{"bookmakers": [...]}]
-                                        odds_data = first_item["bookmakers"]
-                                    elif "bookmaker" in first_item:
-                                        # Struttura: [{"bookmaker": {...}, "bets": [...]}]
-                                        odds_data = [first_item]
-                                    else:
-                                        # Struttura: [{"id": ..., "name": ..., "bets": [...]}]
-                                        odds_data = odds_data_response["response"]
-                                
-                                if odds_data:
-                                    self.api_usage_today += 1  # Conta chiamata API per quote
-                                    logger.info(f"✅ Quote recuperate per {home_team} vs {away_team} (fixture {fixture_id}, {len(odds_data)} bookmaker)")
-                                else:
-                                    logger.warning(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (struttura risposta inattesa: {list(first_item.keys()) if isinstance(first_item, dict) else 'non-dict'})")
+                                logger.warning(f"⚠️  Impossibile recuperare quote per fixture {fixture_id} dopo retry, continuo senza quote")
+                                odds_data = []  # 🎯 NON SALTARE: Continua anche senza quote
                             else:
-                                logger.debug(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (response vuoto o None)")
+                                # 🔧 DEBUG: Log struttura risposta
+                                logger.debug(f"   Risposta /odds: {json.dumps(odds_data_response, indent=2)[:500]}")
+                                
+                                if odds_data_response.get("response") and len(odds_data_response["response"]) > 0:
+                                    # La struttura della risposta può variare
+                                    # Prova diverse strutture possibili
+                                    odds_data = []
+                                    
+                                    # Struttura 1: response è lista di bookmaker
+                                    first_item = odds_data_response["response"][0]
+                                    if isinstance(first_item, dict):
+                                        if "bookmakers" in first_item:
+                                            # Struttura: [{"bookmakers": [...]}]
+                                            odds_data = first_item["bookmakers"]
+                                        elif "bookmaker" in first_item:
+                                            # Struttura: [{"bookmaker": {...}, "bets": [...]}]
+                                            odds_data = [first_item]
+                                        else:
+                                            # Struttura: [{"id": ..., "name": ..., "bets": [...]}]
+                                            odds_data = odds_data_response["response"]
+                                    
+                                    if odds_data:
+                                        self.api_usage_today += 1  # Conta chiamata API per quote
+                                        logger.info(f"✅ Quote recuperate per {home_team} vs {away_team} (fixture {fixture_id}, {len(odds_data)} bookmaker)")
+                                    else:
+                                        logger.warning(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (struttura risposta inattesa: {list(first_item.keys()) if isinstance(first_item, dict) else 'non-dict'})")
+                                        odds_data = []  # 🎯 NON SALTARE: Continua anche senza quote
+                                else:
+                                    logger.warning(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (response vuoto o None)")
+                                    odds_data = []  # 🎯 NON SALTARE: Continua anche senza quote
                         except urllib.error.HTTPError as e:
                             error_body = ""
                             try:
@@ -1119,9 +1130,14 @@ class Automation24H:
                                 pass
                             logger.warning(f"⚠️  HTTP error recupero quote per fixture {fixture_id}: {e.code} - {e.reason} - {error_body}")
                         except Exception as e:
-                            logger.warning(f"⚠️  Errore recupero quote per fixture {fixture_id}: {e}")
+                            logger.warning(f"⚠️  Errore recupero quote per fixture {fixture_id}: {e}, continuo senza quote")
+                            odds_data = []  # 🎯 NON SALTARE: Continua anche senza quote
                     else:
                         logger.debug(f"✅ Quote già presenti in /fixtures per {home_team} vs {away_team} ({len(odds_data)} bookmaker)")
+                    
+                    # 🎯 Assicura che odds_data sia sempre una lista (anche se vuota)
+                    if odds_data is None:
+                        odds_data = []
                     
                     # Estrai TUTTE le quote disponibili
                     logger.info(f"🔍 Estraendo quote per {home_team} vs {away_team} (fixture {fixture_id})...")
@@ -1545,24 +1561,17 @@ class Automation24H:
                     logger.info(f"   Ha statistiche: {bool(statistics)}")
                     logger.info(f"   Ha almeno qualche quota: {has_1x2_partial or has_other_odds}")
                     
-                    # 🔧 FIX: Accetta partita se ha statistiche E almeno alcune quote (necessarie per calcolare EV)
-                    # Genereremo opportunità solo per i mercati dove abbiamo le quote disponibili
-                    if statistics and (has_1x2_partial or has_other_odds):
-                        matches.append(match)
-                        if has_1x2_complete:
-                            logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e quote 1X2 complete)")
-                        elif has_1x2_partial and has_other_odds:
-                            logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche, quote 1X2 parziali e altre quote)")
-                        elif has_1x2_partial:
-                            logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e almeno 1 quota 1X2)")
-                        elif has_other_odds:
-                            logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e altre quote disponibili)")
-                    elif not statistics:
-                        skipped_no_stats += 1
-                        logger.warning(f"⚠️  Match {home_team} vs {away_team} senza statistiche, skip")
+                    # 🎯 RIMOSSO FILTRO: Aggiungi sempre la partita LIVE, anche senza statistiche o quote
+                    # L'utente vuole calcolare confidence ed EV per tutte le partite LIVE
+                    matches.append(match)
+                    if statistics and (has_1x2_complete or has_1x2_partial or has_other_odds):
+                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e quote)")
+                    elif statistics:
+                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche, no quote)")
+                    elif has_1x2_complete or has_1x2_partial or has_other_odds:
+                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha quote, no statistiche)")
                     else:
-                        skipped_no_odds += 1
-                        logger.warning(f"⚠️  Match {home_team} vs {away_team} senza quote sufficienti (1X2: {bool(odds_1)}/{bool(odds_x)}/{bool(odds_2)}, altre: {has_other_odds}), skip")
+                        logger.warning(f"⚠️  Match {home_team} vs {away_team} aggiunto (senza statistiche né quote, calcolo comunque confidence ed EV)")
                 
                 except Exception as e:
                     logger.debug(f"⚠️  Error processing fixture: {e}")
