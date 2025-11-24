@@ -257,6 +257,8 @@ class LiveBettingAdvisor:
             'over_1.5_ht': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
             'over_2.5': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
             'over_3.5': 68.0,  # 🔧 ABBASSATO: 68% invece di 79%
+            'over_4.5': 65.0,  # 🔧 NUOVO: 65% per over_4.5
+            'over_5.5': 65.0,  # 🔧 NUOVO: 65% per over_5.5 (cards, etc.)
             'under_0.5': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
             'under_0.5_ht': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
             'under_1.5': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
@@ -4354,17 +4356,17 @@ class LiveBettingAdvisor:
             
             # FILTRO 1: 1X quando è già 1-0 o più (BANALE!)
             if market == '1x' and score_home > score_away:
-                logger.debug(f"⏭️  Saltata opportunità banale: 1X quando è già {score_home}-{score_away}")
+                logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - 1X quando è già {score_home}-{score_away} (min {minute}')")
                 continue
             
             # FILTRO 2: X2 quando è già 0-1 o più (BANALE!)
             if market == 'x2' and score_away > score_home:
-                logger.debug(f"⏭️  Saltata opportunità banale: X2 quando è già {score_home}-{score_away}")
+                logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - X2 quando è già {score_home}-{score_away} (min {minute}')")
                 continue
             
             # FILTRO 3: Over 0.5 quando c'è già almeno 1 gol (BANALE!)
             if 'over_0.5' in market and (score_home + score_away) >= 1:
-                logger.debug(f"⏭️  Saltata opportunità banale: Over 0.5 quando ci sono già {score_home + score_away} gol")
+                logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Over 0.5 quando ci sono già {score_home + score_away} gol (min {minute}')")
                 continue
             
             # FILTRO 4: Segno 1 quando è già 1-0 o più (BANALE!)
@@ -4375,22 +4377,22 @@ class LiveBettingAdvisor:
                     goal_diff = score_home - score_away
                     # Se differenza >= 2 gol, è troppo sbilanciato per essere un ribaltone realistico
                     if goal_diff >= 2:
-                        logger.debug(f"⏭️  Saltata opportunità banale: Segno 1 quando è già {score_home}-{score_away} (differenza {goal_diff} gol) - troppo sbilanciato")
+                        logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Segno 1 quando è già {score_home}-{score_away} (diff {goal_diff} gol, min {minute}') - troppo sbilanciato")
                         continue
                     # Se differenza = 1 ma siamo oltre 60', è comunque banale
                     elif minute >= 60:
-                        logger.debug(f"⏭️  Saltata opportunità banale: Segno 1 quando è già {score_home}-{score_away} al {minute}'")
+                        logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Segno 1 quando è già {score_home}-{score_away} al {minute}'")
                         continue
                 # Caso 2: Casa in SVANTAGGIO (BUG FIX!)
                 elif score_home < score_away:
                     goal_diff = score_away - score_home
                     # Se la casa è in svantaggio di 2+ gol, è IMPOSSIBILE che vinca (es. 1-7, 0-5)
                     if goal_diff >= 2:
-                        logger.debug(f"⏭️  Saltata opportunità IMPOSSIBILE: Segno 1 quando è già {score_home}-{score_away} (casa in svantaggio di {goal_diff} gol) - IMPOSSIBILE!")
+                        logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Segno 1 quando è già {score_home}-{score_away} (casa svantaggio {goal_diff} gol, min {minute}') - IMPOSSIBILE")
                         continue
                     # Se differenza = 1 ma siamo oltre 70', è praticamente impossibile
                     elif goal_diff == 1 and minute >= 70:
-                        logger.debug(f"⏭️  Saltata opportunità banale: Segno 1 quando è già {score_home}-{score_away} al {minute}' (casa in svantaggio)")
+                        logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Segno 1 quando è già {score_home}-{score_away} al {minute}' (casa in svantaggio)")
                         continue
             
             # FILTRO 5: Segno 2 quando è già 0-1 o più (BANALE!)
@@ -4401,54 +4403,55 @@ class LiveBettingAdvisor:
                     goal_diff = score_away - score_home
                     # Se differenza >= 2 gol, è troppo sbilanciato per essere un ribaltone realistico
                     if goal_diff >= 2:
-                        logger.debug(f"⏭️  Saltata opportunità banale: Segno 2 quando è già {score_home}-{score_away} (differenza {goal_diff} gol) - troppo sbilanciato")
+                        logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Segno 2 quando è già {score_home}-{score_away} (diff {goal_diff} gol, min {minute}') - troppo sbilanciato")
                         continue
                     # Se differenza = 1 ma siamo oltre 60', è comunque banale
                     elif minute >= 60:
-                        logger.debug(f"⏭️  Saltata opportunità banale: Segno 2 quando è già {score_home}-{score_away} al {minute}'")
+                        logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Segno 2 quando è già {score_home}-{score_away} al {minute}'")
                         continue
                 # Caso 2: Ospite in SVANTAGGIO (BUG FIX!)
                 elif score_away < score_home:
                     goal_diff = score_home - score_away
                     # Se l'ospite è in svantaggio di 2+ gol, è IMPOSSIBILE che vinca (es. 7-1, 5-0)
                     if goal_diff >= 2:
-                        logger.debug(f"⏭️  Saltata opportunità IMPOSSIBILE: Segno 2 quando è già {score_home}-{score_away} (ospite in svantaggio di {goal_diff} gol) - IMPOSSIBILE!")
+                        logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Segno 2 quando è già {score_home}-{score_away} (ospite svantaggio {goal_diff} gol, min {minute}') - IMPOSSIBILE")
                         continue
                     # Se differenza = 1 ma siamo oltre 70', è praticamente impossibile
                     elif goal_diff == 1 and minute >= 70:
-                        logger.debug(f"⏭️  Saltata opportunità banale: Segno 2 quando è già {score_home}-{score_away} al {minute}' (ospite in svantaggio)")
+                        logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Segno 2 quando è già {score_home}-{score_away} al {minute}' (ospite in svantaggio)")
                         continue
             
             # FILTRO 6: Over 1.5 quando ci sono già 2+ gol (BANALE!)
             if 'over_1.5' in market and (score_home + score_away) >= 2:
-                logger.debug(f"⏭️  Saltata opportunità banale: Over 1.5 quando ci sono già {score_home + score_away} gol")
+                logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Over 1.5 quando ci sono già {score_home + score_away} gol (min {minute}')")
                 continue
             
             # FILTRO 7: Over 2.5 quando ci sono già 3+ gol (BANALE!)
             if 'over_2.5' in market and (score_home + score_away) >= 3:
-                logger.debug(f"⏭️  Saltata opportunità banale: Over 2.5 quando ci sono già {score_home + score_away} gol")
+                logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Over 2.5 quando ci sono già {score_home + score_away} gol (min {minute}')")
                 continue
             
             # FILTRO 8: Over 3.5 quando ci sono già 4+ gol (BANALE!)
             if 'over_3.5' in market and (score_home + score_away) >= 4:
-                logger.debug(f"⏭️  Saltata opportunità banale: Over 3.5 quando ci sono già {score_home + score_away} gol")
+                logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Over 3.5 quando ci sono già {score_home + score_away} gol (min {minute}')")
                 continue
             
             # FILTRO 9: Under 3.5 quando è 3-0 all'85' (BANALE - ESEMPIO UTENTE!)
             if 'under_3.5' in market:
                 total_goals = score_home + score_away
                 if minute >= 80 and total_goals == 3:
-                    logger.debug(f"⏭️  Saltata opportunità banale: Under 3.5 quando è {score_home}-{score_away} all'{minute}'")
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Under 3.5 quando è {score_home}-{score_away} all'{minute}'")
                     continue
                 if minute >= 78 and total_goals <= 2:
-                    logger.debug(f"⏭️  Saltata opportunità banale: Under 3.5 quando è {score_home}-{score_away} (solo {total_goals} gol) al {minute}' - troppo ovvio")
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Under 3.5 quando è {score_home}-{score_away} (solo {total_goals} gol) al {minute}' - troppo ovvio")
                     continue
             
-            # 🚫 NUOVO FILTRO: Over 3.5 troppo aggressivo ai minuti avanzati (oltre 70')
+            # 🔧 MODIFICATO: Over 3.5 troppo aggressivo solo ai minuti molto avanzati (oltre 85')
+            # Rimosso filtro > 70' perché troppo aggressivo - permette opportunità valide al 45'-70'
             if 'over_3.5' in market:
                 total_goals = score_home + score_away
-                if minute > 70:
-                    logger.debug(f"⏭️  Saltata opportunità troppo aggressiva: Over 3.5 al {minute}' (troppo tardi, rischioso)")
+                if minute > 85:
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Over 3.5 al {minute}' (troppo tardi, rischioso)")
                     continue
             
             # FILTRO 10: Under 2.5 quando è 2-0 all'85' (BANALE!)
@@ -4456,13 +4459,13 @@ class LiveBettingAdvisor:
                 total_goals = score_home + score_away
                 # 🚨 FIX CRITICO: Blocca Under 2.5 se ci sono già 2+ gol nei primi 30 minuti (partita ad alto ritmo)
                 if total_goals >= 2 and minute <= 30:
-                    logger.debug(f"⏭️  Saltata opportunità illogica: Under 2.5 quando è già {score_home}-{score_away} ({total_goals} gol) al {minute}' - partita ad alto ritmo!")
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Under 2.5 quando è già {score_home}-{score_away} ({total_goals} gol) al {minute}' - partita ad alto ritmo")
                     continue
                 if minute >= 80 and total_goals == 2:
-                    logger.debug(f"⏭️  Saltata opportunità banale: Under 2.5 quando è {score_home}-{score_away} all'{minute}'")
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Under 2.5 quando è {score_home}-{score_away} all'{minute}'")
                     continue
                 if minute >= 78 and total_goals <= 1:
-                    logger.debug(f"⏭️  Saltata opportunità banale: Under 2.5 quando è {score_home}-{score_away} (solo {total_goals} gol) al {minute}' - quota ovvia")
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Under 2.5 quando è {score_home}-{score_away} (solo {total_goals} gol) al {minute}' - quota ovvia")
                     continue
             
             # 🆕 FILTRO 10B: Under 1.5 quando c'è già 1 gol e siamo oltre 45' (ILLOGICO!)
@@ -4471,14 +4474,14 @@ class LiveBettingAdvisor:
                 total_goals = score_home + score_away
                 # 🚨 FIX CRITICO: Blocca Under 1.5 se ci sono già 2+ gol (ASSURDO!)
                 if total_goals >= 2:
-                    logger.debug(f"⏭️  Saltata opportunità ASSURDA: Under 1.5 quando ci sono già {total_goals} gol ({score_home}-{score_away}) al {minute}'!")
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Under 1.5 quando ci sono già {total_goals} gol ({score_home}-{score_away}) al {minute}' - ASSURDO")
                     continue
                 if total_goals >= 1 and minute >= 45:
-                    logger.debug(f"⏭️  Saltata opportunità illogica: Under 1.5 quando è già {score_home}-{score_away} (1+ gol) al {minute}' - troppo rischioso")
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Under 1.5 quando è già {score_home}-{score_away} (1+ gol) al {minute}' - troppo rischioso")
                     continue
                 # Se è 1-0 o 0-1 e siamo oltre 50', è ancora più illogico
                 if total_goals == 1 and minute >= 50:
-                    logger.debug(f"⏭️  Saltata opportunità illogica: Under 1.5 quando è già {score_home}-{score_away} (1 gol) al {minute}' - partita già aperta")
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Under 1.5 quando è già {score_home}-{score_away} (1 gol) al {minute}' - partita già aperta")
                     continue
             
             # FILTRO 11: Partita già decisa (differenza >= 3 gol) - NO opportunità
@@ -4491,17 +4494,17 @@ class LiveBettingAdvisor:
                                  '1x', 'x2', '1x2_home', '1x2_away', '1x2_draw',
                                  'exact_score', 'double_chance', 'ribaltone', 'comeback']
                 if any(m in market for m in result_markets):
-                    logger.debug(f"⏭️  Saltata opportunità: Partita già decisa ({score_home}-{score_away} al {minute}', diff: {goal_diff} gol) - BLOCCATO TUTTI I MERCATI RISULTATO")
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Partita già decisa ({score_home}-{score_away} al {minute}', diff: {goal_diff} gol) - BLOCCATO MERCATI RISULTATO")
                     continue
                 # Se differenza >= 4 gol, blocca ANCHE altri mercati (partita completamente decisa)
                 if goal_diff >= 4 and minute >= 50:
-                    logger.debug(f"⏭️  Saltata opportunità: Partita completamente decisa ({score_home}-{score_away} al {minute}', diff: {goal_diff} gol) - BLOCCATO TUTTI I MERCATI")
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Partita completamente decisa ({score_home}-{score_away} al {minute}', diff: {goal_diff} gol) - BLOCCATO TUTTI I MERCATI")
                     continue
             
             # FILTRO 12: Minuto troppo avanzato per Over (oltre 85')
             if 'over' in market and minute >= 85:
                 # Troppo tardi per Over, probabilità molto basse
-                logger.debug(f"⏭️  Saltata opportunità: Over troppo tardi (minuto {minute}')")
+                logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Over troppo tardi (minuto {minute}')")
                 continue
             
             # 🆕 FILTRO 12B: BLOCCA TUTTI I MERCATI SU RISULTATO FINALE AL 90'+
@@ -4511,7 +4514,7 @@ class LiveBettingAdvisor:
                                        '1x2_draw', 'dnb_home', 'dnb_away', 'ribaltone', 'comeback',
                                        'double_chance', '1x', 'x2', '12']
                 if any(m in market for m in result_final_markets):
-                    logger.debug(f"⏭️  Saltata opportunità IMPOSSIBILE: Mercato risultato finale al {minute}' (partita sta finendo!) - {market}")
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Mercato risultato finale al {minute}' (partita sta finendo!)")
                     continue
             
             # 🆕 FILTRO 12C: BLOCCA MERCATI SU RISULTATO FINALE AL 85'+ SE PAREGGIO
@@ -4519,7 +4522,7 @@ class LiveBettingAdvisor:
             if minute >= 85 and score_home == score_away:
                 result_final_markets = ['home_win', 'away_win', 'match_winner', '1x2_home', '1x2_away']
                 if any(m in market for m in result_final_markets):
-                    logger.debug(f"⏭️  Saltata opportunità RISCHIOSA: Mercato risultato finale al {minute}' su pareggio {score_home}-{score_away} - {market}")
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Mercato risultato finale al {minute}' su pareggio {score_home}-{score_away} - RISCHIOSA")
                     continue
             
             # FILTRO 13: Quota troppo bassa (no valore) - DINAMICO per mercato
@@ -4536,31 +4539,31 @@ class LiveBettingAdvisor:
                     min_odds = 1.2  # Under avanzato può avere quota più bassa
                 
                 if opp.odds < min_odds:
-                    logger.debug(f"⏭️  Saltata opportunità: Quota troppo bassa per {market} ({opp.odds:.2f} < {min_odds:.2f})")
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Quota troppo bassa ({opp.odds:.2f} < {min_odds:.2f})")
                     continue
                 
                 # 🆕 OTTIMIZZATO: Filtro quota troppo alta (troppo rischiosa)
                 max_odds = 8.0  # Quote >8.0 sono troppo rischiose
                 if opp.odds > max_odds:
-                    logger.debug(f"⏭️  Saltata opportunità: Quota troppo alta per {market} ({opp.odds:.2f} > {max_odds:.2f})")
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Quota troppo alta ({opp.odds:.2f} > {max_odds:.2f})")
                     continue
             
             # FILTRO 14: Double chance banali (già gestito in _check_double_chance_markets, ma doppio controllo)
             if 'double_chance' in situation and not ('comeback' in situation or 'dominance' in situation):
                 # Se non è un comeback o dominance, potrebbe essere banale
                 if (market == '1x' and score_home >= score_away) or (market == 'x2' and score_away >= score_home):
-                    logger.debug(f"⏭️  Saltata opportunità banale: {market} senza valore reale")
+                    logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Double chance senza valore reale (score {score_home}-{score_away})")
                     continue
             
             # FILTRO 15: Exact Score quando partita non è chiusa
             if 'exact_score' in market and minute < 75:
                 # Troppo presto per exact score
-                logger.debug(f"⏭️  Saltata opportunità: Exact score troppo presto (minuto {minute}')")
+                logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Exact score troppo presto (minuto {minute}')")
                 continue
             
             # FILTRO 16: Goal Range incoerente
             if 'goal_range_0_1' in market and (score_home + score_away) > 1:
-                logger.debug(f"⏭️  Saltata opportunità banale: Goal range 0-1 quando ci sono già {score_home + score_away} gol")
+                logger.info(f"⏭️  FILTRO OVVIA: {opp.market} rimossa - Goal range 0-1 quando ci sono già {score_home + score_away} gol")
                 continue
             
             if 'goal_range_2_3' in market and ((score_home + score_away) < 2 or (score_home + score_away) > 3):
