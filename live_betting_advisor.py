@@ -367,6 +367,66 @@ class LiveBettingAdvisor:
             # Fallback: usa confidence base
             return base_confidence
 
+    def _recalculate_all_confidences(
+        self,
+        opportunities: List[LiveBettingOpportunity],
+        live_data: Dict[str, Any],
+        data_quality_report,
+        advanced_stats
+    ) -> List[LiveBettingOpportunity]:
+        """
+        ✅ FIX COMPLETO: Ricalcola TUTTE le confidence usando DynamicConfidenceCalculator.
+
+        Questo metodo sostituisce le confidence hardcoded (60-90%) con confidence
+        realistiche basate sulla situazione di gioco (40-75%).
+
+        Args:
+            opportunities: Lista opportunità con confidence hardcoded
+            live_data: Dati live
+            data_quality_report: Report qualità dati
+            advanced_stats: Statistiche avanzate
+
+        Returns:
+            Lista opportunità con confidence ricalcolate
+        """
+        recalculated = []
+
+        for opp in opportunities:
+            try:
+                # Calcola confidence corretta con DynamicConfidenceCalculator
+                new_confidence = self.confidence_calculator.calculate(
+                    market_type=opp.market,
+                    situation=opp.situation,
+                    live_data=live_data,
+                    advanced_stats=advanced_stats,
+                    data_quality=data_quality_report
+                )
+
+                # Log cambio se significativo
+                old_conf = opp.confidence
+                if abs(new_confidence - old_conf) > 5:
+                    logger.debug(
+                        f"📊 Confidence ricalcolata per {opp.market}: "
+                        f"{old_conf:.1f}% → {new_confidence:.1f}% "
+                        f"(Δ {new_confidence - old_conf:+.1f}%)"
+                    )
+
+                # Aggiorna confidence
+                opp.confidence = new_confidence
+                recalculated.append(opp)
+
+            except Exception as e:
+                logger.debug(f"⚠️  Errore ricalcolo confidence per {opp.market}: {e}")
+                # Mantieni confidence originale se errore
+                recalculated.append(opp)
+
+        logger.info(
+            f"✅ Ricalcolate {len(recalculated)} confidence con DynamicConfidenceCalculator "
+            f"(logica corretta: situation-based)"
+        )
+
+        return recalculated
+
     def analyze_live_match(
         self,
         match_id: str,
@@ -539,7 +599,15 @@ class LiveBettingAdvisor:
             opportunities.extend(self._check_btts_first_half_markets(match_id, match_data, live_data))
             opportunities.extend(self._check_half_time_result_markets(match_id, match_data, live_data))
             
+            # ✅ NUOVO FIX: Ricalcola TUTTE le confidence con DynamicConfidenceCalculator (logica corretta)
+            # Questo sostituisce le confidence hardcoded con confidence basate sulla situazione reale
+            if self.quality_control_enabled and self.confidence_calculator and data_quality_report and advanced_stats:
+                opportunities = self._recalculate_all_confidences(
+                    opportunities, live_data, data_quality_report, advanced_stats
+                )
+
             # 🆕 NUOVO: Usa IA per analizzare e migliorare le opportunità (sempre attivo)
+            # ✅ FIX: Boost ridotto per evitare confidence troppo alte
             opportunities = self._enhance_with_ai(opportunities, match_data, live_data)
             
             # 🆕 NUOVO: Aggiungi statistiche dettagliate a ogni opportunità
@@ -6254,17 +6322,26 @@ class LiveBettingAdvisor:
         
         for opp in opportunities:
             try:
-                # 🆕 Boost base da analisi statistica
+                # ✅ FIX: Ridotto drasticamente AI boost per evitare confidence troppo alte
+                # Prima: boost 5-15% → confidence 60-90%+ (SBAGLIATO!)
+                # Dopo: boost 0-3% → confidence resta 50-75% (CORRETTO!)
+
+                # Boost base da analisi statistica (ridotto)
                 ai_boost = self._get_ai_market_confidence(match_data, live_data, opp.market)
-                
-                # 🆕 Se LiveMatchAI ha analizzato, aggiungi boost aggiuntivo basato su pattern e situazione
+                ai_boost = ai_boost * 0.2  # ✅ FIX: Ridotto a 20% dell'originale
+
+                # Se LiveMatchAI ha analizzato, aggiungi boost aggiuntivo (ridotto)
                 if live_ai_analysis:
                     additional_boost = self._get_live_ai_boost(
                         opp, live_ai_analysis, match_data, live_data
                     )
+                    additional_boost = additional_boost * 0.2  # ✅ FIX: Ridotto a 20%
                     ai_boost += additional_boost
                     logger.debug(f"✅ Boost AI totale: {ai_boost:.1f}% (base: {ai_boost - additional_boost:.1f}%, LiveMatchAI: {additional_boost:.1f}%)")
-                
+
+                # ✅ FIX: Cappa boost totale a max +3%
+                ai_boost = min(3.0, max(0.0, ai_boost))
+
                 opp.confidence = min(100, opp.confidence + ai_boost)
                 enhanced.append(opp)
             except Exception as e:
