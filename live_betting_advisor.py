@@ -6397,9 +6397,63 @@ class LiveBettingAdvisor:
         if league:
             message += f"🏆 {league}\n"
         
-        # Mercato principale - formato compatto
+        # Mercato principale - formato compatto con bookmaker
         message += f"\n💡 {opportunity.recommendation}\n"
-        message += f"📊 {market_display} | {opportunity.confidence:.0f}% | {opportunity.odds:.2f}"
+        
+        # 🔧 OPZIONE 4: Mostra bookmaker e quota bet365 se disponibile
+        bookmaker_name = None
+        bet365_odd = None
+        
+        # Cerca bookmaker e quota bet365 in match_data
+        match_data = opportunity.match_data
+        all_odds = match_data.get('all_odds', {})
+        bookmaker_tracker = all_odds.get('_bookmakers', {})
+        bet365_odds = all_odds.get('_bet365_odds', {})
+        
+        # Determina bookmaker per questo mercato
+        import re
+        market = opportunity.market.lower()
+        
+        # Estrai threshold se presente
+        threshold_match = re.search(r'(\d+\.?\d*)', market)
+        threshold = threshold_match.group(1) if threshold_match else None
+        
+        # Determina tipo di mercato e outcome
+        if 'second half' in market or '2h' in market or 'secondo tempo' in market:
+            market_type = 'second_half_goals'
+        elif 'first half' in market or '1h' in market or 'primo tempo' in market or 'ht' in market:
+            market_type = 'first_half_goals'
+        elif 'over' in market and 'under' not in market:
+            market_type = 'over_under'
+        elif 'under' in market:
+            market_type = 'over_under'
+        else:
+            market_type = None
+        
+        # Determina outcome (over/under)
+        if 'over' in market:
+            outcome_type = 'over'
+        elif 'under' in market:
+            outcome_type = 'under'
+        else:
+            outcome_type = None
+        
+        # Estrai bookmaker e quota bet365
+        if market_type and threshold and outcome_type:
+            if market_type in bookmaker_tracker and threshold in bookmaker_tracker[market_type]:
+                bookmaker_name = bookmaker_tracker[market_type][threshold].get(outcome_type)
+                bet365_key = f'{market_type}_{threshold}_{outcome_type}'
+                bet365_odd = bet365_odds.get(bet365_key)
+        
+        # Formatta messaggio con bookmaker
+        if bookmaker_name:
+            message += f"📊 {market_display} | {opportunity.confidence:.0f}% | {opportunity.odds:.2f} ({bookmaker_name})"
+            # Mostra quota bet365 se disponibile e diversa
+            if bet365_odd and bet365_odd != opportunity.odds:
+                message += f" | bet365: {bet365_odd:.2f}"
+        else:
+            message += f"📊 {market_display} | {opportunity.confidence:.0f}% | {opportunity.odds:.2f}"
+        
         if hasattr(opportunity, 'ev') and opportunity.ev is not None:
             ev_sign = "+" if opportunity.ev >= 0 else ""
             message += f" | EV: {ev_sign}{opportunity.ev:.1f}%\n"
