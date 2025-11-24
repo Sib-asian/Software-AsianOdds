@@ -22,6 +22,7 @@ import signal
 import sys
 import os
 import sqlite3
+import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Any
@@ -932,9 +933,16 @@ class Automation24H:
             req = urllib.request.Request(url, headers=headers)
 
             try:
-                with urllib.request.urlopen(req, timeout=15) as response:
-                    response_data = response.read().decode()
-                    data = json.loads(response_data)
+                # 🎯 RETRY LOGIC: Usa retry con backoff esponenziale per resilienza
+                def _make_fixtures_request():
+                    with urllib.request.urlopen(req, timeout=15) as response:
+                        response_data = response.read().decode()
+                        return json.loads(response_data)
+                
+                data = self._retry_api_call(_make_fixtures_request, max_retries=3, base_delay=1.0)
+                if data is None:
+                    logger.error("❌ Impossibile recuperare fixtures dopo retry")
+                    return []
 
                     if data.get("errors"):
                         logger.error(f"❌ API-Football ha restituito errori: {data.get('errors')}")
@@ -1054,38 +1062,46 @@ class Automation24H:
                         logger.debug(f"   Nessuna quota in /fixtures, provo a recuperare con /odds?fixture={fixture_id}")
                         try:
                             odds_url = f"{base_url}/odds?fixture={fixture_id}"
-                            odds_req = urllib.request.Request(odds_url, headers=headers)
-                            with urllib.request.urlopen(odds_req, timeout=10) as odds_response:
-                                odds_data_response = json.loads(odds_response.read().decode())
+                            
+                            # 🎯 RETRY LOGIC: Usa retry con backoff esponenziale
+                            def _make_odds_request():
+                                odds_req = urllib.request.Request(odds_url, headers=headers)
+                                with urllib.request.urlopen(odds_req, timeout=10) as odds_response:
+                                    return json.loads(odds_response.read().decode())
+                            
+                            odds_data_response = self._retry_api_call(_make_odds_request, max_retries=3, base_delay=1.0)
+                            if odds_data_response is None:
+                                logger.warning(f"⚠️  Impossibile recuperare quote per fixture {fixture_id} dopo retry")
+                                continue
+                            
+                            # 🔧 DEBUG: Log struttura risposta
+                            logger.debug(f"   Risposta /odds: {json.dumps(odds_data_response, indent=2)[:500]}")
+                            
+                            if odds_data_response.get("response") and len(odds_data_response["response"]) > 0:
+                                # La struttura della risposta può variare
+                                # Prova diverse strutture possibili
+                                odds_data = []
                                 
-                                # 🔧 DEBUG: Log struttura risposta
-                                logger.debug(f"   Risposta /odds: {json.dumps(odds_data_response, indent=2)[:500]}")
-                                
-                                if odds_data_response.get("response") and len(odds_data_response["response"]) > 0:
-                                    # La struttura della risposta può variare
-                                    # Prova diverse strutture possibili
-                                    odds_data = []
-                                    
-                                    # Struttura 1: response è lista di bookmaker
-                                    first_item = odds_data_response["response"][0]
-                                    if isinstance(first_item, dict):
-                                        if "bookmakers" in first_item:
-                                            # Struttura: [{"bookmakers": [...]}]
-                                            odds_data = first_item["bookmakers"]
-                                        elif "bookmaker" in first_item:
-                                            # Struttura: [{"bookmaker": {...}, "bets": [...]}]
-                                            odds_data = [first_item]
-                                        else:
-                                            # Struttura: [{"id": ..., "name": ..., "bets": [...]}]
-                                            odds_data = odds_data_response["response"]
-                                    
-                                    if odds_data:
-                                        self.api_usage_today += 1  # Conta chiamata API per quote
-                                        logger.info(f"✅ Quote recuperate per {home_team} vs {away_team} (fixture {fixture_id}, {len(odds_data)} bookmaker)")
+                                # Struttura 1: response è lista di bookmaker
+                                first_item = odds_data_response["response"][0]
+                                if isinstance(first_item, dict):
+                                    if "bookmakers" in first_item:
+                                        # Struttura: [{"bookmakers": [...]}]
+                                        odds_data = first_item["bookmakers"]
+                                    elif "bookmaker" in first_item:
+                                        # Struttura: [{"bookmaker": {...}, "bets": [...]}]
+                                        odds_data = [first_item]
                                     else:
-                                        logger.warning(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (struttura risposta inattesa: {list(first_item.keys()) if isinstance(first_item, dict) else 'non-dict'})")
+                                        # Struttura: [{"id": ..., "name": ..., "bets": [...]}]
+                                        odds_data = odds_data_response["response"]
+                                
+                                if odds_data:
+                                    self.api_usage_today += 1  # Conta chiamata API per quote
+                                    logger.info(f"✅ Quote recuperate per {home_team} vs {away_team} (fixture {fixture_id}, {len(odds_data)} bookmaker)")
                                 else:
-                                    logger.debug(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (response vuoto o None)")
+                                    logger.warning(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (struttura risposta inattesa: {list(first_item.keys()) if isinstance(first_item, dict) else 'non-dict'})")
+                            else:
+                                logger.debug(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (response vuoto o None)")
                         except urllib.error.HTTPError as e:
                             error_body = ""
                             try:
@@ -1650,12 +1666,10 @@ class Automation24H:
                     for value in values:
                         outcome = value.get("value", "").lower()
                         odd = value.get("odd")
-                        # Converti odd a float se è stringa
-                        if odd:
-                            try:
-                                odd = float(odd) if isinstance(odd, str) else odd
-                            except (ValueError, TypeError):
-                                continue
+                        # 🎯 PRECISIONE MANIACALE: Validazione rigorosa quote prima di usarle
+                        odd = self._validate_odds(odd)
+                        if odd is None:
+                            continue
                             
                             if outcome in ["home", "1"]:
                                 # Raccogli quota da questo bookmaker
@@ -1686,12 +1700,10 @@ class Automation24H:
                     for value in values:
                         outcome = value.get("value", "").lower()
                         odd = value.get("odd")
-                        # Converti odd a float se è stringa
-                        if odd:
-                            try:
-                                odd = float(odd) if isinstance(odd, str) else odd
-                            except (ValueError, TypeError):
-                                continue
+                        # 🎯 PRECISIONE MANIACALE: Validazione rigorosa quote
+                        odd = self._validate_odds(odd)
+                        if odd is None:
+                            continue
                         
                         # Estrai threshold da qualsiasi valore (non solo hardcoded)
                         threshold = None
@@ -2039,9 +2051,15 @@ class Automation24H:
                 "x-rapidapi-host": "v3.football.api-sports.io"
             }
             
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as response:
-                data = json.loads(response.read().decode())
+            # 🎯 RETRY LOGIC: Usa retry con backoff esponenziale per resilienza
+            def _make_request():
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    return json.loads(response.read().decode())
+            
+            data = self._retry_api_call(_make_request, max_retries=3, base_delay=1.0)
+            if data is None:
+                return None
             
             # Verifica se ci sono statistiche disponibili e valide
             if data.get("response") and len(data["response"]) > 0:
@@ -2792,11 +2810,63 @@ class Automation24H:
             elif 'match_stats' in opp_dict:
                 stats = opp_dict['match_stats'] if isinstance(opp_dict['match_stats'], dict) else {}
             
-            # 1. 🆕 MIGLIORATO: Calcola EV e Confidence con normalizzazione intelligente
-            ev = getattr(live_opp, 'ev', 0.0)
+            # 1. 🎯 PRECISIONE MANIACALE: Ricalcola EV con precisione massima ad ogni ciclo
             confidence = getattr(live_opp, 'confidence', 0.0)
             odds = getattr(live_opp, 'odds', 1.0)
             minute = stats.get('minute', 0) if isinstance(stats, dict) else opp_dict.get('minute', 0)
+            
+            # 🎯 PRECISIONE MANIACALE: Ricalcola EV con precisione massima ad ogni ciclo
+            # Questo assicura che EV sia sempre aggiornato con quote/confidence correnti
+            
+            # 🎯 Validazione rigorosa quote e confidence prima del calcolo EV
+            validated_odds = self._validate_odds(odds)
+            if validated_odds is None:
+                logger.warning(
+                    f"⚠️  Quote invalide per {match_id}/{market}: odds={odds}, "
+                    f"conf={confidence:.2f}%, salto calcolo EV"
+                )
+                ev = 0.0
+            elif not isinstance(confidence, (int, float)) or confidence < 0 or confidence > 100:
+                logger.warning(
+                    f"⚠️  Confidence invalida per {match_id}/{market}: conf={confidence}, "
+                    f"odds={odds:.4f}, salto calcolo EV"
+                )
+                ev = 0.0
+            elif self.live_betting_advisor and hasattr(self.live_betting_advisor, '_calculate_ev_from_values'):
+                try:
+                    # Ricalcola EV con funzione precisa (usa Decimal per precisione assoluta)
+                    ev_old = getattr(live_opp, 'ev', 0.0)
+                    ev = self.live_betting_advisor._calculate_ev_from_values(confidence, validated_odds)
+                    # Aggiorna anche l'oggetto live_opp per coerenza
+                    live_opp.ev = ev
+                    live_opp.odds = validated_odds  # Aggiorna anche odds validati
+                    
+                    # 🎯 Log dettagliato per tracciabilità precisione
+                    ev_diff = ev - ev_old
+                    if abs(ev_diff) > 0.01:  # Se differenza > 0.01%
+                        logger.info(
+                            f"🔢 EV RICALCOLATO per {match_id}/{market}: "
+                            f"conf={confidence:.4f}%, odds={validated_odds:.6f} → "
+                            f"EV={ev:.4f}% (precedente: {ev_old:.4f}%, diff: {ev_diff:+.4f}%)"
+                        )
+                    else:
+                        logger.debug(
+                            f"🔢 EV ricalcolato per {match_id}/{market}: "
+                            f"conf={confidence:.2f}%, odds={validated_odds:.4f} → EV={ev:.4f}% (invariato)"
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"❌ Errore ricalcolo EV per {match_id}/{market}: {e}, "
+                        f"conf={confidence:.2f}%, odds={validated_odds:.4f}, uso valore cached"
+                    )
+                    ev = getattr(live_opp, 'ev', 0.0)
+            else:
+                # Fallback: usa valore cached se live_betting_advisor non disponibile
+                ev = getattr(live_opp, 'ev', 0.0)
+                logger.warning(
+                    f"⚠️  LiveBettingAdvisor non disponibile per {match_id}/{market}, "
+                    f"uso EV cached: {ev:.4f}% (conf={confidence:.2f}%, odds={validated_odds:.4f})"
+                )
             
             # 🆕 Normalizzazione EV intelligente (funzione sigmoide/logaritmica)
             # EV positivo alto → più peso, EV negativo → penalità forte

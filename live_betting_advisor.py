@@ -10,6 +10,8 @@ Analizza partite in corso e suggerisce scommesse basate su:
 
 import logging
 import re
+import math
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
@@ -5141,19 +5143,100 @@ class LiveBettingAdvisor:
         return None
     
     def _calculate_ev_from_values(self, confidence: float, odds: float) -> float:
-        """Utility per calcolare l'EV (%) partendo da confidence e quota."""
-        if not odds or odds <= 0:
+        """
+        🎯 PRECISIONE MANIACALE: Calcola EV con precisione assoluta usando Decimal.
+        
+        Formula: EV = (confidence/100) * odds - 1
+        Restituisce EV in percentuale con precisione a 4 decimali.
+        
+        Args:
+            confidence: Confidence in percentuale (0-100)
+            odds: Quota decimale (deve essere > 1.0)
+        
+        Returns:
+            EV in percentuale (es: 8.5 = 8.5%)
+        
+        Raises:
+            ValueError: Se input invalidi
+        """
+        # 🎯 Validazione input rigorosa
+        if not isinstance(confidence, (int, float)):
+            raise ValueError(f"Confidence deve essere numerico, ricevuto: {type(confidence)} = {confidence}")
+        
+        if not isinstance(odds, (int, float)):
+            raise ValueError(f"Odds devono essere numeriche, ricevuto: {type(odds)} = {odds}")
+        
+        if confidence < 0 or confidence > 100:
+            raise ValueError(f"Confidence deve essere tra 0 e 100, ricevuto: {confidence}")
+        
+        if odds <= 1.0:
+            # Odds <= 1.0 sono invalide (impossibile vincere)
+            logger.warning(f"⚠️  Odds invalide (<= 1.0): {odds}, restituisco EV = 0.0")
             return 0.0
-        ev_decimal = (confidence / 100.0) * odds - 1.0
-        return ev_decimal * 100.0
+        
+        if math.isnan(confidence) or math.isinf(confidence):
+            raise ValueError(f"Confidence non valida (NaN o Inf): {confidence}")
+        
+        if math.isnan(odds) or math.isinf(odds):
+            raise ValueError(f"Odds non valide (NaN o Inf): {odds}")
+        
+        try:
+            # 🎯 Usa Decimal per precisione assoluta (evita errori di arrotondamento float)
+            # Converti a stringa prima di Decimal per evitare errori di precisione
+            conf_decimal = Decimal(str(confidence))
+            odds_decimal = Decimal(str(odds))
+            
+            # 🎯 Formula EV: (confidence/100) * odds - 1
+            # Esempio: confidence=75%, odds=2.0
+            # EV = (75/100) * 2.0 - 1 = 0.75 * 2.0 - 1 = 1.5 - 1 = 0.5 = 50%
+            ev_decimal = (conf_decimal / Decimal('100.0')) * odds_decimal - Decimal('1.0')
+            
+            # Converti a percentuale: moltiplica per 100
+            ev_percent_decimal = ev_decimal * Decimal('100.0')
+            
+            # Arrotonda a 4 decimali per precisione massima (es: 8.5234%)
+            ev_percent = float(ev_percent_decimal.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP))
+            
+            # 🎯 Log dettagliato per debug (sempre per tracciabilità, più dettagliato se significativo)
+            if abs(ev_percent) > 5.0 or ev_percent < -10.0:
+                # Log dettagliato per EV significativo o anomalo
+                logger.info(
+                    f"🔢 EV CALCOLATO (significativo): conf={confidence:.4f}%, odds={odds:.6f} → "
+                    f"EV={ev_percent:.4f}% "
+                    f"(formula: ({confidence}/100)*{odds}-1)*100 = {ev_percent:.4f}%)"
+                )
+            else:
+                # Log debug per EV normale
+                logger.debug(
+                    f"🔢 EV calcolato: conf={confidence:.2f}%, odds={odds:.4f} → EV={ev_percent:.4f}%"
+                )
+            
+            return ev_percent
+            
+        except (InvalidOperation, ValueError, TypeError) as e:
+            logger.error(f"❌ Errore calcolo EV: confidence={confidence}, odds={odds}, errore={e}")
+            # Fallback: calcolo con float (meno preciso ma funziona)
+            ev_decimal = (confidence / 100.0) * odds - 1.0
+            ev_percent = ev_decimal * 100.0
+            logger.warning(f"⚠️  Usato fallback float per EV: {ev_percent:.4f}%")
+            return round(ev_percent, 4)
     
     def _calculate_expected_value(self, opportunity: LiveBettingOpportunity) -> float:
         """
-        🆕 Calcola Expected Value (EV) per un'opportunità.
+        🎯 PRECISIONE MANIACALE: Calcola Expected Value (EV) per un'opportunità con precisione massima.
+        
         EV = (confidence/100) * odds - 1
         Valore positivo = opportunità con valore
+        
+        Ricalcola sempre EV per assicurare precisione e aggiornamento con quote/confidence correnti.
         """
-        return self._calculate_ev_from_values(opportunity.confidence, opportunity.odds)
+        # 🎯 Ricalcola sempre EV (non usa valore cached) per precisione massima
+        ev = self._calculate_ev_from_values(opportunity.confidence, opportunity.odds)
+        
+        # Aggiorna anche l'oggetto opportunity per coerenza
+        opportunity.ev = ev
+        
+        return ev
     
     def _filter_by_expected_value(self, opportunities: List[LiveBettingOpportunity]) -> List[LiveBettingOpportunity]:
         """
@@ -5192,10 +5275,10 @@ class LiveBettingAdvisor:
                     f"📊 Opportunità con quota bassa {opp.odds:.2f}: richiesto EV minimo {min_ev_required:.1f}%"
                 )
             
-            ev = getattr(opp, 'ev', None)
-            if ev is None:
-                ev = self._calculate_expected_value(opp)
-                opp.ev = ev
+            # 🎯 PRECISIONE MANIACALE: Ricalcola sempre EV per assicurare precisione massima
+            # Non usa valore cached, ricalcola sempre con quote/confidence correnti
+            ev = self._calculate_expected_value(opp)
+            # opp.ev è già aggiornato da _calculate_expected_value
             
             if ev < min_ev_required:
                 logger.info(
@@ -5933,10 +6016,9 @@ class LiveBettingAdvisor:
         Formula nuova: (confidence/100 * 0.45) + (time_suitability/100 * 0.35) + (EV/100 * 0.15) + (diversity/100 * 0.05)
         """
         # 1. Expected Value
-        ev = getattr(opportunity, 'ev', None)
-        if ev is None:
-            ev = self._calculate_expected_value(opportunity)
-            opportunity.ev = ev
+        # 🎯 PRECISIONE MANIACALE: Ricalcola sempre EV per assicurare precisione massima
+        ev = self._calculate_expected_value(opportunity)
+        # opportunity.ev è già aggiornato da _calculate_expected_value
         ev_normalized = max(0, min(100, ev))  # Clamp tra 0 e 100
 
         # 2. Confidence
