@@ -6411,40 +6411,39 @@ class LiveBettingAdvisor:
         bet365_odds = all_odds.get('_bet365_odds', {})
         
         # Determina bookmaker per questo mercato
+        import re
         market = opportunity.market.lower()
-        if 'over 0.5 second half' in market or 'over 0.5 2h' in market:
-            threshold = '0.5'
-            outcome_type = 'over'
+        
+        # Estrai threshold se presente
+        threshold_match = re.search(r'(\d+\.?\d*)', market)
+        threshold = threshold_match.group(1) if threshold_match else None
+        
+        # Determina tipo di mercato e outcome
+        if 'second half' in market or '2h' in market or 'secondo tempo' in market:
             market_type = 'second_half_goals'
-            if threshold in bookmaker_tracker.get('second_half_goals', {}):
-                bookmaker_name = bookmaker_tracker['second_half_goals'][threshold].get('over')
-                bet365_key = f'second_half_goals_{threshold}_over'
-                bet365_odd = bet365_odds.get(bet365_key)
-        elif 'over' in market and 'second half' in market:
-            # Estrai threshold da market (es. "over 1.5 second half")
-            import re
-            threshold_match = re.search(r'(\d+\.?\d*)', market)
-            if threshold_match:
-                threshold = threshold_match.group(1)
-                outcome_type = 'over'
-                market_type = 'second_half_goals'
-                if threshold in bookmaker_tracker.get('second_half_goals', {}):
-                    bookmaker_name = bookmaker_tracker['second_half_goals'][threshold].get('over')
-                    bet365_key = f'second_half_goals_{threshold}_over'
-                    bet365_odd = bet365_odds.get(bet365_key)
+        elif 'first half' in market or '1h' in market or 'primo tempo' in market or 'ht' in market:
+            market_type = 'first_half_goals'
         elif 'over' in market and 'under' not in market:
-            # Over generico
-            threshold_match = re.search(r'(\d+\.?\d*)', market)
-            if threshold_match:
-                threshold = threshold_match.group(1)
-                if 'ht' in market or 'first half' in market:
-                    market_type = 'over_under_ht'
-                else:
-                    market_type = 'over_under'
-                if threshold in bookmaker_tracker.get(market_type, {}):
-                    bookmaker_name = bookmaker_tracker[market_type][threshold].get('over')
-                    bet365_key = f'{market_type}_{threshold}_over'
-                    bet365_odd = bet365_odds.get(bet365_key)
+            market_type = 'over_under'
+        elif 'under' in market:
+            market_type = 'over_under'
+        else:
+            market_type = None
+        
+        # Determina outcome (over/under)
+        if 'over' in market:
+            outcome_type = 'over'
+        elif 'under' in market:
+            outcome_type = 'under'
+        else:
+            outcome_type = None
+        
+        # Estrai bookmaker e quota bet365
+        if market_type and threshold and outcome_type:
+            if market_type in bookmaker_tracker and threshold in bookmaker_tracker[market_type]:
+                bookmaker_name = bookmaker_tracker[market_type][threshold].get(outcome_type)
+                bet365_key = f'{market_type}_{threshold}_{outcome_type}'
+                bet365_odd = bet365_odds.get(bet365_key)
         
         # Formatta messaggio con bookmaker
         if bookmaker_name:
