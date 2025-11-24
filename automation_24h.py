@@ -1605,7 +1605,22 @@ class Automation24H:
         if not odds_list:
             return all_odds
         
-        # Itera su tutti i bookmaker per trovare le migliori quote
+        # 🔧 OPZIONE 4: Raccogli tutte le quote da tutti i bookmaker (non solo la migliore)
+        # Struttura: {mercato: {outcome: {bookmaker: quota}}}
+        all_bookmaker_odds = {
+            'match_winner': {'home': {}, 'draw': {}, 'away': {}},
+            'over_under': {},
+            'over_under_ht': {},
+            'first_half_goals': {},
+            'second_half_goals': {},
+            'btts': {'yes': {}, 'no': {}},
+            'btts_ht': {'yes': {}, 'no': {}},
+            'double_chance': {'1x': {}, '12': {}, 'x2': {}},
+            'draw_no_bet': {'home': {}, 'away': {}},
+            'asian_handicap': {}
+        }
+        
+        # Itera su tutti i bookmaker per raccogliere tutte le quote
         for bookmaker in odds_list:
             bookmaker_name = bookmaker.get("bookmaker", {}).get("name", "")
             bets = bookmaker.get("bets", [])
@@ -1628,14 +1643,19 @@ class Automation24H:
                                 continue
                             
                             if outcome in ["home", "1"]:
+                                # Raccogli quota da questo bookmaker
+                                all_bookmaker_odds['match_winner']['home'][bookmaker_name] = odd
+                                # Aggiorna se è la migliore
                                 if all_odds['match_winner']['home'] is None or odd > all_odds['match_winner']['home']:
                                     all_odds['match_winner']['home'] = odd
                                     bookmaker_tracker['match_winner']['home'] = bookmaker_name
                             elif outcome in ["draw", "x"]:
+                                all_bookmaker_odds['match_winner']['draw'][bookmaker_name] = odd
                                 if all_odds['match_winner']['draw'] is None or odd > all_odds['match_winner']['draw']:
                                     all_odds['match_winner']['draw'] = odd
                                     bookmaker_tracker['match_winner']['draw'] = bookmaker_name
                             elif outcome in ["away", "2"]:
+                                all_bookmaker_odds['match_winner']['away'][bookmaker_name] = odd
                                 if all_odds['match_winner']['away'] is None or odd > all_odds['match_winner']['away']:
                                     all_odds['match_winner']['away'] = odd
                                     bookmaker_tracker['match_winner']['away'] = bookmaker_name
@@ -1701,14 +1721,18 @@ class Automation24H:
                             if threshold and odd:
                                 if threshold not in bookmaker_tracker['first_half_goals']:
                                     bookmaker_tracker['first_half_goals'][threshold] = {'over': None, 'under': None}
+                                if threshold not in all_bookmaker_odds['first_half_goals']:
+                                    all_bookmaker_odds['first_half_goals'][threshold] = {'over': {}, 'under': {}}
                                 
                                 if "over" in outcome:
+                                    all_bookmaker_odds['first_half_goals'][threshold]['over'][bookmaker_name] = odd
                                     if threshold not in all_odds['first_half_goals']:
                                         all_odds['first_half_goals'][threshold] = {'over': None, 'under': None}
                                     if all_odds['first_half_goals'][threshold]['over'] is None or odd > all_odds['first_half_goals'][threshold]['over']:
                                         all_odds['first_half_goals'][threshold]['over'] = odd
                                         bookmaker_tracker['first_half_goals'][threshold]['over'] = bookmaker_name
                                 elif "under" in outcome:
+                                    all_bookmaker_odds['first_half_goals'][threshold]['under'][bookmaker_name] = odd
                                     if threshold not in all_odds['first_half_goals']:
                                         all_odds['first_half_goals'][threshold] = {'over': None, 'under': None}
                                     if all_odds['first_half_goals'][threshold]['under'] is None or odd > all_odds['first_half_goals'][threshold]['under']:
@@ -1732,14 +1756,18 @@ class Automation24H:
                             if threshold and odd:
                                 if threshold not in bookmaker_tracker['second_half_goals']:
                                     bookmaker_tracker['second_half_goals'][threshold] = {'over': None, 'under': None}
+                                if threshold not in all_bookmaker_odds['second_half_goals']:
+                                    all_bookmaker_odds['second_half_goals'][threshold] = {'over': {}, 'under': {}}
                                 
                                 if "over" in outcome:
+                                    all_bookmaker_odds['second_half_goals'][threshold]['over'][bookmaker_name] = odd
                                     if threshold not in all_odds['second_half_goals']:
                                         all_odds['second_half_goals'][threshold] = {'over': None, 'under': None}
                                     if all_odds['second_half_goals'][threshold]['over'] is None or odd > all_odds['second_half_goals'][threshold]['over']:
                                         all_odds['second_half_goals'][threshold]['over'] = odd
                                         bookmaker_tracker['second_half_goals'][threshold]['over'] = bookmaker_name
                                 elif "under" in outcome:
+                                    all_bookmaker_odds['second_half_goals'][threshold]['under'][bookmaker_name] = odd
                                     if threshold not in all_odds['second_half_goals']:
                                         all_odds['second_half_goals'][threshold] = {'over': None, 'under': None}
                                     if all_odds['second_half_goals'][threshold]['under'] is None or odd > all_odds['second_half_goals'][threshold]['under']:
@@ -1856,8 +1884,95 @@ class Automation24H:
                             except (ValueError, TypeError):
                                 continue
         
-        # 🔧 NUOVO: Aggiungi bookmaker_tracker a all_odds per logging e debug
+        # 🔧 OPZIONE 4: Applica logica ibrida - preferisci bet365 se differenza < 5%
+        # Cerca bet365 in tutti i bookmaker (case-insensitive)
+        bet365_names = ['bet365', 'bet 365', 'bet-365']
+        bet365_odds = {}
+        
+        def find_bet365_odds(market_dict, market_type):
+            """Trova quote bet365 per un mercato"""
+            result = {}
+            for bookmaker_name, quota in market_dict.items():
+                if any(name.lower() in bookmaker_name.lower() for name in bet365_names):
+                    result[bookmaker_name] = quota
+            return result
+        
+        # Trova quote bet365 per ogni mercato
+        for outcome in ['home', 'draw', 'away']:
+            bet365_quota = find_bet365_odds(all_bookmaker_odds['match_winner'][outcome], 'match_winner')
+            if bet365_quota:
+                bet365_odds[f'match_winner_{outcome}'] = list(bet365_quota.values())[0]  # Prendi la prima (dovrebbe essere una sola)
+        
+        # Trova quote bet365 per over/under
+        for threshold in all_bookmaker_odds['over_under'].keys():
+            for outcome_type in ['over', 'under']:
+                if threshold in all_bookmaker_odds['over_under'] and outcome_type in all_bookmaker_odds['over_under'][threshold]:
+                    bet365_quota = find_bet365_odds(all_bookmaker_odds['over_under'][threshold][outcome_type], 'over_under')
+                    if bet365_quota:
+                        bet365_odds[f'over_under_{threshold}_{outcome_type}'] = list(bet365_quota.values())[0]
+        
+        # Trova quote bet365 per second half goals
+        for threshold in all_bookmaker_odds['second_half_goals'].keys():
+            for outcome_type in ['over', 'under']:
+                if threshold in all_bookmaker_odds['second_half_goals'] and outcome_type in all_bookmaker_odds['second_half_goals'][threshold]:
+                    bet365_quota = find_bet365_odds(all_bookmaker_odds['second_half_goals'][threshold][outcome_type], 'second_half_goals')
+                    if bet365_quota:
+                        bet365_odds[f'second_half_goals_{threshold}_{outcome_type}'] = list(bet365_quota.values())[0]
+        
+        # Applica logica ibrida: se bet365 disponibile e differenza < 5%, usa bet365
+        def apply_hybrid_logic(best_odd, bet365_odd_key, market_path, outcome_key=None):
+            """Applica logica ibrida: preferisci bet365 se differenza < 5%"""
+            if bet365_odd_key not in bet365_odds:
+                return best_odd, None  # Nessuna quota bet365 disponibile
+            
+            bet365_odd = bet365_odds[bet365_odd_key]
+            if best_odd is None:
+                return bet365_odd, 'bet365'
+            
+            # Calcola differenza percentuale
+            diff_pct = ((best_odd - bet365_odd) / bet365_odd) * 100
+            
+            if diff_pct < 5.0:  # Differenza < 5%, preferisci bet365
+                # Aggiorna all_odds con quota bet365
+                if outcome_key:
+                    if isinstance(market_path, dict) and outcome_key in market_path:
+                        market_path[outcome_key] = bet365_odd
+                elif isinstance(market_path, dict) and 'over' in market_path and 'under' in market_path:
+                    # Per over/under, devo sapere quale outcome
+                    pass  # Gestito separatamente
+                return bet365_odd, 'bet365'
+            else:
+                return best_odd, bookmaker_tracker.get(market_path, {}).get(outcome_key) if outcome_key else None
+        
+        # Applica logica ibrida per match_winner
+        for outcome in ['home', 'draw', 'away']:
+            best_odd = all_odds['match_winner'][outcome]
+            bet365_key = f'match_winner_{outcome}'
+            new_odd, used_bookmaker = apply_hybrid_logic(best_odd, bet365_key, all_odds['match_winner'], outcome)
+            if used_bookmaker == 'bet365':
+                all_odds['match_winner'][outcome] = new_odd
+                bookmaker_tracker['match_winner'][outcome] = 'bet365'
+                logger.info(f"✅ Preferita bet365 per 1X2 {outcome}: {new_odd} (differenza < 5% dalla quota migliore {best_odd})")
+        
+        # Applica logica ibrida per over/under e second_half_goals
+        for market_type in ['over_under', 'second_half_goals']:
+            market_dict = all_odds[market_type]
+            for threshold in market_dict.keys():
+                for outcome_type in ['over', 'under']:
+                    if outcome_type in market_dict[threshold] and market_dict[threshold][outcome_type] is not None:
+                        best_odd = market_dict[threshold][outcome_type]
+                        bet365_key = f'{market_type}_{threshold}_{outcome_type}'
+                        if bet365_key in bet365_odds:
+                            bet365_odd = bet365_odds[bet365_key]
+                            diff_pct = ((best_odd - bet365_odd) / bet365_odd) * 100
+                            if diff_pct < 5.0:
+                                market_dict[threshold][outcome_type] = bet365_odd
+                                bookmaker_tracker[market_type][threshold][outcome_type] = 'bet365'
+                                logger.info(f"✅ Preferita bet365 per {market_type} {threshold} {outcome_type}: {bet365_odd} (differenza {diff_pct:.1f}% < 5%)")
+        
+        # 🔧 NUOVO: Aggiungi bookmaker_tracker e bet365_odds a all_odds per uso futuro
         all_odds['_bookmakers'] = bookmaker_tracker
+        all_odds['_bet365_odds'] = bet365_odds  # Salva quote bet365 per mostrare nelle notifiche
         
         # 🔧 LOGGING: Mostra quale bookmaker fornisce le quote principali
         logger.info(f"📊 Bookmaker utilizzati per le quote:")
