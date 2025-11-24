@@ -18,10 +18,10 @@ logger = logging.getLogger(__name__)
 
 # 🛡️ SANITY CHECK - Costanti per filtrare opportunità irrealistiche
 # OPZIONE B (BILANCIATA): Permette value betting dove AI trova valore sottostimato dal mercato
-MAX_EV_ALLOWED = 25.0  # Max 25% EV (permette value betting quando AI trova opportunità reali) - era 15%
+MAX_EV_ALLOWED = 50.0  # Max 50% EV (permette value betting quando AI trova opportunità reali) - era 25%
 MAX_CONFIDENCE_ALLOWED = 80.0  # Max 80% confidence (nel betting difficile superare 75%)
-MAX_PROB_DEVIATION = 0.25  # Max 25% differenza tra prob AI e prob implicita quote (permette più value) - era 20%
-CONFIDENCE_PENALTY = 0.10  # Penalizzazione -10% se deviazione eccessiva (era -20%)
+MAX_PROB_DEVIATION = 0.35  # Max 35% differenza tra prob AI e prob implicita quote (permette più value) - era 25%
+CONFIDENCE_PENALTY = 0.05  # Penalizzazione -5% se deviazione eccessiva (era -10%)
 
 # 🆕 Importa LiveMatchAI per analisi AI dedicata ai match live
 try:
