@@ -4915,9 +4915,12 @@ class LiveBettingAdvisor:
         for opp in opportunities:
             market = opp.market.lower()
             min_conf = self._get_market_specific_threshold(market)
-            if min_conf and opp.confidence < min_conf:
-                logger.debug(
-                    f"⏭️  Opportunità {market} filtrata: confidence {opp.confidence:.0f}% < threshold {min_conf:.0f}%"
+            # Se non c'è soglia specifica, usa il default (min_confidence generale)
+            if min_conf is None:
+                min_conf = self.min_confidence
+            if opp.confidence < min_conf:
+                logger.info(
+                    f"⏭️  Opportunità {market} filtrata: confidence {opp.confidence:.1f}% < threshold {min_conf:.1f}% (EV={opp.ev:.1f}%)"
                 )
                 continue
             filtered.append(opp)
