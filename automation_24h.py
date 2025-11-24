@@ -1276,16 +1276,27 @@ class Automation24H:
                         minute = 45
                         logger.info(f"⏰ Minuto impostato da status HT: 45' (intervallo)")
                     elif status_short == "2H":
-                        # Secondo tempo: calcola dalla data ma minimo 46
+                        # Secondo tempo: calcola dalla data SOTTRARRE 15 minuti di intervallo
+                        # Se partita iniziata 90 minuti fa: 45' (1T) + 15' (intervallo) + 30' (2T) = 90 minuti totali
+                        # Ma minuto di gioco = 45 + 30 = 75', non 90'!
                         try:
                             now = datetime.now(timezone.utc)
                             time_diff = (now - fixture_date).total_seconds() / 60
                             
                             if time_diff > 0 and time_diff < 120:
-                                calculated_minute = int(time_diff)
-                                # Per 2H, minimo 46 minuti (inizio secondo tempo)
-                                minute = max(46, calculated_minute)
-                                logger.info(f"⏰ Minuto per 2H: {minute}' (calcolato: {calculated_minute}', minimo 46')")
+                                # Sottrai 15 minuti di intervallo e aggiungi 45 minuti del primo tempo
+                                # minute = 45 (primo tempo) + max(0, time_diff - 60) (secondo tempo dopo intervallo)
+                                # Se time_diff < 60, siamo ancora nel primo tempo o intervallo
+                                if time_diff <= 60:
+                                    # Ancora nel primo tempo o intervallo, ma status dice 2H → usa minimo 46
+                                    minute = 46
+                                    logger.info(f"⏰ Minuto per 2H: {minute}' (time_diff={time_diff:.1f} <= 60, minimo 46')")
+                                else:
+                                    # Dopo intervallo: primo tempo (45') + secondo tempo (time_diff - 60)
+                                    calculated_minute = 45 + int(time_diff - 60)
+                                    # Limita a 90 minuti massimo (prima dei tempi supplementari)
+                                    minute = min(90, max(46, calculated_minute))
+                                    logger.info(f"⏰ Minuto per 2H: {minute}' (time_diff={time_diff:.1f}, calcolato: {calculated_minute}', intervallo sottratto)")
                             else:
                                 minute = 46  # Fallback minimo
                                 logger.info(f"⏰ Minuto per 2H: {minute}' (fallback minimo)")
