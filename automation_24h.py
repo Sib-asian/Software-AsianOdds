@@ -759,7 +759,18 @@ class Automation24H:
                         if opp:
                             opportunities_found += 1
                             all_opportunities.append(opp)  # Raccogli invece di inviare subito
-                            logger.info(f"   ✅ {opp.market}: EV={opp.ev:.1f}%, Conf={opp.confidence:.1f}%, Quality={getattr(opp, 'signal_quality_score', 0):.1f}")
+                            # 🔧 FIX: opp può essere dict o LiveBettingOpportunity
+                            if isinstance(opp, dict):
+                                market = opp.get('market', 'unknown')
+                                ev = opp.get('ev', 0.0)
+                                conf = opp.get('confidence', 0.0)
+                                quality = opp.get('signal_quality_score', 0.0)
+                            else:
+                                market = getattr(opp, 'market', 'unknown')
+                                ev = getattr(opp, 'ev', 0.0)
+                                conf = getattr(opp, 'confidence', 0.0)
+                                quality = getattr(opp, 'signal_quality_score', 0.0)
+                            logger.info(f"   ✅ {market}: EV={ev:.1f}%, Conf={conf:.1f}%, Quality={quality:.1f}")
                 else:
                     matches_without_opportunities += 1
                     # 🔧 DEBUG: Log dettagliato perché non ci sono opportunità
@@ -1276,16 +1287,27 @@ class Automation24H:
                         minute = 45
                         logger.info(f"⏰ Minuto impostato da status HT: 45' (intervallo)")
                     elif status_short == "2H":
-                        # Secondo tempo: calcola dalla data ma minimo 46
+                        # Secondo tempo: calcola dalla data SOTTRARRE 15 minuti di intervallo
+                        # Se partita iniziata 90 minuti fa: 45' (1T) + 15' (intervallo) + 30' (2T) = 90 minuti totali
+                        # Ma minuto di gioco = 45 + 30 = 75', non 90'!
                         try:
                             now = datetime.now(timezone.utc)
                             time_diff = (now - fixture_date).total_seconds() / 60
                             
                             if time_diff > 0 and time_diff < 120:
-                                calculated_minute = int(time_diff)
-                                # Per 2H, minimo 46 minuti (inizio secondo tempo)
-                                minute = max(46, calculated_minute)
-                                logger.info(f"⏰ Minuto per 2H: {minute}' (calcolato: {calculated_minute}', minimo 46')")
+                                # Sottrai 15 minuti di intervallo e aggiungi 45 minuti del primo tempo
+                                # minute = 45 (primo tempo) + max(0, time_diff - 60) (secondo tempo dopo intervallo)
+                                # Se time_diff < 60, siamo ancora nel primo tempo o intervallo
+                                if time_diff <= 60:
+                                    # Ancora nel primo tempo o intervallo, ma status dice 2H → usa minimo 46
+                                    minute = 46
+                                    logger.info(f"⏰ Minuto per 2H: {minute}' (time_diff={time_diff:.1f} <= 60, minimo 46')")
+                                else:
+                                    # Dopo intervallo: primo tempo (45') + secondo tempo (time_diff - 60)
+                                    calculated_minute = 45 + int(time_diff - 60)
+                                    # Limita a 90 minuti massimo (prima dei tempi supplementari)
+                                    minute = min(90, max(46, calculated_minute))
+                                    logger.info(f"⏰ Minuto per 2H: {minute}' (time_diff={time_diff:.1f}, calcolato: {calculated_minute}', intervallo sottratto)")
                             else:
                                 minute = 46  # Fallback minimo
                                 logger.info(f"⏰ Minuto per 2H: {minute}' (fallback minimo)")
@@ -3531,10 +3553,18 @@ class Automation24H:
         status = None
         if live_opp.match_stats:
             status = live_opp.match_stats.get('status', None)
+            # 🔧 FIX: Estrai minute anche da match_stats se disponibile
+            if minute is None or minute == 0:
+                minute = live_opp.match_stats.get('minute', 0)
         
         # 🔧 FIX TIMING: Filtra partite finite - NON inviare notifiche per partite già terminate
-        if minute > 90 or (status and status.upper() in ["FINISHED", "FT", "AET", "PEN"]):
-            logger.warning(f"⏭️  Partita {match_id} saltata: partita già finita (minuto: {minute}, status: {status}) - notifica non inviata")
+        # Verifica status PRIMA del minuto (più affidabile)
+        if status and status.upper() in ["FINISHED", "FT", "AET", "PEN"]:
+            logger.warning(f"⏭️  Partita {match_id} saltata: partita già finita (status: {status}) - notifica non inviata")
+            return
+        # Verifica anche minuto (se > 90, partita probabilmente finita)
+        if minute and minute > 90:
+            logger.warning(f"⏭️  Partita {match_id} saltata: partita già finita (minuto: {minute} > 90) - notifica non inviata")
             return
         
         # 🔧 FIX: Definisci 'now' prima di usarlo
