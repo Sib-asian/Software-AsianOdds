@@ -602,7 +602,14 @@ class DynamicConfidenceCalculator:
         data_quality: Optional[DataQualityReport]
     ) -> float:
         """
-        Calcola confidence dinamico (0-100).
+        ✅ RISCRITTURA COMPLETA: Calcola confidence dinamico con logica corretta.
+
+        APPROCCIO CORRETTO:
+        1. Calcola probabilità BASE dalla SITUAZIONE di gioco (50-80%)
+        2. Adatta questa probabilità con un FATTORE di qualità dati (0.7x - 1.15x)
+        3. Risultato: confidence realistico allineato alle quote
+
+        NON più somma percentuali (60% + 20% + 10% = 90% anche se situazione è pessima!)
 
         Args:
             market_type: Tipo mercato (over_2.5, 1x2, ecc.)
@@ -614,87 +621,415 @@ class DynamicConfidenceCalculator:
         Returns:
             Confidence score 0-100
         """
-        # Base confidence: dipende da data quality
+        # Validazione dati
         if data_quality is None or not data_quality.is_valid:
             return 0.0
 
-        base_conf = data_quality.quality_score * 0.6  # Max 60% da quality
-
-        # Bonus da advanced stats
-        stats_bonus = 0.0
-        if advanced_stats:
-            # Reliability: max +20%
-            reliability_bonus = (advanced_stats.overall_reliability / 100) * 20
-            stats_bonus += reliability_bonus
-
-            # Data completeness: max +10%
-            completeness_bonus = (advanced_stats.data_completeness / 100) * 10
-            stats_bonus += completeness_bonus
-
-        # Bonus situazione specifica
-        situation_bonus = self._calculate_situation_bonus(
+        # 1️⃣ PRIMA: Calcola probabilità BASE dalla SITUAZIONE reale
+        base_probability = self._calculate_base_probability(
             market_type, situation, live_data, advanced_stats
         )
 
-        # Confidence finale
-        confidence = base_conf + stats_bonus + situation_bonus
+        # 2️⃣ POI: Calcola fattore di fiducia dai dati (0.7 - 1.15)
+        quality_factor = self._calculate_quality_trust_factor(
+            data_quality, advanced_stats
+        )
+
+        # 3️⃣ ADATTA: Moltiplica probabilità per fiducia
+        # Se dati ottimi (quality_factor=1.15): 60% → 69%
+        # Se dati scarsi (quality_factor=0.7): 60% → 42%
+        adjusted_confidence = base_probability * quality_factor
 
         # Clamp 0-100
-        return max(0.0, min(100.0, confidence))
+        return max(0.0, min(100.0, adjusted_confidence))
 
-    def _calculate_situation_bonus(
+    def _calculate_quality_trust_factor(
+        self,
+        data_quality: DataQualityReport,
+        advanced_stats: Optional[AdvancedStats]
+    ) -> float:
+        """
+        Calcola fattore di fiducia dai dati (0.7 - 1.15).
+
+        Se dati ottimi: possiamo fidarci di più → factor > 1.0 (boost)
+        Se dati scarsi: dobbiamo essere cauti → factor < 1.0 (penalty)
+
+        Returns:
+            Factor moltiplicativo: 0.7 (dati scarsi) - 1.15 (dati ottimi)
+        """
+        # Base: qualità dati (contributo principale)
+        # Quality 100 → 1.0, Quality 50 → 0.85, Quality 0 → 0.7
+        base_factor = 0.7 + (data_quality.quality_score / 100) * 0.3
+
+        # Bonus da reliability e completeness (piccolo contributo)
+        bonus = 0.0
+        if advanced_stats:
+            # Reliability alta → +0.08 max
+            if advanced_stats.overall_reliability > 80:
+                bonus += 0.08
+            elif advanced_stats.overall_reliability > 60:
+                bonus += 0.04
+
+            # Completeness alta → +0.07 max
+            if advanced_stats.data_completeness > 80:
+                bonus += 0.07
+            elif advanced_stats.data_completeness > 60:
+                bonus += 0.03
+
+        final_factor = base_factor + bonus
+
+        # Clamp 0.7 - 1.15
+        return max(0.7, min(1.15, final_factor))
+
+    def _calculate_base_probability(
         self,
         market_type: str,
         situation: str,
         live_data: Dict[str, Any],
         advanced_stats: Optional[AdvancedStats]
     ) -> float:
-        """Calcola bonus basato sulla situazione specifica"""
-        bonus = 0.0
+        """
+        ✅ CUORE DEL SISTEMA: Calcola probabilità BASE dalla situazione reale.
 
+        Questo metodo risponde alla domanda:
+        "Data la situazione attuale di gioco, quanto è probabile questo outcome?"
+
+        NON considera qualità dati (quello viene dopo).
+        Si basa solo su: score, minuto, statistiche, tipo mercato.
+
+        Returns:
+            Probabilità base 0-100 (tipicamente 40-80%)
+        """
         market = market_type.lower()
-        minute = live_data.get('minute', 0)
 
-        if not advanced_stats:
-            return bonus
-
-        # OVER markets: bonus se high attack intensity
+        # Routing verso metodi specifici per mercato
         if 'over' in market and 'under' not in market:
-            avg_intensity = (
-                advanced_stats.attack_intensity_home +
-                advanced_stats.attack_intensity_away
-            ) / 2
+            return self._calc_over_probability(market, live_data, advanced_stats)
 
-            # High intensity = più confidence in over
-            if avg_intensity > 70:
-                bonus += 10
-            elif avg_intensity > 50:
-                bonus += 5
-
-        # UNDER markets: bonus se low attack intensity
         elif 'under' in market:
+            return self._calc_under_probability(market, live_data, advanced_stats)
+
+        elif any(x in market for x in ['1x2', 'home_win', 'away_win']) or 'ribaltone' in situation:
+            return self._calc_win_probability(market, situation, live_data, advanced_stats)
+
+        elif 'next_goal' in market:
+            return self._calc_next_goal_probability(market, live_data, advanced_stats)
+
+        elif 'btts' in market:
+            return self._calc_btts_probability(market, live_data, advanced_stats)
+
+        elif 'clean_sheet' in market:
+            return self._calc_clean_sheet_probability(market, live_data, advanced_stats)
+
+        else:
+            # Default: situazione neutra
+            return 55.0
+
+    def _calc_over_probability(
+        self,
+        market: str,
+        live_data: Dict[str, Any],
+        advanced_stats: Optional[AdvancedStats]
+    ) -> float:
+        """Calcola probabilità Over basata su situazione reale"""
+        minute = live_data.get('minute', 0)
+        score_home = live_data.get('score_home', 0) or 0
+        score_away = live_data.get('score_away', 0) or 0
+        total_goals = score_home + score_away
+
+        # Estrai threshold (over_1.5 → 1.5)
+        threshold = self._extract_threshold(market)
+        if threshold is None:
+            return 55.0
+
+        goals_needed = max(0, int(threshold) + 1 - total_goals)
+        time_remaining = max(0, 90 - minute)
+
+        # Già superato? 100%
+        if total_goals > threshold:
+            return 100.0
+
+        # Tempo insufficiente per gol necessari? Bassa probabilità
+        if time_remaining < 5 and goals_needed >= 1:
+            return 15.0
+        if time_remaining < 15 and goals_needed >= 2:
+            return 25.0
+
+        # Calcolo basato su attack intensity
+        if advanced_stats:
             avg_intensity = (
                 advanced_stats.attack_intensity_home +
                 advanced_stats.attack_intensity_away
             ) / 2
 
-            # Low intensity = più confidence in under
-            if avg_intensity < 30:
-                bonus += 10
-            elif avg_intensity < 50:
-                bonus += 5
+            # Expected goals per minute
+            # Intensity 70 = ~0.03 gol/min (2.7 gol in 90 min)
+            # Intensity 50 = ~0.02 gol/min (1.8 gol in 90 min)
+            goals_per_min = (avg_intensity / 100) * 0.035
+            expected_goals = goals_per_min * time_remaining
 
-        # Ribaltone: bonus se favorita domina
+            # Probabilità basata su expected goals
+            if goals_needed == 1:
+                # Serve 1 gol: alta prob se expected > 1
+                prob = min(80, 35 + expected_goals * 35)
+            elif goals_needed == 2:
+                # Servono 2 gol
+                prob = min(70, 30 + expected_goals * 20)
+            else:
+                # Servono 3+ gol
+                prob = min(60, 25 + expected_goals * 12)
+
+            return prob
+        else:
+            # Fallback senza advanced stats
+            if goals_needed == 0:
+                return 95.0
+            elif goals_needed == 1 and time_remaining > 35:
+                return 55.0
+            elif goals_needed == 1:
+                return 40.0
+            elif goals_needed == 2 and time_remaining > 50:
+                return 45.0
+            else:
+                return 30.0
+
+    def _calc_under_probability(
+        self,
+        market: str,
+        live_data: Dict[str, Any],
+        advanced_stats: Optional[AdvancedStats]
+    ) -> float:
+        """Calcola probabilità Under"""
+        minute = live_data.get('minute', 0)
+        score_home = live_data.get('score_home', 0) or 0
+        score_away = live_data.get('score_away', 0) or 0
+        total_goals = score_home + score_away
+
+        threshold = self._extract_threshold(market)
+        if threshold is None:
+            return 55.0
+
+        goals_allowed = int(threshold) - total_goals
+        time_remaining = max(0, 90 - minute)
+
+        # Già superato? 0%
+        if total_goals > threshold:
+            return 0.0
+
+        # Pochi minuti e serve 0 gol? Alta probabilità
+        if time_remaining < 10 and goals_allowed == 0:
+            return 85.0
+
+        # Calcolo basato su attack intensity (BASSA intensity = under più probabile)
+        if advanced_stats:
+            avg_intensity = (
+                advanced_stats.attack_intensity_home +
+                advanced_stats.attack_intensity_away
+            ) / 2
+
+            goals_per_min = (avg_intensity / 100) * 0.035
+            expected_goals = goals_per_min * time_remaining
+
+            # Se expected goals < goals_allowed → under probabile
+            if expected_goals < goals_allowed * 0.5:
+                # Molto pochi gol attesi
+                prob = 75.0
+            elif expected_goals < goals_allowed * 0.8:
+                prob = 65.0
+            elif expected_goals < goals_allowed:
+                prob = 55.0
+            else:
+                # Troppi gol attesi → under improbabile
+                prob = 40.0
+
+            return prob
+        else:
+            # Fallback
+            if time_remaining < 20 and goals_allowed >= 1:
+                return 70.0
+            elif goals_allowed >= 2:
+                return 60.0
+            else:
+                return 50.0
+
+    def _calc_win_probability(
+        self,
+        market: str,
+        situation: str,
+        live_data: Dict[str, Any],
+        advanced_stats: Optional[AdvancedStats]
+    ) -> float:
+        """Calcola probabilità vittoria/ribaltone"""
+        minute = live_data.get('minute', 0)
+        score_home = live_data.get('score_home', 0) or 0
+        score_away = live_data.get('score_away', 0) or 0
+        time_remaining = max(0, 90 - minute)
+
+        # Ribaltone: favorita in svantaggio
         if 'ribaltone' in situation:
-            # Se abs(possession_dominance) > 15, favorita sta dominando
-            if abs(advanced_stats.possession_dominance) > 15:
-                bonus += 8
+            goal_diff = abs(score_home - score_away)
 
-        # Late game: bonus per situazioni critiche
-        if minute > 75:
-            bonus += 5
+            # Differenza troppo alta? Improbabile
+            if goal_diff >= 3:
+                return 20.0
+            elif goal_diff == 2:
+                base_prob = 35.0
+            else:
+                base_prob = 55.0
 
-        return bonus
+            # Poco tempo? Riduce probabilità
+            if time_remaining < 20:
+                base_prob *= 0.7
+            elif time_remaining < 40:
+                base_prob *= 0.85
+
+            # Se favorita domina, aumenta
+            if advanced_stats and abs(advanced_stats.possession_dominance) > 15:
+                base_prob += 10
+
+            return min(75.0, base_prob)
+        else:
+            # Normale win: dipende da score attuale
+            if 'home' in market:
+                if score_home > score_away:
+                    return 75.0
+                elif score_home == score_away:
+                    return 50.0
+                else:
+                    return 35.0
+            elif 'away' in market:
+                if score_away > score_home:
+                    return 75.0
+                elif score_home == score_away:
+                    return 50.0
+                else:
+                    return 35.0
+            else:
+                return 50.0
+
+    def _calc_next_goal_probability(
+        self,
+        market: str,
+        live_data: Dict[str, Any],
+        advanced_stats: Optional[AdvancedStats]
+    ) -> float:
+        """Calcola probabilità prossimo gol"""
+        if not advanced_stats:
+            return 52.0
+
+        # Basato su attack intensity
+        intensity_home = advanced_stats.attack_intensity_home
+        intensity_away = advanced_stats.attack_intensity_away
+
+        if 'home' in market:
+            # Prossimo gol casa
+            if intensity_home > intensity_away * 1.5:
+                return 70.0
+            elif intensity_home > intensity_away * 1.2:
+                return 62.0
+            elif intensity_home > intensity_away:
+                return 55.0
+            else:
+                return 45.0
+        elif 'away' in market:
+            # Prossimo gol trasferta
+            if intensity_away > intensity_home * 1.5:
+                return 70.0
+            elif intensity_away > intensity_home * 1.2:
+                return 62.0
+            elif intensity_away > intensity_home:
+                return 55.0
+            else:
+                return 45.0
+        else:
+            return 50.0
+
+    def _calc_btts_probability(
+        self,
+        market: str,
+        live_data: Dict[str, Any],
+        advanced_stats: Optional[AdvancedStats]
+    ) -> float:
+        """Calcola probabilità BTTS (Both Teams To Score)"""
+        score_home = live_data.get('score_home', 0) or 0
+        score_away = live_data.get('score_away', 0) or 0
+        minute = live_data.get('minute', 0)
+        time_remaining = max(0, 90 - minute)
+
+        # BTTS Yes
+        if 'yes' in market or 'btts' == market:
+            # Entrambi hanno già segnato? 100%
+            if score_home > 0 and score_away > 0:
+                return 100.0
+
+            # Uno ha segnato, manca l'altro
+            if score_home > 0 or score_away > 0:
+                # Tempo sufficiente?
+                if time_remaining > 30:
+                    return 60.0
+                elif time_remaining > 15:
+                    return 45.0
+                else:
+                    return 30.0
+            else:
+                # Nessuno ha segnato
+                if time_remaining > 45:
+                    return 50.0
+                else:
+                    return 35.0
+        else:
+            # BTTS No
+            if score_home > 0 and score_away > 0:
+                return 0.0
+            elif time_remaining < 10:
+                return 80.0
+            elif time_remaining < 25:
+                return 65.0
+            else:
+                return 50.0
+
+    def _calc_clean_sheet_probability(
+        self,
+        market: str,
+        live_data: Dict[str, Any],
+        advanced_stats: Optional[AdvancedStats]
+    ) -> float:
+        """Calcola probabilità porta inviolata"""
+        score_home = live_data.get('score_home', 0) or 0
+        score_away = live_data.get('score_away', 0) or 0
+        minute = live_data.get('minute', 0)
+        time_remaining = max(0, 90 - minute)
+
+        if 'home' in market:
+            # Porta inviolata casa (away non segna)
+            if score_away > 0:
+                return 0.0
+            elif time_remaining < 10:
+                return 80.0
+            elif time_remaining < 25:
+                return 65.0
+            else:
+                return 50.0
+        elif 'away' in market:
+            # Porta inviolata trasferta (home non segna)
+            if score_home > 0:
+                return 0.0
+            elif time_remaining < 10:
+                return 80.0
+            elif time_remaining < 25:
+                return 65.0
+            else:
+                return 50.0
+        else:
+            return 50.0
+
+    def _extract_threshold(self, market: str) -> Optional[float]:
+        """Estrae soglia numerica da mercato (over_1.5 → 1.5)"""
+        import re
+        match = re.search(r'(\d+\.?\d*)', market)
+        if match:
+            return float(match.group(1))
+        return None
 
 
 class SignalQualityScorer:
