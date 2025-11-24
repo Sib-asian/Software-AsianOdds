@@ -729,7 +729,7 @@ class Automation24H:
         logger.info("=" * 80)
         logger.info(f"📊 CICLO ANALISI LIVE BETTING - {len(matches)} partite da analizzare")
         logger.info("=" * 80)
-        
+image.png
         for match in matches:
             try:
                 matches_analyzed += 1
@@ -756,21 +756,22 @@ class Automation24H:
                     matches_with_opportunities += 1
                     logger.info(f"📊 {match_name}: trovate {len(opportunities)} opportunità")
                 for opp in opportunities:
-                    if opp:
+                        if not opp:
+                            continue
                         opportunities_found += 1
                         all_opportunities.append(opp)  # Raccogli invece di inviare subito
-                            # 🔧 FIX: opp può essere dict o LiveBettingOpportunity
-                            if isinstance(opp, dict):
-                                market = opp.get('market', 'unknown')
-                                ev = opp.get('ev', 0.0)
-                                conf = opp.get('confidence', 0.0)
-                                quality = opp.get('signal_quality_score', 0.0)
-                            else:
-                                market = getattr(opp, 'market', 'unknown')
-                                ev = getattr(opp, 'ev', 0.0)
-                                conf = getattr(opp, 'confidence', 0.0)
-                                quality = getattr(opp, 'signal_quality_score', 0.0)
-                            logger.info(f"   ✅ {market}: EV={ev:.1f}%, Conf={conf:.1f}%, Quality={quality:.1f}")
+                        # 🔧 FIX: opp può essere dict o LiveBettingOpportunity
+                        if isinstance(opp, dict):
+                            market = opp.get('market', 'unknown')
+                            ev = opp.get('ev', 0.0)
+                            conf = opp.get('confidence', 0.0)
+                            quality = opp.get('signal_quality_score', 0.0)
+                        else:
+                            market = getattr(opp, 'market', 'unknown')
+                            ev = getattr(opp, 'ev', 0.0)
+                            conf = getattr(opp, 'confidence', 0.0)
+                            quality = getattr(opp, 'signal_quality_score', 0.0)
+                        logger.info(f"   ✅ {market}: EV={ev:.1f}%, Conf={conf:.1f}%, Quality={quality:.1f}")
                 else:
                     matches_without_opportunities += 1
                     # 🔧 DEBUG: Log dettagliato perché non ci sono opportunità
@@ -927,24 +928,24 @@ class Automation24H:
             search_dates = [today, yesterday]
             
             for search_date in search_dates:
-            params = {
+                params = {
                     "date": search_date.strftime("%Y-%m-%d"),
                     "timezone": "UTC"
-            }
-            
-            query = urllib.parse.urlencode(params)
-            url = f"{base_url}/fixtures?{query}"
-            headers = {
-                "x-rapidapi-key": api_key,
-                "x-rapidapi-host": "v3.football.api-sports.io"
-            }
-            
+                }
+                
+                query = urllib.parse.urlencode(params)
+                url = f"{base_url}/fixtures?{query}"
+                headers = {
+                    "x-rapidapi-key": api_key,
+                    "x-rapidapi-host": "v3.football.api-sports.io"
+                }
+                
                 logger.info(f"📡 Fetching fixtures from API-Football (date: {search_date}, timezone: UTC)...")
-            self.api_usage_today += 1  # Conta chiamata API per fixtures
-            req = urllib.request.Request(url, headers=headers)
-            
+                self.api_usage_today += 1  # Conta chiamata API per fixtures
+                req = urllib.request.Request(url, headers=headers)
+                
                 try:
-            with urllib.request.urlopen(req, timeout=15) as response:
+                    with urllib.request.urlopen(req, timeout=15) as response:
                         response_data = response.read().decode()
                         data = json.loads(response_data)
                         
@@ -4192,19 +4193,19 @@ def main():
         attempt += 1
         logger.info(f"🔁 Avvio Automation24H (tentativo {attempt})")
         
-        automation = Automation24H(
-            config_path=args.config,
-            telegram_token=args.telegram_token or config.get('telegram_token') or os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN'),
-            telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID'),
-            min_ev=args.min_ev or config.get('min_ev', 8.0),
-            min_confidence=args.min_confidence or config.get('min_confidence', 70.0),
-            update_interval=args.update_interval or config.get('update_interval', 600),
-            api_budget_per_day=config.get('api_budget_per_day', 7500),  # Piano Pro: 7500 chiamate/giorno
-            max_notifications_per_cycle=args.max_notifications or config.get('max_notifications_per_cycle', 2)
-        )
-        
+    automation = Automation24H(
+        config_path=args.config,
+        telegram_token=args.telegram_token or config.get('telegram_token') or os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN'),
+        telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID'),
+        min_ev=args.min_ev or config.get('min_ev', 8.0),
+        min_confidence=args.min_confidence or config.get('min_confidence', 70.0),
+        update_interval=args.update_interval or config.get('update_interval', 600),
+        api_budget_per_day=config.get('api_budget_per_day', 7500),  # Piano Pro: 7500 chiamate/giorno
+        max_notifications_per_cycle=args.max_notifications or config.get('max_notifications_per_cycle', 2)
+    )
+    
         try:
-            automation.start(single_run=args.single_run)
+    automation.start(single_run=args.single_run)
             if args.single_run:
                 break
         except Exception as e:
