@@ -1059,16 +1059,14 @@ class Automation24H:
                     if not home_team or not away_team:
                         continue
                     
-                    # 🎯 RIMOSSO FILTRO: Recupera statistiche ma non saltare se non disponibili
-                    # L'utente vuole calcolare confidence ed EV per tutte le partite LIVE
+                    # 🎯 FILTRO ESSENZIALE: Richiede statistiche per calcolare confidence precisa
                     logger.debug(f"🔍 Verificando statistiche per {home_team} vs {away_team} (fixture {fixture_id}, status: {status_short})...")
                     statistics = self._fetch_statistics_from_api_football(fixture_id, api_key, base_url)
                     if not statistics:
                         skipped_no_stats += 1
-                        logger.warning(f"⚠️  Partita LIVE {home_team} vs {away_team} (status: {status_short}) senza statistiche disponibili, continuo comunque")
-                        statistics = []  # Usa lista vuota invece di saltare
-                    else:
-                        logger.info(f"✅ Statistiche disponibili per {home_team} vs {away_team} (status: {status_short})")
+                        logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} (status: {status_short}) senza statistiche disponibili, skip (necessarie per confidence precisa)")
+                        continue  # Salta questa partita, serve statistiche per confidence precisa
+                    logger.info(f"✅ Statistiche disponibili per {home_team} vs {away_team} (status: {status_short}), procedo con estrazione quote")
                     
                     # 🔧 FIX: Per partite LIVE, dobbiamo fare una chiamata separata per le quote
                     # L'endpoint /fixtures non include sempre le quote per partite LIVE, dobbiamo richiederle
@@ -1089,8 +1087,10 @@ class Automation24H:
                             
                             odds_data_response = self._retry_api_call(_make_odds_request, max_retries=3, base_delay=1.0)
                             if odds_data_response is None:
-                                logger.warning(f"⚠️  Impossibile recuperare quote per fixture {fixture_id} dopo retry, continuo senza quote")
-                                odds_data = []  # 🎯 NON SALTARE: Continua anche senza quote
+                                logger.warning(f"⚠️  Impossibile recuperare quote per fixture {fixture_id} dopo retry")
+                                skipped_no_odds += 1
+                                logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
+                                continue  # Salta questa partita, serve quote per EV preciso
                             else:
                                 # 🔧 DEBUG: Log struttura risposta
                                 logger.debug(f"   Risposta /odds: {json.dumps(odds_data_response, indent=2)[:500]}")
