@@ -619,119 +619,22 @@ class LiveBettingAdvisor:
             for opp in opportunities:
                 self._populate_opportunity_metadata(opp, live_data)
             
-            # 🆕 FILTRI INTELLIGENTI: Rimuovi suggerimenti banali/ovvi
-            before_obvious_filter = len(opportunities)
-            opportunities = self._filter_obvious_opportunities(opportunities, live_data)
-            after_obvious_filter = len(opportunities)
-            if before_obvious_filter > 0:
-                if before_obvious_filter > after_obvious_filter:
-                    logger.info(f"📊 Filtro opportunità ovvie per {match_id}: {before_obvious_filter} opportunità, {before_obvious_filter - after_obvious_filter} ovvie rimosse, {after_obvious_filter} rimaste")
-                else:
-                    logger.info(f"📊 {match_id}: {before_obvious_filter} opportunità generate, nessuna ovvia rimossa")
-            
-            # 🔧 LOG: Opportunità prima di market_specific_rules
-            before_market_rules = len(opportunities)
-            if before_market_rules > 0:
-                logger.info(f"📊 {match_id}: {before_market_rules} opportunità prima di market_specific_rules")
-                for opp in opportunities[:3]:  # Prime 3
-                    logger.info(f"   - {opp.market}: EV={opp.ev:.1f}%, Conf={opp.confidence:.1f}%")
-            
-            opportunities = self._apply_market_specific_rules(opportunities, match_data, live_data)
-            after_market_rules = len(opportunities)
-            if before_market_rules > 0:
-                if before_market_rules > after_market_rules:
-                    logger.info(f"📊 {match_id}: Market specific rules: {before_market_rules} → {after_market_rules} ({before_market_rules - after_market_rules} rimosse)")
-                else:
-                    logger.info(f"📊 {match_id}: Market specific rules: {before_market_rules} opportunità, nessuna rimossa")
-            
-            before_market_conf = len(opportunities)
-            opportunities = self._apply_market_min_confidence(opportunities)
-            after_market_conf = len(opportunities)
-            if before_market_conf > 0:
-                if before_market_conf > after_market_conf:
-                    logger.info(f"📊 {match_id}: Market min confidence: {before_market_conf} → {after_market_conf} ({before_market_conf - after_market_conf} rimosse)")
-                else:
-                    logger.info(f"📊 {match_id}: Market min confidence: {before_market_conf} opportunità, nessuna rimossa")
-            
-            # 🔧 LOG: Opportunità dopo market rules, prima dei filtri EV/Confidence
+            # 🎯 RIMOSSI TUTTI I FILTRI: Calcola solo confidence ed EV, nessun filtro applicato
+            # Log opportunità generate
             if len(opportunities) > 0:
-                logger.info(f"📊 {match_id}: {len(opportunities)} opportunità dopo market rules, prima dei filtri EV/Confidence")
-                for opp in opportunities[:3]:  # Prime 3
+                logger.info(f"📊 {match_id}: {len(opportunities)} opportunità generate (nessun filtro applicato)")
+                for opp in opportunities[:5]:  # Prime 5
                     logger.info(f"   - {opp.market}: EV={opp.ev:.1f}%, Conf={opp.confidence:.1f}%")
             
-            # 🆕 OTTIMIZZATO: Filtra solo opportunità con EV molto negativo (non tutte quelle negative)
-            before_ev_filter = len(opportunities)
-            opportunities_before_ev = opportunities.copy()  # 🔧 FIX: Salva copia prima del filtro per logging
-            opportunities_after_ev = self._filter_by_expected_value(opportunities)
-            after_ev_filter = len(opportunities_after_ev)
-            ev_rejected = before_ev_filter - after_ev_filter
-            opportunities = opportunities_after_ev
-            
-            if before_ev_filter > 0:
-                logger.info(f"📊 Filtro EV per {match_id}: {before_ev_filter} opportunità, {ev_rejected} scartate (EV < {self.min_ev}%), {after_ev_filter} rimaste")
-                if ev_rejected > 0:
-                    # Log dettagliato delle opportunità scartate per EV
-                    filtered_ev_opps = [opp for opp in opportunities_before_ev if opp.ev < self.min_ev]
-                    if filtered_ev_opps:
-                        ev_details = [f"{opp.market}: EV={opp.ev:.1f}% (min={self.min_ev}%)" for opp in filtered_ev_opps[:5]]
-                        logger.info(f"   📊 EV filtrate: {', '.join(ev_details)}")
-            
-            # Filtra solo opportunità con alta confidence
-            before_confidence_filter = len(opportunities)
-            opportunities_after_conf = [opp for opp in opportunities if opp.confidence >= self.min_confidence]
-            after_confidence_filter = len(opportunities_after_conf)
-            confidence_rejected = before_confidence_filter - after_confidence_filter
-            opportunities = opportunities_after_conf
-            
-            if before_confidence_filter > 0:
-                logger.info(f"📊 Filtro Confidence per {match_id}: {before_confidence_filter} opportunità, {confidence_rejected} scartate (confidence < {self.min_confidence}%), {after_confidence_filter} rimaste")
-                if confidence_rejected > 0:
-                    # Log confidence delle opportunità filtrate
-                    all_opps_before = opportunities_after_ev  # Opportunità dopo EV filter
-                    filtered_opps = [opp for opp in all_opps_before if opp.confidence < self.min_confidence]
-                    if filtered_opps:
-                        confidences = [f"{opp.market}: Conf={opp.confidence:.0f}% (min={self.min_confidence}%)" for opp in filtered_opps[:5]]  # Prime 5
-                        logger.info(f"   📊 Confidence filtrate: {', '.join(confidences)}")
-            elif before_obvious_filter == 0:
-                # 🔍 NUOVO: Log quando non vengono trovate opportunità iniziali
-                logger.info(f"🔍 {match_id}: Nessuna opportunità iniziale trovata (score: {live_data.get('score_home', 0)}-{live_data.get('score_away', 0)}, min: {live_data.get('minute', 0)})")
-            
-            # 🆕 OTTIMIZZATO: Deduplica opportunità per match_id + market (PRIMA del limite)
+            # 🆕 Deduplica opportunità per match_id + market (solo per evitare duplicati identici)
             before_dedup = len(opportunities)
             opportunities = self._deduplicate_opportunities(opportunities)
             after_dedup = len(opportunities)
             if before_dedup > after_dedup:
                 logger.info(f"📊 Deduplicazione per {match_id}: {before_dedup} opportunità, {before_dedup - after_dedup} duplicate rimosse, {after_dedup} rimaste")
             
-            # 🆕 OTTIMIZZATO: Filtra segnali contrastanti (es. Under + Ribaltone sulla stessa partita)
-            before_contradictory = len(opportunities)
-            opportunities = self._filter_contradictory_signals(opportunities, live_data)
-            after_contradictory = len(opportunities)
-            if before_contradictory > after_contradictory:
-                logger.info(f"📊 Filtro segnali contrastanti per {match_id}: {before_contradictory} opportunità, {before_contradictory - after_contradictory} contrastanti rimosse, {after_contradictory} rimaste")
-            
-            # 🆕 OTTIMIZZATO: Ordina per mix di Expected Value e Confidence (non solo EV)
+            # 🆕 Ordina per mix di Expected Value e Confidence (non solo EV)
             opportunities.sort(key=lambda x: self._calculate_combined_score(x), reverse=True)
-            
-            # 🔧 LOG: Opportunità prima del filtro finale
-            if len(opportunities) > 0:
-                logger.info(f"📊 {match_id}: {len(opportunities)} opportunità prima del filtro finale (confidence >= {self.min_confidence}%)")
-                for opp in opportunities[:3]:  # Prime 3
-                    logger.info(f"   - {opp.market}: EV={opp.ev:.1f}%, Conf={opp.confidence:.1f}%")
-            
-            # 🆕 FIX CRITICO: Filtro finale di sicurezza - blocca TUTTI i segnali con confidence < min_confidence
-            # Questo è un doppio controllo per essere sicuri che nessun segnale con confidence troppo bassa venga inviato
-            before_final_filter = opportunities.copy()  # Salva copia prima del filtro
-            opportunities = [opp for opp in opportunities if opp.confidence >= self.min_confidence]
-            if len(before_final_filter) > len(opportunities):
-                filtered_count = len(before_final_filter) - len(opportunities)
-                logger.warning(f"⚠️  FILTRO FINALE: Bloccati {filtered_count} segnali con confidence < {self.min_confidence}% (BUG PREVENZIONE)")
-                # Log dettagli dei segnali bloccati per debug
-                for opp in before_final_filter:
-                    if opp.confidence < self.min_confidence:
-                        logger.warning(f"   ❌ Segnale bloccato: {opp.market} su {opp.match_id} con confidence {opp.confidence:.1f}% < {self.min_confidence}%")
-            elif len(before_final_filter) > 0:
-                logger.info(f"📊 {match_id}: Filtro finale: {len(before_final_filter)} opportunità, tutte passate (confidence >= {self.min_confidence}%)")
             
             # 🆕 FILTRO: Limita numero di segnali per partita (max 2 migliori) E deduplica di nuovo
             # Raggruppa per match_id e mantieni solo i 2 migliori per partita
@@ -817,40 +720,7 @@ class LiveBettingAdvisor:
                         f"({quality_result['grade']}), Conf={opp.confidence:.0f}%, EV={opp.ev:.1f}%"
                     )
 
-                # FILTRO: Mantieni solo opportunità con quality score >= 60/100
-                MIN_QUALITY_SCORE = 60.0
-                before_quality_filter = len(opportunities)
-                opportunities_after_quality = [
-                    opp for opp in opportunities
-                    if opp.signal_quality_score >= MIN_QUALITY_SCORE
-                ]
-                after_quality_filter = len(opportunities_after_quality)
-                quality_rejected = before_quality_filter - after_quality_filter
-                opportunities = opportunities_after_quality
-
-                if quality_rejected > 0:
-                    logger.info(
-                        f"📊 Filtro Quality Score: {before_quality_filter} opportunità, {quality_rejected} scartate "
-                        f"(Quality < {MIN_QUALITY_SCORE}/100), {after_quality_filter} rimaste"
-                    )
-                    # Log dettagli delle opportunità scartate
-                    for opp in opportunities[:5]:  # Prime 5 scartate (ma opportunities ora contiene solo quelle che passano)
-                        if hasattr(opp, 'signal_quality_score') and opp.signal_quality_score < MIN_QUALITY_SCORE:
-                            logger.info(
-                                f"   ❌ {opp.market}: Quality={opp.signal_quality_score:.1f}/100 "
-                                f"< {MIN_QUALITY_SCORE} (Conf: {opp.confidence:.0f}%, EV: {opp.ev:.1f}%)"
-                            )
-
-                # Log opportunità che passano
-                if opportunities:
-                    logger.info(f"✅ {len(opportunities)} opportunità passano Quality Scoring:")
-                    for opp in opportunities[:5]:  # Prime 5
-                        logger.info(
-                            f"   ✓ {opp.market}: Quality={opp.signal_quality_score:.1f} "
-                            f"({opp.quality_grade}), Conf={opp.confidence:.0f}%, EV={opp.ev:.1f}%"
-                        )
-                else:
-                    logger.info(f"📊 Nessuna opportunità passa Quality Scoring (min: {MIN_QUALITY_SCORE}/100)")
+                # 🎯 RIMOSSO: Filtro Quality Score - calcola solo confidence ed EV
 
             # 🎯 NUOVO: Aggiorna tracking diversità mercati per le opportunità selezionate
             for opp in opportunities:
@@ -3099,24 +2969,24 @@ class LiveBettingAdvisor:
                             confidence = 78 + (minute - 70) * 0.2 + min(5, ai_boost)
                             confidence = min(88, confidence)
                             
-                            if confidence >= 75:
-                                opportunity = LiveBettingOpportunity(
-                                    match_id=match_id, match_data=match_data,
-                                    situation='match_winner_home_advanced', market='1x2_home',
-                                    recommendation=f"Punta {match_data.get('home')} vince (alternativa Clean Sheet)",
-                                    reasoning=(
-                                        f"🎯 VITTORIA CASA (Alternativa Clean Sheet)!\n\n"
-                                        f"• Score: {score_home}-{score_away} al {minute}'\n"
-                                        f"• {match_data.get('home')} in vantaggio, {match_data.get('away')} senza tiri in porta\n"
-                                        f"• Minuto avanzato ({minute}') → Vittoria casa sempre quotata\n"
-                                        f"• Alta probabilità che mantenga il vantaggio\n"
-                                        f"• Mercato comune e sempre disponibile\n"
-                                        f"• IA boost: +{ai_boost:.0f}%"
-                                    ),
-                                    confidence=confidence, odds=1.5, stake_suggestion=2.5,
-                                    timestamp=datetime.now()
-                                )
-                                opportunities.append(opportunity)
+                            # 🎯 RIMOSSO: Filtro confidence minima - genera sempre l'opportunità
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation='match_winner_home_advanced', market='1x2_home',
+                                recommendation=f"Punta {match_data.get('home')} vince (alternativa Clean Sheet)",
+                                reasoning=(
+                                    f"🎯 VITTORIA CASA (Alternativa Clean Sheet)!\n\n"
+                                    f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                    f"• {match_data.get('home')} in vantaggio, {match_data.get('away')} senza tiri in porta\n"
+                                    f"• Minuto avanzato ({minute}') → Vittoria casa sempre quotata\n"
+                                    f"• Alta probabilità che mantenga il vantaggio\n"
+                                    f"• Mercato comune e sempre disponibile\n"
+                                    f"• IA boost: +{ai_boost:.0f}%"
+                                ),
+                                confidence=confidence, odds=1.5, stake_suggestion=2.5,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
                     logger.debug(f"⏭️  Clean sheet home non generato: minuto {minute}' oltre soglia {max_clean_sheet_minute}', alternative Under 1.5/Match Winner suggerite")
                 else:
                     # Non generare se risultato è già 3-0 o più al 75' (troppo ovvio)
@@ -3144,14 +3014,11 @@ class LiveBettingAdvisor:
                         confidence = base_confidence + (minute - 50) * 0.3 + min(10, ai_boost)  # 🆕 Limita IA boost a +10% per clean sheet
                         confidence = min(92, confidence)
                         
-                        # 🆕 FIX: Verifica che confidence sia almeno 80% (soglia minima per clean_sheet)
-                        if confidence < 80:
-                            logger.debug(f"⏭️  Clean sheet home non generato: confidence {confidence:.0f}% < 80% (soglia minima)")
-                        else:
-                            # Calcola statistiche concrete per il reasoning
-                            total_shots_away = live_data.get('shots_away', 0)
-                            dangerous_attacks_away = live_data.get('dangerous_attacks_away', 0)
-                            xg_away = live_data.get('xg_away', 0)
+                        # 🎯 RIMOSSO: Filtro confidence minima - genera sempre l'opportunità
+                        # Calcola statistiche concrete per il reasoning
+                        total_shots_away = live_data.get('shots_away', 0)
+                        dangerous_attacks_away = live_data.get('dangerous_attacks_away', 0)
+                        xg_away = live_data.get('xg_away', 0)
                         
                         opportunity = LiveBettingOpportunity(
                             match_id=match_id, match_data=match_data,
@@ -3213,24 +3080,24 @@ class LiveBettingAdvisor:
                             confidence = 78 + (minute - 70) * 0.2 + min(5, ai_boost)
                             confidence = min(88, confidence)
                             
-                            if confidence >= 75:
-                                opportunity = LiveBettingOpportunity(
-                                    match_id=match_id, match_data=match_data,
-                                    situation='match_winner_away_advanced', market='1x2_away',
-                                    recommendation=f"Punta {match_data.get('away')} vince (alternativa Clean Sheet)",
-                                    reasoning=(
-                                        f"🎯 VITTORIA TRASFERTA (Alternativa Clean Sheet)!\n\n"
-                                        f"• Score: {score_home}-{score_away} al {minute}'\n"
-                                        f"• {match_data.get('away')} in vantaggio, {match_data.get('home')} senza tiri in porta\n"
-                                        f"• Minuto avanzato ({minute}') → Vittoria trasferta sempre quotata\n"
-                                        f"• Alta probabilità che mantenga il vantaggio\n"
-                                        f"• Mercato comune e sempre disponibile\n"
-                                        f"• IA boost: +{ai_boost:.0f}%"
-                                    ),
-                                    confidence=confidence, odds=1.5, stake_suggestion=2.5,
-                                    timestamp=datetime.now()
-                                )
-                                opportunities.append(opportunity)
+                            # 🎯 RIMOSSO: Filtro confidence minima - genera sempre l'opportunità
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation='match_winner_away_advanced', market='1x2_away',
+                                recommendation=f"Punta {match_data.get('away')} vince (alternativa Clean Sheet)",
+                                reasoning=(
+                                    f"🎯 VITTORIA TRASFERTA (Alternativa Clean Sheet)!\n\n"
+                                    f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                    f"• {match_data.get('away')} in vantaggio, {match_data.get('home')} senza tiri in porta\n"
+                                    f"• Minuto avanzato ({minute}') → Vittoria trasferta sempre quotata\n"
+                                    f"• Alta probabilità che mantenga il vantaggio\n"
+                                    f"• Mercato comune e sempre disponibile\n"
+                                    f"• IA boost: +{ai_boost:.0f}%"
+                                ),
+                                confidence=confidence, odds=1.5, stake_suggestion=2.5,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
                     logger.debug(f"⏭️  Clean sheet away non generato: minuto {minute}' oltre soglia {max_clean_sheet_minute}', alternative Under 1.5/Match Winner suggerite")
                 else:
                     # Non generare se risultato è già 3-0 o più al 75' (troppo ovvio)
@@ -3258,14 +3125,11 @@ class LiveBettingAdvisor:
                         confidence = base_confidence + (minute - 50) * 0.3 + min(10, ai_boost)  # 🆕 Limita IA boost a +10% per clean sheet
                         confidence = min(92, confidence)
                         
-                        # 🆕 FIX: Verifica che confidence sia almeno 80% (soglia minima per clean_sheet)
-                        if confidence < 80:
-                            logger.debug(f"⏭️  Clean sheet away non generato: confidence {confidence:.0f}% < 80% (soglia minima)")
-                        else:
-                            # Calcola statistiche concrete per il reasoning
-                            total_shots_home = live_data.get('shots_home', 0)
-                            dangerous_attacks_home = live_data.get('dangerous_attacks_home', 0)
-                            xg_home = live_data.get('xg_home', 0)
+                        # 🎯 RIMOSSO: Filtro confidence minima - genera sempre l'opportunità
+                        # Calcola statistiche concrete per il reasoning
+                        total_shots_home = live_data.get('shots_home', 0)
+                        dangerous_attacks_home = live_data.get('dangerous_attacks_home', 0)
+                        xg_home = live_data.get('xg_home', 0)
                         
                         opportunity = LiveBettingOpportunity(
                             match_id=match_id, match_data=match_data,
@@ -3338,14 +3202,8 @@ class LiveBettingAdvisor:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'home_win') if self.ai_pipeline else 0
                     # 🆕 FIX: Confidence base aumentata a 75% (minimo 78% richiesto, quindi serve almeno +3% da AI)
                     confidence = 75 + ai_boost
-                    # 🆕 FIX: Se confidence finale < 78%, non generare (troppo rischioso)
-                    if confidence < 78:
-                        logger.debug(f"⏭️  Saltata opportunità: Home Win su 0-0 con confidence {confidence:.0f}% < 78% (troppo bassa)")
-                        return opportunities
+                    # 🎯 RIMOSSO: Filtri confidence ed EV - genera sempre l'opportunità
                     ev_pct = self._calculate_ev_from_values(confidence, odds_1)
-                    if ev_pct < self.min_ev:
-                        logger.debug(f"⏭️  Saltata opportunità: Home Win senza valore (EV {ev_pct:.1f}% < {self.min_ev:.1f}%)")
-                        return opportunities
                     
                     opportunity = LiveBettingOpportunity(
                         match_id=match_id, match_data=match_data,
@@ -3374,14 +3232,8 @@ class LiveBettingAdvisor:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'away_win') if self.ai_pipeline else 0
                     # 🆕 FIX: Confidence base aumentata a 75% (minimo 78% richiesto, quindi serve almeno +3% da AI)
                     confidence = 75 + ai_boost
-                    # 🆕 FIX: Se confidence finale < 78%, non generare (troppo rischioso)
-                    if confidence < 78:
-                        logger.debug(f"⏭️  Saltata opportunità: Away Win su 0-0 con confidence {confidence:.0f}% < 78% (troppo bassa)")
-                        return opportunities
+                    # 🎯 RIMOSSO: Filtri confidence ed EV - genera sempre l'opportunità
                     ev_pct = self._calculate_ev_from_values(confidence, odds_2)
-                    if ev_pct < self.min_ev:
-                        logger.debug(f"⏭️  Saltata opportunità: Away Win senza valore (EV {ev_pct:.1f}% < {self.min_ev:.1f}%)")
-                        return opportunities
                     
                     opportunity = LiveBettingOpportunity(
                         match_id=match_id, match_data=match_data,
