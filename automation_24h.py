@@ -3532,9 +3532,9 @@ class Automation24H:
         if live_opp.match_stats:
             status = live_opp.match_stats.get('status', None)
         
-        # 🔧 NUOVO: Filtra partite finite - NON inviare notifiche per partite già terminate
+        # 🔧 FIX TIMING: Filtra partite finite - NON inviare notifiche per partite già terminate
         if minute > 90 or (status and status.upper() in ["FINISHED", "FT", "AET", "PEN"]):
-            logger.debug(f"⏭️  Partita {match_id} saltata: partita finita (minuto: {minute}, status: {status})")
+            logger.warning(f"⏭️  Partita {match_id} saltata: partita già finita (minuto: {minute}, status: {status}) - notifica non inviata")
             return
         
         # 🔧 FIX: Definisci 'now' prima di usarlo
