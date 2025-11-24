@@ -755,10 +755,10 @@ class Automation24H:
                 if opportunities:
                     matches_with_opportunities += 1
                     logger.info(f"📊 {match_name}: trovate {len(opportunities)} opportunità")
-                    for opp in opportunities:
-                        if opp:
-                            opportunities_found += 1
-                            all_opportunities.append(opp)  # Raccogli invece di inviare subito
+                for opp in opportunities:
+                    if opp:
+                        opportunities_found += 1
+                        all_opportunities.append(opp)  # Raccogli invece di inviare subito
                             # 🔧 FIX: opp può essere dict o LiveBettingOpportunity
                             if isinstance(opp, dict):
                                 market = opp.get('market', 'unknown')
@@ -927,24 +927,24 @@ class Automation24H:
             search_dates = [today, yesterday]
             
             for search_date in search_dates:
-                params = {
+            params = {
                     "date": search_date.strftime("%Y-%m-%d"),
                     "timezone": "UTC"
-                }
-                
-                query = urllib.parse.urlencode(params)
-                url = f"{base_url}/fixtures?{query}"
-                headers = {
-                    "x-rapidapi-key": api_key,
-                    "x-rapidapi-host": "v3.football.api-sports.io"
-                }
-                
+            }
+            
+            query = urllib.parse.urlencode(params)
+            url = f"{base_url}/fixtures?{query}"
+            headers = {
+                "x-rapidapi-key": api_key,
+                "x-rapidapi-host": "v3.football.api-sports.io"
+            }
+            
                 logger.info(f"📡 Fetching fixtures from API-Football (date: {search_date}, timezone: UTC)...")
-                self.api_usage_today += 1  # Conta chiamata API per fixtures
-                req = urllib.request.Request(url, headers=headers)
-                
+            self.api_usage_today += 1  # Conta chiamata API per fixtures
+            req = urllib.request.Request(url, headers=headers)
+            
                 try:
-                    with urllib.request.urlopen(req, timeout=15) as response:
+            with urllib.request.urlopen(req, timeout=15) as response:
                         response_data = response.read().decode()
                         data = json.loads(response_data)
                         
@@ -1042,8 +1042,8 @@ class Automation24H:
                     # 2. Data = yesterday AND status LIVE (partite iniziate ieri ancora in corso)
                     if fixture_date_only == today:
                         # Partita di oggi: accetta solo se LIVE
-                        if not is_live:
-                            skipped_not_live += 1
+                    if not is_live:
+                        skipped_not_live += 1
                             continue  # Salta partite di oggi non LIVE
                     elif fixture_date_only == yesterday:
                         # Partita di ieri: accetta solo se LIVE (ancora in corso)
@@ -3348,7 +3348,7 @@ class Automation24H:
         minute = 0
         if hasattr(live_opp, 'match_stats') and live_opp.match_stats:
             if isinstance(live_opp.match_stats, dict):
-                minute = live_opp.match_stats.get('minute', 0)
+            minute = live_opp.match_stats.get('minute', 0)
         minute_rounded = (minute // 5) * 5
         opp_key = f"{match_id}_{market}_{minute_rounded}"
         
@@ -4164,7 +4164,7 @@ class Automation24H:
 
 
 def main():
-    """Main entry point"""
+    """Main entry point con autoretry continuo"""
     parser = argparse.ArgumentParser(description='Automation 24/7 System')
     parser.add_argument('--config', type=str, help='Config file path')
     parser.add_argument('--telegram-token', type=str, help='Telegram bot token')
@@ -4185,22 +4185,39 @@ def main():
             config = json.load(f)
         logger.info(f"✅ Config caricato da {config_path}")
     
-    # Crea sistema
-    automation = Automation24H(
-        config_path=args.config,
-        telegram_token=args.telegram_token or config.get('telegram_token') or os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN'),
-        telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID'),
-        min_ev=args.min_ev or config.get('min_ev', 8.0),
-        min_confidence=args.min_confidence or config.get('min_confidence', 70.0),
-        update_interval=args.update_interval or config.get('update_interval', 600),
-        api_budget_per_day=config.get('api_budget_per_day', 7500),  # Piano Pro: 7500 chiamate/giorno
-        max_notifications_per_cycle=args.max_notifications or config.get('max_notifications_per_cycle', 2)
-    )
+    retry_delay = int(os.getenv('AUTOMATION_RETRY_DELAY', config.get('retry_delay', 180)))
     
-    # Avvia (single_run per cron jobs)
-    automation.start(single_run=args.single_run)
+    attempt = 0
+    while True:
+        attempt += 1
+        logger.info(f"🔁 Avvio Automation24H (tentativo {attempt})")
+        
+        automation = Automation24H(
+            config_path=args.config,
+            telegram_token=args.telegram_token or config.get('telegram_token') or os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN'),
+            telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID'),
+            min_ev=args.min_ev or config.get('min_ev', 8.0),
+            min_confidence=args.min_confidence or config.get('min_confidence', 70.0),
+            update_interval=args.update_interval or config.get('update_interval', 600),
+            api_budget_per_day=config.get('api_budget_per_day', 7500),  # Piano Pro: 7500 chiamate/giorno
+            max_notifications_per_cycle=args.max_notifications or config.get('max_notifications_per_cycle', 2)
+        )
+        
+        try:
+            automation.start(single_run=args.single_run)
+            if args.single_run:
+                break
+        except Exception as e:
+            logger.error(f"❌ Errore critico nel main loop: {e}", exc_info=True)
+        
+        if args.single_run:
+            break
+        
+        logger.info(f"⏳ Riavvio automatico tra {retry_delay} secondi...")
+        time.sleep(retry_delay)
 
 
 if __name__ == '__main__':
     main()
+
 
