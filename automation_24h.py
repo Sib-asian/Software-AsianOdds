@@ -3349,7 +3349,7 @@ class Automation24H:
         minute = 0
         if hasattr(live_opp, 'match_stats') and live_opp.match_stats:
             if isinstance(live_opp.match_stats, dict):
-            minute = live_opp.match_stats.get('minute', 0)
+                minute = live_opp.match_stats.get('minute', 0)
         minute_rounded = (minute // 5) * 5
         opp_key = f"{match_id}_{market}_{minute_rounded}"
         
@@ -4192,20 +4192,20 @@ def main():
     while True:
         attempt += 1
         logger.info(f"🔁 Avvio Automation24H (tentativo {attempt})")
-        
-    automation = Automation24H(
-        config_path=args.config,
-        telegram_token=args.telegram_token or config.get('telegram_token') or os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN'),
-        telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID'),
-        min_ev=args.min_ev or config.get('min_ev', 8.0),
-        min_confidence=args.min_confidence or config.get('min_confidence', 70.0),
-        update_interval=args.update_interval or config.get('update_interval', 600),
-        api_budget_per_day=config.get('api_budget_per_day', 7500),  # Piano Pro: 7500 chiamate/giorno
-        max_notifications_per_cycle=args.max_notifications or config.get('max_notifications_per_cycle', 2)
-    )
-    
+
+        automation = Automation24H(
+            config_path=args.config,
+            telegram_token=args.telegram_token or config.get('telegram_token') or os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN'),
+            telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID'),
+            min_ev=args.min_ev or config.get('min_ev', 8.0),
+            min_confidence=args.min_confidence or config.get('min_confidence', 70.0),
+            update_interval=args.update_interval or config.get('update_interval', 600),
+            api_budget_per_day=config.get('api_budget_per_day', 7500),  # Piano Pro: 7500 chiamate/giorno
+            max_notifications_per_cycle=args.max_notifications or config.get('max_notifications_per_cycle', 2)
+        )
+
         try:
-    automation.start(single_run=args.single_run)
+            automation.start(single_run=args.single_run)
             if args.single_run:
                 break
         except Exception as e:
