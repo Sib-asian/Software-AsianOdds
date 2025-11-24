@@ -437,26 +437,64 @@ class LiveBettingAdvisor:
             
             # Analizza diverse situazioni con più mercati
             initial_count = len(opportunities)
+            # 🔧 LOG: Generazione opportunità con logging dettagliato
+            score_home = live_data.get('score_home', 0)
+            score_away = live_data.get('score_away', 0)
+            minute = live_data.get('minute', 0)
+            logger.info(f"🔍 {match_id}: Generazione opportunità - score={score_home}-{score_away}, min={minute}', stats={live_data.get('shots_home', 0)}/{live_data.get('shots_away', 0)}")
+            
+            before_ribaltone = len(opportunities)
             opportunities.extend(self._check_ribaltone_opportunity(match_id, match_data, live_data))
+            if len(opportunities) > before_ribaltone:
+                logger.info(f"   ✅ Ribaltone: {len(opportunities) - before_ribaltone} opportunità")
+            
+            before_under_over = len(opportunities)
             opportunities.extend(self._check_under_over_opportunity(match_id, match_data, live_data))
+            if len(opportunities) > before_under_over:
+                logger.info(f"   ✅ Under/Over: {len(opportunities) - before_under_over} opportunità")
+            
+            before_next_goal = len(opportunities)
             opportunities.extend(self._check_next_goal_opportunity(match_id, match_data, live_data))
+            if len(opportunities) > before_next_goal:
+                logger.info(f"   ✅ Next Goal: {len(opportunities) - before_next_goal} opportunità")
+            
+            before_comeback = len(opportunities)
             opportunities.extend(self._check_comeback_opportunity(match_id, match_data, live_data))
+            if len(opportunities) > before_comeback:
+                logger.info(f"   ✅ Comeback: {len(opportunities) - before_comeback} opportunità")
+            
+            before_ht = len(opportunities)
             opportunities.extend(self._check_ht_markets(match_id, match_data, live_data))
+            if len(opportunities) > before_ht:
+                logger.info(f"   ✅ HT Markets: {len(opportunities) - before_ht} opportunità")
+            
+            before_double = len(opportunities)
             opportunities.extend(self._check_double_chance_markets(match_id, match_data, live_data))
+            if len(opportunities) > before_double:
+                logger.info(f"   ✅ Double Chance: {len(opportunities) - before_double} opportunità")
+            
+            before_over_under = len(opportunities)
             opportunities.extend(self._check_over_under_markets(match_id, match_data, live_data))
+            if len(opportunities) > before_over_under:
+                logger.info(f"   ✅ Over/Under Markets: {len(opportunities) - before_over_under} opportunità")
+            
             after_initial_checks = len(opportunities)
             if after_initial_checks == initial_count:
                 # 🔍 LOG: Nessuna opportunità trovata dalle funzioni iniziali
-                logger.info(f"🔍 {match_id}: Nessuna opportunità dalle funzioni iniziali (score: {live_data.get('score_home', 0)}-{live_data.get('score_away', 0)}, min: {live_data.get('minute', 0)})")
+                logger.info(f"🔍 {match_id}: Nessuna opportunità dalle funzioni iniziali (score: {score_home}-{score_away}, min: {minute}')")
                 # 🔧 DEBUG: Log dettagliato per capire perché
-                minute = live_data.get('minute', 0)
                 if minute < 20:
-                    logger.debug(f"   ⚠️  Partita al minuto {minute} - molti filtri richiedono minuto >= 20")
+                    logger.info(f"   ⚠️  Partita al minuto {minute} - molti filtri richiedono minuto >= 20")
+                elif minute >= 85:
+                    logger.info(f"   ⚠️  Partita al minuto {minute} - molti filtri bloccano partite oltre 85'")
                 shots_home = live_data.get('shots_home', 0)
                 shots_away = live_data.get('shots_away', 0)
-                logger.debug(f"   Statistiche: shots={shots_home}/{shots_away}, on_target={live_data.get('shots_on_target_home', 0)}/{live_data.get('shots_on_target_away', 0)}")
+                logger.info(f"   📊 Statistiche: shots={shots_home}/{shots_away}, on_target={live_data.get('shots_on_target_home', 0)}/{live_data.get('shots_on_target_away', 0)}")
+            else:
+                logger.info(f"✅ {match_id}: {after_initial_checks - initial_count} opportunità generate dalle funzioni iniziali")
             
             # 🆕 NUOVO: Mercati avanzati
+            before_advanced = len(opportunities)
             opportunities.extend(self._check_corner_markets(match_id, match_data, live_data))
             opportunities.extend(self._check_card_markets(match_id, match_data, live_data))
             # 🆕 RIMOSSO: Asian Handicap markets (non interessano all'utente)
@@ -464,8 +502,11 @@ class LiveBettingAdvisor:
             opportunities.extend(self._check_btts_markets(match_id, match_data, live_data))
             opportunities.extend(self._check_win_to_nil_markets(match_id, match_data, live_data))
             opportunities.extend(self._check_second_half_markets(match_id, match_data, live_data))
+            if len(opportunities) > before_advanced:
+                logger.info(f"   ✅ Mercati avanzati: {len(opportunities) - before_advanced} opportunità")
             
             # 🆕 NUOVO: Mercati aggiuntivi completi
+            before_additional = len(opportunities)
             opportunities.extend(self._check_draw_no_bet_markets(match_id, match_data, live_data))
             opportunities.extend(self._check_odd_even_markets(match_id, match_data, live_data))
             opportunities.extend(self._check_exact_score_markets(match_id, match_data, live_data))
@@ -477,6 +518,15 @@ class LiveBettingAdvisor:
             # 🚫 RIMOSSO: HT/FT markets (troppo banali in live betting - suggeriti al 45' o con risultato già sbloccato)
             # opportunities.extend(self._check_ht_ft_markets(match_id, match_data, live_data))
             opportunities.extend(self._check_match_winner_markets(match_id, match_data, live_data))
+            if len(opportunities) > before_additional:
+                logger.info(f"   ✅ Mercati aggiuntivi: {len(opportunities) - before_additional} opportunità")
+            
+            # 🔧 LOG: Riepilogo totale opportunità generate
+            total_generated = len(opportunities) - initial_count
+            if total_generated > 0:
+                logger.info(f"✅ {match_id}: TOTALE {total_generated} opportunità generate (iniziali + avanzati + aggiuntivi)")
+            else:
+                logger.info(f"❌ {match_id}: NESSUNA opportunità generata da tutte le funzioni")
             # 🆕 RIMOSSO: Asian Handicap markets (non interessano all'utente)
             # opportunities.extend(self._check_asian_handicap_markets(match_id, match_data, live_data))
             opportunities.extend(self._check_time_of_next_goal_markets(match_id, match_data, live_data))
