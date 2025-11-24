@@ -199,16 +199,17 @@ class Automation24H:
                 # Con confidence 72% e odds 1.3, EV = (0.72 * 1.3 - 1) * 100 = -6.4%
                 # Con confidence 75% e odds 1.4, EV = (0.75 * 1.4 - 1) * 100 = 5%
                 # 🔧 ABBASSATO: Per live betting, EV minimo più basso (6% invece di 5%)
-                live_min_ev = max(6.0, min_ev - 2.0)  # Abbassa di 2% rispetto a pre-match (minimo 6%)
+                # 🎯 RIMOSSO: Non passa più min_confidence e min_ev al LiveBettingAdvisor
+                # L'utente vuole calcolare confidence ed EV senza soglie minime
                 # 🔧 NUOVO: Passa performance tracker per soglie dinamiche
                 live_tracker = self.live_performance_tracker if hasattr(self, 'live_performance_tracker') else None
                 self.live_betting_advisor = LiveBettingAdvisor(
                     notifier=self.notifier,
-                    min_confidence=min_confidence,
-                    min_ev=live_min_ev,
+                    min_confidence=0.0,  # 🎯 Nessuna soglia minima
+                    min_ev=0.0,  # 🎯 Nessuna soglia minima
                     performance_tracker=live_tracker  # 🔧 NUOVO: Passa tracker
                 )
-                logger.info(f"   LiveBettingAdvisor: min_confidence={min_confidence}%, min_ev={live_min_ev}% (abbassato per live betting)")
+                logger.info(f"   LiveBettingAdvisor: nessuna soglia minima (min_confidence=0%, min_ev=0%)")
                 logger.info("✅ LiveBettingAdvisor initialized")
             except Exception as e:
                 logger.warning(f"⚠️  LiveBettingAdvisor error: {e}")
@@ -276,8 +277,8 @@ class Automation24H:
                 self.notifier = TelegramNotifier(
                     bot_token=telegram_token,
                     chat_id=telegram_chat_id,
-                    min_ev=self.min_ev,
-                    min_confidence=self.min_confidence,
+                    min_ev=0.0,  # 🎯 Nessuna soglia minima
+                    min_confidence=0.0,  # 🎯 Nessuna soglia minima
                     rate_limit_seconds=3,
                     live_alerts_enabled=True  # ✅ Abilita notifiche live
                 )
@@ -3224,14 +3225,9 @@ class Automation24H:
                     odds_factor = 0.95  # -5%
                 # Quote 1.3-2.0: neutro (odds_factor = 1.0)
             
-            # 🆕 5.6 Penalità per EV negativo o troppo basso
-            ev_penalty = 1.0
-            if ev < 0:
-                # EV negativo: penalità forte
-                ev_penalty = 0.70  # -30%
-            elif ev < 5.0:
-                # EV troppo basso (<5%): penalità leggera
-                ev_penalty = 0.90  # -10%
+            # 🎯 RIMOSSO: Penalità per EV negativo o troppo basso
+            # L'utente vuole la miglior partita senza soglie minime
+            ev_penalty = 1.0  # Nessuna penalità
             
             # 🆕 5.7 Calcola Final Score composito con tutti i fattori
             final_score = (
