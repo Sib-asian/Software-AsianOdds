@@ -199,16 +199,17 @@ class Automation24H:
                 # Con confidence 72% e odds 1.3, EV = (0.72 * 1.3 - 1) * 100 = -6.4%
                 # Con confidence 75% e odds 1.4, EV = (0.75 * 1.4 - 1) * 100 = 5%
                 # 🔧 ABBASSATO: Per live betting, EV minimo più basso (6% invece di 5%)
-                live_min_ev = max(6.0, min_ev - 2.0)  # Abbassa di 2% rispetto a pre-match (minimo 6%)
+                # 🎯 RIMOSSO: Non passa più min_confidence e min_ev al LiveBettingAdvisor
+                # L'utente vuole calcolare confidence ed EV senza soglie minime
                 # 🔧 NUOVO: Passa performance tracker per soglie dinamiche
                 live_tracker = self.live_performance_tracker if hasattr(self, 'live_performance_tracker') else None
                 self.live_betting_advisor = LiveBettingAdvisor(
                     notifier=self.notifier,
-                    min_confidence=min_confidence,
-                    min_ev=live_min_ev,
+                    min_confidence=0.0,  # 🎯 Nessuna soglia minima
+                    min_ev=0.0,  # 🎯 Nessuna soglia minima
                     performance_tracker=live_tracker  # 🔧 NUOVO: Passa tracker
                 )
-                logger.info(f"   LiveBettingAdvisor: min_confidence={min_confidence}%, min_ev={live_min_ev}% (abbassato per live betting)")
+                logger.info(f"   LiveBettingAdvisor: nessuna soglia minima (min_confidence=0%, min_ev=0%)")
                 logger.info("✅ LiveBettingAdvisor initialized")
             except Exception as e:
                 logger.warning(f"⚠️  LiveBettingAdvisor error: {e}")
