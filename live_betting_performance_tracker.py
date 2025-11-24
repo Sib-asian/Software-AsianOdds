@@ -348,8 +348,9 @@ class LiveBettingPerformanceTracker:
         
         for market, win_rate, total_count, avg_conf, avg_ev in cursor.fetchall():
             # Soglie base
-            base_confidence = 75.0
-            base_ev = 10.0
+            # 🔧 ABBASSATE: Allineate a min_confidence generale (65%)
+            base_confidence = 65.0  # Era 75.0 - troppo alto
+            base_ev = 8.0  # Era 10.0 - troppo alto per live betting
             
             # Aggiustamento basato su win rate
             if win_rate < 50:
@@ -373,8 +374,9 @@ class LiveBettingPerformanceTracker:
                 reason = f"Win rate normale ({win_rate:.1f}%)"
             
             # Limiti minimi e massimi
-            min_confidence = max(70.0, min(85.0, min_confidence))
-            min_ev = max(8.0, min(20.0, min_ev))
+            # 🔧 ABBASSATI: Limiti più permissivi per opportunità valide
+            min_confidence = max(60.0, min(85.0, min_confidence))  # Era 70.0 minimo
+            min_ev = max(5.0, min(20.0, min_ev))  # Era 8.0 minimo
             
             thresholds[market] = {
                 'min_confidence': round(min_confidence, 1),
@@ -425,9 +427,10 @@ class LiveBettingPerformanceTracker:
             }
         
         # Valori default se non trovato
+        # 🔧 ABBASSATI: Allineati a min_confidence generale (65%) per permettere più opportunità
         return {
-            'min_confidence': 75.0,
-            'min_ev': 10.0
+            'min_confidence': 65.0,  # Era 75.0 - troppo alto per mercati senza dati
+            'min_ev': 6.0  # Era 10.0 - troppo alto per live betting
         }
     
     def get_all_market_performance(self, days: int = 30) -> Dict[str, Dict[str, Any]]:
