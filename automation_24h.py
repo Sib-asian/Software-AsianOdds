@@ -729,7 +729,7 @@ class Automation24H:
         logger.info("=" * 80)
         logger.info(f"📊 CICLO ANALISI LIVE BETTING - {len(matches)} partite da analizzare")
         logger.info("=" * 80)
-image.png
+
         for match in matches:
             try:
                 matches_analyzed += 1
