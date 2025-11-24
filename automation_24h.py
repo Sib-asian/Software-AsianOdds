@@ -1118,10 +1118,14 @@ class Automation24H:
                                         logger.info(f"✅ Quote recuperate per {home_team} vs {away_team} (fixture {fixture_id}, {len(odds_data)} bookmaker)")
                                     else:
                                         logger.warning(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (struttura risposta inattesa: {list(first_item.keys()) if isinstance(first_item, dict) else 'non-dict'})")
-                                        odds_data = []  # 🎯 NON SALTARE: Continua anche senza quote
+                                        skipped_no_odds += 1
+                                        logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
+                                        continue  # Salta questa partita, serve quote per EV preciso
                                 else:
                                     logger.warning(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (response vuoto o None)")
-                                    odds_data = []  # 🎯 NON SALTARE: Continua anche senza quote
+                                    skipped_no_odds += 1
+                                    logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
+                                    continue  # Salta questa partita, serve quote per EV preciso
                         except urllib.error.HTTPError as e:
                             error_body = ""
                             try:
@@ -1129,15 +1133,22 @@ class Automation24H:
                             except:
                                 pass
                             logger.warning(f"⚠️  HTTP error recupero quote per fixture {fixture_id}: {e.code} - {e.reason} - {error_body}")
+                            skipped_no_odds += 1
+                            logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
+                            continue  # Salta questa partita, serve quote per EV preciso
                         except Exception as e:
-                            logger.warning(f"⚠️  Errore recupero quote per fixture {fixture_id}: {e}, continuo senza quote")
-                            odds_data = []  # 🎯 NON SALTARE: Continua anche senza quote
+                            logger.warning(f"⚠️  Errore recupero quote per fixture {fixture_id}: {e}")
+                            skipped_no_odds += 1
+                            logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
+                            continue  # Salta questa partita, serve quote per EV preciso
                     else:
                         logger.debug(f"✅ Quote già presenti in /fixtures per {home_team} vs {away_team} ({len(odds_data)} bookmaker)")
                     
-                    # 🎯 Assicura che odds_data sia sempre una lista (anche se vuota)
-                    if odds_data is None:
-                        odds_data = []
+                    # 🎯 Verifica che ci siano almeno alcune quote disponibili
+                    if not odds_data or len(odds_data) == 0:
+                        skipped_no_odds += 1
+                        logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
+                        continue  # Salta questa partita, serve quote per EV preciso
                     
                     # Estrai TUTTE le quote disponibili
                     logger.info(f"🔍 Estraendo quote per {home_team} vs {away_team} (fixture {fixture_id})...")
@@ -1561,17 +1572,24 @@ class Automation24H:
                     logger.info(f"   Ha statistiche: {bool(statistics)}")
                     logger.info(f"   Ha almeno qualche quota: {has_1x2_partial or has_other_odds}")
                     
-                    # 🎯 RIMOSSO FILTRO: Aggiungi sempre la partita LIVE, anche senza statistiche o quote
-                    # L'utente vuole calcolare confidence ed EV per tutte le partite LIVE
-                    matches.append(match)
+                    # 🎯 FILTRO ESSENZIALE: Aggiungi solo partite con statistiche E quote (necessarie per confidence ed EV precisi)
+                    # L'utente vuole calcolare confidence ed EV solo per partite complete
                     if statistics and (has_1x2_complete or has_1x2_partial or has_other_odds):
-                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e quote)")
-                    elif statistics:
-                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche, no quote)")
-                    elif has_1x2_complete or has_1x2_partial or has_other_odds:
-                        logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha quote, no statistiche)")
+                        matches.append(match)
+                        if has_1x2_complete:
+                            logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e quote 1X2 complete)")
+                        elif has_1x2_partial and has_other_odds:
+                            logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche, quote 1X2 parziali e altre quote)")
+                        elif has_1x2_partial:
+                            logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e almeno 1 quota 1X2)")
+                        elif has_other_odds:
+                            logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e altre quote disponibili)")
+                    elif not statistics:
+                        skipped_no_stats += 1
+                        logger.debug(f"⏭️  Match {home_team} vs {away_team} senza statistiche, skip (necessarie per confidence precisa)")
                     else:
-                        logger.warning(f"⚠️  Match {home_team} vs {away_team} aggiunto (senza statistiche né quote, calcolo comunque confidence ed EV)")
+                        skipped_no_odds += 1
+                        logger.debug(f"⏭️  Match {home_team} vs {away_team} senza quote sufficienti (1X2: {bool(odds_1)}/{bool(odds_x)}/{bool(odds_2)}, altre: {has_other_odds}), skip (necessarie per EV preciso)")
                 
                 except Exception as e:
                     logger.debug(f"⚠️  Error processing fixture: {e}")
