@@ -708,14 +708,11 @@ class Automation24H:
             logger.info("   No LIVE matches to monitor, skipping cycle")
             return
         
-        # 1.5. Applica filtri (se disponibili)
-        if self.match_filters:
-            filtered_matches = [m for m in matches if self.match_filters.should_analyze_match(m)]
-            logger.info(f"   After filters: {len(filtered_matches)} matches")
-            matches = filtered_matches
+        # 🔧 RIMOSSO: Filtri match_filters - analizziamo tutte le partite LIVE con statistiche e quote
+        # Le partite vengono già filtrate per avere statistiche e quote disponibili in _fetch_matches_with_odds_from_api_football
         
         if not matches:
-            logger.info("   No matches after filters, skipping cycle")
+            logger.info("   No LIVE matches to monitor, skipping cycle")
             return
         
         # 2. Analizza ogni partita e raccogli tutte le opportunità
@@ -729,7 +726,6 @@ class Automation24H:
         logger.info("=" * 80)
         logger.info(f"📊 CICLO ANALISI LIVE BETTING - {len(matches)} partite da analizzare")
         logger.info("=" * 80)
-image.png
         for match in matches:
             try:
                 matches_analyzed += 1
@@ -756,22 +752,22 @@ image.png
                     matches_with_opportunities += 1
                     logger.info(f"📊 {match_name}: trovate {len(opportunities)} opportunità")
                 for opp in opportunities:
-                        if not opp:
-                            continue
+                    if not opp:
+                        continue
                         opportunities_found += 1
                         all_opportunities.append(opp)  # Raccogli invece di inviare subito
-                        # 🔧 FIX: opp può essere dict o LiveBettingOpportunity
-                        if isinstance(opp, dict):
-                            market = opp.get('market', 'unknown')
-                            ev = opp.get('ev', 0.0)
-                            conf = opp.get('confidence', 0.0)
-                            quality = opp.get('signal_quality_score', 0.0)
-                        else:
-                            market = getattr(opp, 'market', 'unknown')
-                            ev = getattr(opp, 'ev', 0.0)
-                            conf = getattr(opp, 'confidence', 0.0)
-                            quality = getattr(opp, 'signal_quality_score', 0.0)
-                        logger.info(f"   ✅ {market}: EV={ev:.1f}%, Conf={conf:.1f}%, Quality={quality:.1f}")
+                    # 🔧 FIX: opp può essere dict o LiveBettingOpportunity
+                    if isinstance(opp, dict):
+                        market = opp.get('market', 'unknown')
+                        ev = opp.get('ev', 0.0)
+                        conf = opp.get('confidence', 0.0)
+                        quality = opp.get('signal_quality_score', 0.0)
+                    else:
+                        market = getattr(opp, 'market', 'unknown')
+                        ev = getattr(opp, 'ev', 0.0)
+                        conf = getattr(opp, 'confidence', 0.0)
+                        quality = getattr(opp, 'signal_quality_score', 0.0)
+                    logger.info(f"   ✅ {market}: EV={ev:.1f}%, Conf={conf:.1f}%, Quality={quality:.1f}")
                 else:
                     matches_without_opportunities += 1
                     # 🔧 DEBUG: Log dettagliato perché non ci sono opportunità
@@ -1043,8 +1039,8 @@ image.png
                     # 2. Data = yesterday AND status LIVE (partite iniziate ieri ancora in corso)
                     if fixture_date_only == today:
                         # Partita di oggi: accetta solo se LIVE
-                    if not is_live:
-                        skipped_not_live += 1
+                        if not is_live:
+                            skipped_not_live += 1
                             continue  # Salta partite di oggi non LIVE
                     elif fixture_date_only == yesterday:
                         # Partita di ieri: accetta solo se LIVE (ancora in corso)
@@ -2481,16 +2477,9 @@ image.png
                     final_decision['stake'] = optimal_stake
                     ai_result['final_decision'] = final_decision
             
-            # Verifica filtro market (se disponibile)
-            if self.match_filters:
-                market = ai_result.get('final_decision', {}).get('market', '')
-                if market and not self.match_filters.should_analyze_market(market):
-                    logger.debug(f"   Market {market} filtered out")
-                    return None
-            
-            # Verifica se è una vera opportunità VALUE BET
-            if not self._is_real_value_opportunity(ai_result, match):
-                return None
+            # 🔧 RIMOSSO: Filtri market e validazioni - calcoliamo confidence ed EV per tutti i mercati disponibili
+            # Non filtriamo più per action, min_ev, min_confidence, score-based, real value
+            # Tutti i calcoli vengono fatti e la migliore opportunità viene selezionata in _select_best_opportunities
             
             # Costruisci opportunità
             opportunity = {
@@ -2708,116 +2697,9 @@ image.png
             logger.error(traceback.format_exc())
             return []
     
-    def _is_real_value_opportunity(self, ai_result: Dict, match: Dict) -> bool:
-        """
-        Verifica se è una VERA opportunità VALUE BET.
-        
-        Criteri:
-        1. Action deve essere BET (non WATCH/SKIP)
-        2. EV > soglia minima
-        3. Confidence > soglia minima
-        4. NON basato su score (se live)
-        5. Probabilità vs Quote deve avere vero valore
-        """
-        # 1. Check action
-        action = ai_result.get('action') or ai_result.get('final_decision', {}).get('action')
-        if action != 'BET':
-            return False
-        
-        # 2. Check EV
-        ev = ai_result.get('ev') or ai_result.get('summary', {}).get('expected_value', 0)
-        if isinstance(ev, float) and ev < 1.0:
-            ev = ev * 100  # Convert to %
-        if ev < self.min_ev:
-            logger.debug(f"   EV too low: {ev:.1f}% < {self.min_ev}%")
-            return False
-        
-        # 3. Check confidence
-        confidence = ai_result.get('confidence_level') or ai_result.get('summary', {}).get('confidence', 0)
-        if confidence < self.min_confidence:
-            logger.debug(f"   Confidence too low: {confidence:.1f}% < {self.min_confidence}%")
-            return False
-        
-        # 4. Check se è basato su score (se live)
-        # IMPORTANTE: Non vogliamo consigli tipo "1-0 quindi gioca 1"
-        if self._is_score_based_recommendation(ai_result, match):
-            logger.warning(f"   ⚠️  Rejecting score-based recommendation for {match.get('id')}")
-            return False
-        
-        # 5. Verifica vero valore (probabilità vs quote)
-        if not self._has_real_value(ai_result):
-            logger.debug(f"   No real value detected")
-            return False
-        
-        return True
-    
-    def _is_score_based_recommendation(self, ai_result: Dict, match: Dict) -> bool:
-        """
-        Verifica se la raccomandazione è basata solo su score.
-        
-        Questo è il problema che vogliamo evitare:
-        "1-0 quindi gioca 1" - NON ha senso!
-        """
-        # Se non c'è score, non è basato su score
-        current_score = match.get('current_score')
-        if not current_score:
-            return False
-        
-        # Estrai score
-        try:
-            home_score, away_score = map(int, current_score.split('-'))
-        except:
-            return False
-        
-        # Se score è 0-0, non è basato su score
-        if home_score == 0 and away_score == 0:
-            return False
-        
-        # Verifica se la raccomandazione è troppo correlata allo score
-        market = ai_result.get('market') or ai_result.get('final_decision', {}).get('market', '')
-        
-        # Pattern da evitare:
-        # - Score 1-0 e raccomanda HOME
-        # - Score 0-1 e raccomanda AWAY
-        # - Score 2-0 e raccomanda HOME
-        # etc.
-        
-        if 'HOME' in market.upper() and home_score > away_score:
-            # Score favorisce home, raccomanda home - potrebbe essere basato su score
-            # Verifica se c'è altro reasoning oltre allo score
-            reasoning = ai_result.get('llm_playbook', {}).get('text', '') if isinstance(ai_result.get('llm_playbook'), dict) else ''
-            if 'score' in reasoning.lower() and len(reasoning) < 100:
-                # Reasoning troppo breve e menziona score - probabilmente basato su score
-                return True
-        
-        if 'AWAY' in market.upper() and away_score > home_score:
-            reasoning = ai_result.get('llm_playbook', {}).get('text', '') if isinstance(ai_result.get('llm_playbook'), dict) else ''
-            if 'score' in reasoning.lower() and len(reasoning) < 100:
-                return True
-        
-        return False
-    
-    def _has_real_value(self, ai_result: Dict) -> bool:
-        """
-        Verifica se c'è vero valore (probabilità vs quote).
-        
-        True value = probabilità > probabilità implicita dalla quota
-        """
-        probability = ai_result.get('probability') or ai_result.get('summary', {}).get('probability')
-        odds = ai_result.get('odds') or ai_result.get('summary', {}).get('odds')
-        
-        if not probability or not odds or odds <= 1.0:
-            return False
-        
-        # Probabilità implicita dalla quota
-        implied_prob = 1.0 / odds
-        
-        # Se probabilità reale > probabilità implicita + margine, c'è valore
-        margin = 0.05  # 5% margine minimo
-        if probability > implied_prob + margin:
-            return True
-        
-        return False
+    # 🔧 RIMOSSO: _is_real_value_opportunity, _is_score_based_recommendation, _has_real_value
+    # Non filtriamo più le opportunità - calcoliamo confidence ed EV per tutti i mercati
+    # La selezione della migliore opportunità avviene in _select_best_opportunities basandosi solo su EV, Confidence e Quality Score
     
     def _handle_opportunity(self, opportunity: Dict):
         """Gestisce opportunità trovata"""
@@ -2897,25 +2779,19 @@ image.png
         if not opportunities:
             return []
         
-        # 🔧 Filtra PRIMA le opportunità senza statistiche live
+        # 🔧 RIMOSSO: Filtro has_live_stats - accettiamo tutte le opportunità
+        # Le partite vengono già filtrate per avere statistiche e quote in _fetch_matches_with_odds_from_api_football
+        # Qui calcoliamo confidence ed EV per tutte le opportunità e selezioniamo la migliore
         valid_opportunities = []
         for opp_dict in opportunities:
             live_opp = opp_dict.get('live_opportunity')
             if not live_opp:
                 continue
-            
-            # Salta opportunità senza statistiche live significative
-            if hasattr(live_opp, "has_live_stats") and not live_opp.has_live_stats:
-                market_name = getattr(live_opp, 'market', opp_dict.get('market', 'unknown'))
-                logger.warning(f"⚠️  Opportunità {opp_dict.get('match_id', '?')}/{market_name} saltata in _select_best_opportunities: has_live_stats=False")
-                logger.warning(f"   Statistiche disponibili nel match: shots_on_target_home={match_data.get('home_shots_on_target', 'N/A')}, shots_home={match_data.get('home_total_shots', 'N/A')}")
-                continue
-            
             valid_opportunities.append(opp_dict)
         
         # Se non ci sono opportunità valide, ritorna lista vuota
         if not valid_opportunities:
-            logger.info(f"⚠️  Nessuna opportunità valida con statistiche live tra {len(opportunities)} totali")
+            logger.info(f"⚠️  Nessuna opportunità valida tra {len(opportunities)} totali")
             return []
         
         # 🆕 Inizializza Signal Quality Gate se non esiste (verrà inizializzato in _handle_live_opportunity se necessario)
@@ -3332,16 +3208,8 @@ image.png
         if not live_opp:
             return
 
-        # 🔍 Assicura che ci siano statistiche live reali prima di notificare
-        # NOTA: Questo controllo è ridondante ora che filtriamo in _select_best_opportunities,
-        # ma lo manteniamo come sicurezza aggiuntiva
-        if hasattr(live_opp, "has_live_stats") and not live_opp.has_live_stats:
-            market_name = getattr(live_opp, 'market', opportunity.get('market', 'unknown'))
-            logger.warning(f"⚠️  Opportunità {match_id}/{market_name} saltata in _notify_opportunity: has_live_stats=False")
-            match_data = opportunity.get('match_data', {})
-            logger.warning(f"   Statistiche disponibili nel match: shots_on_target_home={match_data.get('home_shots_on_target', 'N/A')}, shots_home={match_data.get('home_total_shots', 'N/A')}")
-            logger.warning(f"   live_opp.has_live_stats={live_opp.has_live_stats}, live_opp.match_stats={getattr(live_opp, 'match_stats', 'N/A')}")
-            return
+        # 🔧 RIMOSSO: Controllo has_live_stats - le partite vengono già filtrate per avere statistiche e quote
+        # in _fetch_matches_with_odds_from_api_football, quindi tutte le opportunità qui hanno statistiche valide
         
         # 🆕 AI SIGNAL QUALITY GATE: Validazione finale qualità segnale
         # 🆕 Ottimizzazione: Usa cache se disponibile per evitare doppio calcolo
@@ -3349,7 +3217,7 @@ image.png
         minute = 0
         if hasattr(live_opp, 'match_stats') and live_opp.match_stats:
             if isinstance(live_opp.match_stats, dict):
-            minute = live_opp.match_stats.get('minute', 0)
+                minute = live_opp.match_stats.get('minute', 0)
         minute_rounded = (minute // 5) * 5
         opp_key = f"{match_id}_{market}_{minute_rounded}"
         
@@ -4193,19 +4061,19 @@ def main():
         attempt += 1
         logger.info(f"🔁 Avvio Automation24H (tentativo {attempt})")
         
-    automation = Automation24H(
-        config_path=args.config,
-        telegram_token=args.telegram_token or config.get('telegram_token') or os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN'),
-        telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID'),
-        min_ev=args.min_ev or config.get('min_ev', 8.0),
-        min_confidence=args.min_confidence or config.get('min_confidence', 70.0),
-        update_interval=args.update_interval or config.get('update_interval', 600),
-        api_budget_per_day=config.get('api_budget_per_day', 7500),  # Piano Pro: 7500 chiamate/giorno
-        max_notifications_per_cycle=args.max_notifications or config.get('max_notifications_per_cycle', 2)
-    )
-    
+        automation = Automation24H(
+            config_path=args.config,
+            telegram_token=args.telegram_token or config.get('telegram_token') or os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN'),
+            telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID'),
+            min_ev=args.min_ev or config.get('min_ev', 8.0),
+            min_confidence=args.min_confidence or config.get('min_confidence', 70.0),
+            update_interval=args.update_interval or config.get('update_interval', 600),
+            api_budget_per_day=config.get('api_budget_per_day', 7500),  # Piano Pro: 7500 chiamate/giorno
+            max_notifications_per_cycle=args.max_notifications or config.get('max_notifications_per_cycle', 2)
+        )
+        
         try:
-    automation.start(single_run=args.single_run)
+            automation.start(single_run=args.single_run)
             if args.single_run:
                 break
         except Exception as e:
