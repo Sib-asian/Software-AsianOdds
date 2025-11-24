@@ -75,7 +75,7 @@ class APIConfig:
     """Configuration for API providers"""
 
     # API-Football (Free tier: 100 calls/day)
-    API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY", "95c43f936816cd4389a747fd2cfe061a")
+    API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY", "")
     API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
     API_FOOTBALL_QUOTA = 100  # calls/day
 
@@ -92,7 +92,7 @@ class APIConfig:
     THEODDS_API_KEY = os.getenv("THEODDS_API_KEY", "")
 
     # OpenWeatherMap
-    OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "01afa2183566fcf16d98b5a33c91eae1")
+    OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "")
 
     # HuggingFace
     HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")

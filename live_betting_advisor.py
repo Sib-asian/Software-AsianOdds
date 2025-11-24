@@ -16,12 +16,21 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-# 🛡️ SANITY CHECK - Costanti per filtrare opportunità irrealistiche
-# OPZIONE B (BILANCIATA): Permette value betting dove AI trova valore sottostimato dal mercato
-MAX_EV_ALLOWED = 50.0  # Max 50% EV (permette value betting quando AI trova opportunità reali) - era 25%
-MAX_CONFIDENCE_ALLOWED = 80.0  # Max 80% confidence (nel betting difficile superare 75%)
-MAX_PROB_DEVIATION = 0.35  # Max 35% differenza tra prob AI e prob implicita quote (permette più value) - era 25%
-CONFIDENCE_PENALTY = 0.05  # Penalizzazione -5% se deviazione eccessiva (era -10%)
+# Import centralized configuration
+try:
+    from ai_system.config import AIConfig
+    _config = AIConfig()
+    MAX_EV_ALLOWED = _config.max_ev_allowed
+    MAX_CONFIDENCE_ALLOWED = _config.max_confidence_allowed
+    MAX_PROB_DEVIATION = _config.max_prob_deviation
+    CONFIDENCE_PENALTY = _config.confidence_penalty
+except ImportError:
+    # Fallback values if config not available
+    MAX_EV_ALLOWED = 50.0
+    MAX_CONFIDENCE_ALLOWED = 80.0
+    MAX_PROB_DEVIATION = 0.35
+    CONFIDENCE_PENALTY = 0.05
+    logger.warning("⚠️  AIConfig not available - using fallback values")
 
 # 🆕 Importa LiveMatchAI per analisi AI dedicata ai match live
 try:

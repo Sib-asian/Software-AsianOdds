@@ -333,6 +333,16 @@ class AIConfig:
     openweather_api_key: str = ""
 
     # ============================================================
+    # LIVE BETTING SANITY CHECKS
+    # ============================================================
+
+    # Sanity check thresholds for live betting opportunities
+    max_ev_allowed: float = 50.0  # Max 50% EV (allows value betting when AI finds real opportunities)
+    max_confidence_allowed: float = 80.0  # Max 80% confidence (hard to exceed 75% in betting)
+    max_prob_deviation: float = 0.35  # Max 35% difference between AI prob and implied odds prob
+    confidence_penalty: float = 0.05  # -5% penalty if deviation is excessive
+
+    # ============================================================
     # REGIME DETECTOR & MARKET STATE
     # ============================================================
 
@@ -451,11 +461,11 @@ class AIConfig:
         if not self.theodds_api_key:
             self.theodds_api_key = os.getenv("THEODDS_API_KEY", "")
         if not self.openweather_api_key:
-            self.openweather_api_key = os.getenv("OPENWEATHER_API_KEY", "01afa2183566fcf16d98b5a33c91eae1")
+            self.openweather_api_key = os.getenv("OPENWEATHER_API_KEY", "")
         if not self.huggingface_api_key:
             self.huggingface_api_key = os.getenv("HUGGINGFACE_API_KEY", "")
         if not self.llm_api_key:
-            self.llm_api_key = os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", "tlNvftSj6tYLVfSRRFvIrN8QK"))
+            self.llm_api_key = os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", ""))
 
         # Valida che i pesi sommino a 1.0
         weight_sum = sum(self.confidence_weights.values())
