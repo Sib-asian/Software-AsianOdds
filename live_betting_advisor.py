@@ -504,12 +504,27 @@ class LiveBettingAdvisor:
                 else:
                     logger.info(f"📊 {match_id}: {before_obvious_filter} opportunità generate, nessuna ovvia rimossa")
             
-            opportunities = self._apply_market_specific_rules(opportunities, match_data, live_data)
-            opportunities = self._apply_market_min_confidence(opportunities)
+            # 🔧 LOG: Opportunità prima di market_specific_rules
+            before_market_rules = len(opportunities)
+            if before_market_rules > 0:
+                logger.info(f"📊 {match_id}: {before_market_rules} opportunità prima di market_specific_rules")
+                for opp in opportunities[:3]:  # Prime 3
+                    logger.info(f"   - {opp.market}: EV={opp.ev:.1f}%, Conf={opp.confidence:.1f}%")
             
-            # 🔧 LOG: Opportunità prima dei filtri
+            opportunities = self._apply_market_specific_rules(opportunities, match_data, live_data)
+            after_market_rules = len(opportunities)
+            if before_market_rules > after_market_rules:
+                logger.info(f"📊 {match_id}: Market specific rules: {before_market_rules} → {after_market_rules} ({before_market_rules - after_market_rules} rimosse)")
+            
+            before_market_conf = len(opportunities)
+            opportunities = self._apply_market_min_confidence(opportunities)
+            after_market_conf = len(opportunities)
+            if before_market_conf > after_market_conf:
+                logger.info(f"📊 {match_id}: Market min confidence: {before_market_conf} → {after_market_conf} ({before_market_conf - after_market_conf} rimosse)")
+            
+            # 🔧 LOG: Opportunità dopo market rules, prima dei filtri EV/Confidence
             if len(opportunities) > 0:
-                logger.info(f"📊 {match_id}: {len(opportunities)} opportunità generate prima dei filtri")
+                logger.info(f"📊 {match_id}: {len(opportunities)} opportunità dopo market rules, prima dei filtri EV/Confidence")
                 for opp in opportunities[:3]:  # Prime 3
                     logger.info(f"   - {opp.market}: EV={opp.ev:.1f}%, Conf={opp.confidence:.1f}%")
             
