@@ -4098,21 +4098,32 @@ class LiveBettingAdvisor:
             diff = abs(confidence_adjusted - confidence_before_coherence)
             
             if diff > 15.0:  # Differenza significativa
-                # 🔧 PROTEZIONE PRINCIPALE: Se la confidence ricalcolata è <= 85% della originale,
+                # 🔧 PROTEZIONE PRINCIPALE: Se la confidence ricalcolata è < 85% della originale,
                 # mantieni SEMPRE quella originale invece di ricalcolare
                 # Questo preserva opportunità valide che altrimenti verrebbero distrutte
-                # Non usare mai una confidence ricalcolata se è <= 85% della originale
-                if confidence_adjusted <= min_confidence_allowed:
+                # Non usare mai una confidence ricalcolata se è < 85% della originale
+                confidence_ratio = confidence_adjusted / confidence_before_coherence if confidence_before_coherence > 0 else 0.0
+                
+                # 🔧 MODIFICATO: Se la confidence ricalcolata è inferiore alla originale,
+                # mantieni sempre quella originale (protezione completa)
+                if confidence_adjusted < confidence_before_coherence:
                     confidence_adjusted = confidence_before_coherence
                     logger.info(
                         f"🔧 COERENZA: {opportunity.market} confidence mantenuta a {confidence_adjusted:.1f}% "
-                        f"(ricalcolo avrebbe dato {((ev_raw / 100.0 + 1.0) / opportunity.odds) * 100.0:.1f}% ma < 85% della originale {confidence_before_coherence:.1f}%)"
+                        f"(ricalcolo avrebbe dato {((ev_raw / 100.0 + 1.0) / opportunity.odds) * 100.0:.1f}% ma è inferiore alla originale {confidence_before_coherence:.1f}%)"
+                    )
+                elif confidence_ratio < 0.85:
+                    # Protezione aggiuntiva: anche se >= originale ma < 85%, mantieni originale
+                    confidence_adjusted = confidence_before_coherence
+                    logger.info(
+                        f"🔧 COERENZA: {opportunity.market} confidence mantenuta a {confidence_adjusted:.1f}% "
+                        f"(ricalcolo avrebbe dato {((ev_raw / 100.0 + 1.0) / opportunity.odds) * 100.0:.1f}% ma è {confidence_ratio*100:.1f}% della originale, < 85%)"
                     )
                 else:
-                    # Solo se la confidence ricalcolata è >= 85% della originale, usala
+                    # Solo se la confidence ricalcolata è >= originale E >= 85% della originale, usala
                     logger.info(
                         f"🔧 COERENZA: {opportunity.market} confidence aggiustata da {confidence_before_coherence:.1f}% a {confidence_adjusted:.1f}% "
-                        f"per coerenza con EV cappato {ev_raw:.1f}% (odds: {opportunity.odds:.2f}, >= 85% della originale)"
+                        f"per coerenza con EV cappato {ev_raw:.1f}% (odds: {opportunity.odds:.2f}, {confidence_ratio*100:.1f}% della originale, >= 85%)"
                     )
                 opportunity.confidence = confidence_adjusted
             elif diff > 1.0:  # Differenza piccola ma significativa (> 1%)
