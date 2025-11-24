@@ -95,7 +95,7 @@ class LiveBettingAdvisor:
             ai_pipeline: AI Pipeline per analisi avanzata (opzionale)
         """
         self.notifier = notifier
-        self.min_confidence = min_confidence  # 75% aumentato: filtri più restrittivi per ridurre segnali banali
+        self.min_confidence = min_confidence  # 70% abbassato: permette più opportunità valide con EV positivo
         self.ai_pipeline = ai_pipeline
         self.min_ev = max(0.0, min_ev)  # Soglia EV (default: 9% per partite live)
         self.max_opportunities_per_match = max(1, int(max_opportunities_per_match))
