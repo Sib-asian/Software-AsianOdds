@@ -277,8 +277,8 @@ class Automation24H:
                 self.notifier = TelegramNotifier(
                     bot_token=telegram_token,
                     chat_id=telegram_chat_id,
-                    min_ev=self.min_ev,
-                    min_confidence=self.min_confidence,
+                    min_ev=0.0,  # 🎯 Nessuna soglia minima
+                    min_confidence=0.0,  # 🎯 Nessuna soglia minima
                     rate_limit_seconds=3,
                     live_alerts_enabled=True  # ✅ Abilita notifiche live
                 )
