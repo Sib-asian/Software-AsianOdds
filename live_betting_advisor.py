@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 # 🛡️ SANITY CHECK - Costanti per filtrare opportunità irrealistiche
 # OPZIONE B (BILANCIATA): Permette value betting dove AI trova valore sottostimato dal mercato
-MAX_EV_ALLOWED = 15.0  # Max 15% EV (betting reale raramente supera 5-8%)
+MAX_EV_ALLOWED = 25.0  # Max 25% EV (permette value betting quando AI trova opportunità reali) - era 15%
 MAX_CONFIDENCE_ALLOWED = 80.0  # Max 80% confidence (nel betting difficile superare 75%)
-MAX_PROB_DEVIATION = 0.20  # Max 20% differenza tra prob AI e prob implicita quote (era 15%)
+MAX_PROB_DEVIATION = 0.25  # Max 25% differenza tra prob AI e prob implicita quote (permette più value) - era 20%
 CONFIDENCE_PENALTY = 0.10  # Penalizzazione -10% se deviazione eccessiva (era -20%)
 
 # 🆕 Importa LiveMatchAI per analisi AI dedicata ai match live
@@ -287,6 +287,9 @@ class LiveBettingAdvisor:
             'win_either_half': 60.0,  # 🔧 ABBASSATO: 60% (era 65%, molte opportunità valide scartate)
             'btts_first_half': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
             'half_time_result': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
+            # 🆕 MERCATI PRESSURE (next goal con analisi pressione)
+            'next_goal_pressure_home': 60.0,  # 🔧 60% - mercato pressione casa
+            'next_goal_pressure_away': 60.0,  # 🔧 60% - mercato pressione ospiti
         }
 
     def health_check(self) -> Dict[str, Any]:
