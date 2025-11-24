@@ -3224,14 +3224,9 @@ class Automation24H:
                     odds_factor = 0.95  # -5%
                 # Quote 1.3-2.0: neutro (odds_factor = 1.0)
             
-            # 🆕 5.6 Penalità per EV negativo o troppo basso
-            ev_penalty = 1.0
-            if ev < 0:
-                # EV negativo: penalità forte
-                ev_penalty = 0.70  # -30%
-            elif ev < 5.0:
-                # EV troppo basso (<5%): penalità leggera
-                ev_penalty = 0.90  # -10%
+            # 🎯 RIMOSSO: Penalità per EV negativo o troppo basso
+            # L'utente vuole la miglior partita senza soglie minime
+            ev_penalty = 1.0  # Nessuna penalità
             
             # 🆕 5.7 Calcola Final Score composito con tutti i fattori
             final_score = (
