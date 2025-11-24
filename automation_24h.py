@@ -1043,8 +1043,8 @@ class Automation24H:
                     # 2. Data = yesterday AND status LIVE (partite iniziate ieri ancora in corso)
                     if fixture_date_only == today:
                         # Partita di oggi: accetta solo se LIVE
-                    if not is_live:
-                        skipped_not_live += 1
+                        if not is_live:
+                            skipped_not_live += 1
                             continue  # Salta partite di oggi non LIVE
                     elif fixture_date_only == yesterday:
                         # Partita di ieri: accetta solo se LIVE (ancora in corso)
