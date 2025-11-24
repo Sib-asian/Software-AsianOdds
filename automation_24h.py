@@ -1585,6 +1585,118 @@ class Automation24H:
             logger.error(f"❌ Error fetching from API-Football: {e}")
             return []
     
+    def _validate_odds(self, odd: Any) -> Optional[float]:
+        """
+        🎯 PRECISIONE MANIACALE: Valida una quota con controlli rigorosi.
+        
+        Args:
+            odd: Quota da validare (può essere str, int, float)
+        
+        Returns:
+            Quota validata come float, o None se invalida
+        """
+        if odd is None:
+            return None
+        
+        try:
+            # Converti a float se necessario
+            if isinstance(odd, str):
+                odd = float(odd)
+            elif not isinstance(odd, (int, float)):
+                return None
+            
+            # Validazione rigorosa
+            if math.isnan(odd) or math.isinf(odd):
+                logger.debug(f"⚠️  Quota NaN/Inf ignorata: {odd}")
+                return None
+            
+            # Quota deve essere > 1.0 (altrimenti impossibile vincere)
+            if odd <= 1.0:
+                logger.debug(f"⚠️  Quota <= 1.0 ignorata: {odd}")
+                return None
+            
+            # Sanity check: quota > 1000 probabilmente è un errore
+            if odd > 1000:
+                logger.warning(f"⚠️  Quota sospetta > 1000 ignorata: {odd}")
+                return None
+            
+            return float(odd)
+            
+        except (ValueError, TypeError) as e:
+            logger.debug(f"⚠️  Errore validazione quota: {odd}, errore: {e}")
+            return None
+    
+    def _retry_api_call(self, func, max_retries: int = 3, base_delay: float = 1.0, *args, **kwargs):
+        """
+        🎯 RETRY LOGIC: Esegue una chiamata API con retry e backoff esponenziale.
+        
+        Args:
+            func: Funzione da eseguire (deve essere una funzione che fa chiamate API)
+            max_retries: Numero massimo di tentativi (default: 3)
+            base_delay: Delay iniziale in secondi (default: 1.0)
+            *args, **kwargs: Argomenti da passare alla funzione
+        
+        Returns:
+            Risultato della funzione, o None se tutti i tentativi falliscono
+        """
+        import urllib.error
+        import urllib.request
+        
+        last_exception = None
+        
+        for attempt in range(max_retries):
+            try:
+                result = func(*args, **kwargs)
+                if result is not None:
+                    if attempt > 0:
+                        logger.info(f"✅ API call riuscita al tentativo {attempt + 1}/{max_retries}")
+                    return result
+                # Se result è None, riprova (potrebbe essere un errore silenzioso)
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # Backoff esponenziale: 1s, 2s, 4s
+                    logger.warning(f"⚠️  API call restituito None, retry {attempt + 1}/{max_retries} tra {delay:.1f}s")
+                    time.sleep(delay)
+                    
+            except urllib.error.HTTPError as e:
+                last_exception = e
+                # Per errori HTTP, controlla se è un errore recuperabile
+                if e.code in [429, 500, 502, 503, 504]:  # Rate limit, server errors
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(
+                            f"⚠️  HTTP error {e.code} al tentativo {attempt + 1}/{max_retries}, "
+                            f"retry tra {delay:.1f}s: {e.reason}"
+                        )
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"❌ HTTP error {e.code} dopo {max_retries} tentativi: {e.reason}")
+                else:
+                    # Errori non recuperabili (404, 401, ecc.) - non riprovare
+                    logger.error(f"❌ HTTP error non recuperabile {e.code}: {e.reason}")
+                    return None
+                    
+            except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        f"⚠️  Errore connessione al tentativo {attempt + 1}/{max_retries}, "
+                        f"retry tra {delay:.1f}s: {e}"
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(f"❌ Errore connessione dopo {max_retries} tentativi: {e}")
+                    
+            except Exception as e:
+                last_exception = e
+                logger.error(f"❌ Errore inatteso al tentativo {attempt + 1}/{max_retries}: {e}")
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    time.sleep(delay)
+        
+        logger.error(f"❌ Tutti i {max_retries} tentativi falliti, ultimo errore: {last_exception}")
+        return None
+    
     def _extract_all_odds_from_api_football(self, odds_list: List[Dict]) -> Dict[str, Any]:
         """
         Estrae TUTTE le quote disponibili da API-Football.
@@ -1670,24 +1782,24 @@ class Automation24H:
                         odd = self._validate_odds(odd)
                         if odd is None:
                             continue
-                            
-                            if outcome in ["home", "1"]:
-                                # Raccogli quota da questo bookmaker
-                                all_bookmaker_odds['match_winner']['home'][bookmaker_name] = odd
-                                # Aggiorna se è la migliore
-                                if all_odds['match_winner']['home'] is None or odd > all_odds['match_winner']['home']:
-                                    all_odds['match_winner']['home'] = odd
-                                    bookmaker_tracker['match_winner']['home'] = bookmaker_name
-                            elif outcome in ["draw", "x"]:
-                                all_bookmaker_odds['match_winner']['draw'][bookmaker_name] = odd
-                                if all_odds['match_winner']['draw'] is None or odd > all_odds['match_winner']['draw']:
-                                    all_odds['match_winner']['draw'] = odd
-                                    bookmaker_tracker['match_winner']['draw'] = bookmaker_name
-                            elif outcome in ["away", "2"]:
-                                all_bookmaker_odds['match_winner']['away'][bookmaker_name] = odd
-                                if all_odds['match_winner']['away'] is None or odd > all_odds['match_winner']['away']:
-                                    all_odds['match_winner']['away'] = odd
-                                    bookmaker_tracker['match_winner']['away'] = bookmaker_name
+                        
+                        if outcome in ["home", "1"]:
+                            # Raccogli quota da questo bookmaker
+                            all_bookmaker_odds['match_winner']['home'][bookmaker_name] = odd
+                            # Aggiorna se è la migliore
+                            if all_odds['match_winner']['home'] is None or odd > all_odds['match_winner']['home']:
+                                all_odds['match_winner']['home'] = odd
+                                bookmaker_tracker['match_winner']['home'] = bookmaker_name
+                        elif outcome in ["draw", "x"]:
+                            all_bookmaker_odds['match_winner']['draw'][bookmaker_name] = odd
+                            if all_odds['match_winner']['draw'] is None or odd > all_odds['match_winner']['draw']:
+                                all_odds['match_winner']['draw'] = odd
+                                bookmaker_tracker['match_winner']['draw'] = bookmaker_name
+                        elif outcome in ["away", "2"]:
+                            all_bookmaker_odds['match_winner']['away'][bookmaker_name] = odd
+                            if all_odds['match_winner']['away'] is None or odd > all_odds['match_winner']['away']:
+                                all_odds['match_winner']['away'] = odd
+                                bookmaker_tracker['match_winner']['away'] = bookmaker_name
                 
                 # Over/Under - id: 5 (può essere FT o HT)
                 elif bet_id == 5 or "over/under" in bet_name or "total goals" in bet_name:
