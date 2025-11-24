@@ -264,14 +264,14 @@ class LiveBettingAdvisor:
             'under_1.5': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
             'under_1.5_ht': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
             'under_2.5': 63.0,  # 🔧 ABBASSATO: 63% (era 68%)
-            'under_3.5': 65.0,  # 🔧 ABBASSATO: 65% (era 70%, mantiene più alto per mercato rischioso)
+            'under_3.5': 63.0,  # 🔧 ABBASSATO: 63% (era 65%, under_3.5 72% dovrebbe passare ma threshold troppo alto)
             'exact_score': 70.0,  # 🔧 ABBASSATO: 70% (era 75%, mantiene alta per mercato rischioso)
             'goal_range_': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
             'dnb_': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
             'clean_sheet': 65.0,  # 🔧 ABBASSATO: 65% (era 70%, mantiene più alto)
             'team_to_score_next': 60.0,  # 🔧 ABBASSATO: 60% (era 65%, molte opportunità valide scartate)
-            'total_goals_odd': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
-            'total_goals_even': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
+            'total_goals_odd': 60.0,  # 🔧 ABBASSATO: 60% (era 62%, total_goals_odd 61% veniva filtrata)
+            'total_goals_even': 60.0,  # 🔧 ABBASSATO: 60% (era 62%)
             # 'asian_handicap': 75.0,  # 🆕 RIMOSSO: non interessano all'utente
             'match_winner': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
             'ht_ft': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
@@ -515,14 +515,20 @@ class LiveBettingAdvisor:
             
             opportunities = self._apply_market_specific_rules(opportunities, match_data, live_data)
             after_market_rules = len(opportunities)
-            if before_market_rules > after_market_rules:
-                logger.info(f"📊 {match_id}: Market specific rules: {before_market_rules} → {after_market_rules} ({before_market_rules - after_market_rules} rimosse)")
+            if before_market_rules > 0:
+                if before_market_rules > after_market_rules:
+                    logger.info(f"📊 {match_id}: Market specific rules: {before_market_rules} → {after_market_rules} ({before_market_rules - after_market_rules} rimosse)")
+                else:
+                    logger.info(f"📊 {match_id}: Market specific rules: {before_market_rules} opportunità, nessuna rimossa")
             
             before_market_conf = len(opportunities)
             opportunities = self._apply_market_min_confidence(opportunities)
             after_market_conf = len(opportunities)
-            if before_market_conf > after_market_conf:
-                logger.info(f"📊 {match_id}: Market min confidence: {before_market_conf} → {after_market_conf} ({before_market_conf - after_market_conf} rimosse)")
+            if before_market_conf > 0:
+                if before_market_conf > after_market_conf:
+                    logger.info(f"📊 {match_id}: Market min confidence: {before_market_conf} → {after_market_conf} ({before_market_conf - after_market_conf} rimosse)")
+                else:
+                    logger.info(f"📊 {match_id}: Market min confidence: {before_market_conf} opportunità, nessuna rimossa")
             
             # 🔧 LOG: Opportunità dopo market rules, prima dei filtri EV/Confidence
             if len(opportunities) > 0:
@@ -584,6 +590,12 @@ class LiveBettingAdvisor:
             # 🆕 OTTIMIZZATO: Ordina per mix di Expected Value e Confidence (non solo EV)
             opportunities.sort(key=lambda x: self._calculate_combined_score(x), reverse=True)
             
+            # 🔧 LOG: Opportunità prima del filtro finale
+            if len(opportunities) > 0:
+                logger.info(f"📊 {match_id}: {len(opportunities)} opportunità prima del filtro finale (confidence >= {self.min_confidence}%)")
+                for opp in opportunities[:3]:  # Prime 3
+                    logger.info(f"   - {opp.market}: EV={opp.ev:.1f}%, Conf={opp.confidence:.1f}%")
+            
             # 🆕 FIX CRITICO: Filtro finale di sicurezza - blocca TUTTI i segnali con confidence < min_confidence
             # Questo è un doppio controllo per essere sicuri che nessun segnale con confidence troppo bassa venga inviato
             before_final_filter = opportunities.copy()  # Salva copia prima del filtro
@@ -595,13 +607,22 @@ class LiveBettingAdvisor:
                 for opp in before_final_filter:
                     if opp.confidence < self.min_confidence:
                         logger.warning(f"   ❌ Segnale bloccato: {opp.market} su {opp.match_id} con confidence {opp.confidence:.1f}% < {self.min_confidence}%")
+            elif len(before_final_filter) > 0:
+                logger.info(f"📊 {match_id}: Filtro finale: {len(before_final_filter)} opportunità, tutte passate (confidence >= {self.min_confidence}%)")
             
             # 🆕 FILTRO: Limita numero di segnali per partita (max 2 migliori) E deduplica di nuovo
             # Raggruppa per match_id e mantieni solo i 2 migliori per partita
+            before_limit = len(opportunities)
             opportunities = self._limit_and_deduplicate_per_match(
                 opportunities,
                 max_per_match=self.max_opportunities_per_match
             )
+            after_limit = len(opportunities)
+            if before_limit > 0:
+                if before_limit > after_limit:
+                    logger.info(f"📊 {match_id}: Limite per partita: {before_limit} → {after_limit} (max {self.max_opportunities_per_match} per partita)")
+                else:
+                    logger.info(f"📊 {match_id}: Limite per partita: {before_limit} opportunità, tutte mantenute")
             
             # 🆕 FIX CRITICO: Filtro finale per bloccare home_win + away_win sulla stessa partita
             # Dopo tutti i filtri, verifica che non ci siano segnali contraddittori rimasti
@@ -631,6 +652,14 @@ class LiveBettingAdvisor:
                 final_opportunities.extend(match_opps)
 
             opportunities = final_opportunities
+            
+            # 🔧 LOG: Opportunità finali dopo tutti i filtri
+            if len(opportunities) > 0:
+                logger.info(f"✅ {match_id}: {len(opportunities)} opportunità FINALI dopo tutti i filtri:")
+                for opp in opportunities:
+                    logger.info(f"   ✅ {opp.market}: EV={opp.ev:.1f}%, Conf={opp.confidence:.1f}%, Odds={opp.odds:.2f}")
+            else:
+                logger.info(f"❌ {match_id}: Nessuna opportunità finale dopo tutti i filtri")
 
             # 🎯 NUOVO: Aggiungi dati live a tutte le opportunità (per time suitability)
             for opp in opportunities:
