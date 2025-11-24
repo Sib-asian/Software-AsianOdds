@@ -781,7 +781,7 @@ class Automation24H:
                     elif not has_odds:
                         logger.info(f"   ⚠️  Motivo: partita senza quote disponibili")
                     else:
-                        logger.info(f"   ℹ️  Motivo: partita analizzata ma filtri (EV/Confidence/Quality) troppo restrittivi o situazione non interessante")
+                        logger.info(f"   ℹ️  Motivo: partita analizzata ma nessuna opportunità generata dal LiveBettingAdvisor")
             except Exception as e:
                 logger.error(f"❌ Error analyzing match {match.get('id', 'unknown')}: {e}")
                 continue
@@ -3049,7 +3049,7 @@ class Automation24H:
                         logger.warning("⚠️  SignalQualityLearner non disponibile per SignalQualityGate!")
                     self.signal_quality_gate = SignalQualityGate(
                         ai_pipeline=self.ai_pipeline,
-                        min_quality_score=75.0,
+                        min_quality_score=0.0,  # 🎯 Nessuna soglia minima
                         learner=getattr(self, 'signal_quality_learner', None)
                     )
                     if self.signal_quality_gate.learner:
@@ -3338,25 +3338,17 @@ class Automation24H:
                 score_original = opp.get('score_original', opp.get('score', 0))
                 score_final = opp.get('score', 0)
                 
-                # Soglia minima: lo score finale deve essere almeno il 50% dello score originale
-                # Questo garantisce che anche dopo penalizzazione, l'opportunità mantenga qualità
-                min_score_threshold = score_original * 0.5
-                
-                if score_final >= min_score_threshold:
-                    best.append(opp)
-                    live_opp = opp['opportunity'].get('live_opportunity')
-                    market = getattr(live_opp, 'market', 'unknown') if live_opp else 'unknown'
-                    logger.info(f"   ✅ Selezionata opportunità tipo '{market_type}' ({market})")
-                    logger.info(f"      📊 Score originale: {score_original:.3f} | Score finale: {score_final:.3f}")
-                    logger.info(f"      📈 EV: {opp['ev']:.1f}% | Conf: {opp['confidence']:.1f}% | Quality: {opp.get('quality_score', 0):.1f} | Odds: {opp.get('odds', 0):.2f}")
-                    # 🆕 Log dettagliato dei fattori di calcolo
-                    logger.debug(f"      🔍 Dettagli calcolo: Base={opp.get('base_score', 0):.3f} | Sinergia={opp.get('synergy_bonus', 1.0):.2f}x | Tempo={opp.get('time_factor', 1.0):.2f}x | Quote={opp.get('odds_factor', 1.0):.2f}x | EV_penalty={opp.get('ev_penalty', 1.0):.2f}x")
-                    break
-            
-            # Se nessuna opportunità passa la soglia minima, prendi comunque la migliore per qualità originale
-            if not best and sorted_by_type:
-                best.append(sorted_by_type[0][1])
-                logger.warning(f"   ⚠️  Nessuna opportunità sopra soglia minima, selezionata la migliore per qualità originale")
+                # 🎯 RIMOSSO: Filtro soglia minima score - l'utente vuole vedere tutte le opportunità
+                # Aggiungi sempre la migliore opportunità senza controllare soglie
+                best.append(opp)
+                live_opp = opp['opportunity'].get('live_opportunity')
+                market = getattr(live_opp, 'market', 'unknown') if live_opp else 'unknown'
+                logger.info(f"   ✅ Selezionata opportunità tipo '{market_type}' ({market})")
+                logger.info(f"      📊 Score originale: {score_original:.3f} | Score finale: {score_final:.3f}")
+                logger.info(f"      📈 EV: {opp['ev']:.1f}% | Conf: {opp['confidence']:.1f}% | Quality: {opp.get('quality_score', 0):.1f} | Odds: {opp.get('odds', 0):.2f}")
+                # 🆕 Log dettagliato dei fattori di calcolo
+                logger.debug(f"      🔍 Dettagli calcolo: Base={opp.get('base_score', 0):.3f} | Sinergia={opp.get('synergy_bonus', 1.0):.2f}x | Tempo={opp.get('time_factor', 1.0):.2f}x | Quote={opp.get('odds_factor', 1.0):.2f}x | EV_penalty={opp.get('ev_penalty', 1.0):.2f}x")
+                break
             
             # Log delle migliori per tipo (per debug)
             logger.debug(f"   📊 Top 5 opportunità per tipo di mercato:")
@@ -3587,20 +3579,17 @@ class Automation24H:
             except Exception as e:
                 logger.error(f"❌ Errore registrazione segnale: {e}", exc_info=True)
         
+        # 🎯 RIMOSSO: Controllo should_send basato su quality_score - l'utente vuole vedere tutte le opportunità
+        # Forza sempre should_send = True per inviare tutte le opportunità
+        should_send = True
         if quality_score is not None:
-            should_send = quality_score.is_approved
-            if not should_send:
-                try:
-                    score_value = quality_score.total_score if hasattr(quality_score, 'total_score') else 0.0
-                    logger.info(
-                        f"⏭️  Segnale {match_id}/{market} BLOCCATO da Signal Quality Gate "
-                        f"(score: {score_value:.1f}/100, min: 75.0)"
-                    )
-                    if hasattr(quality_score, 'reasons') and quality_score.reasons:
-                        logger.info(f"   Motivi blocco: {', '.join(quality_score.reasons)}")
-                except Exception as e:
-                    logger.error(f"❌ Errore durante logging blocco segnale: {e}", exc_info=True)
-                return
+            try:
+                score_value = quality_score.total_score if hasattr(quality_score, 'total_score') else 0.0
+                logger.info(
+                    f"✅ Segnale {match_id}/{market} approvato (Quality Score: {score_value:.1f}/100)"
+                )
+            except Exception as e:
+                logger.debug(f"⚠️  Errore durante log quality_score: {e}")
         
         # 🔧 MIGLIORATO: Evita duplicati usando match_id + market + minuto
         # Questo evita di inviare la stessa opportunità più volte anche se rilevata in cicli diversi
