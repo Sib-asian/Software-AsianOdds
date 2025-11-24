@@ -759,7 +759,18 @@ class Automation24H:
                         if opp:
                             opportunities_found += 1
                             all_opportunities.append(opp)  # Raccogli invece di inviare subito
-                            logger.info(f"   ✅ {opp.market}: EV={opp.ev:.1f}%, Conf={opp.confidence:.1f}%, Quality={getattr(opp, 'signal_quality_score', 0):.1f}")
+                            # 🔧 FIX: opp può essere dict o LiveBettingOpportunity
+                            if isinstance(opp, dict):
+                                market = opp.get('market', 'unknown')
+                                ev = opp.get('ev', 0.0)
+                                conf = opp.get('confidence', 0.0)
+                                quality = opp.get('signal_quality_score', 0.0)
+                            else:
+                                market = getattr(opp, 'market', 'unknown')
+                                ev = getattr(opp, 'ev', 0.0)
+                                conf = getattr(opp, 'confidence', 0.0)
+                                quality = getattr(opp, 'signal_quality_score', 0.0)
+                            logger.info(f"   ✅ {market}: EV={ev:.1f}%, Conf={conf:.1f}%, Quality={quality:.1f}")
                 else:
                     matches_without_opportunities += 1
                     # 🔧 DEBUG: Log dettagliato perché non ci sono opportunità
