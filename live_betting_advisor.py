@@ -522,6 +522,13 @@ class LiveBettingAdvisor:
             
             if before_ev_filter > 0:
                 logger.info(f"📊 Filtro EV per {match_id}: {before_ev_filter} opportunità, {ev_rejected} scartate (EV < {self.min_ev}%), {after_ev_filter} rimaste")
+                if ev_rejected > 0:
+                    # Log dettagliato delle opportunità scartate per EV
+                    all_opps_before_ev = opportunities  # Opportunità prima del filtro EV
+                    filtered_ev_opps = [opp for opp in all_opps_before_ev if opp.ev < self.min_ev]
+                    if filtered_ev_opps:
+                        ev_details = [f"{opp.market}: EV={opp.ev:.1f}% (min={self.min_ev}%)" for opp in filtered_ev_opps[:5]]
+                        logger.info(f"   📊 EV filtrate: {', '.join(ev_details)}")
             
             # Filtra solo opportunità con alta confidence
             before_confidence_filter = len(opportunities)
@@ -537,7 +544,7 @@ class LiveBettingAdvisor:
                     all_opps_before = opportunities_after_ev  # Opportunità dopo EV filter
                     filtered_opps = [opp for opp in all_opps_before if opp.confidence < self.min_confidence]
                     if filtered_opps:
-                        confidences = [f"{opp.market}:{opp.confidence:.0f}%" for opp in filtered_opps[:5]]  # Prime 5
+                        confidences = [f"{opp.market}: Conf={opp.confidence:.0f}% (min={self.min_confidence}%)" for opp in filtered_opps[:5]]  # Prime 5
                         logger.info(f"   📊 Confidence filtrate: {', '.join(confidences)}")
             elif before_obvious_filter == 0:
                 # 🔍 NUOVO: Log quando non vengono trovate opportunità iniziali
