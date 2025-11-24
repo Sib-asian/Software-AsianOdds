@@ -82,9 +82,9 @@ class LiveBettingAdvisor:
     def __init__(
         self,
         notifier=None,
-        min_confidence: float = 65.0,  # 🔧 ABBASSATO: 65% per bilanciare qualità e quantità (permette opportunità con EV positivo)
+        min_confidence: float = 60.0,  # 🔧 ABBASSATO: 60% per permettere più opportunità valide (era 65%)
         ai_pipeline=None,
-        min_ev: float = 8.0,  # 🔧 ABBASSATO: 8% invece di 10% per permettere più opportunità valide
+        min_ev: float = 6.0,  # 🔧 ABBASSATO: 6% invece di 8% per permettere più opportunità valide
         max_opportunities_per_match: int = 3,
         performance_tracker=None  # 🔧 NUOVO: Tracker per soglie dinamiche
     ):
@@ -247,46 +247,46 @@ class LiveBettingAdvisor:
         
         # NOTA: Campionati minori (Serie D, Division 3, ecc.) sono ACCETTATI se hanno dati live sufficienti
         # Il filtro _has_sufficient_live_data farà la scrematura basata sulla qualità dei dati
-        # 🆕 AUMENTATE: Confidence minima specifica per mercato (aumentate per ridurre segnali banali)
+        # 🔧 ABBASSATI: Confidence minima specifica per mercato (allineati a min_confidence 60%)
         self.market_min_confidence: Dict[str, float] = {
-            '1x2_home': 67.0,  # 🔧 ABBASSATO: 67% invece di 78% (ribaltone ma con EV positivo)
-            '1x2_away': 67.0,  # 🔧 ABBASSATO: 67% invece di 78% (ribaltone ma con EV positivo)
-            'over_0.5': 65.0,  # 🔧 ABBASSATO: 65% invece di 75% (permette più opportunità con EV positivo)
-            'over_0.5_ht': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
-            'over_1.5': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
-            'over_1.5_ht': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
-            'over_2.5': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
-            'over_3.5': 68.0,  # 🔧 ABBASSATO: 68% invece di 79%
-            'over_4.5': 65.0,  # 🔧 NUOVO: 65% per over_4.5
-            'over_5.5': 65.0,  # 🔧 NUOVO: 65% per over_5.5 (cards, etc.)
-            'under_0.5': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
-            'under_0.5_ht': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
-            'under_1.5': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
-            'under_1.5_ht': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
-            'under_2.5': 68.0,  # 🔧 ABBASSATO: 68% invece di 79%
-            'under_3.5': 70.0,  # 🔧 ABBASSATO: 70% invece di 80%
-            'exact_score': 75.0,  # 🔧 ABBASSATO: 75% invece di 82% (mantiene alta per mercato rischioso)
-            'goal_range_': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
-            'dnb_': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
-            'clean_sheet': 70.0,  # 🔧 ABBASSATO: 70% invece di 80%
-            'team_to_score_next': 65.0,  # 🔧 ABBASSATO: 65% invece di 76% (molte opportunità valide scartate)
-            'total_goals_odd': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
-            'total_goals_even': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
+            '1x2_home': 62.0,  # 🔧 ABBASSATO: 62% (era 67%, ribaltone ma con EV positivo)
+            '1x2_away': 62.0,  # 🔧 ABBASSATO: 62% (era 67%, ribaltone ma con EV positivo)
+            'over_0.5': 60.0,  # 🔧 ABBASSATO: 60% (era 65%, permette più opportunità con EV positivo)
+            'over_0.5_ht': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
+            'over_1.5': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
+            'over_1.5_ht': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
+            'over_2.5': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
+            'over_3.5': 63.0,  # 🔧 ABBASSATO: 63% (era 68%)
+            'over_4.5': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
+            'over_5.5': 60.0,  # 🔧 ABBASSATO: 60% (era 65%, cards, etc.)
+            'under_0.5': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
+            'under_0.5_ht': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
+            'under_1.5': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
+            'under_1.5_ht': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
+            'under_2.5': 63.0,  # 🔧 ABBASSATO: 63% (era 68%)
+            'under_3.5': 65.0,  # 🔧 ABBASSATO: 65% (era 70%, mantiene più alto per mercato rischioso)
+            'exact_score': 70.0,  # 🔧 ABBASSATO: 70% (era 75%, mantiene alta per mercato rischioso)
+            'goal_range_': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
+            'dnb_': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
+            'clean_sheet': 65.0,  # 🔧 ABBASSATO: 65% (era 70%, mantiene più alto)
+            'team_to_score_next': 60.0,  # 🔧 ABBASSATO: 60% (era 65%, molte opportunità valide scartate)
+            'total_goals_odd': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
+            'total_goals_even': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
             # 'asian_handicap': 75.0,  # 🆕 RIMOSSO: non interessano all'utente
-            'match_winner': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
-            'ht_ft': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
-            'next_goal': 65.0,  # 🔧 ABBASSATO: 65% invece di 78% (molte opportunità valide scartate)
-            'btts': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
-            'win_to_nil': 68.0,  # 🔧 ABBASSATO: 68% invece di 79%
-            'corner': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
-            'card': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
+            'match_winner': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
+            'ht_ft': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
+            'next_goal': 60.0,  # 🔧 ABBASSATO: 60% (era 65%, molte opportunità valide scartate)
+            'btts': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
+            'win_to_nil': 63.0,  # 🔧 ABBASSATO: 63% (era 68%)
+            'corner': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
+            'card': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
             # 🆕 NUOVI MERCATI
-            'team_to_score_first': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
-            'team_to_score_last': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
-            'highest_scoring_half': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
-            'win_either_half': 65.0,  # 🔧 ABBASSATO: 65% invece di 76% (molte opportunità valide scartate)
-            'btts_first_half': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
-            'half_time_result': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
+            'team_to_score_first': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
+            'team_to_score_last': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
+            'highest_scoring_half': 62.0,  # 🔧 ABBASSATO: 62% (era 67%)
+            'win_either_half': 60.0,  # 🔧 ABBASSATO: 60% (era 65%, molte opportunità valide scartate)
+            'btts_first_half': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
+            'half_time_result': 60.0,  # 🔧 ABBASSATO: 60% (era 65%)
         }
 
     def health_check(self) -> Dict[str, Any]:
@@ -532,6 +532,7 @@ class LiveBettingAdvisor:
             
             # 🆕 OTTIMIZZATO: Filtra solo opportunità con EV molto negativo (non tutte quelle negative)
             before_ev_filter = len(opportunities)
+            opportunities_before_ev = opportunities.copy()  # 🔧 FIX: Salva copia prima del filtro per logging
             opportunities_after_ev = self._filter_by_expected_value(opportunities)
             after_ev_filter = len(opportunities_after_ev)
             ev_rejected = before_ev_filter - after_ev_filter
@@ -541,8 +542,7 @@ class LiveBettingAdvisor:
                 logger.info(f"📊 Filtro EV per {match_id}: {before_ev_filter} opportunità, {ev_rejected} scartate (EV < {self.min_ev}%), {after_ev_filter} rimaste")
                 if ev_rejected > 0:
                     # Log dettagliato delle opportunità scartate per EV
-                    all_opps_before_ev = opportunities  # Opportunità prima del filtro EV
-                    filtered_ev_opps = [opp for opp in all_opps_before_ev if opp.ev < self.min_ev]
+                    filtered_ev_opps = [opp for opp in opportunities_before_ev if opp.ev < self.min_ev]
                     if filtered_ev_opps:
                         ev_details = [f"{opp.market}: EV={opp.ev:.1f}% (min={self.min_ev}%)" for opp in filtered_ev_opps[:5]]
                         logger.info(f"   📊 EV filtrate: {', '.join(ev_details)}")
