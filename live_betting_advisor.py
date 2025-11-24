@@ -82,7 +82,7 @@ class LiveBettingAdvisor:
     def __init__(
         self,
         notifier=None,
-        min_confidence: float = 70.0,  # 🔧 ABBASSATO: 70% invece di 75% per permettere più opportunità valide con EV positivo
+        min_confidence: float = 65.0,  # 🔧 ABBASSATO: 65% per bilanciare qualità e quantità (permette opportunità con EV positivo)
         ai_pipeline=None,
         min_ev: float = 8.0,  # 🔧 ABBASSATO: 8% invece di 10% per permettere più opportunità valide
         max_opportunities_per_match: int = 3,
@@ -95,7 +95,7 @@ class LiveBettingAdvisor:
             ai_pipeline: AI Pipeline per analisi avanzata (opzionale)
         """
         self.notifier = notifier
-        self.min_confidence = min_confidence  # 70% abbassato: permette più opportunità valide con EV positivo
+        self.min_confidence = min_confidence  # 65% abbassato: bilanciamento qualità/quantità, permette opportunità con EV positivo
         self.ai_pipeline = ai_pipeline
         self.min_ev = max(0.0, min_ev)  # Soglia EV (default: 9% per partite live)
         self.max_opportunities_per_match = max(1, int(max_opportunities_per_match))
@@ -249,42 +249,42 @@ class LiveBettingAdvisor:
         # Il filtro _has_sufficient_live_data farà la scrematura basata sulla qualità dei dati
         # 🆕 AUMENTATE: Confidence minima specifica per mercato (aumentate per ridurre segnali banali)
         self.market_min_confidence: Dict[str, float] = {
-            '1x2_home': 72.0,  # 🔧 ABBASSATO: 72% invece di 78% (ribaltone ma con EV positivo)
-            '1x2_away': 72.0,  # 🔧 ABBASSATO: 72% invece di 78% (ribaltone ma con EV positivo)
-            'over_0.5': 70.0,  # 🔧 ABBASSATO: 70% invece di 75% (permette più opportunità con EV positivo)
-            'over_0.5_ht': 70.0,  # 🔧 ABBASSATO: 70% invece di 76%
-            'over_1.5': 70.0,  # 🔧 ABBASSATO: 70% invece di 76%
-            'over_1.5_ht': 70.0,  # 🔧 ABBASSATO: 70% invece di 76%
-            'over_2.5': 72.0,  # 🔧 ABBASSATO: 72% invece di 78%
-            'over_3.5': 73.0,  # 🔧 ABBASSATO: 73% invece di 79%
-            'under_0.5': 70.0,  # 🔧 ABBASSATO: 70% invece di 76%
-            'under_0.5_ht': 72.0,  # 🔧 ABBASSATO: 72% invece di 78%
-            'under_1.5': 72.0,  # 🔧 ABBASSATO: 72% invece di 78%
-            'under_1.5_ht': 72.0,  # 🔧 ABBASSATO: 72% invece di 78%
-            'under_2.5': 73.0,  # 🔧 ABBASSATO: 73% invece di 79%
-            'under_3.5': 75.0,  # 🔧 ABBASSATO: 75% invece di 80%
-            'exact_score': 78.0,  # 🔧 ABBASSATO: 78% invece di 82% (mantiene alta per mercato rischioso)
-            'goal_range_': 70.0,  # 🔧 ABBASSATO: 70% invece di 76%
-            'dnb_': 72.0,  # 🔧 ABBASSATO: 72% invece di 78%
-            'clean_sheet': 75.0,  # 🔧 ABBASSATO: 75% invece di 80%
-            'team_to_score_next': 70.0,  # 🔧 ABBASSATO: 70% invece di 76% (molte opportunità valide scartate)
-            'total_goals_odd': 72.0,  # 🔧 ABBASSATO: 72% invece di 78%
-            'total_goals_even': 72.0,  # 🔧 ABBASSATO: 72% invece di 78%
+            '1x2_home': 67.0,  # 🔧 ABBASSATO: 67% invece di 78% (ribaltone ma con EV positivo)
+            '1x2_away': 67.0,  # 🔧 ABBASSATO: 67% invece di 78% (ribaltone ma con EV positivo)
+            'over_0.5': 65.0,  # 🔧 ABBASSATO: 65% invece di 75% (permette più opportunità con EV positivo)
+            'over_0.5_ht': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
+            'over_1.5': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
+            'over_1.5_ht': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
+            'over_2.5': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
+            'over_3.5': 68.0,  # 🔧 ABBASSATO: 68% invece di 79%
+            'under_0.5': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
+            'under_0.5_ht': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
+            'under_1.5': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
+            'under_1.5_ht': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
+            'under_2.5': 68.0,  # 🔧 ABBASSATO: 68% invece di 79%
+            'under_3.5': 70.0,  # 🔧 ABBASSATO: 70% invece di 80%
+            'exact_score': 75.0,  # 🔧 ABBASSATO: 75% invece di 82% (mantiene alta per mercato rischioso)
+            'goal_range_': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
+            'dnb_': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
+            'clean_sheet': 70.0,  # 🔧 ABBASSATO: 70% invece di 80%
+            'team_to_score_next': 65.0,  # 🔧 ABBASSATO: 65% invece di 76% (molte opportunità valide scartate)
+            'total_goals_odd': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
+            'total_goals_even': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
             # 'asian_handicap': 75.0,  # 🆕 RIMOSSO: non interessano all'utente
-            'match_winner': 72.0,  # 🔧 ABBASSATO: 72% invece di 78%
-            'ht_ft': 72.0,  # 🔧 ABBASSATO: 72% invece di 78%
-            'next_goal': 70.0,  # 🔧 ABBASSATO: 70% invece di 78% (molte opportunità valide scartate)
-            'btts': 70.0,  # 🔧 ABBASSATO: 70% invece di 76%
-            'win_to_nil': 73.0,  # 🔧 ABBASSATO: 73% invece di 79%
-            'corner': 70.0,  # 🔧 ABBASSATO: 70% invece di 76%
-            'card': 70.0,  # 🔧 ABBASSATO: 70% invece di 76%
+            'match_winner': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
+            'ht_ft': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
+            'next_goal': 65.0,  # 🔧 ABBASSATO: 65% invece di 78% (molte opportunità valide scartate)
+            'btts': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
+            'win_to_nil': 68.0,  # 🔧 ABBASSATO: 68% invece di 79%
+            'corner': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
+            'card': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
             # 🆕 NUOVI MERCATI
-            'team_to_score_first': 70.0,  # 🔧 ABBASSATO: 70% invece di 76%
-            'team_to_score_last': 70.0,  # 🔧 ABBASSATO: 70% invece di 76%
-            'highest_scoring_half': 72.0,  # 🔧 ABBASSATO: 72% invece di 78%
-            'win_either_half': 70.0,  # 🔧 ABBASSATO: 70% invece di 76% (molte opportunità valide scartate)
-            'btts_first_half': 70.0,  # 🔧 ABBASSATO: 70% invece di 76%
-            'half_time_result': 70.0,  # 🔧 ABBASSATO: 70% invece di 76%
+            'team_to_score_first': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
+            'team_to_score_last': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
+            'highest_scoring_half': 67.0,  # 🔧 ABBASSATO: 67% invece di 78%
+            'win_either_half': 65.0,  # 🔧 ABBASSATO: 65% invece di 76% (molte opportunità valide scartate)
+            'btts_first_half': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
+            'half_time_result': 65.0,  # 🔧 ABBASSATO: 65% invece di 76%
         }
 
     def health_check(self) -> Dict[str, Any]:
