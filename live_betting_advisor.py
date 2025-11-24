@@ -4199,98 +4199,17 @@ class LiveBettingAdvisor:
         opportunity: LiveBettingOpportunity,
         live_data: Dict[str, Any]
     ) -> None:
-        """Arricchisce l'opportunità con stats, EV e urgenza + applica SANITY CHECK."""
+        """
+        🎯 RIMOSSO TUTTI I SANITY CHECK: Arricchisce l'opportunità con stats, EV e urgenza.
+        Calcola solo confidence ed EV senza alcuna limitazione o filtro.
+        """
         opportunity.match_stats = self._extract_match_stats(live_data)
         opportunity.key_stats = self._extract_key_stats_for_market(opportunity, live_data)
         opportunity.urgency_level = self._calculate_urgency(opportunity, live_data)
 
-        # Calcola EV
-        ev_raw = self._calculate_expected_value(opportunity)
-        confidence_original = opportunity.confidence
-        ev_was_capped = False
-
-        # 🛡️ SANITY CHECK 1: Limita EV massimo
-        if ev_raw > MAX_EV_ALLOWED:
-            logger.warning(
-                f"⚠️ SANITY CHECK: {opportunity.market} EV limitato da {ev_raw:.1f}% a {MAX_EV_ALLOWED:.1f}% "
-                f"(confidence: {opportunity.confidence:.1f}%, odds: {opportunity.odds:.2f})"
-            )
-            ev_raw = MAX_EV_ALLOWED
-            ev_was_capped = True
-
-        # 🛡️ SANITY CHECK 2: Limita confidence massima
-        if opportunity.confidence > MAX_CONFIDENCE_ALLOWED:
-            logger.warning(
-                f"⚠️ SANITY CHECK: {opportunity.market} confidence limitata da {opportunity.confidence:.1f}% a {MAX_CONFIDENCE_ALLOWED:.1f}%"
-            )
-            opportunity.confidence = MAX_CONFIDENCE_ALLOWED
-            # Ricalcola EV con confidence limitata
-            ev_raw = self._calculate_expected_value(opportunity)
-            if ev_raw > MAX_EV_ALLOWED:
-                ev_raw = MAX_EV_ALLOWED
-                ev_was_capped = True
-
-        # 🛡️ SANITY CHECK 3: Verifica deviazione probabilità vs quote
-        prob_ai = opportunity.confidence / 100.0
-        prob_implied = 1.0 / opportunity.odds if opportunity.odds > 1.0 else 0.5
-        prob_deviation = abs(prob_ai - prob_implied)
-
-        # 🚨 NUOVO: Filtra deviazioni ESTREME (> 50%) - quote sicuramente sbagliate
-        if prob_deviation > 0.50:
-            logger.warning(
-                f"🚨 SANITY CHECK: {opportunity.market} DEVIAZIONE ESTREMA {prob_deviation*100:.1f}% "
-                f"(AI: {prob_ai*100:.1f}% vs Quote: {prob_implied*100:.1f}%) - OPPORTUNITÀ SCARTATA (quote probabilmente errate)"
-            )
-            return None  # Scarta opportunità con quote anomale
-
-        if prob_deviation > MAX_PROB_DEVIATION:
-            logger.warning(
-                f"⚠️ SANITY CHECK: {opportunity.market} deviazione eccessiva {prob_deviation*100:.1f}% "
-                f"(AI: {prob_ai*100:.1f}% vs Quote: {prob_implied*100:.1f}%) - penalizzo confidence -{CONFIDENCE_PENALTY*100:.0f}%"
-            )
-            # Penalizza confidence se deviazione eccessiva
-            opportunity.confidence *= (1 - CONFIDENCE_PENALTY)
-            # Ricalcola EV
-            ev_raw = self._calculate_expected_value(opportunity)
-            if ev_raw > MAX_EV_ALLOWED:
-                ev_raw = MAX_EV_ALLOWED
-                ev_was_capped = True
-
-        # 🛡️ SANITY CHECK 4: Ricalcola confidence per coerenza matematica se EV è stato cappato
-        # Se EV è stato limitato, aggiusta la confidence per mantenere coerenza: confidence = ((EV + 1) / odds) * 100
-        # 🔧 MODIFICATO: Applica limite minimo più protettivo (75%) per non distruggere opportunità valide
-        if ev_was_capped and opportunity.odds > 1.0:
-            confidence_before_coherence = opportunity.confidence  # Dopo tutte le penalizzazioni
-            confidence_adjusted = ((ev_raw / 100.0 + 1.0) / opportunity.odds) * 100.0
-            
-            # 🔧 AUMENTATO: Limite minimo all'85% della confidence originale (dopo penalizzazioni)
-            # Questo garantisce che opportunità valide non vengano distrutte
-            # Se la confidence ricalcolata è < 85% della originale, mantieni quella originale
-            min_confidence_allowed = confidence_before_coherence * 0.85
-            
-            # Ricalcola solo se la differenza è significativa (> 15%)
-            diff = abs(confidence_adjusted - confidence_before_coherence)
-            
-            if diff > 15.0:  # Differenza significativa
-                # 🔧 FIX: USA SEMPRE confidence ricalcolata per coerenza matematica con EV cappato
-                # Prima: manteneva confidence originale → EV reale != EV mostrato (incoerenza)
-                # Ora: usa confidence ricalcolata → matematicamente coerente
-                logger.info(
-                    f"🔧 COERENZA: {opportunity.market} confidence aggiustata da {confidence_before_coherence:.1f}% a {confidence_adjusted:.1f}% "
-                    f"per coerenza con EV cappato {ev_raw:.1f}% (odds: {opportunity.odds:.2f})"
-                )
-                opportunity.confidence = confidence_adjusted
-            elif diff > 1.0:  # Differenza piccola ma significativa (> 1%)
-                # Per differenze piccole, applica comunque il limite minimo
-                confidence_adjusted = max(confidence_adjusted, min_confidence_allowed)
-                if confidence_adjusted != confidence_before_coherence:
-                    logger.info(
-                        f"🔧 COERENZA: {opportunity.market} confidence aggiustata da {confidence_before_coherence:.1f}% a {confidence_adjusted:.1f}% "
-                        f"per coerenza con EV cappato {ev_raw:.1f}% (odds: {opportunity.odds:.2f}, limite minimo: {min_confidence_allowed:.1f}%)"
-                    )
-                    opportunity.confidence = confidence_adjusted
-
-        opportunity.ev = ev_raw
+        # 🎯 Calcola EV senza alcuna limitazione o sanity check
+        ev = self._calculate_expected_value(opportunity)
+        opportunity.ev = ev
         opportunity.has_live_stats = self._has_meaningful_live_stats(live_data)
     
     def _calculate_urgency(self, opportunity: LiveBettingOpportunity, live_data: Dict[str, Any]) -> str:
