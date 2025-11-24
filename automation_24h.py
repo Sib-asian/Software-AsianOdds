@@ -932,6 +932,9 @@ class Automation24H:
             self.api_usage_today += 1  # Conta chiamata API per fixtures
             req = urllib.request.Request(url, headers=headers)
 
+            # 🎯 Inizializza matches_found prima del try per evitare errori
+            matches_found = []
+            
             try:
                 # 🎯 RETRY LOGIC: Usa retry con backoff esponenziale per resilienza
                 def _make_fixtures_request():
@@ -950,10 +953,10 @@ class Automation24H:
 
                     if not data.get("response"):
                         logger.info(f"ℹ️  Nessuna partita LIVE trovata in questo momento")
-                        return []
-
-                    matches_found = data["response"]
-                    logger.info(f"📊 Trovate {len(matches_found)} partite LIVE in corso!")
+                        matches_found = []
+                    else:
+                        matches_found = data["response"]
+                        logger.info(f"📊 Trovate {len(matches_found)} partite LIVE in corso!")
 
             except urllib.error.HTTPError as e:
                 error_body = ""
@@ -969,11 +972,17 @@ class Automation24H:
                     logger.error("⚠️  API key non valida o scaduta")
                 elif e.code == 403:
                     logger.error("⚠️  Accesso negato - verifica API key e permessi")
+                matches_found = []  # Assicura che matches_found sia sempre definita
                 return []
             except Exception as e:
                 logger.error(f"❌ Errore chiamata API-Football: {e}")
+                matches_found = []  # Assicura che matches_found sia sempre definita
                 return []
-
+            
+            # Se non ci sono partite, ritorna lista vuota
+            if not matches_found:
+                return []
+            
             # Le partite sono già LIVE (filtrate dall'API), non serve filtrarle di nuovo
             data = {"response": matches_found}
             
