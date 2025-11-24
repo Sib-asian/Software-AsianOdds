@@ -378,7 +378,8 @@ class SignalValidator:
                         f"mantenendo valore AI esatto"
                     )
             
-            # NOTA: Rimossa tutta la logica di validazione che penalizzava i valori
+            # NOTA: Rimossa tutta la logica di validazione che penalizzava i valori.
+            # Current validation: Only logs warnings for probability differences (no changes).
         
         except Exception as e:
             logger.debug(f"⚠️  Errore validazione AI: {e}")

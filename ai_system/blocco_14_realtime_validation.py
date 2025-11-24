@@ -116,7 +116,8 @@ class RealtimeValidationEngine:
             })
         
         # NOTE: Removed all "sanity checks" and cross-validation logic that modified 
-        # or penalized probability values. Only keeping basic technical validation.
+        # or penalized probability values. 
+        # Current validation: Only bounds check [0,1] and numerical stability (NaN, Inf).
 
         # Calcola validation score
         n_valid = sum(methodology_results.values())

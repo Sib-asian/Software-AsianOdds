@@ -26,7 +26,7 @@ def test_calibrator_no_capping():
     print(f"Calibration shift: {expected_shift:+.1%}")
     
     if abs(expected_shift) > 0.15:
-        print(f"✅ PASS: Large shift > 15% mantained (no capping)")
+        print(f"✅ PASS: Large shift > 15% maintained (no capping)")
     else:
         print(f"⚠️  Test not applicable: shift < 15%")
     
