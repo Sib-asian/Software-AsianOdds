@@ -4098,19 +4098,21 @@ class LiveBettingAdvisor:
             diff = abs(confidence_adjusted - confidence_before_coherence)
             
             if diff > 15.0:  # Differenza significativa
-                # 🔧 PROTEZIONE PRINCIPALE: Se la confidence ricalcolata è < 75% della originale,
-                # mantieni quella originale invece di ricalcolare
+                # 🔧 PROTEZIONE PRINCIPALE: Se la confidence ricalcolata è <= 85% della originale,
+                # mantieni SEMPRE quella originale invece di ricalcolare
                 # Questo preserva opportunità valide che altrimenti verrebbero distrutte
-                if confidence_adjusted < min_confidence_allowed:
+                # Non usare mai una confidence ricalcolata se è <= 85% della originale
+                if confidence_adjusted <= min_confidence_allowed:
                     confidence_adjusted = confidence_before_coherence
                     logger.info(
                         f"🔧 COERENZA: {opportunity.market} confidence mantenuta a {confidence_adjusted:.1f}% "
-                        f"(ricalcolo avrebbe dato {((ev_raw / 100.0 + 1.0) / opportunity.odds) * 100.0:.1f}% ma < limite minimo {min_confidence_allowed:.1f}%)"
+                        f"(ricalcolo avrebbe dato {((ev_raw / 100.0 + 1.0) / opportunity.odds) * 100.0:.1f}% ma < 85% della originale {confidence_before_coherence:.1f}%)"
                     )
                 else:
+                    # Solo se la confidence ricalcolata è >= 85% della originale, usala
                     logger.info(
                         f"🔧 COERENZA: {opportunity.market} confidence aggiustata da {confidence_before_coherence:.1f}% a {confidence_adjusted:.1f}% "
-                        f"per coerenza con EV cappato {ev_raw:.1f}% (odds: {opportunity.odds:.2f}, limite minimo: {min_confidence_allowed:.1f}%)"
+                        f"per coerenza con EV cappato {ev_raw:.1f}% (odds: {opportunity.odds:.2f}, >= 85% della originale)"
                     )
                 opportunity.confidence = confidence_adjusted
             elif diff > 1.0:  # Differenza piccola ma significativa (> 1%)
