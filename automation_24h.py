@@ -2760,9 +2760,9 @@ class Automation24H:
     
     def _has_real_value(self, ai_result: Dict) -> bool:
         """
-        Verifica se c'è vero valore (probabilità vs quote).
-        
-        True value = probabilità > probabilità implicita dalla quota
+        Verifica solo requisiti tecnici base per valore.
+        NOTA: Rimosso margine artificiale del 5%. Ora accetta qualsiasi EV positivo.
+        Warning viene loggato se probabilità ≤ implicita, ma non blocca.
         """
         probability = ai_result.get('probability') or ai_result.get('summary', {}).get('probability')
         odds = ai_result.get('odds') or ai_result.get('summary', {}).get('odds')
@@ -2773,12 +2773,18 @@ class Automation24H:
         # Probabilità implicita dalla quota
         implied_prob = 1.0 / odds
         
-        # Se probabilità reale > probabilità implicita + margine, c'è valore
-        margin = 0.05  # 5% margine minimo
-        if probability > implied_prob + margin:
+        # NOTA: Rimosso margine artificiale del 5%
+        # Accettiamo qualsiasi probabilità > implicita (anche di 0.1%)
+        # Il filtro min_ev già gestisce la soglia minima configurabile
+        if probability > implied_prob:
             return True
-        
-        return False
+        else:
+            # Log warning se probabilità ≤ implicita (possibile valore negativo)
+            logger.warning(
+                f"⚠️  Probabilità AI ({probability*100:.1f}%) ≤ implicita "
+                f"({implied_prob*100:.1f}%) - possibile EV negativo"
+            )
+            return False
     
     def _handle_opportunity(self, opportunity: Dict):
         """Gestisce opportunità trovata"""
