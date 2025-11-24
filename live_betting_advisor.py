@@ -1908,22 +1908,34 @@ class LiveBettingAdvisor:
                         # Se non c'è quota reale, salta questa opportunità (NON fidarsi di quote stimate)
                         logger.warning(f"⏭️ Under 2.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                     else:
-                        opportunity = LiveBettingOpportunity(
-                            match_id=match_id, match_data=match_data,
-                            situation='under_2.5_general', market='under_2.5',
-                            recommendation="Punta Under 2.5 Gol",
-                            reasoning=(
-                                f"🎯 UNDER 2.5!\n\n"
-                                f"• Score: {score_home}-{score_away} al {minute}'\n"
-                                f"• Partita CHIUSA:\n"
-                                f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min - bassa)\n"
-                                f"• Alta probabilità max 2 gol totale\n"
-                                f"• IA boost: +{ai_boost:.0f}%"
-                            ),
-                            confidence=confidence, odds=odds_under_2_5, stake_suggestion=2.5,
-                            timestamp=datetime.now()
-                        )
-                        opportunities.append(opportunity)
+                        # 🚨 NUOVO: Validazione quote anomale vs situazione di gioco
+                        # Al 60'+ con 1 gol, Under 2.5 dovrebbe avere quote BASSE (1.10-1.50)
+                        # Quote > 3.0 indicano errore API o quote invertite
+                        if odds_under_2_5 > 3.0:
+                            logger.warning(
+                                f"🚨 QUOTE ANOMALE: Under 2.5 a {odds_under_2_5:.2f} al {minute}' con {total_goals} gol è SOSPETTO! "
+                                f"(dovrebbe essere 1.10-1.50) - Possibile errore API o quote invertite. "
+                                f"Partita: {match_data.get('home')} vs {match_data.get('away')}"
+                            )
+                            # NON generare opportunità con quote chiaramente sbagliate
+                            pass  # Salta questa opportunità
+                        else:
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation='under_2.5_general', market='under_2.5',
+                                recommendation="Punta Under 2.5 Gol",
+                                reasoning=(
+                                    f"🎯 UNDER 2.5!\n\n"
+                                    f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                    f"• Partita CHIUSA:\n"
+                                    f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min - bassa)\n"
+                                    f"• Alta probabilità max 2 gol totale\n"
+                                    f"• IA boost: +{ai_boost:.0f}%"
+                                ),
+                                confidence=confidence, odds=odds_under_2_5, stake_suggestion=2.5,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
             
             # UNDER 3.5: Partita chiusa, max 3 gol
             elif total_goals <= 3 and minute >= 70 and minute <= 85:
@@ -4221,6 +4233,14 @@ class LiveBettingAdvisor:
         prob_implied = 1.0 / opportunity.odds if opportunity.odds > 1.0 else 0.5
         prob_deviation = abs(prob_ai - prob_implied)
 
+        # 🚨 NUOVO: Filtra deviazioni ESTREME (> 50%) - quote sicuramente sbagliate
+        if prob_deviation > 0.50:
+            logger.warning(
+                f"🚨 SANITY CHECK: {opportunity.market} DEVIAZIONE ESTREMA {prob_deviation*100:.1f}% "
+                f"(AI: {prob_ai*100:.1f}% vs Quote: {prob_implied*100:.1f}%) - OPPORTUNITÀ SCARTATA (quote probabilmente errate)"
+            )
+            return None  # Scarta opportunità con quote anomale
+
         if prob_deviation > MAX_PROB_DEVIATION:
             logger.warning(
                 f"⚠️ SANITY CHECK: {opportunity.market} deviazione eccessiva {prob_deviation*100:.1f}% "
@@ -4250,33 +4270,13 @@ class LiveBettingAdvisor:
             diff = abs(confidence_adjusted - confidence_before_coherence)
             
             if diff > 15.0:  # Differenza significativa
-                # 🔧 PROTEZIONE PRINCIPALE: Se la confidence ricalcolata è < 85% della originale,
-                # mantieni SEMPRE quella originale invece di ricalcolare
-                # Questo preserva opportunità valide che altrimenti verrebbero distrutte
-                # Non usare mai una confidence ricalcolata se è < 85% della originale
-                confidence_ratio = confidence_adjusted / confidence_before_coherence if confidence_before_coherence > 0 else 0.0
-                
-                # 🔧 MODIFICATO: Se la confidence ricalcolata è inferiore alla originale,
-                # mantieni sempre quella originale (protezione completa)
-                if confidence_adjusted < confidence_before_coherence:
-                    confidence_adjusted = confidence_before_coherence
-                    logger.info(
-                        f"🔧 COERENZA: {opportunity.market} confidence mantenuta a {confidence_adjusted:.1f}% "
-                        f"(ricalcolo avrebbe dato {((ev_raw / 100.0 + 1.0) / opportunity.odds) * 100.0:.1f}% ma è inferiore alla originale {confidence_before_coherence:.1f}%)"
-                    )
-                elif confidence_ratio < 0.85:
-                    # Protezione aggiuntiva: anche se >= originale ma < 85%, mantieni originale
-                    confidence_adjusted = confidence_before_coherence
-                    logger.info(
-                        f"🔧 COERENZA: {opportunity.market} confidence mantenuta a {confidence_adjusted:.1f}% "
-                        f"(ricalcolo avrebbe dato {((ev_raw / 100.0 + 1.0) / opportunity.odds) * 100.0:.1f}% ma è {confidence_ratio*100:.1f}% della originale, < 85%)"
-                    )
-                else:
-                    # Solo se la confidence ricalcolata è >= originale E >= 85% della originale, usala
-                    logger.info(
-                        f"🔧 COERENZA: {opportunity.market} confidence aggiustata da {confidence_before_coherence:.1f}% a {confidence_adjusted:.1f}% "
-                        f"per coerenza con EV cappato {ev_raw:.1f}% (odds: {opportunity.odds:.2f}, {confidence_ratio*100:.1f}% della originale, >= 85%)"
-                    )
+                # 🔧 FIX: USA SEMPRE confidence ricalcolata per coerenza matematica con EV cappato
+                # Prima: manteneva confidence originale → EV reale != EV mostrato (incoerenza)
+                # Ora: usa confidence ricalcolata → matematicamente coerente
+                logger.info(
+                    f"🔧 COERENZA: {opportunity.market} confidence aggiustata da {confidence_before_coherence:.1f}% a {confidence_adjusted:.1f}% "
+                    f"per coerenza con EV cappato {ev_raw:.1f}% (odds: {opportunity.odds:.2f})"
+                )
                 opportunity.confidence = confidence_adjusted
             elif diff > 1.0:  # Differenza piccola ma significativa (> 1%)
                 # Per differenze piccole, applica comunque il limite minimo
