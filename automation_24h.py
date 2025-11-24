@@ -1008,7 +1008,6 @@ class Automation24H:
 
                     # Doppio check di sicurezza (dovrebbe essere sempre live)
                     is_live = status_short in ["1H", "HT", "2H", "ET", "P", "LIVE"]
-<<<<<<< HEAD
                     is_finished = status_short in ["FT", "AET", "PEN"]
                     is_not_started = status_short in ["NS", "TBD", "CANC", "SUSP", "INT", "PST", "ABAN"]
                     
@@ -1020,23 +1019,10 @@ class Automation24H:
                         skipped_not_live += 1
                         continue  # Salta partite non iniziate o sospese
                     
-                    # 🔧 OPZIONE 3: Accetta partite se:
-                    # 1. Data = today (qualsiasi status, ma poi filtriamo per LIVE)
-                    # 2. Data = yesterday AND status LIVE (partite iniziate ieri ancora in corso)
-                    if fixture_date_only == today:
-                        # Partita di oggi: accetta solo se LIVE
-                        if not is_live:
-                            skipped_not_live += 1
-                            continue  # Salta partite di oggi non LIVE
-                    elif fixture_date_only == yesterday:
-                        # Partita di ieri: accetta solo se LIVE (ancora in corso)
-                        if not is_live:
-                            skipped_not_live += 1
-                            continue  # Salta partite di ieri non LIVE (già finite o non iniziate)
-                    else:
-                        # Partita di altro giorno: salta
+                    # Verifica che sia live (doppio check di sicurezza)
+                    if not is_live:
                         skipped_not_live += 1
-                        continue  # Salta partite di altri giorni
+                        continue  # Salta partite non LIVE
                     
                     live_count += 1
                     
