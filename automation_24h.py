@@ -3553,10 +3553,18 @@ class Automation24H:
         status = None
         if live_opp.match_stats:
             status = live_opp.match_stats.get('status', None)
+            # 🔧 FIX: Estrai minute anche da match_stats se disponibile
+            if minute is None or minute == 0:
+                minute = live_opp.match_stats.get('minute', 0)
         
         # 🔧 FIX TIMING: Filtra partite finite - NON inviare notifiche per partite già terminate
-        if minute > 90 or (status and status.upper() in ["FINISHED", "FT", "AET", "PEN"]):
-            logger.warning(f"⏭️  Partita {match_id} saltata: partita già finita (minuto: {minute}, status: {status}) - notifica non inviata")
+        # Verifica status PRIMA del minuto (più affidabile)
+        if status and status.upper() in ["FINISHED", "FT", "AET", "PEN"]:
+            logger.warning(f"⏭️  Partita {match_id} saltata: partita già finita (status: {status}) - notifica non inviata")
+            return
+        # Verifica anche minuto (se > 90, partita probabilmente finita)
+        if minute and minute > 90:
+            logger.warning(f"⏭️  Partita {match_id} saltata: partita già finita (minuto: {minute} > 90) - notifica non inviata")
             return
         
         # 🔧 FIX: Definisci 'now' prima di usarlo
