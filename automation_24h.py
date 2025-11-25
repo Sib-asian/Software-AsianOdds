@@ -23,9 +23,11 @@ import sys
 import os
 import sqlite3
 import math
+import re
+import statistics
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Any
+from typing import Dict, List, Optional, Set, Any, Tuple
 import argparse
 
 # Carica variabili d'ambiente da .env
@@ -759,10 +761,7 @@ class Automation24H:
                             continue
 
                         # 🔧 FIX: estrai sempre l'oggetto opportunità reale (anche se annidato in un dict)
-                        if isinstance(opp, dict):
-                            live_opp = opp.get('live_opportunity', opp)
-                        else:
-                            live_opp = opp
+                        live_opp = opp.get('live_opportunity', opp) if isinstance(opp, dict) else opp
 
                         # 🔧 FIX: supporta sia LiveBettingOpportunity che dict
                         if isinstance(live_opp, dict):
@@ -929,73 +928,73 @@ class Automation24H:
             params = {
                 "live": "all"  # Tutte le partite live in corso al mondo
             }
-
+            
             query = urllib.parse.urlencode(params)
             url = f"{base_url}/fixtures?{query}"
             headers = {
                 "x-rapidapi-key": api_key,
                 "x-rapidapi-host": "v3.football.api-sports.io"
             }
-
+            
             logger.info(f"📡 Fetching LIVE fixtures from API-Football (endpoint: /fixtures?live=all)...")
             self.api_usage_today += 1  # Conta chiamata API per fixtures
             req = urllib.request.Request(url, headers=headers)
-
-            # 🎯 Inizializza matches_found prima del try per evitare errori
+            
+            # 🎯 Inizializza matches_found prima del retry per evitare errori
             matches_found = []
             
-            try:
-                # 🎯 RETRY LOGIC: Usa retry con backoff esponenziale per resilienza
-                def _make_fixtures_request():
-                    with urllib.request.urlopen(req, timeout=15) as response:
+            # 🎯 RETRY LOGIC: Usa retry con backoff esponenziale per resilienza
+            def _make_fixtures_request():
+            with urllib.request.urlopen(req, timeout=15) as response:
                         response_data = response.read().decode()
-                        return json.loads(response_data)
+                    return json.loads(response_data)
+            
+            data = self._retry_api_call(_make_fixtures_request, max_retries=3, base_delay=1.0)
+            if data is None:
+                logger.error("❌ Impossibile recuperare fixtures dopo retry")
+                return []
+                        
+                        if data.get("errors"):
+                logger.error(f"❌ API-Football ha restituito errori: {data.get('errors')}")
+                return []
+            
+            if not data.get("response"):
+                logger.info(f"ℹ️  Nessuna partita LIVE trovata in questo momento (response vuoto)")
+                matches_found = []
+                        else:
+                matches_found = data["response"]
+                logger.info(f"📊 Trovate {len(matches_found)} partite LIVE in corso dall'API!")
                 
-                data = self._retry_api_call(_make_fixtures_request, max_retries=3, base_delay=1.0)
-                if data is None:
-                    logger.error("❌ Impossibile recuperare fixtures dopo retry")
-                    return []
+                # 🎯 DEBUG: Log dettagliato delle partite trovate
+                for i, fixture in enumerate(matches_found[:3]):  # Prime 3 per debug
+                    fixture_data = fixture.get("fixture", {})
+                    teams_data = fixture.get("teams", {})
+                    status_short = fixture_data.get("status", {}).get("short", "N/A")
+                    home = teams_data.get("home", {}).get("name", "?")
+                    away = teams_data.get("away", {}).get("name", "?")
+                    logger.info(f"   Partita {i+1}: {home} vs {away} - Status: {status_short}")
 
-                if data.get("errors"):
-                    logger.error(f"❌ API-Football ha restituito errori: {data.get('errors')}")
-                    return []
-
-                if not data.get("response"):
-                    logger.info(f"ℹ️  Nessuna partita LIVE trovata in questo momento (response vuoto)")
-                    matches_found = []
-                else:
-                    matches_found = data["response"]
-                    logger.info(f"📊 Trovate {len(matches_found)} partite LIVE in corso dall'API!")
-                    
-                    # 🎯 DEBUG: Log dettagliato delle partite trovate
-                    for i, fixture in enumerate(matches_found[:3]):  # Prime 3 per debug
-                        fixture_data = fixture.get("fixture", {})
-                        teams_data = fixture.get("teams", {})
-                        status_short = fixture_data.get("status", {}).get("short", "N/A")
-                        home = teams_data.get("home", {}).get("name", "?")
-                        away = teams_data.get("away", {}).get("name", "?")
-                        logger.info(f"   Partita {i+1}: {home} vs {away} - Status: {status_short}")
-
-            except urllib.error.HTTPError as e:
-                error_body = ""
-                try:
-                    error_body = e.read().decode()
-                    logger.error(f"❌ API-Football HTTP error: {e.code} - {e.reason}")
-                    logger.error(f"   Response body: {error_body[:500]}")
-                except:
-                    pass
-                if e.code == 429:
-                    logger.error("⚠️  Rate limit raggiunto, aspetta prima di riprovare")
-                elif e.code == 401:
-                    logger.error("⚠️  API key non valida o scaduta")
-                elif e.code == 403:
-                    logger.error("⚠️  Accesso negato - verifica API key e permessi")
-                matches_found = []  # Assicura che matches_found sia sempre definita
-                return []
-            except Exception as e:
-                logger.error(f"❌ Errore chiamata API-Football: {e}")
-                matches_found = []  # Assicura che matches_found sia sempre definita
-                return []
+        except urllib.error.HTTPError as e:
+            error_body = ""
+            try:
+                error_body = e.read().decode()
+            except:
+                pass
+            logger.error(f"❌ API-Football HTTP error: {e.code} - {e.reason}")
+            if error_body:
+                logger.error(f"   Response body: {error_body[:500]}")
+            if e.code == 429:
+                logger.error("⚠️  Rate limit raggiunto, aspetta prima di riprovare")
+            elif e.code == 401:
+                logger.error("⚠️  API key non valida o scaduta")
+            elif e.code == 403:
+                logger.error("⚠️  Accesso negato - verifica API key e permessi")
+            matches_found = []
+            return []
+        except Exception as e:
+            logger.error(f"❌ Errore chiamata API-Football: {e}")
+            matches_found = []
+            return []
             
             # Se non ci sono partite, ritorna lista vuota
             if not matches_found:
@@ -1036,7 +1035,7 @@ class Automation24H:
                     
                     # Parse datetime
                     fixture_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-
+                    
                     # ✅ SEMPLIFICATO: L'endpoint ?live=all restituisce già solo partite live
                     # Non serve più filtrare per data o status - sono tutte live!
                     status_short = fixture_data.get("status", {}).get("short", "")
@@ -1090,8 +1089,8 @@ class Automation24H:
                             
                             # 🎯 RETRY LOGIC: Usa retry con backoff esponenziale
                             def _make_odds_request():
-                                odds_req = urllib.request.Request(odds_url, headers=headers)
-                                with urllib.request.urlopen(odds_req, timeout=10) as odds_response:
+                            odds_req = urllib.request.Request(odds_url, headers=headers)
+                            with urllib.request.urlopen(odds_req, timeout=10) as odds_response:
                                     return json.loads(odds_response.read().decode())
                             
                             odds_data_response = self._retry_api_call(_make_odds_request, max_retries=3, base_delay=1.0)
@@ -1671,6 +1670,105 @@ class Automation24H:
             logger.debug(f"⚠️  Errore validazione quota: {odd}, errore: {e}")
             return None
     
+    def _select_realistic_odds(self, odds_dict: Dict[str, float], market_name: str = "unknown") -> Tuple[Optional[float], Optional[str]]:
+        """
+        🎯 SELEZIONE INTELLIGENTE QUOTE: Seleziona una quota "realistica" evitando outlier.
+        
+        Strategia:
+        1. Raccoglie tutte le quote valide
+        2. Calcola statistiche (media, mediana, deviazione standard)
+        3. Filtra outlier (> 2 deviazioni standard dalla media)
+        4. Seleziona 75° percentile o mediana dei top bookmaker (più realistico della quota massima)
+        
+        Args:
+            odds_dict: Dict {bookmaker_name: quota} con tutte le quote disponibili
+            market_name: Nome del mercato per logging
+        
+        Returns:
+            Tuple (quota_selezionata, bookmaker_name) o (None, None) se nessuna quota valida
+        """
+        if not odds_dict:
+            return None, None
+        
+        # Raccogli tutte le quote valide
+        valid_odds = []
+        for bookmaker, odd in odds_dict.items():
+            validated = self._validate_odds(odd)
+            if validated is not None:
+                valid_odds.append((validated, bookmaker))
+        
+        if not valid_odds:
+            return None, None
+        
+        # Se c'è solo una quota valida, usala
+        if len(valid_odds) == 1:
+            return valid_odds[0]
+        
+        # Estrai solo i valori numerici per calcoli statistici
+        odds_values = [odd for odd, _ in valid_odds]
+        
+        # Calcola statistiche
+        mean_odds = statistics.mean(odds_values)
+        median_odds = statistics.median(odds_values)
+        
+        # Calcola deviazione standard (se ci sono almeno 2 quote)
+        if len(odds_values) >= 2:
+            try:
+                std_dev = statistics.stdev(odds_values)
+            except statistics.StatisticsError:
+                std_dev = 0
+        else:
+            std_dev = 0
+        
+        # Filtra outlier: rimuovi quote > 2 deviazioni standard dalla media
+        # (ma mantieni almeno la quota più alta se tutte sono outlier)
+        filtered_odds = []
+        outlier_threshold = mean_odds + (2 * std_dev) if std_dev > 0 else float('inf')
+        
+        for odd, bookmaker in valid_odds:
+            if odd <= outlier_threshold:
+                filtered_odds.append((odd, bookmaker))
+        
+        # Se tutte le quote sono outlier, usa comunque la migliore (ma logga warning)
+        if not filtered_odds:
+            max_odd, max_bookmaker = max(valid_odds, key=lambda x: x[0])
+            logger.warning(
+                f"⚠️  QUOTE ANOMALE per {market_name}: tutte le quote sono outlier "
+                f"(media={mean_odds:.3f}, max={max_odd:.3f}, diff={((max_odd-mean_odds)/mean_odds*100):.1f}%). "
+                f"Uso comunque la migliore: {max_odd:.3f} da {max_bookmaker}"
+            )
+            return max_odd, max_bookmaker
+        
+        # Seleziona quota "realistica": usa 75° percentile invece della quota massima
+        # Questo evita quote anomale ma mantiene quote competitive
+        sorted_odds = sorted(filtered_odds, key=lambda x: x[0])
+        
+        # Calcola 75° percentile
+        percentile_75_idx = int(len(sorted_odds) * 0.75)
+        if percentile_75_idx >= len(sorted_odds):
+            percentile_75_idx = len(sorted_odds) - 1
+        
+        selected_odd, selected_bookmaker = sorted_odds[percentile_75_idx]
+        
+        # Se la differenza tra 75° percentile e max è < 5%, preferisci la max (più competitiva)
+        max_odd, max_bookmaker = sorted_odds[-1]
+        diff_pct = ((max_odd - selected_odd) / selected_odd) * 100 if selected_odd > 0 else 0
+        
+        if diff_pct < 5.0 and len(filtered_odds) >= 3:
+            # Usa la quota massima se è vicina al 75° percentile (non è un outlier)
+            selected_odd, selected_bookmaker = max_odd, max_bookmaker
+        
+        # Log dettagliato se ci sono outlier filtrati
+        if len(filtered_odds) < len(valid_odds):
+            outliers_count = len(valid_odds) - len(filtered_odds)
+            logger.info(
+                f"📊 {market_name}: {outliers_count} outlier filtrati su {len(valid_odds)} quote. "
+                f"Media={mean_odds:.3f}, Mediana={median_odds:.3f}, StdDev={std_dev:.3f}, "
+                f"Selezionata={selected_odd:.3f} (75° percentile) da {selected_bookmaker}"
+            )
+        
+        return selected_odd, selected_bookmaker
+    
     def _retry_api_call(self, func, max_retries: int = 3, base_delay: float = 1.0, *args, **kwargs):
         """
         🎯 RETRY LOGIC: Esegue una chiamata API con retry e backoff esponenziale.
@@ -1827,11 +1925,11 @@ class Automation24H:
                         odd = self._validate_odds(odd)
                         if odd is None:
                             continue
-                        
+                            
                         if outcome in ["home", "1"]:
                             # Raccogli quota da questo bookmaker
                             all_bookmaker_odds['match_winner']['home'][bookmaker_name] = odd
-                            # Aggiorna se è la migliore
+                            # Aggiorna se è la migliore (verrà poi sovrascritta da selezione intelligente)
                             if all_odds['match_winner']['home'] is None or odd > all_odds['match_winner']['home']:
                                 all_odds['match_winner']['home'] = odd
                                 bookmaker_tracker['match_winner']['home'] = bookmaker_name
@@ -1860,7 +1958,7 @@ class Automation24H:
                         # 🎯 PRECISIONE MANIACALE: Validazione rigorosa quote
                         odd = self._validate_odds(odd)
                         if odd is None:
-                            continue
+                                continue
                         
                         # Estrai threshold da qualsiasi valore (non solo hardcoded)
                         threshold = None
@@ -2068,6 +2166,129 @@ class Automation24H:
                             except (ValueError, TypeError):
                                 continue
         
+        # 🔧 NUOVO: Calcola numero di bookmaker disponibili per ogni mercato/outcome
+        bookmaker_counts = {
+            'match_winner': {'home': 0, 'draw': 0, 'away': 0},
+            'over_under': {},
+            'over_under_ht': {},
+            'first_half_goals': {},
+            'second_half_goals': {},
+            'btts': {'yes': 0, 'no': 0},
+            'btts_ht': {'yes': 0, 'no': 0},
+            'double_chance': {'1x': 0, '12': 0, 'x2': 0},
+            'draw_no_bet': {'home': 0, 'away': 0}
+        }
+        bookmaker_counts_flat = {}
+
+        for outcome in ['home', 'draw', 'away']:
+            count = len(all_bookmaker_odds['match_winner'][outcome])
+            bookmaker_counts['match_winner'][outcome] = count
+            bookmaker_counts_flat[f"match_winner:{outcome}"] = count
+
+        def _populate_counts_for_threshold(source_dict, target_key: str):
+            for threshold, outcome_dict in source_dict.items():
+                if threshold not in bookmaker_counts[target_key]:
+                    bookmaker_counts[target_key][threshold] = {}
+                for outcome_type in ['over', 'under']:
+                    count = len(outcome_dict.get(outcome_type, {})) if isinstance(outcome_dict, dict) else 0
+                    bookmaker_counts[target_key][threshold][outcome_type] = count
+                    bookmaker_counts_flat[f"{target_key}:{threshold}:{outcome_type}"] = count
+
+        _populate_counts_for_threshold(all_bookmaker_odds['over_under'], 'over_under')
+        _populate_counts_for_threshold(all_bookmaker_odds['over_under_ht'], 'over_under_ht')
+        _populate_counts_for_threshold(all_bookmaker_odds['first_half_goals'], 'first_half_goals')
+        _populate_counts_for_threshold(all_bookmaker_odds['second_half_goals'], 'second_half_goals')
+
+        for outcome in ['yes', 'no']:
+            count = len(all_bookmaker_odds['btts'][outcome])
+            bookmaker_counts['btts'][outcome] = count
+            bookmaker_counts_flat[f"btts:{outcome}"] = count
+
+            count_ht = len(all_bookmaker_odds['btts_ht'][outcome])
+            bookmaker_counts['btts_ht'][outcome] = count_ht
+            bookmaker_counts_flat[f"btts_ht:{outcome}"] = count_ht
+
+        for outcome in ['1x', '12', 'x2']:
+            count = len(all_bookmaker_odds['double_chance'][outcome])
+            bookmaker_counts['double_chance'][outcome] = count
+            bookmaker_counts_flat[f"double_chance:{outcome}"] = count
+
+        for outcome in ['home', 'away']:
+            count = len(all_bookmaker_odds['draw_no_bet'][outcome])
+            bookmaker_counts['draw_no_bet'][outcome] = count
+            bookmaker_counts_flat[f"draw_no_bet:{outcome}"] = count
+        
+        # 🎯 NUOVO: Applica selezione intelligente quote (evita outlier)
+        # Sostituisce le quote massime con quote "realistiche" (75° percentile, filtra outlier)
+        logger.debug("🔍 Applicazione selezione intelligente quote (filtro outlier)...")
+        
+        # Match Winner (1X2)
+        for outcome in ['home', 'draw', 'away']:
+            if all_bookmaker_odds['match_winner'][outcome]:
+                selected_odd, selected_bookmaker = self._select_realistic_odds(
+                    all_bookmaker_odds['match_winner'][outcome],
+                    f"1X2_{outcome}"
+                )
+                if selected_odd is not None:
+                    all_odds['match_winner'][outcome] = selected_odd
+                    bookmaker_tracker['match_winner'][outcome] = selected_bookmaker
+        
+        # Over/Under FT e HT
+        for threshold_dict, market_key, odds_key, tracker_key in [
+            (all_bookmaker_odds['over_under'], 'over_under', all_odds['over_under'], bookmaker_tracker['over_under']),
+            (all_bookmaker_odds['over_under_ht'], 'over_under_ht', all_odds['over_under_ht'], bookmaker_tracker['over_under_ht']),
+            (all_bookmaker_odds['first_half_goals'], 'first_half_goals', all_odds['first_half_goals'], bookmaker_tracker['first_half_goals']),
+            (all_bookmaker_odds['second_half_goals'], 'second_half_goals', all_odds['second_half_goals'], bookmaker_tracker['second_half_goals'])
+        ]:
+            for threshold, outcomes in threshold_dict.items():
+                for outcome_type in ['over', 'under']:
+                    if outcome_type in outcomes and outcomes[outcome_type]:
+                        selected_odd, selected_bookmaker = self._select_realistic_odds(
+                            outcomes[outcome_type],
+                            f"{market_key}_{threshold}_{outcome_type}"
+                        )
+                        if selected_odd is not None:
+                            if threshold not in odds_key:
+                                odds_key[threshold] = {'over': None, 'under': None}
+                            odds_key[threshold][outcome_type] = selected_odd
+                            if threshold not in tracker_key:
+                                tracker_key[threshold] = {'over': None, 'under': None}
+                            tracker_key[threshold][outcome_type] = selected_bookmaker
+        
+        # BTTS FT e HT
+        for outcome in ['yes', 'no']:
+            for market_key, target_dict in [
+                ('btts', all_odds['btts']),
+                ('btts_ht', all_odds['btts_ht'])
+            ]:
+                if all_bookmaker_odds[market_key][outcome]:
+                    selected_odd, selected_bookmaker = self._select_realistic_odds(
+                        all_bookmaker_odds[market_key][outcome],
+                        f"{market_key}_{outcome}"
+                    )
+                    if selected_odd is not None:
+                        target_dict[outcome] = selected_odd
+        
+        # Double Chance
+        for outcome in ['1x', '12', 'x2']:
+            if all_bookmaker_odds['double_chance'][outcome]:
+                selected_odd, selected_bookmaker = self._select_realistic_odds(
+                    all_bookmaker_odds['double_chance'][outcome],
+                    f"double_chance_{outcome}"
+                )
+                if selected_odd is not None:
+                    all_odds['double_chance'][outcome] = selected_odd
+        
+        # Draw No Bet
+        for outcome in ['home', 'away']:
+            if all_bookmaker_odds['draw_no_bet'][outcome]:
+                selected_odd, selected_bookmaker = self._select_realistic_odds(
+                    all_bookmaker_odds['draw_no_bet'][outcome],
+                    f"dnb_{outcome}"
+                )
+                if selected_odd is not None:
+                    all_odds['draw_no_bet'][outcome] = selected_odd
+        
         # 🔧 OPZIONE 4: Applica logica ibrida - preferisci bet365 se differenza < 5%
         # Cerca bet365 in tutti i bookmaker (case-insensitive)
         bet365_names = ['bet365', 'bet 365', 'bet-365']
@@ -2154,9 +2375,42 @@ class Automation24H:
                                 bookmaker_tracker[market_type][threshold][outcome_type] = 'bet365'
                                 logger.info(f"✅ Preferita bet365 per {market_type} {threshold} {outcome_type}: {bet365_odd} (differenza {diff_pct:.1f}% < 5%)")
         
-        # 🔧 NUOVO: Aggiungi bookmaker_tracker e bet365_odds a all_odds per uso futuro
+        # 🔧 NUOVO: Aggiungi tracker, conteggi e riepilogo offerte a all_odds per uso futuro
+        best_offer_summary = []
+        for outcome in ['home', 'draw', 'away']:
+            odd = all_odds['match_winner'][outcome]
+            bm = bookmaker_tracker['match_winner'][outcome]
+            if odd:
+                best_offer_summary.append({
+                    'market': f'1x2_{outcome}',
+                    'odd': odd,
+                    'bookmaker': bm,
+                    'bookmakers_available': bookmaker_counts['match_winner'][outcome]
+                })
+
+        for threshold, odds in list(all_odds['over_under'].items())[:3]:
+            over_odd = odds.get('over')
+            under_odd = odds.get('under')
+            if over_odd:
+                best_offer_summary.append({
+                    'market': f'over_{threshold}',
+                    'odd': over_odd,
+                    'bookmaker': bookmaker_tracker['over_under'].get(threshold, {}).get('over'),
+                    'bookmakers_available': bookmaker_counts['over_under'].get(threshold, {}).get('over', 0)
+                })
+            if under_odd:
+                best_offer_summary.append({
+                    'market': f'under_{threshold}',
+                    'odd': under_odd,
+                    'bookmaker': bookmaker_tracker['over_under'].get(threshold, {}).get('under'),
+                    'bookmakers_available': bookmaker_counts['over_under'].get(threshold, {}).get('under', 0)
+                })
+
         all_odds['_bookmakers'] = bookmaker_tracker
         all_odds['_bet365_odds'] = bet365_odds  # Salva quote bet365 per mostrare nelle notifiche
+        all_odds['_bookmaker_counts'] = bookmaker_counts
+        all_odds['_bookmaker_counts_flat'] = bookmaker_counts_flat
+        all_odds['_best_offer_summary'] = best_offer_summary
         
         # 🔧 LOGGING: Mostra quale bookmaker fornisce le quote principali
         logger.info(f"📊 Bookmaker utilizzati per le quote:")
@@ -2210,8 +2464,8 @@ class Automation24H:
             
             # 🎯 RETRY LOGIC: Usa retry con backoff esponenziale per resilienza
             def _make_request():
-                req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=10) as response:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
                     return json.loads(response.read().decode())
             
             data = self._retry_api_call(_make_request, max_retries=3, base_delay=1.0)
@@ -2926,6 +3180,168 @@ class Automation24H:
         if not opportunities:
             return []
         
+        def _extract_threshold_from_market_name(market_name: Optional[str]) -> Optional[str]:
+            if not market_name:
+                return None
+            match = re.search(r'(\d+(\.\d+)?)', market_name)
+            return match.group(1) if match else None
+
+        def _map_market_to_liquidity_key(market_name: Optional[str]) -> Optional[str]:
+            if not market_name:
+                return None
+            lower = market_name.lower()
+            threshold = _extract_threshold_from_market_name(lower)
+
+            def _is_first_half(name: str) -> bool:
+                return any(tag in name for tag in ['_ht', '_1h', 'first_half', '1st_half'])
+
+            def _is_second_half(name: str) -> bool:
+                return any(tag in name for tag in ['_2h', 'second_half', '2nd_half'])
+
+            if lower.startswith('over_') or lower.startswith('under_'):
+                base = 'over_under'
+                if _is_first_half(lower):
+                    base = 'over_under_ht'
+                elif _is_second_half(lower):
+                    base = 'second_half_goals'
+                outcome = 'over' if lower.startswith('over_') else 'under'
+                if threshold:
+                    return f"{base}:{threshold}:{outcome}"
+
+            if lower.startswith('btts'):
+                outcome = 'yes'
+                if 'no' in lower:
+                    outcome = 'no'
+                base = 'btts'
+                if _is_first_half(lower):
+                    base = 'btts_ht'
+                return f"{base}:{outcome}"
+
+            if 'next_goal' in lower or lower.startswith('next_goal'):
+                if 'away' in lower:
+                    return "match_winner:away"
+                if 'home' in lower:
+                    return "match_winner:home"
+                return None
+
+            if lower.startswith('home_win') or '1x2_home' in lower:
+                return "match_winner:home"
+            if lower.startswith('away_win') or '1x2_away' in lower:
+                return "match_winner:away"
+
+            if 'draw_no_bet' in lower or lower.startswith('dnb_'):
+                if 'away' in lower:
+                    return "draw_no_bet:away"
+                return "draw_no_bet:home"
+
+            if 'double_chance' in lower or lower.startswith('1x') or lower.startswith('x2') or lower.startswith('12'):
+                if '1x' in lower:
+                    return "double_chance:1x"
+                if 'x2' in lower:
+                    return "double_chance:x2"
+                if '12' in lower:
+                    return "double_chance:12"
+
+            return None
+
+        def _compute_liquidity_factor_for_opportunity(market_name: Optional[str], opp_dict: Dict) -> float:
+            if not market_name:
+                return 1.0
+            match_data = opp_dict.get('match_data') or {}
+            all_odds_data = match_data.get('all_odds') or {}
+            counts_flat = all_odds_data.get('_bookmaker_counts_flat') or {}
+            liquidity_key = _map_market_to_liquidity_key(market_name)
+            if not liquidity_key or not counts_flat:
+                return 1.0
+            count = counts_flat.get(liquidity_key)
+            if not count:
+                return 1.0
+            if count >= 5:
+                return 1.08
+            if count == 4:
+                return 1.05
+            if count == 3:
+                return 1.03
+            if count == 2:
+                return 1.01
+            return 0.97  # Solo un bookmaker → meno affidabile
+
+        def _compute_pressure_factor(stats_dict: Optional[Dict[str, Any]]) -> float:
+            if not isinstance(stats_dict, dict):
+                return 1.0
+            shots_home = stats_dict.get('shots_home') or stats_dict.get('home_total_shots') or 0
+            shots_away = stats_dict.get('shots_away') or stats_dict.get('away_total_shots') or 0
+            sot_home = stats_dict.get('shots_on_target_home') or stats_dict.get('home_shots_on_target') or 0
+            sot_away = stats_dict.get('shots_on_target_away') or stats_dict.get('away_shots_on_target') or 0
+            xg_home = stats_dict.get('xg_home') or 0.0
+            xg_away = stats_dict.get('xg_away') or 0.0
+            attacks_home = stats_dict.get('dangerous_attacks_home') or 0
+            attacks_away = stats_dict.get('dangerous_attacks_away') or 0
+
+            total_shots = shots_home + shots_away
+            total_sot = sot_home + sot_away
+            total_xg = (xg_home or 0.0) + (xg_away or 0.0)
+            total_attacks = attacks_home + attacks_away
+
+            metrics_available = sum([
+                1 if total_shots > 0 else 0,
+                1 if total_sot > 0 else 0,
+                1 if total_xg > 0 else 0,
+                1 if total_attacks > 0 else 0
+            ])
+            if metrics_available <= 1:
+                return 1.0
+
+            factor = 1.0
+            if total_sot >= 6 or total_xg >= 2.5:
+                factor += 0.08
+            elif total_sot <= 1 and total_shots <= 8:
+                factor -= 0.05
+
+            if abs(sot_home - sot_away) >= 4:
+                factor += 0.03
+
+            if total_attacks >= 80 or total_shots >= 22:
+                factor += 0.04
+
+            return max(0.9, min(1.12, factor))
+
+        def _compute_realism_factor(confidence_value: float, odds_value: float) -> float:
+            if not odds_value or odds_value <= 1.0:
+                return 1.0
+            try:
+                implied_prob = (1.0 / odds_value) * 100.0
+            except ZeroDivisionError:
+                return 1.0
+            prob_gap = abs(confidence_value - implied_prob)
+            if prob_gap <= 5:
+                return 1.05
+            if prob_gap <= 15:
+                return 1.02
+            if prob_gap >= 35:
+                return 0.90
+            if prob_gap >= 25:
+                return 0.95
+            return 1.0
+
+        def _adjust_weights_for_market(market_type: str, market_name: str, minute_value: int, weights: Dict[str, float]) -> Dict[str, float]:
+            adjusted = weights.copy()
+            lower = (market_name or '').lower()
+            if market_type in {'over', 'under', 'btts'}:
+                adjusted['stats'] += 0.05
+            if market_type in {'next', 'goal'} or 'next_goal' in lower:
+                adjusted['confidence'] += 0.05
+            if 'card' in lower or 'corner' in lower:
+                adjusted['quality'] += 0.05
+            if 'second_half' in lower or minute_value >= 60:
+                adjusted['quality'] += 0.02
+            if minute_value >= 75 and market_type in {'over', 'goal', 'next'}:
+                adjusted['ev'] += 0.05
+            total = sum(adjusted.values()) or 1.0
+            for key in adjusted:
+                adjusted[key] = adjusted[key] / total
+            return adjusted
+        
         # 🔧 RIMOSSO: Filtro has_live_stats - accettiamo tutte le opportunità
         # Le partite vengono già filtrate per avere statistiche e quote in _fetch_matches_with_odds_from_api_football
         # Qui calcoliamo confidence ed EV per tutte le opportunità e selezioniamo la migliore
@@ -3042,6 +3458,11 @@ class Automation24H:
             ev_normalized = max(0.3, min(2.0, ev_normalized))
             
             confidence_normalized = confidence / 100.0
+
+            pressure_factor = _compute_pressure_factor(stats or opp_dict.get('match_stats'))
+            liquidity_factor = _compute_liquidity_factor_for_opportunity(market, opp_dict)
+            odds_for_gap = validated_odds if validated_odds is not None else odds
+            realism_factor = _compute_realism_factor(confidence, odds_for_gap if odds_for_gap else 0.0)
             
             # 2. 🆕 Calcola Quality Score (se disponibile)
             quality_score_normalized = 0.0
@@ -3186,7 +3607,23 @@ class Automation24H:
                 weight_confidence = 0.25
                 weight_stats = 0.10
             
-            # 🆕 5.2 Calcola score base con pesi dinamici
+            # 🆕 5.2 Calcola score base con pesi dinamici e profili mercato
+            weights = _adjust_weights_for_market(
+                market_type,
+                market,
+                minute,
+                {
+                    'ev': weight_ev,
+                    'confidence': weight_confidence,
+                    'quality': weight_quality,
+                    'stats': weight_stats
+                }
+            )
+            weight_ev = weights['ev']
+            weight_confidence = weights['confidence']
+            weight_quality = weights['quality']
+            weight_stats = weights['stats']
+            
             base_score = (
                 ev_normalized * weight_ev +
                 confidence_normalized * weight_confidence +
@@ -3244,7 +3681,10 @@ class Automation24H:
                 time_factor * 
                 odds_factor * 
                 ev_penalty * 
-                score_modifier
+                score_modifier *
+                pressure_factor *
+                liquidity_factor *
+                realism_factor
             )
             
             minute = stats.get('minute', 0) if isinstance(stats, dict) else 0
@@ -3265,6 +3705,9 @@ class Automation24H:
                 'odds_factor': odds_factor,  # 🆕 Fattore quote
                 'ev_penalty': ev_penalty,  # 🆕 Penalità EV
                 'score_modifier': score_modifier,
+                'pressure_factor': pressure_factor,
+                'liquidity_factor': liquidity_factor,
+                'realism_factor': realism_factor,
                 'modifier_reason': modifier_reason,
                 'opp_key': opp_key  # Per cache
             })
@@ -3348,15 +3791,25 @@ class Automation24H:
                 
                 # 🎯 RIMOSSO: Filtro soglia minima score - l'utente vuole vedere tutte le opportunità
                 # Aggiungi sempre la migliore opportunità senza controllare soglie
-                best.append(opp)
-                live_opp = opp['opportunity'].get('live_opportunity')
-                market = getattr(live_opp, 'market', 'unknown') if live_opp else 'unknown'
-                logger.info(f"   ✅ Selezionata opportunità tipo '{market_type}' ({market})")
-                logger.info(f"      📊 Score originale: {score_original:.3f} | Score finale: {score_final:.3f}")
-                logger.info(f"      📈 EV: {opp['ev']:.1f}% | Conf: {opp['confidence']:.1f}% | Quality: {opp.get('quality_score', 0):.1f} | Odds: {opp.get('odds', 0):.2f}")
-                # 🆕 Log dettagliato dei fattori di calcolo
-                logger.debug(f"      🔍 Dettagli calcolo: Base={opp.get('base_score', 0):.3f} | Sinergia={opp.get('synergy_bonus', 1.0):.2f}x | Tempo={opp.get('time_factor', 1.0):.2f}x | Quote={opp.get('odds_factor', 1.0):.2f}x | EV_penalty={opp.get('ev_penalty', 1.0):.2f}x")
-                break
+                    best.append(opp)
+                    live_opp = opp['opportunity'].get('live_opportunity')
+                    market = getattr(live_opp, 'market', 'unknown') if live_opp else 'unknown'
+                    logger.info(f"   ✅ Selezionata opportunità tipo '{market_type}' ({market})")
+                    logger.info(f"      📊 Score originale: {score_original:.3f} | Score finale: {score_final:.3f}")
+                    logger.info(f"      📈 EV: {opp['ev']:.1f}% | Conf: {opp['confidence']:.1f}% | Quality: {opp.get('quality_score', 0):.1f} | Odds: {opp.get('odds', 0):.2f}")
+                    # 🆕 Log dettagliato dei fattori di calcolo
+                logger.debug(
+                    "      🔍 Dettagli calcolo: Base=%.3f | Sinergia=%.2fx | Tempo=%.2fx | Quote=%.2fx | EV_penalty=%.2fx | Pressione=%.2fx | Liquidità=%.2fx | Realismo=%.2fx",
+                    opp.get('base_score', 0),
+                    opp.get('synergy_bonus', 1.0),
+                    opp.get('time_factor', 1.0),
+                    opp.get('odds_factor', 1.0),
+                    opp.get('ev_penalty', 1.0),
+                    opp.get('pressure_factor', 1.0),
+                    opp.get('liquidity_factor', 1.0),
+                    opp.get('realism_factor', 1.0)
+                )
+                    break
             
             # Log delle migliori per tipo (per debug)
             logger.debug(f"   📊 Top 5 opportunità per tipo di mercato:")
@@ -3403,7 +3856,7 @@ class Automation24H:
         minute = 0
         if hasattr(live_opp, 'match_stats') and live_opp.match_stats:
             if isinstance(live_opp.match_stats, dict):
-                minute = live_opp.match_stats.get('minute', 0)
+            minute = live_opp.match_stats.get('minute', 0)
         minute_rounded = (minute // 5) * 5
         opp_key = f"{match_id}_{market}_{minute_rounded}"
         
@@ -3591,12 +4044,12 @@ class Automation24H:
         # Forza sempre should_send = True per inviare tutte le opportunità
         should_send = True
         if quality_score is not None:
-            try:
-                score_value = quality_score.total_score if hasattr(quality_score, 'total_score') else 0.0
-                logger.info(
+                try:
+                    score_value = quality_score.total_score if hasattr(quality_score, 'total_score') else 0.0
+                    logger.info(
                     f"✅ Segnale {match_id}/{market} approvato (Quality Score: {score_value:.1f}/100)"
-                )
-            except Exception as e:
+                    )
+                except Exception as e:
                 logger.debug(f"⚠️  Errore durante log quality_score: {e}")
         
         # 🔧 MIGLIORATO: Evita duplicati usando match_id + market + minuto
@@ -4244,19 +4697,19 @@ def main():
         attempt += 1
         logger.info(f"🔁 Avvio Automation24H (tentativo {attempt})")
         
-        automation = Automation24H(
-            config_path=args.config,
-            telegram_token=args.telegram_token or config.get('telegram_token') or os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN'),
-            telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID'),
-            min_ev=args.min_ev or config.get('min_ev', 8.0),
-            min_confidence=args.min_confidence or config.get('min_confidence', 70.0),
-            update_interval=args.update_interval or config.get('update_interval', 600),
-            api_budget_per_day=config.get('api_budget_per_day', 7500),  # Piano Pro: 7500 chiamate/giorno
-            max_notifications_per_cycle=args.max_notifications or config.get('max_notifications_per_cycle', 2)
-        )
-        
+    automation = Automation24H(
+        config_path=args.config,
+        telegram_token=args.telegram_token or config.get('telegram_token') or os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN'),
+        telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID'),
+        min_ev=args.min_ev or config.get('min_ev', 8.0),
+        min_confidence=args.min_confidence or config.get('min_confidence', 70.0),
+        update_interval=args.update_interval or config.get('update_interval', 600),
+        api_budget_per_day=config.get('api_budget_per_day', 7500),  # Piano Pro: 7500 chiamate/giorno
+        max_notifications_per_cycle=args.max_notifications or config.get('max_notifications_per_cycle', 2)
+    )
+    
         try:
-            automation.start(single_run=args.single_run)
+    automation.start(single_run=args.single_run)
             if args.single_run:
                 break
         except Exception as e:
