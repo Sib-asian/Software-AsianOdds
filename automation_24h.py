@@ -754,23 +754,31 @@ class Automation24H:
                 if opportunities:
                     matches_with_opportunities += 1
                     logger.info(f"📊 {match_name}: trovate {len(opportunities)} opportunità")
-                for opp in opportunities:
-                    if not opp:
-                        continue
+                    for opp in opportunities:
+                        if not opp:
+                            continue
+
+                        # 🔧 FIX: estrai sempre l'oggetto opportunità reale (anche se annidato in un dict)
+                        if isinstance(opp, dict):
+                            live_opp = opp.get('live_opportunity', opp)
+                        else:
+                            live_opp = opp
+
+                        # 🔧 FIX: supporta sia LiveBettingOpportunity che dict
+                        if isinstance(live_opp, dict):
+                            market = live_opp.get('market', 'unknown')
+                            ev = live_opp.get('ev', 0.0)
+                            conf = live_opp.get('confidence', 0.0)
+                            quality = live_opp.get('signal_quality_score', 0.0)
+                        else:
+                            market = getattr(live_opp, 'market', 'unknown')
+                            ev = getattr(live_opp, 'ev', 0.0)
+                            conf = getattr(live_opp, 'confidence', 0.0)
+                            quality = getattr(live_opp, 'signal_quality_score', 0.0)
+
                         opportunities_found += 1
-                        all_opportunities.append(opp)  # Raccogli invece di inviare subito
-                    # 🔧 FIX: opp può essere dict o LiveBettingOpportunity
-                    if isinstance(opp, dict):
-                        market = opp.get('market', 'unknown')
-                        ev = opp.get('ev', 0.0)
-                        conf = opp.get('confidence', 0.0)
-                        quality = opp.get('signal_quality_score', 0.0)
-                    else:
-                        market = getattr(opp, 'market', 'unknown')
-                        ev = getattr(opp, 'ev', 0.0)
-                        conf = getattr(opp, 'confidence', 0.0)
-                        quality = getattr(opp, 'signal_quality_score', 0.0)
-                    logger.info(f"   ✅ {market}: EV={ev:.1f}%, Conf={conf:.1f}%, Quality={quality:.1f}")
+                        all_opportunities.append(opp)  # Mantieni struttura originale per selezione successiva
+                        logger.info(f"   ✅ {market}: EV={ev:.1f}%, Conf={conf:.1f}%, Quality={quality:.1f}")
                 else:
                     matches_without_opportunities += 1
                     # 🔧 DEBUG: Log dettagliato perché non ci sono opportunità
