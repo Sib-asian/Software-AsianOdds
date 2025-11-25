@@ -1765,16 +1765,11 @@ class Automation24H:
         import re  # Import una sola volta
         import statistics  # Per calcolo mediana
 
-        # 🆕 WHITELIST: Bookmaker affidabili con quote accurate
+        # 🆕 WHITELIST: SOLO bookmaker affidabili con quote accurate (NO FALLBACK!)
         TRUSTED_BOOKMAKERS = {
             'bet365', 'bet 365', 'bet-365',           # Bet365 (varianti)
             'pinnacle', 'pinnacle sports',            # Pinnacle (sharp)
             'betfair', 'betfair exchange',            # Betfair (exchange)
-            '1xbet',                                   # 1xBet (popolare)
-            'william hill', 'williamhill',             # William Hill
-            'unibet',                                  # Unibet
-            'bwin',                                    # Bwin
-            '888sport',                                # 888 Sport
         }
 
         def normalize_bookmaker_name(name: str) -> str:
@@ -1851,8 +1846,12 @@ class Automation24H:
             'draw_no_bet': {'home': {}, 'away': {}},
             'asian_handicap': {}
         }
-        
-        # 🆕 Itera SOLO sui bookmaker trusted (whitelist)
+
+        # 🔍 DEBUG: Log di tutti i bookmaker disponibili dall'API
+        available_bookmakers = [b.get("bookmaker", {}).get("name", "N/A") for b in odds_list]
+        logger.info(f"🔍 DEBUG: Bookmaker disponibili dall'API ({len(available_bookmakers)}): {', '.join(available_bookmakers[:10])}")
+
+        # 🆕 Itera SOLO sui bookmaker trusted (whitelist - NO FALLBACK)
         trusted_bookmakers_found = []
         for bookmaker in odds_list:
             bookmaker_name = bookmaker.get("bookmaker", {}).get("name", "")
@@ -2119,76 +2118,13 @@ class Automation24H:
                             except (ValueError, TypeError):
                                 continue
 
-        # 🆕 FALLBACK: Se non trova bookmaker trusted, usa TUTTI i bookmaker disponibili
-        if not trusted_bookmakers_found:
-            logger.warning(f"⚠️ Nessun bookmaker trusted trovato! Uso TUTTI i bookmaker disponibili come fallback.")
-            logger.info(f"📋 Bookmaker disponibili dall'API: {[b.get('bookmaker', {}).get('name', 'N/A') for b in odds_list[:5]]}...")
-
-            # Seconda passata: usa TUTTI i bookmaker (senza filtro trusted)
-            for bookmaker in odds_list:
-                bookmaker_name = bookmaker.get("bookmaker", {}).get("name", "")
-                bets = bookmaker.get("bets", [])
-
-                for bet in bets:
-                    bet_id = bet.get("id")
-                    bet_name = bet.get("name", "").lower()
-                    values = bet.get("values", [])
-
-                    # Match Winner (1X2) - id: 1
-                    if bet_id == 1 or "match winner" in bet_name or "1x2" in bet_name:
-                        for value in values:
-                            outcome = value.get("value", "").lower()
-                            odd = value.get("odd")
-                            odd = self._validate_odds(odd)
-                            if odd is None:
-                                continue
-
-                            if outcome in ["home", "1"]:
-                                all_bookmaker_odds['match_winner']['home'][bookmaker_name] = odd
-                            elif outcome in ["draw", "x"]:
-                                all_bookmaker_odds['match_winner']['draw'][bookmaker_name] = odd
-                            elif outcome in ["away", "2"]:
-                                all_bookmaker_odds['match_winner']['away'][bookmaker_name] = odd
-
-                    # Over/Under - id: 5
-                    elif bet_id == 5 or "goals over/under" in bet_name:
-                        for value in values:
-                            total = value.get("value")
-                            outcome = value.get("value", "").lower()
-                            odd = value.get("odd")
-                            odd = self._validate_odds(odd)
-                            if odd is None or total is None:
-                                continue
-
-                            try:
-                                total_float = float(total)
-                                key = f"over_{total_float}" if "over" in outcome else f"under_{total_float}"
-
-                                if key not in all_bookmaker_odds['over_under']:
-                                    all_bookmaker_odds['over_under'][key] = {}
-                                all_bookmaker_odds['over_under'][key][bookmaker_name] = odd
-                            except (ValueError, TypeError):
-                                continue
-
-                    # BTTS - id: 8
-                    elif bet_id == 8 or "both teams score" in bet_name or "btts" in bet_name:
-                        for value in values:
-                            outcome = value.get("value", "").lower()
-                            odd = value.get("odd")
-                            odd = self._validate_odds(odd)
-                            if odd is None:
-                                continue
-
-                            if "yes" in outcome:
-                                all_bookmaker_odds['btts']['yes'][bookmaker_name] = odd
-                            elif "no" in outcome:
-                                all_bookmaker_odds['btts']['no'][bookmaker_name] = odd
-
-        # 🆕 NUOVA LOGICA: Calcola mediana dalle quote dei trusted bookmakers (o tutti se fallback)
+        # 🆕 NUOVA LOGICA: Calcola mediana SOLO dai trusted bookmakers (NO FALLBACK)
         if trusted_bookmakers_found:
-            logger.info(f"📊 Trovati {len(trusted_bookmakers_found)} bookmaker trusted: {', '.join(trusted_bookmakers_found)}")
+            logger.info(f"✅ Trovati {len(trusted_bookmakers_found)} bookmaker trusted: {', '.join(trusted_bookmakers_found)}")
         else:
-            logger.info(f"📊 Uso fallback: {len(odds_list)} bookmaker totali disponibili")
+            logger.warning(f"⚠️ NESSUN bookmaker trusted trovato! Nessuna quota estratta per questa partita.")
+            # Ritorna dizionario vuoto - nessun mercato disponibile
+            return all_odds
 
         # 1. Match Winner (1X2)
         for outcome in ['home', 'draw', 'away']:
