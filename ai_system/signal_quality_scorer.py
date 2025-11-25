@@ -17,6 +17,12 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 from dataclasses import dataclass
 
+# Import delle metriche avanzate
+try:
+    from ai_system.signal_metrics import AdvancedSignalMetrics
+except ImportError:
+    from signal_metrics import AdvancedSignalMetrics
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,6 +34,7 @@ class QualityScore:
     data_quality_score: float  # 0-100
     logic_score: float  # 0-100
     timing_score: float  # 0-100
+    coherence_score: float  # 0-100 (nuovo: verifica coerenza metriche)
     is_approved: bool
     reasons: List[str]
     warnings: List[str]
@@ -107,11 +114,12 @@ class ContextAwareValidator:
 
 class AISignalQualityScorer:
     """Valuta qualità complessiva del segnale"""
-    
+
     def __init__(self, ai_pipeline=None, learned_weights=None):
         self.ai_pipeline = ai_pipeline
         self.context_validator = ContextAwareValidator()
         self.learned_weights = learned_weights  # Pesi appresi (opzionale)
+        self.metrics_calculator = AdvancedSignalMetrics()  # Nuovo: per metriche granulari
     
     def score_signal(
         self,
@@ -134,6 +142,7 @@ class AISignalQualityScorer:
                 data_quality_score=0,
                 logic_score=0,
                 timing_score=0,
+                coherence_score=0,
                 is_approved=False,
                 reasons=["Opportunità senza live_opportunity"],
                 warnings=[],
@@ -153,38 +162,47 @@ class AISignalQualityScorer:
         
         # 4. Timing Score
         timing_score, timing_reasons, timing_warnings = self._score_timing(live_data, live_opp)
-        
-        # 5. Calcola score totale (media pesata)
+
+        # 5. Coherence Score (NUOVO: verifica coerenza tra metriche e mercato)
+        coherence_score, coherence_reasons, coherence_warnings = self._score_coherence(
+            opportunity, match_data, live_data
+        )
+
+        # 6. Calcola score totale (media pesata)
         # Usa pesi appresi se disponibili, altrimenti default
+        # NUOVI PESI: ridotto context e timing, aggiunto coherence
         weights = self.learned_weights if self.learned_weights else {
-            'context': 0.35,
-            'data_quality': 0.25,
-            'logic': 0.25,
-            'timing': 0.15
+            'context': 0.30,       # era 0.35
+            'data_quality': 0.25,  # invariato
+            'logic': 0.20,         # era 0.25
+            'timing': 0.10,        # era 0.15
+            'coherence': 0.15      # NUOVO
         }
-        
+
         total_score = (
-            context_score * weights.get('context', 0.35) +
+            context_score * weights.get('context', 0.30) +
             data_quality_score * weights.get('data_quality', 0.25) +
-            logic_score * weights.get('logic', 0.25) +
-            timing_score * weights.get('timing', 0.15)
+            logic_score * weights.get('logic', 0.20) +
+            timing_score * weights.get('timing', 0.10) +
+            coherence_score * weights.get('coherence', 0.15)
         )
         
-        # 6. Raccogli tutti i motivi
-        all_reasons = context_reasons + data_reasons + logic_reasons + timing_reasons
-        all_warnings = context_warnings + data_warnings + logic_warnings + timing_warnings
-        
-        # 7. Decisione finale: approva solo se score >= min_quality_score E nessun errore critico
+        # 7. Raccogli tutti i motivi (incluso coherence)
+        all_reasons = context_reasons + data_reasons + logic_reasons + timing_reasons + coherence_reasons
+        all_warnings = context_warnings + data_warnings + logic_warnings + timing_warnings + coherence_warnings
+
+        # 8. Decisione finale: approva solo se score >= min_quality_score E nessun errore critico
         # Se ci sono "reasons" (errori critici), blocca sempre
         has_critical_errors = len(all_reasons) > 0
         is_approved = total_score >= min_quality_score and not has_critical_errors
-        
+
         return QualityScore(
             total_score=round(total_score, 1),
             context_score=round(context_score, 1),
             data_quality_score=round(data_quality_score, 1),
             logic_score=round(logic_score, 1),
             timing_score=round(timing_score, 1),
+            coherence_score=round(coherence_score, 1),
             is_approved=is_approved,
             reasons=all_reasons,
             warnings=all_warnings,
@@ -273,13 +291,64 @@ class AISignalQualityScorer:
         score = 100.0
         reasons = []
         warnings = []
-        
+
         minute = live_data.get('minute', 0)
-        
+
         # Solo log informativo
         warnings.append(f"Minuto: {minute}'")
-        
+
         return max(0, score), reasons, warnings
+
+    def _score_coherence(
+        self,
+        opportunity: Dict[str, Any],
+        match_data: Dict[str, Any],
+        live_data: Dict[str, Any]
+    ) -> Tuple[float, List[str], List[str]]:
+        """
+        NUOVO: Valuta la coerenza tra il mercato predetto e le metriche live.
+        Usa AdvancedSignalMetrics per verificare che le statistiche supportino il segnale.
+
+        Returns:
+            (score 0-100, reasons, warnings)
+        """
+        reasons = []
+        warnings = []
+
+        live_opp = opportunity.get('live_opportunity')
+        if not live_opp:
+            return 50.0, reasons, warnings  # Neutrale se non c'è live_opp
+
+        market = getattr(live_opp, 'market', 'unknown')
+
+        # Usa il nuovo modulo di metriche avanzate per calcolare la coerenza
+        try:
+            coherence_value, coherence_warnings = self.metrics_calculator.evaluate_market_coherence(
+                market=market,
+                live_data=live_data,
+                opportunity_data=opportunity
+            )
+
+            # coherence_value è 0.0-1.0, convertiamo in 0-100
+            score = coherence_value * 100.0
+
+            # Aggiungi warnings dalla valutazione
+            if coherence_warnings:
+                warnings.extend(coherence_warnings)
+
+            # Se il punteggio è molto basso, aggiungiamo una nota
+            if score < 50:
+                warnings.append(f"⚠️  Coerenza bassa ({score:.0f}/100) tra {market} e statistiche")
+            elif score >= 80:
+                warnings.append(f"✅ Ottima coerenza ({score:.0f}/100) tra {market} e statistiche")
+
+        except Exception as e:
+            # In caso di errore, usiamo score neutrale
+            logger.warning(f"Errore calcolo coherence score: {e}")
+            score = 70.0  # Neutrale-positivo in caso di errore
+            warnings.append(f"Coherence check fallito: {str(e)}")
+
+        return max(0, min(score, 100)), reasons, warnings
 
 
 class SignalQualityGate:
@@ -333,7 +402,8 @@ class SignalQualityGate:
                 f"(Context: {quality_score.context_score:.1f}, "
                 f"Data: {quality_score.data_quality_score:.1f}, "
                 f"Logic: {quality_score.logic_score:.1f}, "
-                f"Timing: {quality_score.timing_score:.1f})"
+                f"Timing: {quality_score.timing_score:.1f}, "
+                f"Coherence: {quality_score.coherence_score:.1f})"
             )
         else:
             logger.warning(
