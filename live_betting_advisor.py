@@ -2552,6 +2552,9 @@ class LiveBettingAdvisor:
                     # 🆕 OTTIMIZZATO: Aumentata confidence base per mercato rischioso
                     confidence = 75 + ai_boost
                     
+                    # 🆕 FIX: Usa quota reale da Draw No Bet invece di hardcoded 2.2
+                    odds_dnb_home = match_data.get('odds_dnb_home', 2.2)
+
                     opportunity = LiveBettingOpportunity(
                         match_id=match_id, match_data=match_data,
                         situation='team_to_score_next_home', market='team_to_score_next_home',
@@ -2566,7 +2569,7 @@ class LiveBettingAdvisor:
                             f"• Alta probabilità prossimo gol\n"
                             f"• IA boost: +{ai_boost:.0f}%"
                         ),
-                        confidence=confidence, odds=2.2, stake_suggestion=2.5,
+                        confidence=confidence, odds=odds_dnb_home, stake_suggestion=2.5,
                         timestamp=datetime.now()
                     )
                     opportunities.append(opportunity)
@@ -2586,7 +2589,10 @@ class LiveBettingAdvisor:
                         ai_boost = self._get_ai_market_confidence(match_data, live_data, 'team_to_score_next_away') if self.ai_pipeline else 0
                         # 🆕 OTTIMIZZATO: Aumentata confidence base per mercato rischioso
                         confidence = 75 + ai_boost
-                        
+
+                        # 🆕 FIX: Usa quota reale da Draw No Bet invece di hardcoded 2.2
+                        odds_dnb_away = match_data.get('odds_dnb_away', 2.2)
+
                         opportunity = LiveBettingOpportunity(
                             match_id=match_id, match_data=match_data,
                             situation='team_to_score_next_away', market='team_to_score_next_away',
@@ -2601,7 +2607,7 @@ class LiveBettingAdvisor:
                                 f"• Alta probabilità prossimo gol\n"
                                 f"• IA boost: +{ai_boost:.0f}%"
                             ),
-                            confidence=confidence, odds=2.2, stake_suggestion=2.5,
+                            confidence=confidence, odds=odds_dnb_away, stake_suggestion=2.5,
                             timestamp=datetime.now()
                         )
                         opportunities.append(opportunity)
