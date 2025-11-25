@@ -1765,7 +1765,7 @@ class Automation24H:
         import re  # Import una sola volta
         import statistics  # Per calcolo mediana
 
-        # 🆕 WHITELIST: Bookmaker affidabili con quote accurate
+        # 🆕 WHITELIST: SOLO bookmaker affidabili con quote accurate (NO FALLBACK!)
         TRUSTED_BOOKMAKERS = {
             'bet365', 'bet 365', 'bet-365',           # Bet365 (varianti)
             'pinnacle', 'pinnacle sports',            # Pinnacle (sharp)
@@ -1846,8 +1846,12 @@ class Automation24H:
             'draw_no_bet': {'home': {}, 'away': {}},
             'asian_handicap': {}
         }
-        
-        # 🆕 Itera SOLO sui bookmaker trusted (whitelist)
+
+        # 🔍 DEBUG: Log di tutti i bookmaker disponibili dall'API
+        available_bookmakers = [b.get("bookmaker", {}).get("name", "N/A") for b in odds_list]
+        logger.info(f"🔍 DEBUG: Bookmaker disponibili dall'API ({len(available_bookmakers)}): {', '.join(available_bookmakers[:10])}")
+
+        # 🆕 Itera SOLO sui bookmaker trusted (whitelist - NO FALLBACK)
         trusted_bookmakers_found = []
         for bookmaker in odds_list:
             bookmaker_name = bookmaker.get("bookmaker", {}).get("name", "")
@@ -2113,9 +2117,14 @@ class Automation24H:
                                 })
                             except (ValueError, TypeError):
                                 continue
-        
-        # 🆕 NUOVA LOGICA: Calcola mediana dalle quote dei trusted bookmakers
-        logger.info(f"📊 Trovati {len(trusted_bookmakers_found)} bookmaker trusted: {', '.join(trusted_bookmakers_found)}")
+
+        # 🆕 NUOVA LOGICA: Calcola mediana SOLO dai trusted bookmakers (NO FALLBACK)
+        if trusted_bookmakers_found:
+            logger.info(f"✅ Trovati {len(trusted_bookmakers_found)} bookmaker trusted: {', '.join(trusted_bookmakers_found)}")
+        else:
+            logger.warning(f"⚠️ NESSUN bookmaker trusted trovato! Nessuna quota estratta per questa partita.")
+            # Ritorna dizionario vuoto - nessun mercato disponibile
+            return all_odds
 
         # 1. Match Winner (1X2)
         for outcome in ['home', 'draw', 'away']:
