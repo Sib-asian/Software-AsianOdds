@@ -1745,10 +1745,13 @@ class Automation24H:
     def _extract_all_odds_from_api_football(self, odds_list: List[Dict]) -> Dict[str, Any]:
         """
         Estrae TUTTE le quote disponibili da API-Football.
-        
+
         API-Football restituisce una lista di bookmaker, ognuno con i suoi mercati.
         Estrae le migliori quote per ogni mercato disponibile.
-        
+
+        🆕 WHITELIST BOOKMAKER: Usa solo bookmaker affidabili (bet365, pinnacle, betfair)
+        per evitare quote anomale. Calcola la mediana tra i trusted disponibili.
+
         Mercati cercati:
         - Match Winner (1X2) - id: 1
         - Over/Under FT/HT - id: 5
@@ -1760,7 +1763,43 @@ class Automation24H:
         - Draw No Bet - id: 13
         """
         import re  # Import una sola volta
-        
+        import statistics  # Per calcolo mediana
+
+        # 🆕 WHITELIST: Bookmaker affidabili con quote accurate
+        TRUSTED_BOOKMAKERS = {
+            'bet365', 'bet 365', 'bet-365',           # Bet365 (varianti)
+            'pinnacle', 'pinnacle sports',            # Pinnacle (sharp)
+            'betfair', 'betfair exchange',            # Betfair (exchange)
+        }
+
+        def normalize_bookmaker_name(name: str) -> str:
+            """Normalizza nome bookmaker per confronto"""
+            return name.lower().strip().replace(' ', '').replace('-', '')
+
+        def is_trusted_bookmaker(name: str) -> bool:
+            """Verifica se il bookmaker è nella whitelist"""
+            normalized = normalize_bookmaker_name(name)
+            return any(normalize_bookmaker_name(trusted) == normalized for trusted in TRUSTED_BOOKMAKERS)
+
+        def calculate_median_odd(bookmaker_odds_dict: Dict[str, float]) -> Optional[float]:
+            """
+            Calcola la mediana delle quote dai bookmaker trusted.
+            Se solo 1-2 bookmaker, usa la media invece della mediana.
+            """
+            if not bookmaker_odds_dict:
+                return None
+
+            odds_values = list(bookmaker_odds_dict.values())
+
+            if len(odds_values) == 1:
+                return odds_values[0]
+            elif len(odds_values) == 2:
+                # Con 2 valori, usa la media
+                return statistics.mean(odds_values)
+            else:
+                # Con 3+ valori, usa la mediana
+                return statistics.median(odds_values)
+
         all_odds = {
             'match_winner': {'home': None, 'draw': None, 'away': None},
             'over_under': {},  # FT (Full Time)
@@ -1808,11 +1847,18 @@ class Automation24H:
             'asian_handicap': {}
         }
         
-        # Itera su tutti i bookmaker per raccogliere tutte le quote
+        # 🆕 Itera SOLO sui bookmaker trusted (whitelist)
+        trusted_bookmakers_found = []
         for bookmaker in odds_list:
             bookmaker_name = bookmaker.get("bookmaker", {}).get("name", "")
+
+            # 🆕 FILTRO: Salta bookmaker non trusted
+            if not is_trusted_bookmaker(bookmaker_name):
+                continue
+
+            trusted_bookmakers_found.append(bookmaker_name)
             bets = bookmaker.get("bets", [])
-            
+
             for bet in bets:
                 bet_id = bet.get("id")
                 bet_name = bet.get("name", "").lower()
@@ -2068,118 +2114,95 @@ class Automation24H:
                             except (ValueError, TypeError):
                                 continue
         
-        # 🔧 OPZIONE 4: Applica logica ibrida - preferisci bet365 se differenza < 5%
-        # Cerca bet365 in tutti i bookmaker (case-insensitive)
-        bet365_names = ['bet365', 'bet 365', 'bet-365']
-        bet365_odds = {}
-        
-        def find_bet365_odds(market_dict, market_type):
-            """Trova quote bet365 per un mercato"""
-            result = {}
-            for bookmaker_name, quota in market_dict.items():
-                if any(name.lower() in bookmaker_name.lower() for name in bet365_names):
-                    result[bookmaker_name] = quota
-            return result
-        
-        # Trova quote bet365 per ogni mercato
+        # 🆕 NUOVA LOGICA: Calcola mediana dalle quote dei trusted bookmakers
+        logger.info(f"📊 Trovati {len(trusted_bookmakers_found)} bookmaker trusted: {', '.join(trusted_bookmakers_found)}")
+
+        # 1. Match Winner (1X2)
         for outcome in ['home', 'draw', 'away']:
-            bet365_quota = find_bet365_odds(all_bookmaker_odds['match_winner'][outcome], 'match_winner')
-            if bet365_quota:
-                bet365_odds[f'match_winner_{outcome}'] = list(bet365_quota.values())[0]  # Prendi la prima (dovrebbe essere una sola)
-        
-        # Trova quote bet365 per over/under
-        for threshold in all_bookmaker_odds['over_under'].keys():
+            if outcome in all_bookmaker_odds['match_winner']:
+                median_odd = calculate_median_odd(all_bookmaker_odds['match_winner'][outcome])
+                if median_odd:
+                    all_odds['match_winner'][outcome] = median_odd
+                    num_bookies = len(all_bookmaker_odds['match_winner'][outcome])
+                    bookmaker_tracker['match_winner'][outcome] = f'median_of_{num_bookies}_trusted'
+                    logger.debug(f"   1X2 {outcome}: {median_odd:.2f} (mediana da {num_bookies} bookmaker)")
+
+        # 2. Over/Under Full Time
+        for threshold, outcomes in all_bookmaker_odds['over_under'].items():
+            if threshold not in all_odds['over_under']:
+                all_odds['over_under'][threshold] = {'over': None, 'under': None}
+            if threshold not in bookmaker_tracker['over_under']:
+                bookmaker_tracker['over_under'][threshold] = {'over': None, 'under': None}
+
             for outcome_type in ['over', 'under']:
-                if threshold in all_bookmaker_odds['over_under'] and outcome_type in all_bookmaker_odds['over_under'][threshold]:
-                    bet365_quota = find_bet365_odds(all_bookmaker_odds['over_under'][threshold][outcome_type], 'over_under')
-                    if bet365_quota:
-                        bet365_odds[f'over_under_{threshold}_{outcome_type}'] = list(bet365_quota.values())[0]
-        
-        # Trova quote bet365 per second half goals
-        for threshold in all_bookmaker_odds['second_half_goals'].keys():
+                if outcome_type in outcomes:
+                    median_odd = calculate_median_odd(outcomes[outcome_type])
+                    if median_odd:
+                        all_odds['over_under'][threshold][outcome_type] = median_odd
+                        num_bookies = len(outcomes[outcome_type])
+                        bookmaker_tracker['over_under'][threshold][outcome_type] = f'median_of_{num_bookies}_trusted'
+                        logger.debug(f"   O/U {threshold} {outcome_type}: {median_odd:.2f} (mediana da {num_bookies} bookmaker)")
+
+        # 3. Over/Under Half Time
+        for threshold, outcomes in all_bookmaker_odds['over_under_ht'].items():
+            if threshold not in all_odds['over_under_ht']:
+                all_odds['over_under_ht'][threshold] = {'over': None, 'under': None}
+            if threshold not in bookmaker_tracker['over_under_ht']:
+                bookmaker_tracker['over_under_ht'][threshold] = {'over': None, 'under': None}
+
             for outcome_type in ['over', 'under']:
-                if threshold in all_bookmaker_odds['second_half_goals'] and outcome_type in all_bookmaker_odds['second_half_goals'][threshold]:
-                    bet365_quota = find_bet365_odds(all_bookmaker_odds['second_half_goals'][threshold][outcome_type], 'second_half_goals')
-                    if bet365_quota:
-                        bet365_odds[f'second_half_goals_{threshold}_{outcome_type}'] = list(bet365_quota.values())[0]
-        
-        # Applica logica ibrida: se bet365 disponibile e differenza < 5%, usa bet365
-        def apply_hybrid_logic(best_odd, bet365_odd_key, market_path, outcome_key=None):
-            """Applica logica ibrida: preferisci bet365 se differenza < 5%"""
-            if bet365_odd_key not in bet365_odds:
-                return best_odd, None  # Nessuna quota bet365 disponibile
-            
-            bet365_odd = bet365_odds[bet365_odd_key]
-            if best_odd is None:
-                return bet365_odd, 'bet365'
-            
-            # Calcola differenza percentuale
-            diff_pct = ((best_odd - bet365_odd) / bet365_odd) * 100
-            
-            if diff_pct < 5.0:  # Differenza < 5%, preferisci bet365
-                # Aggiorna all_odds con quota bet365
-                if outcome_key:
-                    if isinstance(market_path, dict) and outcome_key in market_path:
-                        market_path[outcome_key] = bet365_odd
-                elif isinstance(market_path, dict) and 'over' in market_path and 'under' in market_path:
-                    # Per over/under, devo sapere quale outcome
-                    pass  # Gestito separatamente
-                return bet365_odd, 'bet365'
-            else:
-                return best_odd, bookmaker_tracker.get(market_path, {}).get(outcome_key) if outcome_key else None
-        
-        # Applica logica ibrida per match_winner
-        for outcome in ['home', 'draw', 'away']:
-            best_odd = all_odds['match_winner'][outcome]
-            bet365_key = f'match_winner_{outcome}'
-            new_odd, used_bookmaker = apply_hybrid_logic(best_odd, bet365_key, all_odds['match_winner'], outcome)
-            if used_bookmaker == 'bet365':
-                all_odds['match_winner'][outcome] = new_odd
-                bookmaker_tracker['match_winner'][outcome] = 'bet365'
-                logger.info(f"✅ Preferita bet365 per 1X2 {outcome}: {new_odd} (differenza < 5% dalla quota migliore {best_odd})")
-        
-        # Applica logica ibrida per over/under e second_half_goals
-        for market_type in ['over_under', 'second_half_goals']:
-            market_dict = all_odds[market_type]
-            for threshold in market_dict.keys():
-                for outcome_type in ['over', 'under']:
-                    if outcome_type in market_dict[threshold] and market_dict[threshold][outcome_type] is not None:
-                        best_odd = market_dict[threshold][outcome_type]
-                        bet365_key = f'{market_type}_{threshold}_{outcome_type}'
-                        if bet365_key in bet365_odds:
-                            bet365_odd = bet365_odds[bet365_key]
-                            diff_pct = ((best_odd - bet365_odd) / bet365_odd) * 100
-                            if diff_pct < 5.0:
-                                market_dict[threshold][outcome_type] = bet365_odd
-                                bookmaker_tracker[market_type][threshold][outcome_type] = 'bet365'
-                                logger.info(f"✅ Preferita bet365 per {market_type} {threshold} {outcome_type}: {bet365_odd} (differenza {diff_pct:.1f}% < 5%)")
-        
-        # 🔧 NUOVO: Aggiungi bookmaker_tracker e bet365_odds a all_odds per uso futuro
+                if outcome_type in outcomes:
+                    median_odd = calculate_median_odd(outcomes[outcome_type])
+                    if median_odd:
+                        all_odds['over_under_ht'][threshold][outcome_type] = median_odd
+                        num_bookies = len(outcomes[outcome_type])
+                        bookmaker_tracker['over_under_ht'][threshold][outcome_type] = f'median_of_{num_bookies}_trusted'
+
+        # 4. First Half Goals
+        for threshold, outcomes in all_bookmaker_odds['first_half_goals'].items():
+            if threshold not in all_odds['first_half_goals']:
+                all_odds['first_half_goals'][threshold] = {'over': None, 'under': None}
+            if threshold not in bookmaker_tracker['first_half_goals']:
+                bookmaker_tracker['first_half_goals'][threshold] = {'over': None, 'under': None}
+
+            for outcome_type in ['over', 'under']:
+                if outcome_type in outcomes:
+                    median_odd = calculate_median_odd(outcomes[outcome_type])
+                    if median_odd:
+                        all_odds['first_half_goals'][threshold][outcome_type] = median_odd
+                        num_bookies = len(outcomes[outcome_type])
+                        bookmaker_tracker['first_half_goals'][threshold][outcome_type] = f'median_of_{num_bookies}_trusted'
+
+        # 5. Second Half Goals
+        for threshold, outcomes in all_bookmaker_odds['second_half_goals'].items():
+            if threshold not in all_odds['second_half_goals']:
+                all_odds['second_half_goals'][threshold] = {'over': None, 'under': None}
+            if threshold not in bookmaker_tracker['second_half_goals']:
+                bookmaker_tracker['second_half_goals'][threshold] = {'over': None, 'under': None}
+
+            for outcome_type in ['over', 'under']:
+                if outcome_type in outcomes:
+                    median_odd = calculate_median_odd(outcomes[outcome_type])
+                    if median_odd:
+                        all_odds['second_half_goals'][threshold][outcome_type] = median_odd
+                        num_bookies = len(outcomes[outcome_type])
+                        bookmaker_tracker['second_half_goals'][threshold][outcome_type] = f'median_of_{num_bookies}_trusted'
+                        logger.debug(f"   2H Goals {threshold} {outcome_type}: {median_odd:.2f} (mediana da {num_bookies} bookmaker)")
+
+        # 6. BTTS (Full Time e Half Time) - Già gestito con logica MAX, lasciamo invariato per ora
+        # 7. Double Chance - Già gestito con logica MAX, lasciamo invariato per ora
+        # 8. Draw No Bet - Già gestito con logica MAX, lasciamo invariato per ora
+        # 9. Asian Handicap - Già gestito con logica MAX, lasciamo invariato per ora
+
+        # 🔧 NUOVO: Aggiungi bookmaker_tracker a all_odds per uso futuro
         all_odds['_bookmakers'] = bookmaker_tracker
-        all_odds['_bet365_odds'] = bet365_odds  # Salva quote bet365 per mostrare nelle notifiche
+        all_odds['_trusted_bookmakers_found'] = trusted_bookmakers_found  # Lista bookmaker effettivamente usati
 
-        # 🔬 LOGGING STRATEGICO: Conta quali bookmaker "vincono" più spesso
-        bookmaker_wins = {}
-        for market_type, outcomes in bookmaker_tracker.items():
-            if market_type in ['_bookmakers', '_bet365_odds'] or not outcomes:
-                continue
-            if isinstance(outcomes, dict):
-                for outcome_key, bookie in outcomes.items():
-                    if isinstance(bookie, str) and bookie:  # Bookmaker name
-                        bookmaker_wins[bookie] = bookmaker_wins.get(bookie, 0) + 1
-                    elif isinstance(bookie, dict):  # Nested dict (threshold-based markets)
-                        for sub_key, sub_bookie in bookie.items():
-                            if isinstance(sub_bookie, str) and sub_bookie:
-                                bookmaker_wins[sub_bookie] = bookmaker_wins.get(sub_bookie, 0) + 1
+        # 🔬 LOGGING STRATEGICO: Log dei bookmaker trusted usati
+        if trusted_bookmakers_found:
+            logger.debug(f"🔬 [TRUSTED_BOOKMAKERS] Usati {len(trusted_bookmakers_found)} bookmaker: {', '.join(trusted_bookmakers_found)}")
 
-        if bookmaker_wins:
-            top_bookmakers = sorted(bookmaker_wins.items(), key=lambda x: x[1], reverse=True)[:3]
-            logger.debug(
-                f"🔬 [FASE2_PREVIEW] Bookmaker Stats: "
-                f"{', '.join([f'{bm}={count}' for bm, count in top_bookmakers])}"
-            )
-
-        # 🔧 LOGGING: Mostra quale bookmaker fornisce le quote principali
+        # 🔧 LOGGING: Mostra quote finali calcolate (mediana trusted)
         logger.info(f"📊 Bookmaker utilizzati per le quote:")
         if bookmaker_tracker['match_winner']['home']:
             logger.info(f"   1X2 Home: {all_odds['match_winner']['home']} ({bookmaker_tracker['match_winner']['home']})")
