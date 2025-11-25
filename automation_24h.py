@@ -1848,13 +1848,13 @@ class Automation24H:
         }
 
         # 🔍 DEBUG: Log di tutti i bookmaker disponibili dall'API
-        available_bookmakers = [b.get("bookmaker", {}).get("name", "N/A") for b in odds_list]
+        available_bookmakers = [b.get("name", "N/A") for b in odds_list]
         logger.info(f"🔍 DEBUG: Bookmaker disponibili dall'API ({len(available_bookmakers)}): {', '.join(available_bookmakers[:10])}")
 
         # 🆕 Itera SOLO sui bookmaker trusted (whitelist - NO FALLBACK)
         trusted_bookmakers_found = []
         for bookmaker in odds_list:
-            bookmaker_name = bookmaker.get("bookmaker", {}).get("name", "")
+            bookmaker_name = bookmaker.get("name", "")
 
             # 🆕 FILTRO: Salta bookmaker non trusted
             if not is_trusted_bookmaker(bookmaker_name):
