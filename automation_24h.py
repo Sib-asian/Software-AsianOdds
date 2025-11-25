@@ -2157,7 +2157,28 @@ class Automation24H:
         # 🔧 NUOVO: Aggiungi bookmaker_tracker e bet365_odds a all_odds per uso futuro
         all_odds['_bookmakers'] = bookmaker_tracker
         all_odds['_bet365_odds'] = bet365_odds  # Salva quote bet365 per mostrare nelle notifiche
-        
+
+        # 🔬 LOGGING STRATEGICO: Conta quali bookmaker "vincono" più spesso
+        bookmaker_wins = {}
+        for market_type, outcomes in bookmaker_tracker.items():
+            if market_type in ['_bookmakers', '_bet365_odds'] or not outcomes:
+                continue
+            if isinstance(outcomes, dict):
+                for outcome_key, bookie in outcomes.items():
+                    if isinstance(bookie, str) and bookie:  # Bookmaker name
+                        bookmaker_wins[bookie] = bookmaker_wins.get(bookie, 0) + 1
+                    elif isinstance(bookie, dict):  # Nested dict (threshold-based markets)
+                        for sub_key, sub_bookie in bookie.items():
+                            if isinstance(sub_bookie, str) and sub_bookie:
+                                bookmaker_wins[sub_bookie] = bookmaker_wins.get(sub_bookie, 0) + 1
+
+        if bookmaker_wins:
+            top_bookmakers = sorted(bookmaker_wins.items(), key=lambda x: x[1], reverse=True)[:3]
+            logger.debug(
+                f"🔬 [FASE2_PREVIEW] Bookmaker Stats: "
+                f"{', '.join([f'{bm}={count}' for bm, count in top_bookmakers])}"
+            )
+
         # 🔧 LOGGING: Mostra quale bookmaker fornisce le quote principali
         logger.info(f"📊 Bookmaker utilizzati per le quote:")
         if bookmaker_tracker['match_winner']['home']:
@@ -2946,7 +2967,22 @@ class Automation24H:
         
         # 🔧 OPZIONE 4: Identifica mercati alternativi
         alternative_market_types = {'over', 'under', 'btts', 'clean', 'exact', 'goal', 'odd', 'ht'}
-        
+
+        # 🆕 FASE 1 MIGLIORAMENTI: Penalità per mercati lenti (ormai troppo tardi)
+        # Formato: 'market_name': {minute_threshold: penalty_multiplier}
+        slow_market_penalties = {
+            'under_0.5': {80: 0.70, 70: 0.85},  # troppo tardi per under 0.5
+            'under_1.5': {75: 0.75, 65: 0.90},
+            'under_2.5': {70: 0.80, 60: 0.90},
+            'clean_sheet_home': {70: 0.80, 60: 0.90},
+            'clean_sheet_away': {70: 0.80, 60: 0.90},
+            'exact_score_0_0': {60: 0.75, 50: 0.85},
+            'btts_no': {70: 0.85, 60: 0.92},
+            'first_half_result': {40: 0.70},  # impossibile dopo primo tempo
+            'next_goal_home': {85: 0.80, 75: 0.90},
+            'next_goal_away': {85: 0.80, 75: 0.90}
+        }
+
         # 🆕 Calcola score completo per ogni opportunità (incluso Quality Score)
         scored_opportunities = []
         now = datetime.now()
@@ -3109,6 +3145,17 @@ class Automation24H:
                         minute_rounded = (minute // 5) * 5
                         opp_key = f"{match_id}_{market}_{minute_rounded}"
                         self.quality_score_cache[opp_key] = quality_score_obj
+
+                        # 🔬 LOGGING STRATEGICO: Mostra impatto del nuovo coherence score
+                        logger.debug(
+                            f"🔬 [FASE1_COHERENCE] {match_id}/{market}: "
+                            f"QualityTotal={quality_score_obj.total_score:.1f} "
+                            f"(Context={quality_score_obj.context_score:.1f}, "
+                            f"Data={quality_score_obj.data_quality_score:.1f}, "
+                            f"Logic={quality_score_obj.logic_score:.1f}, "
+                            f"Timing={quality_score_obj.timing_score:.1f}, "
+                            f"Coherence={quality_score_obj.coherence_score:.1f})"
+                        )
                     else:
                         logger.warning(f"⚠️  quality_score_obj è None per {match_id}/{market}, uso default 0.5")
                         quality_score_normalized = 0.5
@@ -3213,7 +3260,10 @@ class Automation24H:
             
             # 🆕 5.4 Fattore tempo (minuto del match)
             time_factor = 1.0
+            # 🔬 LOGGING STRATEGICO: Calcola anche time_factor granulare (5 fasce) per confronto futuro
+            time_factor_granular = 1.0
             if minute > 0:
+                # Attuale (3 fasce)
                 if minute <= 20:
                     # Minuti iniziali: statistiche meno affidabili
                     time_factor = 0.90  # -10%
@@ -3221,6 +3271,29 @@ class Automation24H:
                     # Minuti avanzati: statistiche più affidabili
                     time_factor = 1.05  # +5%
                 # Minuti 20-60: neutro (time_factor = 1.0)
+
+                # 🔬 FASE 2 PREVIEW: Calcola time_factor con fasce granulari (per logging/analisi)
+                if minute <= 15:
+                    time_factor_granular = 0.85
+                elif minute <= 30:
+                    time_factor_granular = 0.95
+                elif minute <= 45:
+                    time_factor_granular = 1.05
+                elif minute <= 60:
+                    time_factor_granular = 1.10
+                elif minute <= 75:
+                    time_factor_granular = 1.15
+                else:
+                    time_factor_granular = 1.00
+
+                # 🔬 Log differenza per analisi futura
+                time_diff = time_factor_granular - time_factor
+                if abs(time_diff) > 0.01:
+                    logger.debug(
+                        f"🔬 [FASE2_PREVIEW] {match_id}/{market} min {minute}: "
+                        f"TimeFactor actual={time_factor:.2f} vs granular={time_factor_granular:.2f} "
+                        f"(diff={time_diff:+.2f})"
+                    )
             
             # 🆕 5.5 Fattore qualità quote
             odds_factor = 1.0
@@ -3232,19 +3305,33 @@ class Automation24H:
                     # Quote troppo basse: penalità
                     odds_factor = 0.95  # -5%
                 # Quote 1.3-2.0: neutro (odds_factor = 1.0)
-            
+
+            # 🆕 5.6 FASE 1 MIGLIORAMENTI: Penalità mercati lenti (troppo tardi)
+            slow_market_penalty = 1.0
+            slow_penalty_reason = ""
+
+            if market in slow_market_penalties and minute > 0:
+                penalties = slow_market_penalties[market]
+                # Applica la penalità più severa che si applica (soglie in ordine decrescente)
+                for threshold in sorted(penalties.keys(), reverse=True):
+                    if minute >= threshold:
+                        slow_market_penalty = penalties[threshold]
+                        slow_penalty_reason = f" (penalizzato {(1.0-slow_market_penalty)*100:.0f}%: troppo tardi per {market} al {minute}')"
+                        break
+
             # 🎯 RIMOSSO: Penalità per EV negativo o troppo basso
             # L'utente vuole la miglior partita senza soglie minime
             ev_penalty = 1.0  # Nessuna penalità
-            
-            # 🆕 5.7 Calcola Final Score composito con tutti i fattori
+
+            # 🆕 5.7 Calcola Final Score composito con tutti i fattori (incluso slow_market_penalty)
             final_score = (
-                base_score * 
-                synergy_bonus * 
-                time_factor * 
-                odds_factor * 
-                ev_penalty * 
-                score_modifier
+                base_score *
+                synergy_bonus *
+                time_factor *
+                odds_factor *
+                ev_penalty *
+                score_modifier *
+                slow_market_penalty  # NUOVO: penalità per mercati lenti
             )
             
             minute = stats.get('minute', 0) if isinstance(stats, dict) else 0
@@ -3266,6 +3353,8 @@ class Automation24H:
                 'ev_penalty': ev_penalty,  # 🆕 Penalità EV
                 'score_modifier': score_modifier,
                 'modifier_reason': modifier_reason,
+                'slow_market_penalty': slow_market_penalty,  # 🆕 FASE 1: Penalità mercati lenti
+                'slow_penalty_reason': slow_penalty_reason,  # 🆕 FASE 1: Motivo penalità
                 'opp_key': opp_key  # Per cache
             })
         
@@ -3354,8 +3443,8 @@ class Automation24H:
                 logger.info(f"   ✅ Selezionata opportunità tipo '{market_type}' ({market})")
                 logger.info(f"      📊 Score originale: {score_original:.3f} | Score finale: {score_final:.3f}")
                 logger.info(f"      📈 EV: {opp['ev']:.1f}% | Conf: {opp['confidence']:.1f}% | Quality: {opp.get('quality_score', 0):.1f} | Odds: {opp.get('odds', 0):.2f}")
-                # 🆕 Log dettagliato dei fattori di calcolo
-                logger.debug(f"      🔍 Dettagli calcolo: Base={opp.get('base_score', 0):.3f} | Sinergia={opp.get('synergy_bonus', 1.0):.2f}x | Tempo={opp.get('time_factor', 1.0):.2f}x | Quote={opp.get('odds_factor', 1.0):.2f}x | EV_penalty={opp.get('ev_penalty', 1.0):.2f}x")
+                # 🆕 Log dettagliato dei fattori di calcolo (incluso slow_market_penalty)
+                logger.debug(f"      🔍 Dettagli calcolo: Base={opp.get('base_score', 0):.3f} | Sinergia={opp.get('synergy_bonus', 1.0):.2f}x | Tempo={opp.get('time_factor', 1.0):.2f}x | Quote={opp.get('odds_factor', 1.0):.2f}x | EV_penalty={opp.get('ev_penalty', 1.0):.2f}x | SlowMarket={opp.get('slow_market_penalty', 1.0):.2f}x")
                 break
             
             # Log delle migliori per tipo (per debug)
@@ -3377,11 +3466,14 @@ class Automation24H:
             match_id = item['opportunity'].get('match_id', 'unknown')
             market = getattr(live_opp, 'market', 'unknown')
             modifier_info = item.get('modifier_reason', '')
+            slow_penalty_info = item.get('slow_penalty_reason', '')
+            # Combina entrambi i motivi
+            combined_reasons = modifier_info + slow_penalty_info
             quality_info = f", quality={item['quality_score']:.1f}/100" if item['quality_score'] > 0 else ""
             logger.info(
                 f"      {i}. {match_id} - {market}: "
                 f"final_score={item['score']:.3f}, "
-                f"ev={item['ev']:.1f}%, conf={item['confidence']:.1f}%{quality_info}{modifier_info}"
+                f"ev={item['ev']:.1f}%, conf={item['confidence']:.1f}%{quality_info}{combined_reasons}"
             )
         
         return [item['opportunity'] for item in best]
