@@ -529,6 +529,183 @@ class LiveBettingAdvisor:
         
         return None
 
+    def _validate_realistic_odds(
+        self,
+        market: str,
+        odds: float,
+        match_data: Dict[str, Any],
+        live_data: Dict[str, Any]
+    ) -> tuple[bool, Optional[str]]:
+        """
+        🛡️ VALIDAZIONE QUOTE REALISTICHE
+
+        Verifica che una quota sia realistica per il mercato e contesto di gioco.
+        Previene EV irrealistici causati da quote API errate.
+
+        Args:
+            market: Nome mercato (es. 'under_1.5', 'over_2.5')
+            odds: Quota da validare
+            match_data: Dati partita
+            live_data: Dati live (score, minuto, stats)
+
+        Returns:
+            (is_valid, error_message):
+                - True se quota è valida
+                - False + messaggio di errore se quota è sospetta
+        """
+        if not odds or odds < 1.01:
+            return False, f"Quote troppo bassa: {odds}"
+
+        if odds > 100:
+            return False, f"Quota troppo alta: {odds} (max 100)"
+
+        # Estrai contesto partita
+        score_home = live_data.get('score_home', 0)
+        score_away = live_data.get('score_away', 0)
+        minute = live_data.get('minute', 0)
+        total_goals = score_home + score_away
+
+        market_lower = market.lower()
+
+        # 🎯 VALIDAZIONE UNDER 1.5
+        if 'under_1.5' in market_lower or 'under_1_5' in market_lower:
+            # Under 1.5 con 0 gol al 65'+: quota realistica 1.10-2.50
+            if total_goals == 0 and minute >= 65:
+                if odds > 3.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 1.5 a {odds:.2f} con 0-0 al {minute}' è SOSPETTO! "
+                        f"(dovrebbe essere 1.10-2.50). Possibile errore API."
+                    )
+                elif odds > 10.0:
+                    return False, (
+                        f"🚨 QUOTA ASSURDA: Under 1.5 a {odds:.2f} è IMPOSSIBILE! "
+                        f"Implica solo {100/odds:.1f}% probabilità - probabile errore API."
+                    )
+            # Under 1.5 con già 1 gol: quota realistica 1.05-1.80
+            elif total_goals == 1:
+                if odds > 2.5:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 1.5 a {odds:.2f} con già {total_goals} gol è SOSPETTO! "
+                        f"(dovrebbe essere 1.05-1.80)"
+                    )
+
+        # 🎯 VALIDAZIONE UNDER 2.5
+        elif 'under_2.5' in market_lower or 'under_2_5' in market_lower:
+            # Under 2.5 con 0-1 gol al 60'+: quota realistica 1.10-2.00
+            if total_goals <= 1 and minute >= 60:
+                if odds > 3.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 2.5 a {odds:.2f} al {minute}' con {total_goals} gol è SOSPETTO! "
+                        f"(dovrebbe essere 1.10-2.00). Possibile errore API."
+                    )
+            # Under 2.5 con già 2 gol: quota molto bassa 1.05-1.40
+            elif total_goals == 2:
+                if odds > 2.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 2.5 a {odds:.2f} con già 2 gol è SOSPETTO! "
+                        f"(dovrebbe essere 1.05-1.40)"
+                    )
+
+        # 🎯 VALIDAZIONE OVER 0.5
+        elif 'over_0.5' in market_lower or 'over_0_5' in market_lower:
+            # Over 0.5 con 0 gol: quota realistica 1.05-1.50
+            if total_goals == 0:
+                if odds > 3.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 0.5 a {odds:.2f} con 0 gol è SOSPETTO! "
+                        f"(dovrebbe essere 1.05-1.50)"
+                    )
+            # Over 0.5 con già 1+ gol: già verificato, quota ~1.01-1.05
+            elif total_goals >= 1:
+                if odds > 1.10:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 0.5 a {odds:.2f} con già {total_goals} gol è ASSURDO! "
+                        f"Mercato già deciso!"
+                    )
+
+        # 🎯 VALIDAZIONE OVER 1.5
+        elif 'over_1.5' in market_lower or 'over_1_5' in market_lower:
+            # Over 1.5 con 0 gol dopo 30'+: quota realistica 1.20-2.50
+            if total_goals == 0 and minute >= 30:
+                if odds > 4.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 1.5 a {odds:.2f} con 0-0 al {minute}' è SOSPETTO! "
+                        f"(dovrebbe essere 1.20-2.50)"
+                    )
+            # Over 1.5 con già 2+ gol: mercato deciso
+            elif total_goals >= 2:
+                if odds > 1.10:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 1.5 a {odds:.2f} con già {total_goals} gol è ASSURDO! "
+                        f"Mercato già deciso!"
+                    )
+
+        # 🎯 VALIDAZIONE OVER 2.5
+        elif 'over_2.5' in market_lower or 'over_2_5' in market_lower:
+            # Over 2.5 con 0-1 gol al 70'+: quota realistica 3.00-15.00
+            if total_goals <= 1 and minute >= 70:
+                if odds < 2.5:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 2.5 a {odds:.2f} al {minute}' con {total_goals} gol è SOSPETTO! "
+                        f"(dovrebbe essere almeno 3.00)"
+                    )
+            # Over 2.5 con già 3+ gol: mercato deciso
+            elif total_goals >= 3:
+                if odds > 1.10:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 2.5 a {odds:.2f} con già {total_goals} gol è ASSURDO! "
+                        f"Mercato già deciso!"
+                    )
+
+        # 🎯 VALIDAZIONE BTTS (Both Teams To Score)
+        elif 'btts_yes' in market_lower:
+            # BTTS Yes con già entrambe segnato: mercato deciso
+            if score_home >= 1 and score_away >= 1:
+                if odds > 1.10:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: BTTS Yes a {odds:.2f} con score {score_home}-{score_away} è ASSURDO! "
+                        f"Mercato già deciso!"
+                    )
+        elif 'btts_no' in market_lower:
+            # BTTS No con già entrambe segnato: mercato perso
+            if score_home >= 1 and score_away >= 1:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: BTTS No a {odds:.2f} con score {score_home}-{score_away} è ASSURDO! "
+                        f"Mercato già perso! (dovrebbe essere >10)"
+                    )
+
+        # 🎯 SANITY CHECK GENERALE: Probabilità implicita
+        prob_implied = 1.0 / odds if odds > 1.0 else 0.5
+
+        # Quote che implicano < 5% probabilità sono sospette per la maggior parte dei mercati live
+        if prob_implied < 0.05 and minute > 20:
+            # Eccezione: mercati già decisi o score estremi
+            if not (
+                # Mercati già decisi
+                (total_goals >= 3 and 'under_2.5' in market_lower) or
+                (total_goals == 0 and minute > 80 and 'over_3.5' in market_lower)
+            ):
+                return False, (
+                    f"🚨 PROBABILITÀ IMPLICITA SOSPETTA: Quote {odds:.2f} implica solo {prob_implied*100:.1f}% probabilità "
+                    f"al {minute}' - probabile errore API"
+                )
+
+        # Quote che implicano > 95% probabilità sono sospette a meno che il mercato non sia quasi deciso
+        if prob_implied > 0.95 and minute < 80:
+            if not (
+                # Eccezioni: mercati quasi certi
+                (total_goals >= 1 and 'over_0.5' in market_lower) or
+                (total_goals >= 2 and 'over_1.5' in market_lower)
+            ):
+                return False, (
+                    f"🚨 QUOTA TROPPO BASSA: Quote {odds:.2f} implica {prob_implied*100:.1f}% probabilità "
+                    f"al {minute}' - sospetto"
+                )
+
+        # ✅ Quota superata tutti i controlli
+        return True, None
+
     def _calculate_dynamic_confidence(
         self,
         market_type: str,
@@ -1821,16 +1998,25 @@ class LiveBettingAdvisor:
                     if not odds_over_0_5:
                         logger.warning(f"⏭️ Over 0.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                     else:
-                        # Quote alternative (se disponibili)
-                        odds_over_1_5 = match_data.get('odds_over_1_5')
-                        odds_over_2_5 = match_data.get('odds_over_2_5')
-                        alternative_markets = []
-                        if odds_over_1_5:
-                            alternative_markets.append({'market': 'over_1.5', 'confidence': confidence - 15, 'odds': odds_over_1_5})
-                        if odds_over_2_5:
-                            alternative_markets.append({'market': 'over_2.5', 'confidence': confidence - 25, 'odds': odds_over_2_5})
+                        # 🛡️ NUOVO: Valida quote realistiche
+                        is_valid, error_msg = self._validate_realistic_odds('over_0.5', odds_over_0_5, match_data, live_data)
+                        if not is_valid:
+                            logger.warning(f"⏭️ Over 0.5 SCARTATO per {match_data.get('home')} vs {match_data.get('away')}: {error_msg}")
+                        else:
+                            # Quote alternative (se disponibili e valide)
+                            odds_over_1_5 = match_data.get('odds_over_1_5')
+                            odds_over_2_5 = match_data.get('odds_over_2_5')
+                            alternative_markets = []
+                            if odds_over_1_5:
+                                is_valid_1_5, _ = self._validate_realistic_odds('over_1.5', odds_over_1_5, match_data, live_data)
+                                if is_valid_1_5:
+                                    alternative_markets.append({'market': 'over_1.5', 'confidence': confidence - 15, 'odds': odds_over_1_5})
+                            if odds_over_2_5:
+                                is_valid_2_5, _ = self._validate_realistic_odds('over_2.5', odds_over_2_5, match_data, live_data)
+                                if is_valid_2_5:
+                                    alternative_markets.append({'market': 'over_2.5', 'confidence': confidence - 25, 'odds': odds_over_2_5})
 
-                        opportunity = LiveBettingOpportunity(
+                            opportunity = LiveBettingOpportunity(
                             match_id=match_id, match_data=match_data,
                             situation='over_0.5_general', market='over_0.5',
                             recommendation="Punta Over 0.5 Gol",
@@ -1870,11 +2056,20 @@ class LiveBettingAdvisor:
                 if not odds_over_1_5:
                     logger.warning(f"⏭️ Over 1.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                 else:
-                    # Quota alternativa Over 2.5 (se disponibile)
-                    odds_over_2_5 = match_data.get('odds_over_2_5')
-                    alternative_markets = [{'market': 'over_2.5', 'confidence': confidence - 12, 'odds': odds_over_2_5}] if odds_over_2_5 else None
+                    # 🛡️ NUOVO: Valida quote realistiche
+                    is_valid, error_msg = self._validate_realistic_odds('over_1.5', odds_over_1_5, match_data, live_data)
+                    if not is_valid:
+                        logger.warning(f"⏭️ Over 1.5 SCARTATO per {match_data.get('home')} vs {match_data.get('away')}: {error_msg}")
+                    else:
+                        # Quota alternativa Over 2.5 (se disponibile e valida)
+                        odds_over_2_5 = match_data.get('odds_over_2_5')
+                        alternative_markets = None
+                        if odds_over_2_5:
+                            is_valid_2_5, _ = self._validate_realistic_odds('over_2.5', odds_over_2_5, match_data, live_data)
+                            if is_valid_2_5:
+                                alternative_markets = [{'market': 'over_2.5', 'confidence': confidence - 12, 'odds': odds_over_2_5}]
 
-                    opportunity = LiveBettingOpportunity(
+                        opportunity = LiveBettingOpportunity(
                         match_id=match_id, match_data=match_data,
                         situation='over_1.5_general', market='over_1.5',
                         recommendation="Punta Over 1.5 Gol",
@@ -1905,11 +2100,20 @@ class LiveBettingAdvisor:
                     if not odds_over_2_5:
                         logger.warning(f"⏭️ Over 2.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                     else:
-                        # Quota alternativa Over 3.5 (se disponibile)
-                        odds_over_3_5 = match_data.get('odds_over_3_5')
-                        alternative_markets = [{'market': 'over_3.5', 'confidence': confidence - 20, 'odds': odds_over_3_5}] if odds_over_3_5 else None
+                        # 🛡️ NUOVO: Valida quote realistiche
+                        is_valid, error_msg = self._validate_realistic_odds('over_2.5', odds_over_2_5, match_data, live_data)
+                        if not is_valid:
+                            logger.warning(f"⏭️ Over 2.5 SCARTATO per {match_data.get('home')} vs {match_data.get('away')}: {error_msg}")
+                        else:
+                            # Quota alternativa Over 3.5 (se disponibile e valida)
+                            odds_over_3_5 = match_data.get('odds_over_3_5')
+                            alternative_markets = None
+                            if odds_over_3_5:
+                                is_valid_3_5, _ = self._validate_realistic_odds('over_3.5', odds_over_3_5, match_data, live_data)
+                                if is_valid_3_5:
+                                    alternative_markets = [{'market': 'over_3.5', 'confidence': confidence - 20, 'odds': odds_over_3_5}]
 
-                        opportunity = LiveBettingOpportunity(
+                            opportunity = LiveBettingOpportunity(
                             match_id=match_id, match_data=match_data,
                             situation='over_2.5_general', market='over_2.5',
                             recommendation="Punta Over 2.5 Gol",
@@ -1939,23 +2143,28 @@ class LiveBettingAdvisor:
                     if not odds_over_2_5:
                         logger.debug(f"⏭️  Over 2.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                     else:
-                        opportunity = LiveBettingOpportunity(
-                            match_id=match_id, match_data=match_data,
-                            situation='over_2.5_high_tempo', market='over_2.5',
-                            recommendation="Punta Over 2.5 Gol (partita molto aperta)",
-                            reasoning=(
-                                f"🎯 OVER 2.5!\n\n"
-                                f"• Score: {score_home}-{score_away} al {minute}'\n"
-                                f"• Partita MOLTO APERTA:\n"
-                                f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min)\n"
-                                f"  - Tiri in porta: {total_shots_on_target}\n"
-                                f"• Alta probabilità altri gol → Over 2.5\n"
-                                f"• IA boost: +{ai_boost:.0f}%"
-                            ),
-                            confidence=confidence, odds=odds_over_2_5, stake_suggestion=2.5,
-                            timestamp=datetime.now()
-                        )
-                        opportunities.append(opportunity)
+                        # 🛡️ NUOVO: Valida quote realistiche
+                        is_valid, error_msg = self._validate_realistic_odds('over_2.5', odds_over_2_5, match_data, live_data)
+                        if not is_valid:
+                            logger.warning(f"⏭️ Over 2.5 SCARTATO per {match_data.get('home')} vs {match_data.get('away')}: {error_msg}")
+                        else:
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation='over_2.5_high_tempo', market='over_2.5',
+                                recommendation="Punta Over 2.5 Gol (partita molto aperta)",
+                                reasoning=(
+                                    f"🎯 OVER 2.5!\n\n"
+                                    f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                    f"• Partita MOLTO APERTA:\n"
+                                    f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min)\n"
+                                    f"  - Tiri in porta: {total_shots_on_target}\n"
+                                    f"• Alta probabilità altri gol → Over 2.5\n"
+                                    f"• IA boost: +{ai_boost:.0f}%"
+                                ),
+                                confidence=confidence, odds=odds_over_2_5, stake_suggestion=2.5,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
             
             # OVER 3.5: Già 3 gol o partita estremamente aperta
             # 🚫 FIX: Over 3.5 troppo aggressivo ai minuti avanzati - limitato a max 70'
@@ -1969,21 +2178,26 @@ class LiveBettingAdvisor:
                 if not odds_over_3_5:
                     logger.warning(f"⏭️ Over 3.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                 else:
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='over_3.5_general', market='over_3.5',
-                        recommendation="Punta Over 3.5 Gol",
-                        reasoning=(
-                            f"🎯 OVER 3.5!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• Già 3 gol, partita ESTREMAMENTE APERTA\n"
-                            f"• Alta probabilità quarto gol\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        confidence=confidence, odds=odds_over_3_5, stake_suggestion=2.5,
-                        timestamp=datetime.now()
-                    )
-                    opportunities.append(opportunity)
+                    # 🛡️ NUOVO: Valida quote realistiche
+                    is_valid, error_msg = self._validate_realistic_odds('over_3.5', odds_over_3_5, match_data, live_data)
+                    if not is_valid:
+                        logger.warning(f"⏭️ Over 3.5 SCARTATO per {match_data.get('home')} vs {match_data.get('away')}: {error_msg}")
+                    else:
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='over_3.5_general', market='over_3.5',
+                            recommendation="Punta Over 3.5 Gol",
+                            reasoning=(
+                                f"🎯 OVER 3.5!\n\n"
+                                f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                f"• Già 3 gol, partita ESTREMAMENTE APERTA\n"
+                                f"• Alta probabilità quarto gol\n"
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=odds_over_3_5, stake_suggestion=2.5,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
             
             # UNDER 1.5: Partita chiusa, max 1 gol
             # 🆕 FIX: NON generare Under 1.5 se c'è già 1 gol e siamo oltre 45' (illogico - se è 1-0 al 50', under 1.5 è già perso se segna un altro gol)
@@ -1994,28 +2208,33 @@ class LiveBettingAdvisor:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'under_1.5') if self.ai_pipeline else 0
                     base_confidence = 75 + (minute - 50) * 0.5
                     confidence = min(93, base_confidence + ai_boost)
-                    
+
                     # 🆕 Usa quota reale da match_data se disponibile
                     odds_under_1_5 = match_data.get('odds_under_1_5')
                     if not odds_under_1_5:
                         logger.warning(f"⏭️ Under 1.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                     else:
-                        opportunity = LiveBettingOpportunity(
-                            match_id=match_id, match_data=match_data,
-                            situation='under_1.5_general', market='under_1.5',
-                            recommendation="Punta Under 1.5 Gol",
-                            reasoning=(
-                                f"🎯 UNDER 1.5!\n\n"
-                                f"• Score: {score_home}-{score_away} al {minute}'\n"
-                                f"• Partita CHIUSA:\n"
-                                f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min - bassa)\n"
-                                f"• Alta probabilità max 1 gol totale\n"
-                                f"• IA boost: +{ai_boost:.0f}%"
-                            ),
-                            confidence=confidence, odds=odds_under_1_5, stake_suggestion=2.5,
-                            timestamp=datetime.now()
-                        )
-                        opportunities.append(opportunity)
+                        # 🛡️ NUOVO: Valida quote realistiche
+                        is_valid, error_msg = self._validate_realistic_odds('under_1.5', odds_under_1_5, match_data, live_data)
+                        if not is_valid:
+                            logger.warning(f"⏭️ Under 1.5 SCARTATO per {match_data.get('home')} vs {match_data.get('away')}: {error_msg}")
+                        else:
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation='under_1.5_general', market='under_1.5',
+                                recommendation="Punta Under 1.5 Gol",
+                                reasoning=(
+                                    f"🎯 UNDER 1.5!\n\n"
+                                    f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                    f"• Partita CHIUSA:\n"
+                                    f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min - bassa)\n"
+                                    f"• Alta probabilità max 1 gol totale\n"
+                                    f"• IA boost: +{ai_boost:.0f}%"
+                                ),
+                                confidence=confidence, odds=odds_under_1_5, stake_suggestion=2.5,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
             
             # UNDER 2.5: Partita chiusa, max 2 gol
             # 🚫 FIX: Blocca Under 2.5 se c'è già 1 gol e siamo prima del 30' (troppo rischioso)
@@ -2036,17 +2255,10 @@ class LiveBettingAdvisor:
                         # Se non c'è quota reale, salta questa opportunità (NON fidarsi di quote stimate)
                         logger.warning(f"⏭️ Under 2.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                     else:
-                        # 🚨 NUOVO: Validazione quote anomale vs situazione di gioco
-                        # Al 60'+ con 1 gol, Under 2.5 dovrebbe avere quote BASSE (1.10-1.50)
-                        # Quote > 3.0 indicano errore API o quote invertite
-                        if odds_under_2_5 > 3.0:
-                            logger.warning(
-                                f"🚨 QUOTE ANOMALE: Under 2.5 a {odds_under_2_5:.2f} al {minute}' con {total_goals} gol è SOSPETTO! "
-                                f"(dovrebbe essere 1.10-1.50) - Possibile errore API o quote invertite. "
-                                f"Partita: {match_data.get('home')} vs {match_data.get('away')}"
-                            )
-                            # NON generare opportunità con quote chiaramente sbagliate
-                            pass  # Salta questa opportunità
+                        # 🛡️ NUOVO: Valida quote realistiche (sostituisce il vecchio controllo > 3.0)
+                        is_valid, error_msg = self._validate_realistic_odds('under_2.5', odds_under_2_5, match_data, live_data)
+                        if not is_valid:
+                            logger.warning(f"⏭️ Under 2.5 SCARTATO per {match_data.get('home')} vs {match_data.get('away')}: {error_msg}")
                         else:
                             opportunity = LiveBettingOpportunity(
                                 match_id=match_id, match_data=match_data,
@@ -5463,6 +5675,19 @@ class LiveBettingAdvisor:
             # Arrotonda a 4 decimali per precisione massima (es: 8.5234%)
             ev_percent = float(ev_percent_decimal.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP))
             
+            # 🛡️ SANITY CHECK FINALE: EV irrealistici
+            if ev_percent > 100.0:
+                logger.error(
+                    f"🚨 EV ASSURDO BLOCCATO: {ev_percent:.1f}% con conf={confidence:.1f}%, odds={odds:.2f} "
+                    f"→ RIDOTTO a 100% (probabilmente quote API errate!)"
+                )
+                ev_percent = 100.0
+            elif ev_percent > 50.0:
+                logger.warning(
+                    f"⚠️ EV SOSPETTO: {ev_percent:.1f}% con conf={confidence:.1f}%, odds={odds:.2f} "
+                    f"→ Possibile errore quote API! Verificare!"
+                )
+
             # 🎯 Log dettagliato per debug (sempre per tracciabilità, più dettagliato se significativo)
             if abs(ev_percent) > 5.0 or ev_percent < -10.0:
                 # Log dettagliato per EV significativo o anomalo
@@ -5476,7 +5701,7 @@ class LiveBettingAdvisor:
                 logger.debug(
                     f"🔢 EV calcolato: conf={confidence:.2f}%, odds={odds:.4f} → EV={ev_percent:.4f}%"
                 )
-            
+
             return ev_percent
             
         except (InvalidOperation, ValueError, TypeError) as e:
