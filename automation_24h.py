@@ -1054,12 +1054,14 @@ class Automation24H:
                     if not home_team or not away_team:
                         continue
 
-                    # 🎯 MODIFICATO: Le statistiche sono ora OPZIONALI (non più obbligatorie)
-                    # Se non disponibili, il sistema userà valori di default e confidence ridotta
+                    # 🎯 MODIFICATO: Le statistiche sono OBBLIGATORIE per le notifiche
+                    # L'utente vuole ricevere notifiche SOLO per partite con statistiche E quote disponibili
                     logger.debug(f"🔍 Verificando statistiche per {home_team} vs {away_team} (fixture {fixture_id}, status: {status_short})...")
                     statistics = self._fetch_statistics_from_api_football(fixture_id, api_key, base_url)
                     if not statistics:
-                        logger.warning(f"⚠️  Nessuna statistica disponibile per {home_team} vs {away_team} (status: {status_short}), uso valori di default")
+                        logger.warning(f"⏭️ SALTATA: {home_team} vs {away_team} - nessuna statistica disponibile (status: {status_short})")
+                        skipped_no_stats += 1
+                        continue  # Salta partite senza statistiche
                     else:
                         logger.info(f"✅ Statistiche disponibili per {home_team} vs {away_team} (status: {status_short}), procedo con estrazione quote")
                     
@@ -1081,10 +1083,10 @@ class Automation24H:
                             self.api_usage_today += 1  # Conta chiamata API per quote
                             logger.info(f"✅ Quote recuperate per {home_team} vs {away_team} (fixture {fixture_id}, {len(odds_data)} bookmaker)")
                         else:
+                            # 🎯 MODIFICATO: Quote OBBLIGATORIE - salta partite senza quote
+                            logger.warning(f"⏭️ SALTATA: {home_team} vs {away_team} - nessuna quota disponibile (fixture {fixture_id})")
                             skipped_no_odds += 1
-                            odds_pending = True
-                            odds_data = []
-                            logger.warning(f"⚠️  Nessuna quota disponibile per fixture {fixture_id}, lascio che il watchdog ritenti")
+                            continue  # Salta partite senza quote
                     else:
                         logger.debug(f"✅ Quote già presenti in /fixtures per {home_team} vs {away_team} ({len(odds_data)} bookmaker)")
                     
@@ -1138,7 +1140,17 @@ class Automation24H:
                         logger.info(f"📊 Mercati trovati per {home_team} vs {away_team}: {', '.join(markets_found)}")
                     else:
                         logger.warning(f"⚠️  Nessun mercato trovato per {home_team} vs {away_team} (fixture {fixture_id})")
-                    
+
+                    # 🎯 NUOVO: Verifica che almeno i mercati principali siano disponibili
+                    # L'utente vuole notifiche solo con quote principali (1X2 o Over/Under)
+                    has_1x2 = all_odds.get('match_winner', {}).get('home') is not None
+                    has_over_under = len(all_odds.get('over_under', {})) > 0
+
+                    if not has_1x2 and not has_over_under:
+                        logger.warning(f"⏭️ SALTATA: {home_team} vs {away_team} - nessun mercato principale (1X2 o Over/Under) disponibile")
+                        skipped_no_odds += 1
+                        continue  # Salta partite senza mercati principali
+
                     # Estrai score e minute dalla fixture
                     # 🔧 FIX CRITICO: Lo score NON è in fixture_data['score'] ma probabilmente in fixture['goals']
                     score_data = fixture_data.get("score", {})
