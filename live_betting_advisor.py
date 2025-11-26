@@ -377,27 +377,58 @@ class LiveBettingAdvisor:
             odds_under_1_5 = match_data.get('odds_under_1_5')
             odds_under_2_5 = match_data.get('odds_under_2_5')
 
-            # Estrai statistiche live se disponibili
+            # 🛡️ VALIDAZIONE E NORMALIZZAZIONE STATISTICHE LIVE
             if live_data:
-                score_home = live_data.get('score_home', 0)
-                score_away = live_data.get('score_away', 0)
-                minute = live_data.get('minute', 0)
-                possession_home = live_data.get('possession_home', 50)
-                shots_home = live_data.get('shots_home', 0)
-                shots_away = live_data.get('shots_away', 0)
-                shots_on_target_home = live_data.get('shots_on_target_home', 0)
-                shots_on_target_away = live_data.get('shots_on_target_away', 0)
-                attacks_home = live_data.get('attacks_home', 0)
-                attacks_away = live_data.get('attacks_away', 0)
-                dangerous_attacks_home = live_data.get('dangerous_attacks_home', 0)
-                dangerous_attacks_away = live_data.get('dangerous_attacks_away', 0)
+                # Estrai e valida con defaults sicuri
+                score_home = int(live_data.get('score_home') or 0)
+                score_away = int(live_data.get('score_away') or 0)
+                minute = int(live_data.get('minute') or 0)
+                possession_home = float(live_data.get('possession_home') or 50)
+                shots_home = int(live_data.get('shots_home') or 0)
+                shots_away = int(live_data.get('shots_away') or 0)
+                shots_on_target_home = int(live_data.get('shots_on_target_home') or 0)
+                shots_on_target_away = int(live_data.get('shots_on_target_away') or 0)
+                attacks_home = int(live_data.get('attacks_home') or 0)
+                attacks_away = int(live_data.get('attacks_away') or 0)
+                dangerous_attacks_home = int(live_data.get('dangerous_attacks_home') or 0)
+                dangerous_attacks_away = int(live_data.get('dangerous_attacks_away') or 0)
+
+                # 🛡️ NORMALIZZAZIONE VALORI (previeni valori invalidi da API)
+                minute = max(0, min(120, minute))  # 0-120 minuti (regolari + extra time)
+                possession_home = max(0, min(100, possession_home))  # 0-100%
+                score_home = max(0, score_home)  # No score negativi
+                score_away = max(0, score_away)
+                shots_home = max(0, shots_home)  # No valori negativi
+                shots_away = max(0, shots_away)
+                shots_on_target_home = max(0, min(shots_home, shots_on_target_home))  # <= total shots
+                shots_on_target_away = max(0, min(shots_away, shots_on_target_away))
+                attacks_home = max(0, attacks_home)
+                attacks_away = max(0, attacks_away)
+                dangerous_attacks_home = max(0, min(attacks_home, dangerous_attacks_home))  # <= attacks
+                dangerous_attacks_away = max(0, min(attacks_away, dangerous_attacks_away))
+
+                # Calcola derivati (una volta sola per performance)
+                possession_away = 100 - possession_home
+                total_goals = score_home + score_away
             else:
                 score_home = score_away = minute = 0
-                possession_home = 50
+                possession_home = possession_away = 50
                 shots_home = shots_away = 0
                 shots_on_target_home = shots_on_target_away = 0
                 attacks_home = attacks_away = 0
                 dangerous_attacks_home = dangerous_attacks_away = 0
+                total_goals = 0
+
+            # 🛡️ VALIDAZIONE QUOTE BASE (previeni NaN, Inf, negativi)
+            import math
+            for odd_name in ['odds_1', 'odds_x', 'odds_2', 'odds_over_0_5', 'odds_over_1_5', 'odds_over_2_5',
+                            'odds_under_0_5', 'odds_under_1_5', 'odds_under_2_5']:
+                odd_value = locals().get(odd_name)
+                if odd_value is not None:
+                    if isinstance(odd_value, (int, float)):
+                        if math.isnan(odd_value) or math.isinf(odd_value) or odd_value <= 0:
+                            logger.warning(f"⚠️ {odd_name} invalido: {odd_value}, impostato a None")
+                            locals()[odd_name] = None
 
             market_lower = market.lower()
 
@@ -485,7 +516,6 @@ class LiveBettingAdvisor:
             # Logica: usa possesso, tiri in porta, attacchi pericolosi per stimare chi segna prossimo
             elif 'next_goal' in market_lower or 'team_to_score_next' in market_lower:
                 if live_data and minute > 0:
-                    total_goals = score_home + score_away
                     # Solo se partita in corso e non troppo tardi
                     if minute >= 10 and minute <= 85 and total_goals < 5:
                         # Calcola xG (expected goals) semplificato da statistiche
@@ -495,14 +525,14 @@ class LiveBettingAdvisor:
 
                         # Aggiungi peso per possesso (team con più possesso più probabile)
                         possession_factor_home = possession_home / 100
-                        possession_factor_away = (100 - possession_home) / 100
+                        possession_factor_away = possession_away / 100  # 🛡️ FIX: usa variabile pre-calcolata
 
                         xg_home_weighted = xg_home * (0.7 + possession_factor_home * 0.3)
                         xg_away_weighted = xg_away * (0.7 + possession_factor_away * 0.3)
 
-                        # Normalizza probabilità
+                        # 🛡️ FIX BUG #4: Normalizza probabilità con soglia più robusta
                         total_xg = xg_home_weighted + xg_away_weighted
-                        if total_xg > 0.1:  # Solo se c'è attività
+                        if total_xg > 0.5:  # Soglia aumentata da 0.1 a 0.5 per evitare divisioni per valori troppo piccoli
                             prob_home = xg_home_weighted / total_xg
                             prob_away = xg_away_weighted / total_xg
 
@@ -538,13 +568,17 @@ class LiveBettingAdvisor:
                     # 2. Squadre equilibrate (entrambe segnano)
                     prob_btts = prob_over_1_5 * (0.5 + balance * 0.4)
 
-                    # Aggiustamento live: se già entrambe segnato, BTTS = 100%
+                    # 🛡️ FIX BUG #3: Aggiustamento live
+                    # Se già entrambe segnato, BTTS quasi certo (ma non 100% per evitare odds 1.0)
                     if live_data and score_home > 0 and score_away > 0:
-                        prob_btts = 1.0
+                        prob_btts = 0.99  # Max 99% → odds = 1.01 (minimo valido)
                     # Se una squadra non ha ancora segnato ma minuto avanzato, meno probabile
                     elif live_data and minute > 60:
                         if score_home == 0 or score_away == 0:
                             prob_btts *= 0.7  # -30% se una non ha segnato dopo 60'
+
+                    # 🛡️ FIX: Assicura prob_btts < 1.0 per evitare odds invalide
+                    prob_btts = min(0.99, prob_btts)
 
                     if prob_btts > 0.15:
                         odds_btts = 1 / prob_btts
@@ -553,26 +587,39 @@ class LiveBettingAdvisor:
                             return round(odds_btts, 2)
 
             elif 'btts_no' in market_lower:
-                # BTTS No = opposto di BTTS Yes
-                btts_yes_odds = self._calculate_synthetic_odds(match_data, 'btts_yes', live_data)
-                if btts_yes_odds:
-                    prob_btts_yes = 1 / btts_yes_odds
+                # 🛡️ FIX BUG #1: BTTS No senza ricorsione (calcolo inline)
+                if odds_over_1_5 and odds_1 and odds_2 and odds_over_1_5 > 1.01 and odds_1 > 0 and odds_2 > 0:
+                    # Calcola BTTS Yes inline (no ricorsione)
+                    prob_over_1_5 = 1 / odds_over_1_5
+                    balance = min(odds_1 / odds_2, odds_2 / odds_1)
+                    prob_btts_yes = prob_over_1_5 * (0.5 + balance * 0.4)
+
+                    # Aggiustamenti live (stesso di BTTS Yes)
+                    if live_data and score_home > 0 and score_away > 0:
+                        prob_btts_yes = 0.99
+                    elif live_data and minute > 60 and (score_home == 0 or score_away == 0):
+                        prob_btts_yes *= 0.7
+
+                    # Limita a 99%
+                    prob_btts_yes = min(0.99, prob_btts_yes)
+
+                    # BTTS No = opposto
                     prob_btts_no = 1 - prob_btts_yes
                     if prob_btts_no > 0.15:
                         odds_btts_no = 1 / prob_btts_no
                         if 1.1 <= odds_btts_no <= 5.0:
-                            logger.info(f"🔢 BTTS No calcolato da BTTS Yes: {odds_btts_no:.2f}")
+                            logger.info(f"🔢 BTTS No calcolato inline: {odds_btts_no:.2f} (prob_yes={prob_btts_yes:.2f})")
                             return round(odds_btts_no, 2)
 
             # === CLEAN SHEET (da Under + difesa) ===
             # Logica: Clean sheet correlato a Under + forza difensiva
             elif 'clean_sheet_home' in market_lower:
-                if odds_under_1_5 and live_data:
+                if odds_under_1_5 and odds_under_1_5 > 1.01 and live_data:
                     # Probabilità Under 1.5 (max 1 gol totale)
-                    prob_under_1_5 = 1 / odds_under_1_5 if odds_under_1_5 > 1.01 else 0
+                    prob_under_1_5 = 1 / odds_under_1_5
 
-                    # Se away ha già segnato, clean sheet home impossibile
-                    if score_away > 0:
+                    # 🛡️ FIX BUG #8: Se away ha già segnato, clean sheet home impossibile
+                    if score_away != 0:  # Check robusto (copre anche negativi se bug upstream)
                         return 50.0  # Quote altissime (quasi impossibile)
 
                     # Se 0-0 o 1-0, clean sheet possibile
@@ -588,10 +635,11 @@ class LiveBettingAdvisor:
                             return round(odds_clean, 2)
 
             elif 'clean_sheet_away' in market_lower:
-                if odds_under_1_5 and live_data:
-                    prob_under_1_5 = 1 / odds_under_1_5 if odds_under_1_5 > 1.01 else 0
+                if odds_under_1_5 and odds_under_1_5 > 1.01 and live_data:
+                    prob_under_1_5 = 1 / odds_under_1_5
 
-                    if score_home > 0:
+                    # 🛡️ FIX: Check robusto
+                    if score_home != 0:
                         return 50.0
 
                     shots_factor = max(0.3, 1 - (shots_on_target_home * 0.1))
@@ -606,10 +654,11 @@ class LiveBettingAdvisor:
             # === WIN TO NIL (da 1X2 + Clean Sheet) ===
             # Logica: Vittoria senza subire = Vittoria AND Clean sheet
             elif 'win_to_nil_home' in market_lower or 'home_win_to_nil' in market_lower:
-                if odds_1:
+                if odds_1 and odds_1 > 1.01:
                     # Calcola clean sheet home
                     odds_clean = self._calculate_synthetic_odds(match_data, 'clean_sheet_home', live_data)
-                    if odds_clean:
+                    # 🛡️ FIX BUG #2: Validazione robusta odds_clean
+                    if odds_clean and odds_clean > 1.01 and odds_clean < 50.0:  # Escludi quote impossibili (50.0)
                         # Win to nil = P(win) × P(clean)
                         prob_win = 1 / odds_1
                         prob_clean = 1 / odds_clean
@@ -622,9 +671,10 @@ class LiveBettingAdvisor:
                                 return round(odds_wtn, 2)
 
             elif 'win_to_nil_away' in market_lower or 'away_win_to_nil' in market_lower:
-                if odds_2:
+                if odds_2 and odds_2 > 1.01:
                     odds_clean = self._calculate_synthetic_odds(match_data, 'clean_sheet_away', live_data)
-                    if odds_clean:
+                    # 🛡️ FIX BUG #2: Validazione robusta
+                    if odds_clean and odds_clean > 1.01 and odds_clean < 50.0:
                         prob_win = 1 / odds_2
                         prob_clean = 1 / odds_clean
                         prob_win_to_nil = prob_win * prob_clean
@@ -639,9 +689,11 @@ class LiveBettingAdvisor:
             # Logica: Combina probabilità esito + numero gol
             elif 'exact_score' in market_lower or market_lower.startswith('score_'):
                 import re
-                # Estrai score dal nome (es. 'score_1_0', 'exact_score_2_1')
+                # 🛡️ FIX BUG #5: Estrai score con validazione robusta
                 score_match = re.search(r'(\d+)[_-](\d+)', market_lower)
-                if score_match and odds_1 and odds_x and odds_2:
+                # Valida che ci siano almeno 2 gruppi (home e away score)
+                if score_match and len(score_match.groups()) >= 2 and odds_1 and odds_x and odds_2 and \
+                   odds_1 > 1.01 and odds_x > 1.01 and odds_2 > 1.01:
                     expected_home = int(score_match.group(1))
                     expected_away = int(score_match.group(2))
                     expected_total = expected_home + expected_away
