@@ -657,6 +657,57 @@ class LiveBettingAdvisor:
                         f"Mercato già deciso!"
                     )
 
+        # 🎯 VALIDAZIONE UNDER 0.5
+        elif 'under_0.5' in market_lower or 'under_0_5' in market_lower:
+            # Under 0.5 con già 1+ gol: mercato perso
+            if total_goals >= 1:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 0.5 a {odds:.2f} con {total_goals} gol è ASSURDO! "
+                        f"Mercato già perso! (dovrebbe essere >10)"
+                    )
+            # Under 0.5 al 70'+: quota deve essere alta
+            elif minute >= 70 and total_goals == 0:
+                if odds < 3.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 0.5 a {odds:.2f} al {minute}' con 0 gol è SOSPETTO! "
+                        f"(dovrebbe essere >3.00, partita può ancora sbloccarsi)"
+                    )
+
+        # 🎯 VALIDAZIONE UNDER 3.5
+        elif 'under_3.5' in market_lower or 'under_3_5' in market_lower:
+            # Under 3.5 con già 4+ gol: mercato perso
+            if total_goals >= 4:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 3.5 a {odds:.2f} con {total_goals} gol è ASSURDO! "
+                        f"Mercato già perso!"
+                    )
+            # Under 3.5 con 3 gol: quota molto bassa
+            elif total_goals == 3:
+                if odds > 1.50:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 3.5 a {odds:.2f} con 3 gol è SOSPETTO! "
+                        f"(dovrebbe essere 1.05-1.50)"
+                    )
+
+        # 🎯 VALIDAZIONE OVER 3.5
+        elif 'over_3.5' in market_lower or 'over_3_5' in market_lower:
+            # Over 3.5 con già 4+ gol: mercato deciso
+            if total_goals >= 4:
+                if odds > 1.10:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 3.5 a {odds:.2f} con {total_goals} gol è ASSURDO! "
+                        f"Mercato già deciso!"
+                    )
+            # Over 3.5 al 80'+ con 0-1 gol: quota altissima
+            elif minute >= 80 and total_goals <= 1:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 3.5 a {odds:.2f} al {minute}' con {total_goals} gol è SOSPETTO! "
+                        f"(dovrebbe essere >10)"
+                    )
+
         # 🎯 VALIDAZIONE BTTS (Both Teams To Score)
         elif 'btts_yes' in market_lower:
             # BTTS Yes con già entrambe segnato: mercato deciso
@@ -666,6 +717,14 @@ class LiveBettingAdvisor:
                         f"🚨 QUOTA ANOMALA: BTTS Yes a {odds:.2f} con score {score_home}-{score_away} è ASSURDO! "
                         f"Mercato già deciso!"
                     )
+            # BTTS Yes al 80'+ con 0-0: quota molto alta
+            elif minute >= 80 and total_goals == 0:
+                if odds < 5.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: BTTS Yes a {odds:.2f} al {minute}' con 0-0 è SOSPETTO! "
+                        f"(dovrebbe essere >5.00, poco tempo)"
+                    )
+
         elif 'btts_no' in market_lower:
             # BTTS No con già entrambe segnato: mercato perso
             if score_home >= 1 and score_away >= 1:
@@ -673,6 +732,153 @@ class LiveBettingAdvisor:
                     return False, (
                         f"🚨 QUOTA ANOMALA: BTTS No a {odds:.2f} con score {score_home}-{score_away} è ASSURDO! "
                         f"Mercato già perso! (dovrebbe essere >10)"
+                    )
+            # BTTS No al 85'+ con una squadra ancora a 0: quota molto bassa
+            elif minute >= 85:
+                if (score_home == 0 or score_away == 0) and odds > 1.50:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: BTTS No a {odds:.2f} al {minute}' con {score_home}-{score_away} è SOSPETTO! "
+                        f"(dovrebbe essere <1.50, poco tempo)"
+                    )
+
+        # 🎯 VALIDAZIONE 1X2 (Match Winner)
+        elif any(x in market_lower for x in ['home_win', 'away_win', '1x2_home', '1x2_away', 'match_winner']):
+            is_home = 'home' in market_lower or '1x2_home' in market_lower
+            diff = score_home - score_away if is_home else score_away - score_home
+
+            # Squadra già in vantaggio di 2+ gol al 70'+: quota molto bassa
+            if diff >= 2 and minute >= 70:
+                if odds > 1.30:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Vittoria a {odds:.2f} con {'casa' if is_home else 'trasferta'} avanti di {diff} gol al {minute}' è SOSPETTO! "
+                        f"(dovrebbe essere <1.30)"
+                    )
+            # Squadra in svantaggio di 2+ gol al 70'+: quota molto alta
+            elif diff <= -2 and minute >= 70:
+                if odds < 5.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Vittoria a {odds:.2f} con {'casa' if is_home else 'trasferta'} sotto di {abs(diff)} gol al {minute}' è SOSPETTO! "
+                        f"(dovrebbe essere >5.00)"
+                    )
+
+        # 🎯 VALIDAZIONE DRAW (pareggio)
+        elif 'draw' in market_lower and '1x2' in market_lower:
+            # Pareggio al 85'+ con score diverso di 2+: quota altissima
+            if minute >= 85 and abs(score_home - score_away) >= 2:
+                if odds < 15.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Pareggio a {odds:.2f} al {minute}' con {score_home}-{score_away} è SOSPETTO! "
+                        f"(dovrebbe essere >15)"
+                    )
+
+        # 🎯 VALIDAZIONE DOUBLE CHANCE
+        elif any(x in market_lower for x in ['1x', 'x2', '12', 'double_chance']):
+            # Double Chance al 80'+ con vantaggio di 2+: quota molto bassa
+            if minute >= 80:
+                if ('1x' in market_lower and score_home - score_away >= 2) or \
+                   ('x2' in market_lower and score_away - score_home >= 2):
+                    if odds > 1.15:
+                        return False, (
+                            f"🚨 QUOTA ANOMALA: Double Chance a {odds:.2f} al {minute}' con vantaggio di 2+ gol è SOSPETTO! "
+                            f"(dovrebbe essere <1.15)"
+                        )
+
+        # 🎯 VALIDAZIONE DRAW NO BET
+        elif any(x in market_lower for x in ['dnb_home', 'dnb_away', 'draw_no_bet']):
+            is_home = 'home' in market_lower
+            diff = score_home - score_away if is_home else score_away - score_home
+
+            # DNB con vantaggio di 2+ al 75'+: quota molto bassa
+            if diff >= 2 and minute >= 75:
+                if odds > 1.20:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: DNB a {odds:.2f} con vantaggio di {diff} gol al {minute}' è SOSPETTO! "
+                        f"(dovrebbe essere <1.20)"
+                    )
+
+        # 🎯 VALIDAZIONE WIN TO NIL / CLEAN SHEET
+        elif any(x in market_lower for x in ['win_to_nil', 'clean_sheet']):
+            is_home = 'home' in market_lower
+            conceded = score_away if is_home else score_home
+            own_score = score_home if is_home else score_away
+
+            # Se ha già subito gol: mercato perso
+            if conceded >= 1:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Clean Sheet a {odds:.2f} con {conceded} gol subiti è ASSURDO! "
+                        f"Mercato già perso!"
+                    )
+            # Win to nil al 85'+ con 0-0 o perdendo: quota molto alta
+            elif 'win_to_nil' in market_lower and minute >= 85 and own_score == 0:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Win to Nil a {odds:.2f} al {minute}' senza aver segnato è SOSPETTO! "
+                        f"(dovrebbe essere >10)"
+                    )
+
+        # 🎯 VALIDAZIONE ODD/EVEN
+        elif any(x in market_lower for x in ['odd', 'even', 'total_goals']):
+            # Al 85'+ con score già stabilito: le quote dovrebbero favorire lo status quo
+            if minute >= 85:
+                is_odd = total_goals % 2 == 1
+                if ('odd' in market_lower and is_odd) or ('even' in market_lower and not is_odd):
+                    # Il mercato attualmente vincente dovrebbe avere quota bassa
+                    if odds > 1.50:
+                        return False, (
+                            f"🚨 QUOTA ANOMALA: {'Odd' if is_odd else 'Even'} a {odds:.2f} al {minute}' con {total_goals} gol è SOSPETTO! "
+                            f"(dovrebbe essere <1.50)"
+                        )
+
+        # 🎯 VALIDAZIONE TEAM TO SCORE NEXT/FIRST
+        elif any(x in market_lower for x in ['next_goal', 'first_goal', 'team_to_score']):
+            # Se una squadra è in netto vantaggio territoriale, quote troppo alte sono sospette
+            # Ma questo richiede stats avanzate, quindi facciamo solo check base
+            if minute >= 85:
+                # Al 85'+, quote per prossimo gol dovrebbero essere molto balance o No Goal favorite
+                if odds > 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Team to Score a {odds:.2f} al {minute}' è SOSPETTO! "
+                        f"(quote >10 in zona Cesarini sono anomale)"
+                    )
+
+        # 🎯 VALIDAZIONE HT/FT
+        elif 'ht_ft' in market_lower or 'half_time_full_time' in market_lower:
+            # Se il HT è già passato e il risultato HT è deciso
+            if minute >= 45:
+                # Il risultato HT è già fissato, quindi alcuni combo sono impossibili
+                # Es: se HT era 0-0, "Casa-Casa" richiede la casa vinca in FT
+                # Quote dovrebbero riflettere questo
+                if odds < 1.01:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: HT/FT a {odds:.2f} è SOSPETTO! "
+                        f"(quota quasi 1.00 è impossibile)"
+                    )
+
+        # 🎯 VALIDAZIONE GOAL RANGE
+        elif 'goal_range' in market_lower or 'range_gol' in market_lower:
+            # Se siamo già oltre il range superiore: mercato perso
+            if '0_1' in market_lower and total_goals >= 2:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Goal Range 0-1 a {odds:.2f} con {total_goals} gol è ASSURDO! "
+                        f"Mercato già perso!"
+                    )
+            elif '2_3' in market_lower and total_goals >= 4:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Goal Range 2-3 a {odds:.2f} con {total_goals} gol è ASSURDO! "
+                        f"Mercato già perso!"
+                    )
+
+        # 🎯 VALIDAZIONE TIME OF NEXT GOAL
+        elif 'next_goal_before' in market_lower or 'next_goal_after' in market_lower:
+            # Se siamo già oltre il threshold temporale
+            if 'before_75' in market_lower and minute >= 75:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Next Goal Before 75' a {odds:.2f} al {minute}' è ASSURDO! "
+                        f"Siamo già oltre il 75'!"
                     )
 
         # 🎯 SANITY CHECK GENERALE: Probabilità implicita
