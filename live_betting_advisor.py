@@ -3705,41 +3705,28 @@ class LiveBettingAdvisor:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'asian_handicap_home') if self.ai_pipeline else 0
                     confidence = 72 + ai_boost
                     
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='asian_handicap_home', market=f'asian_handicap_home_+{handicap}',
-                        recommendation=f"Punta {match_data.get('home')} Asian Handicap +{handicap}",
-                        reasoning=(
-                            f"🎯 HANDICAP ASIATICO!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• {match_data.get('home')} perde ma DOMINA:\n"
-                            f"  - Possesso: {possession_home}%\n"
-                            f"  - Tiri: {shots_home} vs {shots_away}\n"
-                            f"• Handicap +{handicap} offre buon valore\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        # 🎯 RECUPERA QUOTA REALE DALL'API
-                        odds_handicap = self._get_real_odds(match_data, f'asian_handicap_home_+{handicap}', handicap=f'+{handicap}')
-                        if not odds_handicap:
-                            logger.debug(f"⏭️  Asian Handicap Home +{handicap} saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
-                        else:
-                            opportunity = LiveBettingOpportunity(
-                                match_id=match_id, match_data=match_data,
-                                situation='asian_handicap_home', market=f'asian_handicap_home_+{handicap}',
-                                recommendation=f"Punta {match_data.get('home')} Asian Handicap +{handicap}",
-                                reasoning=(
-                                    f"🎯 HANDICAP ASIATICO!\n\n"
-                                    f"• Score: {score_home}-{score_away} al {minute}'\n"
-                                    f"• {match_data.get('home')} perde ma DOMINA:\n"
-                                    f"  - Possesso: {possession_home}%\n"
-                                    f"  - Tiri: {shots_home} vs {shots_away}\n"
-                                    f"• Handicap +{handicap} offre buon valore\n"
-                                    f"• IA boost: +{ai_boost:.0f}%"
-                                ),
-                                confidence=confidence, odds=odds_handicap, stake_suggestion=2.5,
-                                timestamp=datetime.now()
-                            )
-                            opportunities.append(opportunity)
+                    # 🎯 RECUPERA QUOTA REALE DALL'API
+                    odds_handicap = self._get_real_odds(match_data, f'asian_handicap_home_+{handicap}', handicap=f'+{handicap}')
+                    if not odds_handicap:
+                        logger.debug(f"⏭️  Asian Handicap Home +{handicap} saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                    else:
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='asian_handicap_home', market=f'asian_handicap_home_+{handicap}',
+                            recommendation=f"Punta {match_data.get('home')} Asian Handicap +{handicap}",
+                            reasoning=(
+                                f"🎯 HANDICAP ASIATICO!\n\n"
+                                f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                f"• {match_data.get('home')} perde ma DOMINA:\n"
+                                f"  - Possesso: {possession_home}%\n"
+                                f"  - Tiri: {shots_home} vs {shots_away}\n"
+                                f"• Handicap +{handicap} offre buon valore\n"
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=odds_handicap, stake_suggestion=2.5,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
             
             # Asian Handicap Away
             elif score_away < score_home and minute >= 30 and minute <= 75:
@@ -3749,41 +3736,28 @@ class LiveBettingAdvisor:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'asian_handicap_away') if self.ai_pipeline else 0
                     confidence = 72 + ai_boost
                     
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='asian_handicap_away', market=f'asian_handicap_away_+{handicap}',
-                        recommendation=f"Punta {match_data.get('away')} Asian Handicap +{handicap}",
-                        reasoning=(
-                            f"🎯 HANDICAP ASIATICO!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• {match_data.get('away')} perde ma DOMINA:\n"
-                            f"  - Possesso: {possession_away}%\n"
-                            f"  - Tiri: {shots_away} vs {shots_home}\n"
-                            f"• Handicap +{handicap} offre buon valore\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        # 🎯 RECUPERA QUOTA REALE DALL'API
-                        odds_handicap = self._get_real_odds(match_data, f'asian_handicap_away_+{handicap}', handicap=f'+{handicap}')
-                        if not odds_handicap:
-                            logger.debug(f"⏭️  Asian Handicap Away +{handicap} saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
-                        else:
-                            opportunity = LiveBettingOpportunity(
-                                match_id=match_id, match_data=match_data,
-                                situation='asian_handicap_away', market=f'asian_handicap_away_+{handicap}',
-                                recommendation=f"Punta {match_data.get('away')} Asian Handicap +{handicap}",
-                                reasoning=(
-                                    f"🎯 HANDICAP ASIATICO!\n\n"
-                                    f"• Score: {score_home}-{score_away} al {minute}'\n"
-                                    f"• {match_data.get('away')} perde ma DOMINA:\n"
-                                    f"  - Possesso: {possession_away}%\n"
-                                    f"  - Tiri: {shots_away} vs {shots_home}\n"
-                                    f"• Handicap +{handicap} offre buon valore\n"
-                                    f"• IA boost: +{ai_boost:.0f}%"
-                                ),
-                                confidence=confidence, odds=odds_handicap, stake_suggestion=2.5,
-                                timestamp=datetime.now()
-                            )
-                            opportunities.append(opportunity)
+                    # 🎯 RECUPERA QUOTA REALE DALL'API
+                    odds_handicap = self._get_real_odds(match_data, f'asian_handicap_away_+{handicap}', handicap=f'+{handicap}')
+                    if not odds_handicap:
+                        logger.debug(f"⏭️  Asian Handicap Away +{handicap} saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                    else:
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='asian_handicap_away', market=f'asian_handicap_away_+{handicap}',
+                            recommendation=f"Punta {match_data.get('away')} Asian Handicap +{handicap}",
+                            reasoning=(
+                                f"🎯 HANDICAP ASIATICO!\n\n"
+                                f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                f"• {match_data.get('away')} perde ma DOMINA:\n"
+                                f"  - Possesso: {possession_away}%\n"
+                                f"  - Tiri: {shots_away} vs {shots_home}\n"
+                                f"• Handicap +{handicap} offre buon valore\n"
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=odds_handicap, stake_suggestion=2.5,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
                     
         except Exception as e:
             logger.debug(f"⚠️  Errore check asian handicap markets: {e}")
@@ -3817,24 +3791,12 @@ class LiveBettingAdvisor:
                     # 🆕 OTTIMIZZATO: Aumentata confidence base per next goal (mercato rischioso)
                     confidence = 75 + ai_boost
                     
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='next_goal_before_75', market='next_goal_before_75',
-                        recommendation="Punta Prossimo Gol Prima del 75'",
-                        reasoning=(
-                            f"🎯 TIME OF NEXT GOAL!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• Partita APERTA:\n"
-                            f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min)\n"
-                            f"• Alta probabilità gol prima del 75'\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        # 🎯 RECUPERA QUOTA REALE DALL'API
-                        odds_time = self._get_real_odds(match_data, 'next_goal_before_75', situation='next_goal_before_75')
-                        if not odds_time:
-                            logger.debug(f"⏭️  Next Goal Before 75 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
-                        else:
-                            opportunity = LiveBettingOpportunity(
+                    # 🎯 RECUPERA QUOTA REALE DALL'API
+                    odds_time = self._get_real_odds(match_data, 'next_goal_before_75', situation='next_goal_before_75')
+                    if not odds_time:
+                        logger.debug(f"⏭️  Next Goal Before 75 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                    else:
+                        opportunity = LiveBettingOpportunity(
                                 match_id=match_id, match_data=match_data,
                                 situation='next_goal_before_75', market='next_goal_before_75',
                                 recommendation="Punta Prossimo Gol Prima del 75'",
@@ -3848,8 +3810,8 @@ class LiveBettingAdvisor:
                                 ),
                                 confidence=confidence, odds=odds_time, stake_suggestion=2.0,
                                 timestamp=datetime.now()
-                            )
-                            opportunities.append(opportunity)
+                        )
+                        opportunities.append(opportunity)
             
             # Next Goal After 75': Se partita chiusa
             # 🆕 FIX: NON generare se siamo oltre 75' (illogico - il 75' è già passato)
@@ -3860,23 +3822,12 @@ class LiveBettingAdvisor:
                     # 🆕 OTTIMIZZATO: Aumentata confidence base per mercato rischioso
                     confidence = 75 + ai_boost
                     
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='next_goal_after_75', market='next_goal_after_75',
-                        recommendation="Punta Prossimo Gol Dopo il 75'",
-                        reasoning=(
-                            f"🎯 TIME OF NEXT GOAL!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• Partita CHIUSA (tiri/min: {shots_per_minute:.2f})\n"
-                            f"• Probabile gol tardivo se c'è\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        # 🎯 RECUPERA QUOTA REALE DALL'API
-                        odds_time = self._get_real_odds(match_data, 'next_goal_after_75', situation='next_goal_after_75')
-                        if not odds_time:
-                            logger.debug(f"⏭️  Next Goal After 75 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
-                        else:
-                            opportunity = LiveBettingOpportunity(
+                    # 🎯 RECUPERA QUOTA REALE DALL'API
+                    odds_time = self._get_real_odds(match_data, 'next_goal_after_75', situation='next_goal_after_75')
+                    if not odds_time:
+                        logger.debug(f"⏭️  Next Goal After 75 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                    else:
+                        opportunity = LiveBettingOpportunity(
                                 match_id=match_id, match_data=match_data,
                                 situation='next_goal_after_75', market='next_goal_after_75',
                                 recommendation="Punta Prossimo Gol Dopo il 75'",
@@ -3889,8 +3840,8 @@ class LiveBettingAdvisor:
                                 ),
                                 confidence=confidence, odds=odds_time, stake_suggestion=1.5,
                                 timestamp=datetime.now()
-                            )
-                            opportunities.append(opportunity)
+                        )
+                        opportunities.append(opportunity)
                     
         except Exception as e:
             logger.debug(f"⚠️  Errore check time of next goal markets: {e}")
@@ -4011,25 +3962,12 @@ class LiveBettingAdvisor:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'team_to_score_last_home') if self.ai_pipeline else 0
                     confidence = 73 + ai_boost
                     
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='team_to_score_last_home', market='team_to_score_last_home',
-                        recommendation=f"Punta {match_data.get('home')} segna per ultimo",
-                        reasoning=(
-                            f"🎯 SQUADRA CHE SEGNA PER ULTIMA!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• {match_data.get('home')} in momentum:\n"
-                            f"  - Possesso: {possession_home}%\n"
-                            f"  - Tiri: {shots_home} vs {shots_away}\n"
-                            f"• Alta probabilità segna per ultimo\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        # 🎯 RECUPERA QUOTA REALE DALL'API
-                        odds_last = self._get_real_odds(match_data, 'team_to_score_last_home', situation='team_to_score_last_home')
-                        if not odds_last:
-                            logger.debug(f"⏭️  Team to Score Last Home saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
-                        else:
-                            opportunity = LiveBettingOpportunity(
+                    # 🎯 RECUPERA QUOTA REALE DALL'API
+                    odds_last = self._get_real_odds(match_data, 'team_to_score_last_home', situation='team_to_score_last_home')
+                    if not odds_last:
+                        logger.debug(f"⏭️  Team to Score Last Home saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                    else:
+                        opportunity = LiveBettingOpportunity(
                                 match_id=match_id, match_data=match_data,
                                 situation='team_to_score_last_home', market='team_to_score_last_home',
                                 recommendation=f"Punta {match_data.get('home')} segna per ultimo",
@@ -4044,33 +3982,20 @@ class LiveBettingAdvisor:
                                 ),
                                 confidence=confidence, odds=odds_last, stake_suggestion=2.0,
                                 timestamp=datetime.now()
-                            )
-                            opportunities.append(opportunity)
+                        )
+                        opportunities.append(opportunity)
                 
                 # Away in vantaggio o pareggio ma domina
                 elif (score_away >= score_home) and possession_home < 45 and shots_away > shots_home * 1.3:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'team_to_score_last_away') if self.ai_pipeline else 0
                     confidence = 73 + ai_boost
                     
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='team_to_score_last_away', market='team_to_score_last_away',
-                        recommendation=f"Punta {match_data.get('away')} segna per ultimo",
-                        reasoning=(
-                            f"🎯 SQUADRA CHE SEGNA PER ULTIMA!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• {match_data.get('away')} in momentum:\n"
-                            f"  - Possesso: {100-possession_home}%\n"
-                            f"  - Tiri: {shots_away} vs {shots_home}\n"
-                            f"• Alta probabilità segna per ultimo\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        # 🎯 RECUPERA QUOTA REALE DALL'API
-                        odds_last = self._get_real_odds(match_data, 'team_to_score_last_away', situation='team_to_score_last_away')
-                        if not odds_last:
-                            logger.debug(f"⏭️  Team to Score Last Away saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
-                        else:
-                            opportunity = LiveBettingOpportunity(
+                    # 🎯 RECUPERA QUOTA REALE DALL'API
+                    odds_last = self._get_real_odds(match_data, 'team_to_score_last_away', situation='team_to_score_last_away')
+                    if not odds_last:
+                        logger.debug(f"⏭️  Team to Score Last Away saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                    else:
+                        opportunity = LiveBettingOpportunity(
                                 match_id=match_id, match_data=match_data,
                                 situation='team_to_score_last_away', market='team_to_score_last_away',
                                 recommendation=f"Punta {match_data.get('away')} segna per ultimo",
@@ -4085,8 +4010,8 @@ class LiveBettingAdvisor:
                                 ),
                                 confidence=confidence, odds=odds_last, stake_suggestion=2.0,
                                 timestamp=datetime.now()
-                            )
-                            opportunities.append(opportunity)
+                        )
+                        opportunities.append(opportunity)
         except Exception as e:
             logger.debug(f"⚠️  Errore check team to score last markets: {e}")
         return opportunities
@@ -4158,24 +4083,12 @@ class LiveBettingAdvisor:
                     # Determina se dati sono reali o stimati
                     data_source = "reali" if events and (ht_goals > 0 or st_goals > 0) else "stimati"
                     
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='highest_scoring_half_1h', market='highest_scoring_half_1h',
-                        recommendation="Punta Primo Tempo con più gol",
-                        reasoning=(
-                            f"🎯 TEMPO CON PIÙ GOL: 1° TEMPO\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• Primo tempo: {estimated_ht_goals} gol ({data_source})\n"
-                            f"• Secondo tempo: {estimated_st_goals} gol ({data_source})\n"
-                            f"• Primo tempo più prolifico\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        # 🎯 RECUPERA QUOTA REALE DALL'API
-                        odds_half = self._get_real_odds(match_data, 'highest_scoring_half_1h', situation='highest_scoring_half_1h')
-                        if not odds_half:
-                            logger.debug(f"⏭️  Highest Scoring Half 1H saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
-                        else:
-                            opportunity = LiveBettingOpportunity(
+                    # 🎯 RECUPERA QUOTA REALE DALL'API
+                    odds_half = self._get_real_odds(match_data, 'highest_scoring_half_1h', situation='highest_scoring_half_1h')
+                    if not odds_half:
+                        logger.debug(f"⏭️  Highest Scoring Half 1H saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                    else:
+                        opportunity = LiveBettingOpportunity(
                                 match_id=match_id, match_data=match_data,
                                 situation='highest_scoring_half_1h', market='highest_scoring_half_1h',
                                 recommendation="Punta Primo Tempo con più gol",
@@ -4189,8 +4102,8 @@ class LiveBettingAdvisor:
                                 ),
                                 confidence=confidence, odds=odds_half, stake_suggestion=2.0,
                                 timestamp=datetime.now()
-                            )
-                            opportunities.append(opportunity)
+                        )
+                        opportunities.append(opportunity)
                 
                 # Se secondo tempo sta avendo più gol
                 elif minute >= 60 and total_goals >= 2:
@@ -4201,24 +4114,12 @@ class LiveBettingAdvisor:
                         # Determina se dati sono reali o stimati
                         data_source = "reali" if events and (ht_goals > 0 or st_goals > 0) else "stimati"
                         
-                        opportunity = LiveBettingOpportunity(
-                            match_id=match_id, match_data=match_data,
-                            situation='highest_scoring_half_2h', market='highest_scoring_half_2h',
-                            recommendation="Punta Secondo Tempo con più gol",
-                            reasoning=(
-                                f"🎯 TEMPO CON PIÙ GOL!\n\n"
-                                f"• Score: {score_home}-{score_away} al {minute}'\n"
-                                f"• Primo tempo: {estimated_ht_goals} gol ({data_source})\n"
-                                f"• Secondo tempo: {estimated_st_goals} gol ({data_source})\n"
-                                f"• Secondo tempo più prolifico\n"
-                                f"• IA boost: +{ai_boost:.0f}%"
-                            ),
-                            # 🎯 RECUPERA QUOTA REALE DALL'API
-                            odds_half = self._get_real_odds(match_data, 'highest_scoring_half_2h', situation='highest_scoring_half_2h')
-                            if not odds_half:
-                                logger.debug(f"⏭️  Highest Scoring Half 2H saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
-                            else:
-                                opportunity = LiveBettingOpportunity(
+                        # 🎯 RECUPERA QUOTA REALE DALL'API
+                        odds_half = self._get_real_odds(match_data, 'highest_scoring_half_2h', situation='highest_scoring_half_2h')
+                        if not odds_half:
+                            logger.debug(f"⏭️  Highest Scoring Half 2H saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                        else:
+                            opportunity = LiveBettingOpportunity(
                                     match_id=match_id, match_data=match_data,
                                     situation='highest_scoring_half_2h', market='highest_scoring_half_2h',
                                     recommendation="Punta Secondo Tempo con più gol",
@@ -4227,13 +4128,13 @@ class LiveBettingAdvisor:
                                         f"• Score: {score_home}-{score_away} al {minute}'\n"
                                         f"• Primo tempo: {estimated_ht_goals} gol ({data_source})\n"
                                         f"• Secondo tempo: {estimated_st_goals} gol ({data_source})\n"
-                                        f"• Secondo tempo più prolifico\n"
-                                        f"• IA boost: +{ai_boost:.0f}%"
-                                    ),
-                                    confidence=confidence, odds=odds_half, stake_suggestion=2.0,
-                                    timestamp=datetime.now()
-                                )
-                                opportunities.append(opportunity)
+                                    f"• Secondo tempo più prolifico\n"
+                                    f"• IA boost: +{ai_boost:.0f}%"
+                                ),
+                                confidence=confidence, odds=odds_half, stake_suggestion=2.0,
+                                timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
         except Exception as e:
             logger.debug(f"⚠️  Errore check highest scoring half markets: {e}")
         return opportunities
@@ -4271,25 +4172,12 @@ class LiveBettingAdvisor:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'win_either_half_home') if self.ai_pipeline else 0
                     confidence = 73 + ai_boost
                     
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='win_either_half_home', market='win_either_half_home',
-                        recommendation=f"Punta {match_data.get('home')} vince almeno un tempo",
-                        reasoning=(
-                            f"🎯 WIN EITHER HALF!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• {match_data.get('home')} DOMINA:\n"
-                            f"  - Possesso: {possession_home}%\n"
-                            f"  - Tiri: {shots_home} vs {shots_away}\n"
-                            f"• Alta probabilità vince almeno un tempo\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        # 🎯 RECUPERA QUOTA REALE DALL'API
-                        odds_win = self._get_real_odds(match_data, 'win_either_half_home', situation='win_either_half_home')
-                        if not odds_win:
-                            logger.debug(f"⏭️  Win Either Half Home saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
-                        else:
-                            opportunity = LiveBettingOpportunity(
+                    # 🎯 RECUPERA QUOTA REALE DALL'API
+                    odds_win = self._get_real_odds(match_data, 'win_either_half_home', situation='win_either_half_home')
+                    if not odds_win:
+                        logger.debug(f"⏭️  Win Either Half Home saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                    else:
+                        opportunity = LiveBettingOpportunity(
                                 match_id=match_id, match_data=match_data,
                                 situation='win_either_half_home', market='win_either_half_home',
                                 recommendation=f"Punta {match_data.get('home')} vince almeno un tempo",
@@ -4304,8 +4192,8 @@ class LiveBettingAdvisor:
                                 ),
                                 confidence=confidence, odds=odds_win, stake_suggestion=2.5,
                                 timestamp=datetime.now()
-                            )
-                            opportunities.append(opportunity)
+                        )
+                        opportunities.append(opportunity)
                 
                 # Away domina ma non vince nettamente
                 elif possession_home < 40 and shots_away > shots_home * 1.5 and score_away <= score_home + 1:
@@ -4420,26 +4308,12 @@ class LiveBettingAdvisor:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'half_time_result_home') if self.ai_pipeline else 0
                     confidence = 73 + ai_boost
                     
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='half_time_result_home', market='half_time_result_home',
-                        recommendation=f"Punta {match_data.get('home')} vince Primo Tempo",
-                        reasoning=(
-                            f"🎯 HALF TIME RESULT!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• {match_data.get('home')} DOMINA primo tempo:\n"
-                            f"  - Possesso: {possession_home}%\n"
-                            f"  - Tiri: {shots_home} vs {shots_away}\n"
-                            f"  - Tiri in porta: {shots_on_target_home} vs {shots_on_target_away}\n"
-                            f"• Alta probabilità vince primo tempo\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        # 🎯 RECUPERA QUOTA REALE DALL'API
-                        odds_ht_result = self._get_real_odds(match_data, 'half_time_result_home', situation='half_time_result_home')
-                        if not odds_ht_result:
-                            logger.debug(f"⏭️  Half Time Result Home saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
-                        else:
-                            opportunity = LiveBettingOpportunity(
+                    # 🎯 RECUPERA QUOTA REALE DALL'API
+                    odds_ht_result = self._get_real_odds(match_data, 'half_time_result_home', situation='half_time_result_home')
+                    if not odds_ht_result:
+                        logger.debug(f"⏭️  Half Time Result Home saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                    else:
+                        opportunity = LiveBettingOpportunity(
                                 match_id=match_id, match_data=match_data,
                                 situation='half_time_result_home', market='half_time_result_home',
                                 recommendation=f"Punta {match_data.get('home')} vince Primo Tempo",
@@ -4455,8 +4329,8 @@ class LiveBettingAdvisor:
                                 ),
                                 confidence=confidence, odds=odds_ht_result, stake_suggestion=2.0,
                                 timestamp=datetime.now()
-                            )
-                            opportunities.append(opportunity)
+                        )
+                        opportunities.append(opportunity)
                 
                 # Away domina nettamente
                 elif possession_home < 35 and shots_away > shots_home * 1.5 and shots_on_target_away >= 3:
