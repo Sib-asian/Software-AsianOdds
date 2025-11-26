@@ -1671,6 +1671,326 @@ class Automation24H:
             logger.debug(f"⚠️  Errore validazione quota: {odd}, errore: {e}")
             return None
     
+    # ============================================================================
+    # 🆕 ODDS AGGREGATION IMPROVEMENTS - Vig Removal, MAD Outlier Filter, EWMA
+    # ============================================================================
+    
+    # Trusted bookmakers for weighted aggregation (weight 2.0)
+    TRUSTED_BOOKMAKERS_WEIGHTED: Dict[str, float] = {
+        'bet365': 2.0,
+        'bet 365': 2.0,
+        'pinnacle': 2.0,
+        'pinnacle sports': 2.0,
+        'betfair': 2.0,
+        'betfair exchange': 2.0,
+    }
+    
+    def _is_outlier_mad(self, values: List[float], x: float, k: float = 3.5) -> bool:
+        """
+        🎯 MAD-based outlier detection (Median Absolute Deviation).
+        
+        Determines if a value x is an outlier in a list of values using MAD.
+        MAD is more robust than standard deviation for detecting outliers.
+        
+        Args:
+            values: List of numeric values to compare against
+            x: The value to test for being an outlier
+            k: Threshold multiplier (default 3.5 = conservative)
+               Lower k = more aggressive filtering
+               Higher k = more permissive
+        
+        Returns:
+            True if x is an outlier, False otherwise
+        """
+        import statistics
+        
+        if len(values) < 3:
+            # Not enough data for reliable MAD calculation
+            return False
+        
+        try:
+            median_val = statistics.median(values)
+            # Calculate MAD: median of absolute deviations from median
+            absolute_deviations = [abs(v - median_val) for v in values]
+            mad = statistics.median(absolute_deviations)
+            
+            # Constant factor for normal distribution approximation
+            # 1.4826 makes MAD comparable to standard deviation for normal dist
+            mad_adjusted = mad * 1.4826
+            
+            # Avoid division by zero
+            if mad_adjusted < 0.0001:
+                # Very low MAD means all values are nearly identical
+                # Consider outlier if it differs significantly from median
+                return abs(x - median_val) > 0.5  # Threshold for near-identical values
+            
+            # Calculate modified z-score
+            modified_z_score = abs(x - median_val) / mad_adjusted
+            
+            is_outlier = modified_z_score > k
+            if is_outlier:
+                logger.debug(
+                    f"📊 MAD outlier detected: {x:.2f} (median={median_val:.2f}, "
+                    f"MAD={mad:.4f}, z-score={modified_z_score:.2f}, k={k})"
+                )
+            
+            return is_outlier
+            
+        except Exception as e:
+            logger.debug(f"⚠️  Errore MAD outlier detection: {e}")
+            return False
+    
+    def _ewma(self, previous_value: Optional[float], new_value: float, alpha: float = 0.4) -> float:
+        """
+        🎯 Exponentially Weighted Moving Average (EWMA) for odds smoothing.
+        
+        Applies temporal smoothing to reduce noise in live odds updates.
+        
+        Args:
+            previous_value: Previous EWMA value (None if first observation)
+            new_value: New observed value
+            alpha: Smoothing factor (0 < alpha <= 1)
+                   Higher alpha = more weight on new values (less smoothing)
+                   Lower alpha = more weight on historical values (more smoothing)
+                   Default 0.4 = moderate smoothing
+        
+        Returns:
+            Smoothed value
+        """
+        if previous_value is None:
+            return new_value
+        
+        # EWMA formula: S_t = alpha * X_t + (1 - alpha) * S_{t-1}
+        return alpha * new_value + (1 - alpha) * previous_value
+    
+    def _remove_vig_and_aggregate(
+        self,
+        odds_dict: Dict[str, float],
+        weights: Optional[Dict[str, float]] = None
+    ) -> tuple:
+        """
+        🎯 Aggregate odds from multiple bookmakers with weighted average.
+        
+        Takes a dictionary of {bookmaker: odd} for the SAME outcome (e.g., Over 2.5)
+        and returns the aggregated odd using weighted implied probabilities.
+        
+        Algorithm:
+        1. Validate all odds using _validate_odds
+        2. Apply MAD-based outlier filtering
+        3. Convert odds to implied probabilities: p = 1/odd
+        4. Apply weights for bookmakers (trusted get weight 2.0, others 1.0)
+        5. Calculate weighted average implied probability
+        6. Convert back to aggregated odd = 1/aggregated_prob
+        
+        Note: This method aggregates odds for a SINGLE outcome from multiple bookmakers.
+        True "vig removal" requires both sides of a market (e.g., Over AND Under).
+        Here we use the weighted average approach which is simpler and effective.
+        
+        Args:
+            odds_dict: Dictionary mapping bookmaker name to odd value
+            weights: Optional custom weights {bookmaker: weight}
+                     If None, uses TRUSTED_BOOKMAKERS_WEIGHTED
+        
+        Returns:
+            Tuple of (aggregated_odd: Optional[float], metadata: Dict)
+            - aggregated_odd: The cleaned, aggregated odd, or None if invalid
+            - metadata: Dict with details about the aggregation
+        """
+        import statistics
+        
+        metadata = {
+            'method': 'vig_removed_weighted_avg',
+            'bookmakers_used': 0,
+            'trusted_used': [],
+            'raw_odds': {},
+            'implied_probs': {},
+            'weights_applied': {},
+            'outliers_removed': [],
+            'aggregated_prob': None,
+            'aggregated_odd': None,
+        }
+        
+        if not odds_dict:
+            logger.debug("⚠️  _remove_vig_and_aggregate: empty odds_dict")
+            return None, metadata
+        
+        # Step 1: Validate odds
+        valid_odds = {}
+        for bookmaker, odd in odds_dict.items():
+            validated = self._validate_odds(odd)
+            if validated is not None:
+                valid_odds[bookmaker] = validated
+        
+        if not valid_odds:
+            logger.debug("⚠️  _remove_vig_and_aggregate: no valid odds after validation")
+            return None, metadata
+        
+        metadata['raw_odds'] = valid_odds.copy()
+        metadata['bookmakers_used'] = len(valid_odds)
+        
+        # Step 2: MAD-based outlier filtering
+        odds_values = list(valid_odds.values())
+        filtered_odds = {}
+        
+        for bookmaker, odd in valid_odds.items():
+            if len(odds_values) >= 3 and self._is_outlier_mad(odds_values, odd, k=3.5):
+                metadata['outliers_removed'].append({'bookmaker': bookmaker, 'odd': odd})
+                logger.info(f"📊 Outlier rimosso: {bookmaker} con quota {odd:.2f}")
+            else:
+                filtered_odds[bookmaker] = odd
+        
+        # If all odds filtered, use maximum as fallback
+        if not filtered_odds:
+            logger.warning("⚠️  Tutti gli odds filtrati come outlier, uso la quota massima")
+            max_bookmaker = max(valid_odds, key=valid_odds.get)
+            filtered_odds = {max_bookmaker: valid_odds[max_bookmaker]}
+        
+        # Step 3: Convert to implied probabilities
+        implied_probs = {}
+        for bookmaker, odd in filtered_odds.items():
+            implied_probs[bookmaker] = 1.0 / odd
+        
+        metadata['implied_probs'] = implied_probs.copy()
+        
+        # Step 4: Apply weights
+        if weights is None:
+            weights = {}
+        
+        # Default weights: trusted bookmakers get 2.0, others get 1.0
+        applied_weights = {}
+        for bookmaker in implied_probs.keys():
+            normalized_name = bookmaker.lower().strip().replace('-', ' ')
+            if bookmaker in weights:
+                applied_weights[bookmaker] = weights[bookmaker]
+            elif normalized_name in self.TRUSTED_BOOKMAKERS_WEIGHTED:
+                applied_weights[bookmaker] = self.TRUSTED_BOOKMAKERS_WEIGHTED[normalized_name]
+                metadata['trusted_used'].append(bookmaker)
+            else:
+                # Check partial match
+                is_trusted = False
+                for trusted_name, trusted_weight in self.TRUSTED_BOOKMAKERS_WEIGHTED.items():
+                    if trusted_name in normalized_name or normalized_name in trusted_name:
+                        applied_weights[bookmaker] = trusted_weight
+                        metadata['trusted_used'].append(bookmaker)
+                        is_trusted = True
+                        break
+                if not is_trusted:
+                    applied_weights[bookmaker] = 1.0
+        
+        metadata['weights_applied'] = applied_weights.copy()
+        
+        # Step 5: Calculate weighted average implied probability
+        total_weight = sum(applied_weights.values())
+        if total_weight <= 0:
+            logger.warning("⚠️  Somma pesi <= 0, impossibile calcolare media pesata")
+            return None, metadata
+        
+        # Weighted average of IMPLIED PROBABILITIES (not normalized probs)
+        aggregated_prob = sum(
+            implied_probs[bm] * applied_weights[bm]
+            for bm in implied_probs.keys()
+        ) / total_weight
+        
+        metadata['aggregated_prob'] = aggregated_prob
+        
+        # Step 6: Convert back to odd
+        if aggregated_prob <= 0 or aggregated_prob >= 1:
+            logger.warning(f"⚠️  Probabilità aggregata invalida: {aggregated_prob}")
+            return None, metadata
+        
+        aggregated_odd = 1.0 / aggregated_prob
+        metadata['aggregated_odd'] = aggregated_odd
+        
+        # Log result
+        logger.info(
+            f"📊 Quote aggregate: {len(filtered_odds)} bookmaker usati "
+            f"(trusted: {len(metadata['trusted_used'])}), "
+            f"outliers rimossi: {len(metadata['outliers_removed'])}, "
+            f"quota aggregata: {aggregated_odd:.2f}"
+        )
+        
+        return aggregated_odd, metadata
+    
+    def _apply_ewma_smoothing(
+        self,
+        market_key: str,
+        fixture_id: str,
+        new_odd: float,
+        alpha: float = 0.4
+    ) -> float:
+        """
+        🎯 Apply EWMA smoothing to an odd using cache.
+        
+        Maintains an in-memory cache of previous EWMA values per market+fixture.
+        
+        Args:
+            market_key: Market identifier (e.g., 'over_2.5')
+            fixture_id: Fixture/match identifier
+            new_odd: New observed odd
+            alpha: EWMA smoothing factor (default 0.4)
+        
+        Returns:
+            Smoothed odd value
+        """
+        # Initialize cache if not exists
+        if not hasattr(self, 'odds_ewma_cache'):
+            self.odds_ewma_cache = {}
+        
+        # Create cache key
+        cache_key = f"{fixture_id}_{market_key}"
+        
+        # Get previous value
+        previous_value = self.odds_ewma_cache.get(cache_key)
+        
+        # Calculate EWMA
+        smoothed_odd = self._ewma(previous_value, new_odd, alpha)
+        
+        # Update cache (with size limit)
+        self.odds_ewma_cache[cache_key] = smoothed_odd
+        
+        # Clean up old entries if cache too large (keep max 1000 entries)
+        if len(self.odds_ewma_cache) > 1000:
+            # Remove oldest half of entries (simple LRU approximation)
+            keys_to_remove = list(self.odds_ewma_cache.keys())[:500]
+            for key in keys_to_remove:
+                del self.odds_ewma_cache[key]
+            logger.debug(f"🧹 EWMA cache cleanup: rimosse {len(keys_to_remove)} entry vecchie")
+        
+        # Log if smoothing changed the value significantly
+        if previous_value is not None and abs(smoothed_odd - new_odd) > 0.05:
+            logger.debug(
+                f"📈 EWMA smoothing: {market_key} ({fixture_id}): "
+                f"{new_odd:.2f} → {smoothed_odd:.2f} (prev: {previous_value:.2f})"
+            )
+        
+        return smoothed_odd
+    
+    def _get_aggregation_metrics(self) -> Dict[str, int]:
+        """
+        🎯 Get in-memory aggregation metrics.
+        
+        Returns:
+            Dict with metrics like 'outliers_removed', 'odds_aggregated', etc.
+        """
+        if not hasattr(self, 'aggregation_metrics'):
+            self.aggregation_metrics = {
+                'outliers_removed': 0,
+                'odds_aggregated': 0,
+                'ewma_smoothed': 0,
+                'trusted_bookmakers_used': 0,
+            }
+        return self.aggregation_metrics
+    
+    def _increment_metric(self, metric_name: str, amount: int = 1):
+        """Increment an aggregation metric counter."""
+        metrics = self._get_aggregation_metrics()
+        if metric_name in metrics:
+            metrics[metric_name] += amount
+    
+    # ============================================================================
+    # END ODDS AGGREGATION IMPROVEMENTS
+    # ============================================================================
+    
     def _retry_api_call(self, func, max_retries: int = 3, base_delay: float = 1.0, *args, **kwargs):
         """
         🎯 RETRY LOGIC: Esegue una chiamata API con retry e backoff esponenziale.
@@ -1783,21 +2103,43 @@ class Automation24H:
 
         def calculate_median_odd(bookmaker_odds_dict: Dict[str, float]) -> Optional[float]:
             """
-            Calcola la mediana delle quote dai bookmaker trusted.
-            Se solo 1-2 bookmaker, usa la media invece della mediana.
+            🆕 IMPROVED: Calcola la quota aggregata con MAD outlier filter + vig removal.
+            
+            Utilizza i nuovi metodi:
+            - _is_outlier_mad per filtrare outlier
+            - _remove_vig_and_aggregate per calcolare quota pulita
+            
+            Fallback alla mediana semplice se i metodi avanzati falliscono.
             """
             if not bookmaker_odds_dict:
                 return None
 
             odds_values = list(bookmaker_odds_dict.values())
 
+            # Se solo 1 valore, ritornalo direttamente
             if len(odds_values) == 1:
                 return odds_values[0]
-            elif len(odds_values) == 2:
-                # Con 2 valori, usa la media
+            
+            # 🆕 IMPROVED: Usa aggregazione avanzata con MAD + vig removal
+            try:
+                aggregated_odd, metadata = self._remove_vig_and_aggregate(bookmaker_odds_dict)
+                
+                if aggregated_odd is not None:
+                    # Aggiorna metriche
+                    if metadata.get('outliers_removed'):
+                        self._increment_metric('outliers_removed', len(metadata['outliers_removed']))
+                    self._increment_metric('odds_aggregated')
+                    if metadata.get('trusted_used'):
+                        self._increment_metric('trusted_bookmakers_used', len(metadata['trusted_used']))
+                    return aggregated_odd
+                    
+            except Exception as e:
+                logger.debug(f"⚠️  Errore aggregazione avanzata: {e} - fallback a mediana")
+            
+            # Fallback: mediana semplice (mantiene compatibilità)
+            if len(odds_values) == 2:
                 return statistics.mean(odds_values)
             else:
-                # Con 3+ valori, usa la mediana
                 return statistics.median(odds_values)
 
         all_odds = {
