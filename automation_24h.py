@@ -1089,23 +1089,25 @@ class Automation24H:
                     logger.info(f"🔍 Verificando quote per {home_team} vs {away_team} (fixture {fixture_id})...")
                     logger.info(f"   Quote iniziali da /fixtures: {len(odds_data) if odds_data else 0} bookmaker")
                     
+                    odds_pending = False
                     if not odds_data or len(odds_data) == 0:
                         logger.info(f"   ⚠️  Nessuna quota in /fixtures, provo a recuperare con /odds?fixture={fixture_id}")
-                        odds_data = self._fetch_fixture_odds_from_api_football(fixture_id, api_key, base_url)
-                        if not odds_data:
+                        try:
+                            odds_fetch = self._fetch_fixture_odds_from_api_football(fixture_id, api_key, base_url)
+                        except Exception as e:
+                            logger.warning(f"⚠️  Errore recupero quote per fixture {fixture_id}: {e}")
+                            odds_fetch = None
+                        if odds_fetch:
+                            odds_data = odds_fetch
+                            self.api_usage_today += 1  # Conta chiamata API per quote
+                            logger.info(f"✅ Quote recuperate per {home_team} vs {away_team} (fixture {fixture_id}, {len(odds_data)} bookmaker)")
+                        else:
                             skipped_no_odds += 1
-                            logger.warning(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
-                            continue
-                        self.api_usage_today += 1  # Conta chiamata API per quote
-                        logger.info(f"✅ Quote recuperate per {home_team} vs {away_team} (fixture {fixture_id}, {len(odds_data)} bookmaker)")
+                            odds_pending = True
+                            odds_data = []
+                            logger.warning(f"⚠️  Nessuna quota disponibile per fixture {fixture_id}, lascio che il watchdog ritenti")
                     else:
                         logger.debug(f"✅ Quote già presenti in /fixtures per {home_team} vs {away_team} ({len(odds_data)} bookmaker)")
-                    
-                    # 🎯 Verifica che ci siano almeno alcune quote disponibili
-                    if not odds_data or len(odds_data) == 0:
-                        skipped_no_odds += 1
-                        logger.warning(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
-                        continue  # Salta questa partita, serve quote per EV preciso
                     
                     # Estrai TUTTE le quote disponibili
                     logger.info(f"🔍 Estraendo quote per {home_team} vs {away_team} (fixture {fixture_id})...")
@@ -1385,6 +1387,7 @@ class Automation24H:
                         'odds_2': all_odds.get('match_winner', {}).get('away'),
                         # Tutte le altre quote disponibili
                         'all_odds': all_odds,
+                        'odds_pending': odds_pending,
                         'all_odds_precision': all_odds.get('_precision_snapshot')
                     }
                     
@@ -2250,7 +2253,7 @@ class Automation24H:
                         outcome = value.get("value", "").lower()
                         odd_decimal = self._validate_odds(value.get("odd"))
                         if odd_decimal is None:
-                            continue
+                                continue
                         odd_float = float(odd_decimal)
                         
                         if odd_float:
@@ -2267,7 +2270,7 @@ class Automation24H:
                         outcome = value.get("value", "")
                         odd_decimal = self._validate_odds(value.get("odd"))
                         if odd_decimal is None:
-                            continue
+                                continue
                         odd_float = float(odd_decimal)
                         
                         if odd_float and outcome:
@@ -2610,23 +2613,24 @@ class Automation24H:
             
             # Verifica se ci sono statistiche disponibili e valide
             if data.get("response") and len(data["response"]) > 0:
-                # Controlla se ci sono statistiche valide (non tutte a 0)
+                self.api_usage_today += 1
+                # Controlla se tutte le stats sono zero solo per logging
+                all_zero = True
                 for team_stats in data["response"]:
                     stats_list = team_stats.get("statistics", [])
-                    if stats_list:
-                        # Verifica se almeno una statistica ha un valore > 0
-                        for stat in stats_list:
-                            value = stat.get("value")
-                            if value and value != "0" and value != 0:
-                                # 🔧 FIX: Conta chiamata API solo se statistiche valide
-                                self.api_usage_today += 1
-                                logger.debug(f"✅ Statistiche valide trovate per fixture {fixture_id}, chiamata API conteggiata")
-                                return data["response"]  # Restituisce le statistiche se valide
-                # Statistiche presenti ma tutte a 0 - NON contare chiamata API
-                logger.debug(f"⚠️  Statistiche presenti ma tutte a 0 per fixture {fixture_id}, chiamata API NON conteggiata")
-                return None
-            # Nessuna statistica disponibile - NON contare chiamata API
-            logger.debug(f"⚠️  Nessuna statistica disponibile per fixture {fixture_id}, chiamata API NON conteggiata")
+                    for stat in stats_list or []:
+                        value = stat.get("value")
+                        if value not in (None, 0, "0"):
+                            all_zero = False
+                            break
+                    if not all_zero:
+                        break
+                if all_zero:
+                    logger.debug(f"⚠️  Statistiche presenti ma ancora tutte a 0 per fixture {fixture_id}, accetto comunque il feed")
+                else:
+                    logger.debug(f"✅ Statistiche valide trovate per fixture {fixture_id}")
+                return data["response"]
+            logger.debug(f"⚠️  Nessuna statistica disponibile per fixture {fixture_id}")
             return None
             
         except urllib.error.HTTPError as e:
