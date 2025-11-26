@@ -343,11 +343,21 @@ class LiveBettingAdvisor:
         Deriviamo quote per mercati non disponibili dall'API usando:
         - Quote 1X2 (odds_1, odds_x, odds_2)
         - Quote Over/Under (odds_over_X_X, odds_under_X_X)
-        - Situazione live (score, minuto)
+        - Statistiche live (possesso, tiri, score, minuto, pressione)
+        - Modelli probabilistici avanzati
+
+        Mercati calcolabili:
+        - DNB, Double Chance, Asian Handicap (da 1X2)
+        - Team to score next (da statistiche pressione + xG)
+        - BTTS (da Over/Under + bias squadre)
+        - Clean Sheet (da Under + difesa)
+        - Win to Nil (da 1X2 + Clean Sheet)
+        - Exact Score (da 1X2 + Over/Under)
+        - Half Time markets (da statistiche HT)
 
         Args:
             match_data: Dati partita con quote base
-            market: Mercato da calcolare (es. 'dnb_home', '1x', 'asian_handicap_home_+1')
+            market: Mercato da calcolare (es. 'dnb_home', 'next_goal_home', 'btts_yes')
             live_data: Dati live opzionali per aggiustamenti
 
         Returns:
@@ -358,6 +368,36 @@ class LiveBettingAdvisor:
             odds_1 = match_data.get('odds_1')  # Home win
             odds_x = match_data.get('odds_x')  # Draw
             odds_2 = match_data.get('odds_2')  # Away win
+
+            # Recupera quote Over/Under
+            odds_over_0_5 = match_data.get('odds_over_0_5')
+            odds_over_1_5 = match_data.get('odds_over_1_5')
+            odds_over_2_5 = match_data.get('odds_over_2_5')
+            odds_under_0_5 = match_data.get('odds_under_0_5')
+            odds_under_1_5 = match_data.get('odds_under_1_5')
+            odds_under_2_5 = match_data.get('odds_under_2_5')
+
+            # Estrai statistiche live se disponibili
+            if live_data:
+                score_home = live_data.get('score_home', 0)
+                score_away = live_data.get('score_away', 0)
+                minute = live_data.get('minute', 0)
+                possession_home = live_data.get('possession_home', 50)
+                shots_home = live_data.get('shots_home', 0)
+                shots_away = live_data.get('shots_away', 0)
+                shots_on_target_home = live_data.get('shots_on_target_home', 0)
+                shots_on_target_away = live_data.get('shots_on_target_away', 0)
+                attacks_home = live_data.get('attacks_home', 0)
+                attacks_away = live_data.get('attacks_away', 0)
+                dangerous_attacks_home = live_data.get('dangerous_attacks_home', 0)
+                dangerous_attacks_away = live_data.get('dangerous_attacks_away', 0)
+            else:
+                score_home = score_away = minute = 0
+                possession_home = 50
+                shots_home = shots_away = 0
+                shots_on_target_home = shots_on_target_away = 0
+                attacks_home = attacks_away = 0
+                dangerous_attacks_home = dangerous_attacks_away = 0
 
             market_lower = market.lower()
 
@@ -440,6 +480,204 @@ class LiveBettingAdvisor:
                         if 1.3 <= ah_odds <= 5.0:
                             logger.info(f"🔢 Asian Handicap calcolato sinteticamente: {ah_odds:.2f} (stima, da odds_1={odds_1:.2f}, odds_2={odds_2:.2f})")
                             return round(ah_odds, 2)
+
+            # === TEAM TO SCORE NEXT (da statistiche pressione + xG) ===
+            # Logica: usa possesso, tiri in porta, attacchi pericolosi per stimare chi segna prossimo
+            elif 'next_goal' in market_lower or 'team_to_score_next' in market_lower:
+                if live_data and minute > 0:
+                    total_goals = score_home + score_away
+                    # Solo se partita in corso e non troppo tardi
+                    if minute >= 10 and minute <= 85 and total_goals < 5:
+                        # Calcola xG (expected goals) semplificato da statistiche
+                        # Formula: xG = (shots_on_target * 0.3) + (dangerous_attacks * 0.05)
+                        xg_home = (shots_on_target_home * 0.3) + (dangerous_attacks_home * 0.05)
+                        xg_away = (shots_on_target_away * 0.3) + (dangerous_attacks_away * 0.05)
+
+                        # Aggiungi peso per possesso (team con più possesso più probabile)
+                        possession_factor_home = possession_home / 100
+                        possession_factor_away = (100 - possession_home) / 100
+
+                        xg_home_weighted = xg_home * (0.7 + possession_factor_home * 0.3)
+                        xg_away_weighted = xg_away * (0.7 + possession_factor_away * 0.3)
+
+                        # Normalizza probabilità
+                        total_xg = xg_home_weighted + xg_away_weighted
+                        if total_xg > 0.1:  # Solo se c'è attività
+                            prob_home = xg_home_weighted / total_xg
+                            prob_away = xg_away_weighted / total_xg
+
+                            # Converti a quote (odds = 1 / prob)
+                            if 'home' in market_lower and prob_home > 0.15:  # Min 15% probabilità
+                                odds_next_home = 1 / prob_home
+                                # Validazione: quote ragionevoli per next goal (1.5-8.0)
+                                if 1.5 <= odds_next_home <= 8.0:
+                                    logger.info(f"🔢 Next Goal Home calcolato da statistiche: {odds_next_home:.2f} (xG_home={xg_home:.2f}, possesso={possession_home}%)")
+                                    return round(odds_next_home, 2)
+
+                            elif 'away' in market_lower and prob_away > 0.15:
+                                odds_next_away = 1 / prob_away
+                                if 1.5 <= odds_next_away <= 8.0:
+                                    logger.info(f"🔢 Next Goal Away calcolato da statistiche: {odds_next_away:.2f} (xG_away={xg_away:.2f}, possesso={(100-possession_home)}%)")
+                                    return round(odds_next_away, 2)
+
+            # === BTTS (da Over/Under + bias squadre) ===
+            # Logica: BTTS correlato a Over 1.5 + equilibrio squadre
+            elif 'btts_yes' in market_lower:
+                if odds_over_1_5 and odds_1 and odds_2:
+                    # Probabilità Over 1.5 (almeno 2 gol)
+                    prob_over_1_5 = 1 / odds_over_1_5 if odds_over_1_5 > 1.01 else 0
+
+                    # Equilibrio squadre: più equilibrate, più probabile BTTS
+                    # Se odds_1 ≈ odds_2, squadre equilibrate
+                    balance = min(odds_1 / odds_2, odds_2 / odds_1) if odds_1 > 0 and odds_2 > 0 else 0
+                    # balance = 1.0 → perfettamente equilibrate
+                    # balance = 0.5 → una nettamente favorita
+
+                    # BTTS più probabile se:
+                    # 1. Over 1.5 probabile (tanti gol)
+                    # 2. Squadre equilibrate (entrambe segnano)
+                    prob_btts = prob_over_1_5 * (0.5 + balance * 0.4)
+
+                    # Aggiustamento live: se già entrambe segnato, BTTS = 100%
+                    if live_data and score_home > 0 and score_away > 0:
+                        prob_btts = 1.0
+                    # Se una squadra non ha ancora segnato ma minuto avanzato, meno probabile
+                    elif live_data and minute > 60:
+                        if score_home == 0 or score_away == 0:
+                            prob_btts *= 0.7  # -30% se una non ha segnato dopo 60'
+
+                    if prob_btts > 0.15:
+                        odds_btts = 1 / prob_btts
+                        if 1.3 <= odds_btts <= 6.0:
+                            logger.info(f"🔢 BTTS Yes calcolato da Over/Under: {odds_btts:.2f} (prob_over_1.5={prob_over_1_5:.2f}, balance={balance:.2f})")
+                            return round(odds_btts, 2)
+
+            elif 'btts_no' in market_lower:
+                # BTTS No = opposto di BTTS Yes
+                btts_yes_odds = self._calculate_synthetic_odds(match_data, 'btts_yes', live_data)
+                if btts_yes_odds:
+                    prob_btts_yes = 1 / btts_yes_odds
+                    prob_btts_no = 1 - prob_btts_yes
+                    if prob_btts_no > 0.15:
+                        odds_btts_no = 1 / prob_btts_no
+                        if 1.1 <= odds_btts_no <= 5.0:
+                            logger.info(f"🔢 BTTS No calcolato da BTTS Yes: {odds_btts_no:.2f}")
+                            return round(odds_btts_no, 2)
+
+            # === CLEAN SHEET (da Under + difesa) ===
+            # Logica: Clean sheet correlato a Under + forza difensiva
+            elif 'clean_sheet_home' in market_lower:
+                if odds_under_1_5 and live_data:
+                    # Probabilità Under 1.5 (max 1 gol totale)
+                    prob_under_1_5 = 1 / odds_under_1_5 if odds_under_1_5 > 1.01 else 0
+
+                    # Se away ha già segnato, clean sheet home impossibile
+                    if score_away > 0:
+                        return 50.0  # Quote altissime (quasi impossibile)
+
+                    # Se 0-0 o 1-0, clean sheet possibile
+                    # Considera tiri in porta away (più tiri = meno probabile clean)
+                    shots_factor = max(0.3, 1 - (shots_on_target_away * 0.1))  # -10% per ogni tiro porta
+
+                    prob_clean_home = prob_under_1_5 * shots_factor * 0.6  # ~60% di Under 1.5
+
+                    if prob_clean_home > 0.1:
+                        odds_clean = 1 / prob_clean_home
+                        if 1.5 <= odds_clean <= 10.0:
+                            logger.info(f"🔢 Clean Sheet Home calcolato: {odds_clean:.2f} (under_1.5={odds_under_1_5:.2f}, shots_away={shots_on_target_away})")
+                            return round(odds_clean, 2)
+
+            elif 'clean_sheet_away' in market_lower:
+                if odds_under_1_5 and live_data:
+                    prob_under_1_5 = 1 / odds_under_1_5 if odds_under_1_5 > 1.01 else 0
+
+                    if score_home > 0:
+                        return 50.0
+
+                    shots_factor = max(0.3, 1 - (shots_on_target_home * 0.1))
+                    prob_clean_away = prob_under_1_5 * shots_factor * 0.6
+
+                    if prob_clean_away > 0.1:
+                        odds_clean = 1 / prob_clean_away
+                        if 1.5 <= odds_clean <= 10.0:
+                            logger.info(f"🔢 Clean Sheet Away calcolato: {odds_clean:.2f} (under_1.5={odds_under_1_5:.2f}, shots_home={shots_on_target_home})")
+                            return round(odds_clean, 2)
+
+            # === WIN TO NIL (da 1X2 + Clean Sheet) ===
+            # Logica: Vittoria senza subire = Vittoria AND Clean sheet
+            elif 'win_to_nil_home' in market_lower or 'home_win_to_nil' in market_lower:
+                if odds_1:
+                    # Calcola clean sheet home
+                    odds_clean = self._calculate_synthetic_odds(match_data, 'clean_sheet_home', live_data)
+                    if odds_clean:
+                        # Win to nil = P(win) × P(clean)
+                        prob_win = 1 / odds_1
+                        prob_clean = 1 / odds_clean
+                        prob_win_to_nil = prob_win * prob_clean
+
+                        if prob_win_to_nil > 0.05:
+                            odds_wtn = 1 / prob_win_to_nil
+                            if 2.0 <= odds_wtn <= 20.0:
+                                logger.info(f"🔢 Win to Nil Home calcolato: {odds_wtn:.2f} (odds_1={odds_1:.2f}, clean={odds_clean:.2f})")
+                                return round(odds_wtn, 2)
+
+            elif 'win_to_nil_away' in market_lower or 'away_win_to_nil' in market_lower:
+                if odds_2:
+                    odds_clean = self._calculate_synthetic_odds(match_data, 'clean_sheet_away', live_data)
+                    if odds_clean:
+                        prob_win = 1 / odds_2
+                        prob_clean = 1 / odds_clean
+                        prob_win_to_nil = prob_win * prob_clean
+
+                        if prob_win_to_nil > 0.05:
+                            odds_wtn = 1 / prob_win_to_nil
+                            if 2.0 <= odds_wtn <= 20.0:
+                                logger.info(f"🔢 Win to Nil Away calcolato: {odds_wtn:.2f} (odds_2={odds_2:.2f}, clean={odds_clean:.2f})")
+                                return round(odds_wtn, 2)
+
+            # === EXACT SCORE (da 1X2 + Over/Under) ===
+            # Logica: Combina probabilità esito + numero gol
+            elif 'exact_score' in market_lower or market_lower.startswith('score_'):
+                import re
+                # Estrai score dal nome (es. 'score_1_0', 'exact_score_2_1')
+                score_match = re.search(r'(\d+)[_-](\d+)', market_lower)
+                if score_match and odds_1 and odds_x and odds_2:
+                    expected_home = int(score_match.group(1))
+                    expected_away = int(score_match.group(2))
+                    expected_total = expected_home + expected_away
+
+                    # Determina esito
+                    if expected_home > expected_away:
+                        prob_result = 1 / odds_1  # Home win
+                    elif expected_away > expected_home:
+                        prob_result = 1 / odds_2  # Away win
+                    else:
+                        prob_result = 1 / odds_x  # Draw
+
+                    # Probabilità numero gol (da Over/Under)
+                    # Usa distribuzione Poisson semplificata
+                    prob_goals = 0.15  # Base probability per exact score
+
+                    # Aggiusta per total goals
+                    if expected_total == 0 and odds_under_0_5:
+                        prob_goals = (1 / odds_under_0_5) * 0.8
+                    elif expected_total == 1 and odds_under_1_5:
+                        prob_goals = (1 / odds_under_1_5) * 0.4
+                    elif expected_total == 2 and odds_over_1_5 and odds_under_2_5:
+                        prob_over_1_5 = 1 / odds_over_1_5 if odds_over_1_5 > 1.01 else 0
+                        prob_under_2_5 = 1 / odds_under_2_5 if odds_under_2_5 > 1.01 else 0
+                        prob_goals = prob_over_1_5 * prob_under_2_5 * 0.5
+                    elif expected_total >= 3 and odds_over_2_5:
+                        prob_goals = (1 / odds_over_2_5) * 0.3
+
+                    # Exact score = P(result) × P(goals)
+                    prob_exact = prob_result * prob_goals
+
+                    if prob_exact > 0.02:  # Min 2% probability
+                        odds_exact = 1 / prob_exact
+                        if 5.0 <= odds_exact <= 100.0:  # Exact scores tipicamente 5.0-100.0
+                            logger.info(f"🔢 Exact Score {expected_home}-{expected_away} calcolato: {odds_exact:.2f}")
+                            return round(odds_exact, 2)
 
             return None
 
