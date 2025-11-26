@@ -982,27 +982,6 @@ class Automation24H:
                     away = teams_data.get("away", {}).get("name", "?")
                     logger.info(f"   Partita {i+1}: {home} vs {away} - Status: {status_short}")
 
-        except urllib.error.HTTPError as e:
-            error_body = ""
-            try:
-                error_body = e.read().decode()
-            except:
-                pass
-            logger.error(f"❌ API-Football HTTP error: {e.code} - {e.reason}")
-            if error_body:
-                logger.error(f"   Response body: {error_body[:500]}")
-            if e.code == 429:
-                logger.error("⚠️  Rate limit raggiunto, aspetta prima di riprovare")
-            elif e.code == 401:
-                logger.error("⚠️  API key non valida o scaduta")
-            elif e.code == 403:
-                logger.error("⚠️  Accesso negato - verifica API key e permessi")
-            matches_found = []
-            return []
-        except Exception as e:
-            logger.error(f"❌ Errore chiamata API-Football: {e}")
-            matches_found = []
-            return []
             
             # Se non ci sono partite, ritorna lista vuota
             if not matches_found:
