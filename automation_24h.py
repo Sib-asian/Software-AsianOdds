@@ -1068,22 +1068,22 @@ class Automation24H:
                         continue
                     
                     # 🎯 FILTRO ESSENZIALE: Richiede statistiche per calcolare confidence precisa
-                    logger.debug(f"🔍 Verificando statistiche per {home_team} vs {away_team} (fixture {fixture_id}, status: {status_short})...")
+                    logger.info(f"🔍 Verificando statistiche per {home_team} vs {away_team} (fixture {fixture_id}, status: {status_short})...")
                     statistics = self._fetch_statistics_from_api_football(fixture_id, api_key, base_url)
                     if not statistics:
                         skipped_no_stats += 1
-                        logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} (status: {status_short}) senza statistiche disponibili, skip (necessarie per confidence precisa)")
+                        logger.warning(f"⚠️  Partita LIVE {home_team} vs {away_team} (status: {status_short}) senza statistiche disponibili, skip (necessarie per confidence precisa)")
                         continue  # Salta questa partita, serve statistiche per confidence precisa
                     logger.info(f"✅ Statistiche disponibili per {home_team} vs {away_team} (status: {status_short}), procedo con estrazione quote")
                     
                     # 🔧 FIX: Per partite LIVE, dobbiamo fare una chiamata separata per le quote
                     # L'endpoint /fixtures non include sempre le quote per partite LIVE, dobbiamo richiederle
-                    logger.debug(f"🔍 Verificando quote per {home_team} vs {away_team} (fixture {fixture_id})...")
-                    logger.debug(f"   Quote iniziali da /fixtures: {len(odds_data) if odds_data else 0} bookmaker")
+                    logger.info(f"🔍 Verificando quote per {home_team} vs {away_team} (fixture {fixture_id})...")
+                    logger.info(f"   Quote iniziali da /fixtures: {len(odds_data) if odds_data else 0} bookmaker")
                     
                     if not odds_data or len(odds_data) == 0:
                         # Prova a recuperare le quote per questa partita LIVE
-                        logger.debug(f"   Nessuna quota in /fixtures, provo a recuperare con /odds?fixture={fixture_id}")
+                        logger.info(f"   ⚠️  Nessuna quota in /fixtures, provo a recuperare con /odds?fixture={fixture_id}")
                         try:
                             odds_url = f"{base_url}/odds?fixture={fixture_id}"
                             
@@ -1097,7 +1097,7 @@ class Automation24H:
                             if odds_data_response is None:
                                 logger.warning(f"⚠️  Impossibile recuperare quote per fixture {fixture_id} dopo retry")
                                 skipped_no_odds += 1
-                                logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
+                                logger.warning(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
                                 continue  # Salta questa partita, serve quote per EV preciso
                             else:
                                 # 🔧 DEBUG: Log struttura risposta
@@ -1155,7 +1155,7 @@ class Automation24H:
                     # 🎯 Verifica che ci siano almeno alcune quote disponibili
                     if not odds_data or len(odds_data) == 0:
                         skipped_no_odds += 1
-                        logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
+                        logger.warning(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
                         continue  # Salta questa partita, serve quote per EV preciso
                     
                     # Estrai TUTTE le quote disponibili
@@ -1605,20 +1605,24 @@ class Automation24H:
             
             logger.info(f"✅ Riepilogo estrazione partite LIVE:")
             logger.info(f"   - Partite LIVE totali trovate: {len(data['response'])}")
-            logger.info(f"   - Partite LIVE processate: {live_count}")
-            logger.info(f"   - Partite finite (skipped): {skipped_finished}")
-            logger.info(f"   - Partite troppo vecchie (skipped): {skipped_not_live}")
-            logger.info(f"   - Partite LIVE senza statistiche (skipped): {skipped_no_stats}")
-            logger.info(f"   - Partite LIVE senza quote 1X2 (skipped): {skipped_no_odds}")
-            logger.info(f"   - Partite LIVE con quote e statistiche: {len(matches)}")
+            logger.info(f"📊 RIEPILOGO FILTRAGGIO PARTITE LIVE:")
+            logger.info(f"   ✅ Partite LIVE processate: {live_count}")
+            logger.info(f"   ⏭️  Partite finite (skipped): {skipped_finished}")
+            logger.info(f"   ⏭️  Partite non LIVE (skipped): {skipped_not_live}")
+            logger.info(f"   ⚠️  Partite LIVE senza statistiche (skipped): {skipped_no_stats}")
+            logger.info(f"   ⚠️  Partite LIVE senza quote (skipped): {skipped_no_odds}")
+            logger.info(f"   ✅ Partite LIVE con quote e statistiche (VALIDATE): {len(matches)}")
             
             if len(matches) == 0:
                 if live_count == 0:
                     logger.info(f"ℹ️  Nessuna partita LIVE trovata in questo momento. Questo è normale se non ci sono partite in corso.")
-                elif skipped_no_stats > 0:
-                    logger.warning(f"⚠️  {skipped_no_stats} partite LIVE trovate ma senza statistiche disponibili")
-                elif skipped_no_odds > 0:
-                    logger.warning(f"⚠️  {skipped_no_odds} partite LIVE trovate ma senza quote 1X2 disponibili")
+                else:
+                    logger.warning(f"⚠️  PROBLEMA: Trovate {live_count} partite LIVE ma tutte scartate!")
+                    if skipped_no_stats > 0:
+                        logger.warning(f"   - {skipped_no_stats} partite senza statistiche disponibili (API potrebbe non avere ancora dati)")
+                    if skipped_no_odds > 0:
+                        logger.warning(f"   - {skipped_no_odds} partite senza quote disponibili (bookmaker potrebbero non offrire quote live)")
+                    logger.warning(f"💡 SUGGERIMENTO: Le partite appena iniziate potrebbero non avere ancora statistiche/quote. Riprova tra qualche minuto.")
             
             return matches
             
