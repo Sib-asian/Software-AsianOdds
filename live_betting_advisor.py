@@ -432,7 +432,15 @@ class LiveBettingAdvisor:
             odds_key = 'odds_dnb_home'
         elif 'dnb_away' in market_lower or ('draw_no_bet' in market_lower and 'away' in market_lower):
             odds_key = 'odds_dnb_away'
-        
+
+        # 🆕 FIX: Match Winner (1X2) - home_win, away_win, draw
+        elif 'home_win' in market_lower or ('1x2' in market_lower and 'home' in market_lower):
+            odds_key = 'odds_1'
+        elif 'away_win' in market_lower or ('1x2' in market_lower and 'away' in market_lower):
+            odds_key = 'odds_2'
+        elif 'draw' in market_lower and ('match' in market_lower or '1x2' in market_lower):
+            odds_key = 'odds_x'
+
         # Asian Handicap - usa all_odds
         elif 'asian_handicap' in market_lower or 'handicap' in market_lower:
             all_odds = match_data.get('all_odds', {})
@@ -4030,13 +4038,17 @@ class LiveBettingAdvisor:
             shots_on_target_home = live_data.get('shots_on_target_home', 0)
             shots_on_target_away = live_data.get('shots_on_target_away', 0)
             
-            odds_1 = match_data.get('odds_1', 2.0)
-            odds_2 = match_data.get('odds_2', 2.0)
-            
+            # 🎯 FIX: Recupera quote reali live dall'API
+            odds_1 = self._get_real_odds(match_data, 'home_win') or match_data.get('odds_1', 2.0)
+            odds_2 = self._get_real_odds(match_data, 'away_win') or match_data.get('odds_2', 2.0)
+            odds_x = self._get_real_odds(match_data, 'draw') or match_data.get('odds_x', 3.0)
+
             # Home Win: Pareggio ma home domina nettamente
-            # 🆕 FIX: Aumentata confidence base (70% troppo bassa, min richiesto 78% per match_winner)
-            if score_home == score_away and minute >= 50 and minute <= 75:
-                if possession_home > 65 and shots_home > shots_away * 1.5 and shots_on_target_home >= 4:
+            # 🆕 FIX: Condizioni rilassate per permettere più opportunità valide
+            # PRIMA: solo 50-75', possesso > 65%, tiri > 1.5x, tiri porta >= 4
+            # DOPO: 30-80', possesso > 58%, tiri > 1.3x, tiri porta >= 3
+            if score_home == score_away and minute >= 30 and minute <= 80:
+                if possession_home > 58 and shots_home > shots_away * 1.3 and shots_on_target_home >= 3:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'home_win') if self.ai_pipeline else 0
                     # 🆕 FIX: Confidence base aumentata a 75% (minimo 78% richiesto, quindi serve almeno +3% da AI)
                     confidence = 75 + ai_boost
@@ -4063,10 +4075,12 @@ class LiveBettingAdvisor:
                     opportunities.append(opportunity)
             
             # Away Win: Pareggio ma away domina nettamente
-            # 🆕 FIX: Aumentata confidence base (70% troppo bassa, min richiesto 78% per match_winner)
-            elif score_home == score_away and minute >= 50 and minute <= 75:
+            # 🆕 FIX: Condizioni rilassate per permettere più opportunità valide
+            # PRIMA: solo 50-75', possesso > 65%, tiri > 1.5x, tiri porta >= 4
+            # DOPO: 30-80', possesso > 58%, tiri > 1.3x, tiri porta >= 3
+            elif score_home == score_away and minute >= 30 and minute <= 80:
                 possession_away = 100 - possession_home
-                if possession_away > 65 and shots_away > shots_home * 1.5 and shots_on_target_away >= 4:
+                if possession_away > 58 and shots_away > shots_home * 1.3 and shots_on_target_away >= 3:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'away_win') if self.ai_pipeline else 0
                     # 🆕 FIX: Confidence base aumentata a 75% (minimo 78% richiesto, quindi serve almeno +3% da AI)
                     confidence = 75 + ai_boost
@@ -4091,7 +4105,127 @@ class LiveBettingAdvisor:
                         timestamp=datetime.now()
                     )
                     opportunities.append(opportunity)
-                    
+
+            # 🆕 NUOVO: Home Win quando già in vantaggio e domina (conferma vittoria)
+            # Scenario: Home vince 1-0, 2-1, ecc. e continua a dominare → alta probabilità mantiene vantaggio
+            elif score_home > score_away and minute >= 60 and minute <= 85:
+                goal_diff = score_home - score_away
+                if goal_diff <= 2:  # Solo se vantaggio piccolo (1-2 gol, non 5-0)
+                    # Verifica dominio per confermare vittoria
+                    if possession_home > 55 and shots_on_target_home > shots_on_target_away:
+                        ai_boost = self._get_ai_market_confidence(match_data, live_data, 'home_win') if self.ai_pipeline else 0
+                        # Confidence aumenta con vantaggio e minuto
+                        base_conf = 70 + (goal_diff * 3) + ((minute - 60) / 5)  # +3% per gol, +1% ogni 5 min
+                        confidence = min(85, base_conf + ai_boost)
+
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='home_win_maintaining_lead', market='home_win',
+                            recommendation=f"Punta {match_data.get('home')} vince",
+                            reasoning=(
+                                f"🎯 VITTORIA FINALE (1X2)!\n\n"
+                                f"• Score: {score_home}-{score_away} (vantaggio {goal_diff} gol) al {minute}'\n"
+                                f"• {match_data.get('home')} in vantaggio e CONTROLLA:\n"
+                                f"  - Possesso: {possession_home}%\n"
+                                f"  - Tiri in porta: {shots_on_target_home} vs {shots_on_target_away}\n"
+                                f"• Alta probabilità mantiene vantaggio\n"
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=odds_1, stake_suggestion=3.0,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
+
+            # 🆕 NUOVO: Away Win quando già in vantaggio e domina (conferma vittoria)
+            elif score_away > score_home and minute >= 60 and minute <= 85:
+                goal_diff = score_away - score_home
+                if goal_diff <= 2:  # Solo se vantaggio piccolo (1-2 gol)
+                    possession_away = 100 - possession_home
+                    if possession_away > 55 and shots_on_target_away > shots_on_target_home:
+                        ai_boost = self._get_ai_market_confidence(match_data, live_data, 'away_win') if self.ai_pipeline else 0
+                        base_conf = 70 + (goal_diff * 3) + ((minute - 60) / 5)
+                        confidence = min(85, base_conf + ai_boost)
+
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='away_win_maintaining_lead', market='away_win',
+                            recommendation=f"Punta {match_data.get('away')} vince",
+                            reasoning=(
+                                f"🎯 VITTORIA FINALE (1X2)!\n\n"
+                                f"• Score: {score_home}-{score_away} (vantaggio {goal_diff} gol) al {minute}'\n"
+                                f"• {match_data.get('away')} in vantaggio e CONTROLLA:\n"
+                                f"  - Possesso: {possession_away}%\n"
+                                f"  - Tiri in porta: {shots_on_target_away} vs {shots_on_target_home}\n"
+                                f"• Alta probabilità mantiene vantaggio\n"
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=odds_2, stake_suggestion=3.0,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
+
+            # 🆕 NUOVO: Home Win quando in svantaggio ma domina NETTAMENTE (ribaltone)
+            # Scenario: Home perde 0-1 o 1-2 ma STRAPAZZA l'avversario → ribaltone probabile
+            elif score_home < score_away and minute >= 40 and minute <= 75:
+                goal_diff = score_away - score_home
+                if goal_diff <= 2:  # Solo se svantaggio recuperabile (max 2 gol)
+                    # Deve dominare MOLTO nettamente per ribaltone
+                    if possession_home > 62 and shots_home > shots_away * 1.5 and shots_on_target_home >= 4:
+                        ai_boost = self._get_ai_market_confidence(match_data, live_data, 'home_win') if self.ai_pipeline else 0
+                        # Confidence più bassa per ribaltone (più difficile)
+                        base_conf = 65 - (goal_diff * 2)  # -2% per ogni gol di svantaggio
+                        confidence = base_conf + ai_boost
+
+                        if confidence >= 60:  # Solo se abbastanza alta
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation='home_win_comeback', market='home_win',
+                                recommendation=f"Punta {match_data.get('home')} vince (RIBALTONE)",
+                                reasoning=(
+                                    f"🎯 VITTORIA FINALE - RIBALTONE (1X2)!\n\n"
+                                    f"• Score: {score_home}-{score_away} (svantaggio {goal_diff} gol) al {minute}'\n"
+                                    f"• {match_data.get('home')} perde ma DOMINA NETTAMENTE:\n"
+                                    f"  - Possesso: {possession_home}%\n"
+                                    f"  - Tiri: {shots_home} vs {shots_away}\n"
+                                    f"  - Tiri in porta: {shots_on_target_home} vs {shots_on_target_away}\n"
+                                    f"• Ribaltone molto probabile!\n"
+                                    f"• IA boost: +{ai_boost:.0f}%"
+                                ),
+                                confidence=confidence, odds=odds_1, stake_suggestion=2.5,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
+
+            # 🆕 NUOVO: Away Win quando in svantaggio ma domina NETTAMENTE (ribaltone)
+            elif score_away < score_home and minute >= 40 and minute <= 75:
+                goal_diff = score_home - score_away
+                if goal_diff <= 2:  # Solo se svantaggio recuperabile
+                    possession_away = 100 - possession_home
+                    if possession_away > 62 and shots_away > shots_home * 1.5 and shots_on_target_away >= 4:
+                        ai_boost = self._get_ai_market_confidence(match_data, live_data, 'away_win') if self.ai_pipeline else 0
+                        base_conf = 65 - (goal_diff * 2)
+                        confidence = base_conf + ai_boost
+
+                        if confidence >= 60:
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation='away_win_comeback', market='away_win',
+                                recommendation=f"Punta {match_data.get('away')} vince (RIBALTONE)",
+                                reasoning=(
+                                    f"🎯 VITTORIA FINALE - RIBALTONE (1X2)!\n\n"
+                                    f"• Score: {score_home}-{score_away} (svantaggio {goal_diff} gol) al {minute}'\n"
+                                    f"• {match_data.get('away')} perde ma DOMINA NETTAMENTE:\n"
+                                    f"  - Possesso: {possession_away}%\n"
+                                    f"  - Tiri: {shots_away} vs {shots_home}\n"
+                                    f"  - Tiri in porta: {shots_on_target_away} vs {shots_on_target_home}\n"
+                                    f"• Ribaltone molto probabile!\n"
+                                    f"• IA boost: +{ai_boost:.0f}%"
+                                ),
+                                confidence=confidence, odds=odds_2, stake_suggestion=2.5,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
+
         except Exception as e:
             logger.debug(f"⚠️  Errore check match winner markets: {e}")
         return opportunities
