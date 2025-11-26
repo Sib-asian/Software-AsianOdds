@@ -331,27 +331,147 @@ class LiveBettingAdvisor:
 
         return status
 
+    def _calculate_synthetic_odds(
+        self,
+        match_data: Dict[str, Any],
+        market: str,
+        live_data: Dict[str, Any] = None
+    ) -> Optional[float]:
+        """
+        🆕 CALCOLA QUOTE SINTETICHE per mercati secondari usando formule matematiche.
+
+        Deriviamo quote per mercati non disponibili dall'API usando:
+        - Quote 1X2 (odds_1, odds_x, odds_2)
+        - Quote Over/Under (odds_over_X_X, odds_under_X_X)
+        - Situazione live (score, minuto)
+
+        Args:
+            match_data: Dati partita con quote base
+            market: Mercato da calcolare (es. 'dnb_home', '1x', 'asian_handicap_home_+1')
+            live_data: Dati live opzionali per aggiustamenti
+
+        Returns:
+            Quota sintetica calcolata o None se impossibile
+        """
+        try:
+            # Recupera quote base 1X2
+            odds_1 = match_data.get('odds_1')  # Home win
+            odds_x = match_data.get('odds_x')  # Draw
+            odds_2 = match_data.get('odds_2')  # Away win
+
+            market_lower = market.lower()
+
+            # === DRAW NO BET (DNB) ===
+            # Formula: DNB = odds_team * odds_draw / (odds_draw - 1)
+            # Logica: elimina il pareggio, rimborsa se finisce X
+            if 'dnb_home' in market_lower or (market_lower == 'draw_no_bet_home'):
+                if odds_1 and odds_x and odds_x > 1.01:
+                    dnb_home = (odds_1 * odds_x) / (odds_x - 1)
+                    # Validazione: DNB deve essere < odds_1 (meno rischioso)
+                    if dnb_home > 1.01 and dnb_home < odds_1:
+                        logger.info(f"🔢 DNB Home calcolato sinteticamente: {dnb_home:.2f} (da odds_1={odds_1:.2f}, odds_x={odds_x:.2f})")
+                        return round(dnb_home, 2)
+
+            elif 'dnb_away' in market_lower or (market_lower == 'draw_no_bet_away'):
+                if odds_2 and odds_x and odds_x > 1.01:
+                    dnb_away = (odds_2 * odds_x) / (odds_x - 1)
+                    if dnb_away > 1.01 and dnb_away < odds_2:
+                        logger.info(f"🔢 DNB Away calcolato sinteticamente: {dnb_away:.2f} (da odds_2={odds_2:.2f}, odds_x={odds_x:.2f})")
+                        return round(dnb_away, 2)
+
+            # === DOUBLE CHANCE (1X, X2, 12) ===
+            # Formula: DC = 1 / (1/odds_a + 1/odds_b)
+            # Logica: combina due esiti, vinci se uno dei due si verifica
+            elif '1x' in market_lower and 'x2' not in market_lower:  # 1X (Home or Draw)
+                if odds_1 and odds_x and odds_1 > 1.01 and odds_x > 1.01:
+                    dc_1x = 1 / ((1/odds_1) + (1/odds_x))
+                    # Validazione: DC deve essere < min(odds_1, odds_x)
+                    if dc_1x > 1.01 and dc_1x < min(odds_1, odds_x):
+                        logger.info(f"🔢 Double Chance 1X calcolato sinteticamente: {dc_1x:.2f} (da odds_1={odds_1:.2f}, odds_x={odds_x:.2f})")
+                        return round(dc_1x, 2)
+
+            elif 'x2' in market_lower:  # X2 (Draw or Away)
+                if odds_x and odds_2 and odds_x > 1.01 and odds_2 > 1.01:
+                    dc_x2 = 1 / ((1/odds_x) + (1/odds_2))
+                    if dc_x2 > 1.01 and dc_x2 < min(odds_x, odds_2):
+                        logger.info(f"🔢 Double Chance X2 calcolato sinteticamente: {dc_x2:.2f} (da odds_x={odds_x:.2f}, odds_2={odds_2:.2f})")
+                        return round(dc_x2, 2)
+
+            elif '12' in market_lower:  # 12 (Home or Away)
+                if odds_1 and odds_2 and odds_1 > 1.01 and odds_2 > 1.01:
+                    dc_12 = 1 / ((1/odds_1) + (1/odds_2))
+                    if dc_12 > 1.01 and dc_12 < min(odds_1, odds_2):
+                        logger.info(f"🔢 Double Chance 12 calcolato sinteticamente: {dc_12:.2f} (da odds_1={odds_1:.2f}, odds_2={odds_2:.2f})")
+                        return round(dc_12, 2)
+
+            # === ASIAN HANDICAP (stima basata su differenza quote) ===
+            # Logica: se home favorita (odds_1 < odds_2), AH home negativo vale più
+            elif 'asian_handicap' in market_lower or 'handicap' in market_lower:
+                if odds_1 and odds_2 and odds_1 > 1.01 and odds_2 > 1.01:
+                    # Estrai handicap dal nome mercato
+                    import re
+                    handicap_match = re.search(r'([+-]?\d+\.?\d*)', market_lower)
+                    if handicap_match:
+                        h_value = float(handicap_match.group(1))
+
+                        # Stima AH basata su quanto è favorita una squadra
+                        # Se odds_1 << odds_2, home molto favorita → AH home con handicap negativo
+                        odds_ratio = odds_2 / odds_1 if odds_1 > 0 else 1
+
+                        # Aggiustamento live se disponibile
+                        live_adjustment = 1.0
+                        if live_data:
+                            score_home = live_data.get('score_home', 0)
+                            score_away = live_data.get('score_away', 0)
+                            goal_diff = score_home - score_away
+                            # Se già in vantaggio, AH più favorevole
+                            live_adjustment = 1 + (goal_diff * 0.05)  # +5% per ogni gol di vantaggio
+
+                        # Stima AH (formula semplificata)
+                        if 'home' in market_lower:
+                            # AH Home: se favorita (odds_1 < odds_2), quota più bassa
+                            ah_base = odds_1 * (1 + (h_value * 0.1))  # Aggiusta per handicap
+                            ah_odds = ah_base * live_adjustment
+                        else:  # away
+                            ah_base = odds_2 * (1 + (h_value * 0.1))
+                            ah_odds = ah_base * live_adjustment
+
+                        # Validazione: AH deve essere ragionevole (1.5-3.5 tipicamente)
+                        if 1.3 <= ah_odds <= 5.0:
+                            logger.info(f"🔢 Asian Handicap calcolato sinteticamente: {ah_odds:.2f} (stima, da odds_1={odds_1:.2f}, odds_2={odds_2:.2f})")
+                            return round(ah_odds, 2)
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"⚠️  Errore calcolo quote sintetiche per {market}: {e}")
+            return None
+
     def _get_real_odds(
         self,
         match_data: Dict[str, Any],
         market: str,
         situation: str = None,
         threshold: str = None,
-        handicap: str = None
+        handicap: str = None,
+        live_data: Dict[str, Any] = None
     ) -> Optional[float]:
         """
         🎯 RECUPERA QUOTE REALI DALL'API - PRECISIONE AL MILLESIMO
-        
+        🆕 Con fallback a calcolo sintetico per mercati secondari
+
         Mappa ogni mercato alle quote reali disponibili dall'API.
+        Se non disponibili, prova a calcolare sinteticamente da quote 1X2.
         Restituisce None se la quota non è disponibile.
-        
+
         Args:
             match_data: Dati partita con quote API
             market: Nome mercato (es. 'over_0.5_ht', 'btts_yes', 'asian_handicap')
             situation: Situazione (opzionale, usato come fallback)
             threshold: Threshold numerico (es. '0.5', '1.5', '2.5')
             handicap: Valore handicap per asian_handicap (es. '+1', '-0.5')
-        
+            live_data: Dati live opzionali per calcolo sintetico
+
         Returns:
             Quota reale (float) o None se non disponibile
         """
@@ -534,7 +654,14 @@ class LiveBettingAdvisor:
                     return None
                 if odd and isinstance(odd, (int, float)) and odd >= 1.0:
                     return float(odd)
-        
+
+        # 🆕 FALLBACK: Se quota reale non disponibile, prova calcolo sintetico
+        # Supporta: DNB, Double Chance, Asian Handicap (stime)
+        synthetic_odds = self._calculate_synthetic_odds(match_data, market, live_data)
+        if synthetic_odds:
+            logger.info(f"✅ Usata quota sintetica per {market}: {synthetic_odds:.2f}")
+            return synthetic_odds
+
         return None
 
     def _validate_realistic_odds(
@@ -2050,10 +2177,10 @@ class LiveBettingAdvisor:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, '1x') if self.ai_pipeline else 0
                     confidence = 75 + ai_boost  # Alta confidence solo se domina
                     
-                    # 🎯 RECUPERA QUOTA REALE DALL'API
-                    odds_1x = self._get_real_odds(match_data, '1x', situation='double_chance_1x_comeback')
+                    # 🎯 RECUPERA QUOTA REALE DALL'API (con fallback sintetico)
+                    odds_1x = self._get_real_odds(match_data, '1x', situation='double_chance_1x_comeback', live_data=live_data)
                     if not odds_1x:
-                        logger.debug(f"⏭️  1X saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                        logger.debug(f"⏭️  1X saltato: quota non disponibile (né reale né sintetica) per {match_data.get('home')} vs {match_data.get('away')}")
                     else:
                         opportunity = LiveBettingOpportunity(
                             match_id=match_id, match_data=match_data,
@@ -2080,8 +2207,8 @@ class LiveBettingAdvisor:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'x2') if self.ai_pipeline else 0
                     confidence = 75 + ai_boost
                     
-                    # 🎯 RECUPERA QUOTA REALE DALL'API
-                    odds_x2 = self._get_real_odds(match_data, 'x2', situation='double_chance_x2_comeback')
+                    # 🎯 RECUPERA QUOTA REALE DALL'API (con fallback sintetico)
+                    odds_x2 = self._get_real_odds(match_data, 'x2', situation='double_chance_x2_comeback', live_data=live_data)
                     if not odds_x2:
                         logger.debug(f"⏭️  X2 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                     else:
@@ -4038,10 +4165,10 @@ class LiveBettingAdvisor:
             shots_on_target_home = live_data.get('shots_on_target_home', 0)
             shots_on_target_away = live_data.get('shots_on_target_away', 0)
             
-            # 🎯 FIX: Recupera quote reali live dall'API
-            odds_1 = self._get_real_odds(match_data, 'home_win') or match_data.get('odds_1', 2.0)
-            odds_2 = self._get_real_odds(match_data, 'away_win') or match_data.get('odds_2', 2.0)
-            odds_x = self._get_real_odds(match_data, 'draw') or match_data.get('odds_x', 3.0)
+            # 🎯 FIX: Recupera quote reali live dall'API (con live_data per calcoli sintetici)
+            odds_1 = self._get_real_odds(match_data, 'home_win', live_data=live_data) or match_data.get('odds_1', 2.0)
+            odds_2 = self._get_real_odds(match_data, 'away_win', live_data=live_data) or match_data.get('odds_2', 2.0)
+            odds_x = self._get_real_odds(match_data, 'draw', live_data=live_data) or match_data.get('odds_x', 3.0)
 
             # Home Win: Pareggio ma home domina nettamente
             # 🆕 FIX: Condizioni rilassate per permettere più opportunità valide
