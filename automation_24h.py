@@ -1068,14 +1068,14 @@ class Automation24H:
                     if not home_team or not away_team:
                         continue
                     
-                    # 🎯 FILTRO ESSENZIALE: Richiede statistiche per calcolare confidence precisa
+                    # 🎯 MODIFICATO: Le statistiche sono ora OPZIONALI (non più obbligatorie)
+                    # Se non disponibili, il sistema userà valori di default e confidence ridotta
                     logger.debug(f"🔍 Verificando statistiche per {home_team} vs {away_team} (fixture {fixture_id}, status: {status_short})...")
                     statistics = self._fetch_statistics_from_api_football(fixture_id, api_key, base_url)
                     if not statistics:
-                        skipped_no_stats += 1
-                        logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} (status: {status_short}) senza statistiche disponibili, skip (necessarie per confidence precisa)")
-                        continue  # Salta questa partita, serve statistiche per confidence precisa
-                    logger.info(f"✅ Statistiche disponibili per {home_team} vs {away_team} (status: {status_short}), procedo con estrazione quote")
+                        logger.warning(f"⚠️  Nessuna statistica disponibile per {home_team} vs {away_team} (status: {status_short}), uso valori di default")
+                    else:
+                        logger.info(f"✅ Statistiche disponibili per {home_team} vs {away_team} (status: {status_short}), procedo con estrazione quote")
                     
                     # 🔧 FIX: Per partite LIVE, dobbiamo fare una chiamata separata per le quote
                     # L'endpoint /fixtures non include sempre le quote per partite LIVE, dobbiamo richiederle
@@ -1581,21 +1581,21 @@ class Automation24H:
                     logger.info(f"   Ha statistiche: {bool(statistics)}")
                     logger.info(f"   Ha almeno qualche quota: {has_1x2_partial or has_other_odds}")
                     
-                    # 🎯 FILTRO ESSENZIALE: Aggiungi solo partite con statistiche E quote (necessarie per confidence ed EV precisi)
-                    # L'utente vuole calcolare confidence ed EV solo per partite complete
-                    if statistics and (has_1x2_complete or has_1x2_partial or has_other_odds):
+                    # 🎯 MODIFICATO: Accetta partite con quote, anche senza statistiche
+                    # Le statistiche migliorano la confidence, ma non sono più obbligatorie
+                    # Richiede almeno ALCUNE quote disponibili (1X2 parziali O altri mercati)
+                    if (has_1x2_complete or has_1x2_partial or has_other_odds):
                         matches.append(match)
-                        if has_1x2_complete:
+                        if statistics and has_1x2_complete:
                             logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e quote 1X2 complete)")
-                        elif has_1x2_partial and has_other_odds:
+                        elif statistics and has_1x2_partial and has_other_odds:
                             logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche, quote 1X2 parziali e altre quote)")
-                        elif has_1x2_partial:
+                        elif statistics and has_1x2_partial:
                             logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e almeno 1 quota 1X2)")
-                        elif has_other_odds:
+                        elif statistics and has_other_odds:
                             logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e altre quote disponibili)")
-                    elif not statistics:
-                        skipped_no_stats += 1
-                        logger.debug(f"⏭️  Match {home_team} vs {away_team} senza statistiche, skip (necessarie per confidence precisa)")
+                        elif not statistics and (has_1x2_complete or has_1x2_partial or has_other_odds):
+                            logger.warning(f"⚠️  Match {home_team} vs {away_team} aggiunto SENZA statistiche (ha quote: 1X2={has_1x2_complete or has_1x2_partial}, altre={has_other_odds}), confidence sarà ridotta")
                     else:
                         skipped_no_odds += 1
                         logger.debug(f"⏭️  Match {home_team} vs {away_team} senza quote sufficienti (1X2: {bool(odds_1)}/{bool(odds_x)}/{bool(odds_2)}, altre: {has_other_odds}), skip (necessarie per EV preciso)")
@@ -1609,9 +1609,8 @@ class Automation24H:
             logger.info(f"   - Partite LIVE processate: {live_count}")
             logger.info(f"   - Partite finite (skipped): {skipped_finished}")
             logger.info(f"   - Partite troppo vecchie (skipped): {skipped_not_live}")
-            logger.info(f"   - Partite LIVE senza statistiche (skipped): {skipped_no_stats}")
-            logger.info(f"   - Partite LIVE senza quote 1X2 (skipped): {skipped_no_odds}")
-            logger.info(f"   - Partite LIVE con quote e statistiche: {len(matches)}")
+            logger.info(f"   - Partite LIVE senza quote sufficienti (skipped): {skipped_no_odds}")
+            logger.info(f"   - Partite aggiunte al monitoraggio: {len(matches)}")
             
             if len(matches) == 0:
                 if live_count == 0:
