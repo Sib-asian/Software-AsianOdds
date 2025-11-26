@@ -23,6 +23,7 @@ import sys
 import os
 import sqlite3
 import math
+from decimal import Decimal, InvalidOperation, getcontext
 import re
 import statistics
 from datetime import datetime, timedelta, timezone
@@ -40,6 +41,7 @@ except ImportError:
 # Setup logging using centralized configuration
 from logging_setup import init_logging
 init_logging()
+getcontext().prec = 12
 logger = logging.getLogger(__name__)
 
 # Import sistema esistente
@@ -720,6 +722,12 @@ class Automation24H:
             logger.info("   No LIVE matches to monitor, skipping cycle")
             return
         
+        # 🕵️  Controllo precisione quote prima di analizzare
+        try:
+            self._run_odds_precision_watchdog(matches)
+        except Exception as e:
+            logger.debug(f"⚠️  Odds precision watchdog error: {e}")
+        
         # 2. Analizza ogni partita e raccogli tutte le opportunità
         all_opportunities = []  # Raccogli tutte le opportunità per selezionare le migliori
         opportunities_found = 0
@@ -1082,73 +1090,14 @@ class Automation24H:
                     logger.info(f"   Quote iniziali da /fixtures: {len(odds_data) if odds_data else 0} bookmaker")
                     
                     if not odds_data or len(odds_data) == 0:
-                        # Prova a recuperare le quote per questa partita LIVE
                         logger.info(f"   ⚠️  Nessuna quota in /fixtures, provo a recuperare con /odds?fixture={fixture_id}")
-                        try:
-                            odds_url = f"{base_url}/odds?fixture={fixture_id}"
-                            
-                            # 🎯 RETRY LOGIC: Usa retry con backoff esponenziale
-                            def _make_odds_request():
-                                odds_req = urllib.request.Request(odds_url, headers=headers)
-                                with urllib.request.urlopen(odds_req, timeout=10) as odds_response:
-                                    return json.loads(odds_response.read().decode())
-                            
-                            odds_data_response = self._retry_api_call(_make_odds_request, max_retries=3, base_delay=1.0)
-                            if odds_data_response is None:
-                                logger.warning(f"⚠️  Impossibile recuperare quote per fixture {fixture_id} dopo retry")
-                                skipped_no_odds += 1
-                                logger.warning(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
-                                continue  # Salta questa partita, serve quote per EV preciso
-                            else:
-                                # 🔧 DEBUG: Log struttura risposta
-                                logger.debug(f"   Risposta /odds: {json.dumps(odds_data_response, indent=2)[:500]}")
-                                
-                                if odds_data_response.get("response") and len(odds_data_response["response"]) > 0:
-                                    # La struttura della risposta può variare
-                                    # Prova diverse strutture possibili
-                                    odds_data = []
-                                    
-                                    # Struttura 1: response è lista di bookmaker
-                                    first_item = odds_data_response["response"][0]
-                                    if isinstance(first_item, dict):
-                                        if "bookmakers" in first_item:
-                                            # Struttura: [{"bookmakers": [...]}]
-                                            odds_data = first_item["bookmakers"]
-                                        elif "bookmaker" in first_item:
-                                            # Struttura: [{"bookmaker": {...}, "bets": [...]}]
-                                            odds_data = [first_item]
-                                        else:
-                                            # Struttura: [{"id": ..., "name": ..., "bets": [...]}]
-                                            odds_data = odds_data_response["response"]
-                                    
-                                    if odds_data:
-                                        self.api_usage_today += 1  # Conta chiamata API per quote
-                                        logger.info(f"✅ Quote recuperate per {home_team} vs {away_team} (fixture {fixture_id}, {len(odds_data)} bookmaker)")
-                                    else:
-                                        logger.warning(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (struttura risposta inattesa: {list(first_item.keys()) if isinstance(first_item, dict) else 'non-dict'})")
-                                        skipped_no_odds += 1
-                                        logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
-                                        continue  # Salta questa partita, serve quote per EV preciso
-                                else:
-                                    logger.warning(f"⚠️  Nessuna quota disponibile per fixture {fixture_id} (response vuoto o None)")
-                                    skipped_no_odds += 1
-                                    logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
-                                    continue  # Salta questa partita, serve quote per EV preciso
-                        except urllib.error.HTTPError as e:
-                            error_body = ""
-                            try:
-                                error_body = e.read().decode()[:200]
-                            except:
-                                pass
-                            logger.warning(f"⚠️  HTTP error recupero quote per fixture {fixture_id}: {e.code} - {e.reason} - {error_body}")
+                        odds_data = self._fetch_fixture_odds_from_api_football(fixture_id, api_key, base_url)
+                        if not odds_data:
                             skipped_no_odds += 1
-                            logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
-                            continue  # Salta questa partita, serve quote per EV preciso
-                        except Exception as e:
-                            logger.warning(f"⚠️  Errore recupero quote per fixture {fixture_id}: {e}")
-                            skipped_no_odds += 1
-                            logger.debug(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
-                            continue  # Salta questa partita, serve quote per EV preciso
+                            logger.warning(f"⏭️  Partita LIVE {home_team} vs {away_team} senza quote disponibili, skip (necessarie per EV preciso)")
+                            continue
+                        self.api_usage_today += 1  # Conta chiamata API per quote
+                        logger.info(f"✅ Quote recuperate per {home_team} vs {away_team} (fixture {fixture_id}, {len(odds_data)} bookmaker)")
                     else:
                         logger.debug(f"✅ Quote già presenti in /fixtures per {home_team} vs {away_team} ({len(odds_data)} bookmaker)")
                     
@@ -1435,7 +1384,8 @@ class Automation24H:
                         'odds_x': all_odds.get('match_winner', {}).get('draw'),
                         'odds_2': all_odds.get('match_winner', {}).get('away'),
                         # Tutte le altre quote disponibili
-                        'all_odds': all_odds
+                        'all_odds': all_odds,
+                        'all_odds_precision': all_odds.get('_precision_snapshot')
                     }
                     
                     # Aggiungi quote specifiche per compatibilità con codice esistente
@@ -1633,7 +1583,42 @@ class Automation24H:
             logger.error(f"❌ Error fetching from API-Football: {e}")
             return []
     
-    def _validate_odds(self, odd: Any) -> Optional[float]:
+    def _fetch_fixture_odds_from_api_football(self, fixture_id: int, api_key: str, base_url: str) -> Optional[List[Dict]]:
+        """
+        Recupera la lista di bookmaker/quote per un singolo fixture live.
+        Restituisce una lista di bookmaker pronta per _extract_all_odds_from_api_football.
+        """
+        import urllib.request
+        
+        headers = {
+            "x-rapidapi-key": api_key,
+            "x-rapidapi-host": "v3.football.api-sports.io"
+        }
+        odds_url = f"{base_url}/odds?fixture={fixture_id}"
+        
+        def _make_odds_request():
+            odds_req = urllib.request.Request(odds_url, headers=headers)
+            with urllib.request.urlopen(odds_req, timeout=10) as odds_response:
+                return json.loads(odds_response.read().decode())
+        
+        odds_data_response = self._retry_api_call(_make_odds_request, max_retries=3, base_delay=1.0)
+        if odds_data_response is None:
+            return None
+        
+        response = odds_data_response.get("response")
+        if not response:
+            return None
+        
+        bookmakers_list: List[Dict[str, Any]] = []
+        for item in response:
+            if isinstance(item, dict) and item.get("bookmakers"):
+                bookmakers_list.extend(item.get("bookmakers") or [])
+            else:
+                bookmakers_list.append(item)
+        
+        return bookmakers_list or None
+    
+    def _validate_odds(self, odd: Any) -> Optional[Decimal]:
         """
         🎯 PRECISIONE MANIACALE: Valida una quota con controlli rigorosi.
         
@@ -1641,40 +1626,46 @@ class Automation24H:
             odd: Quota da validare (può essere str, int, float)
         
         Returns:
-            Quota validata come float, o None se invalida
+            Quota validata come Decimal, o None se invalida
         """
         if odd is None:
             return None
         
         try:
-            # Converti a float se necessario
-            if isinstance(odd, str):
-                odd = float(odd)
-            elif not isinstance(odd, (int, float)):
+            if isinstance(odd, Decimal):
+                decimal_odd = odd
+            elif isinstance(odd, str):
+                decimal_odd = Decimal(odd.strip())
+            elif isinstance(odd, (int, float)):
+                if isinstance(odd, float) and (math.isnan(odd) or math.isinf(odd)):
+                    logger.debug(f"⚠️  Quota NaN/Inf ignorata: {odd}")
+                    return None
+                decimal_odd = Decimal(str(odd))
+            else:
                 return None
             
-            # Validazione rigorosa
-            if math.isnan(odd) or math.isinf(odd):
-                logger.debug(f"⚠️  Quota NaN/Inf ignorata: {odd}")
+            if decimal_odd.is_nan():
+                logger.debug(f"⚠️  Quota NaN ignorata: {odd}")
+                return None
+            if not decimal_odd.is_finite():
+                logger.debug(f"⚠️  Quota non finita ignorata: {odd}")
                 return None
             
-            # Quota deve essere > 1.0 (altrimenti impossibile vincere)
-            if odd <= 1.0:
+            if decimal_odd <= Decimal("1.0"):
                 logger.debug(f"⚠️  Quota <= 1.0 ignorata: {odd}")
                 return None
             
-            # Sanity check: quota > 1000 probabilmente è un errore
-            if odd > 1000:
+            if decimal_odd > Decimal("1000"):
                 logger.warning(f"⚠️  Quota sospetta > 1000 ignorata: {odd}")
                 return None
             
-            return float(odd)
+            return decimal_odd
             
-        except (ValueError, TypeError) as e:
+        except (InvalidOperation, ValueError, TypeError) as e:
             logger.debug(f"⚠️  Errore validazione quota: {odd}, errore: {e}")
             return None
     
-    def _select_realistic_odds(self, odds_dict: Dict[str, float], market_name: str = "unknown") -> Tuple[Optional[float], Optional[str]]:
+    def _select_realistic_odds(self, odds_dict: Dict[str, Decimal], market_name: str = "unknown") -> Tuple[Optional[Decimal], Optional[str]]:
         """
         🎯 SELEZIONE INTELLIGENTE QUOTE: Seleziona una quota "realistica" evitando outlier.
         
@@ -1695,7 +1686,7 @@ class Automation24H:
             return None, None
         
         # Raccogli tutte le quote valide
-        valid_odds = []
+        valid_odds: List[Tuple[Decimal, str]] = []
         for bookmaker, odd in odds_dict.items():
             validated = self._validate_odds(odd)
             if validated is not None:
@@ -1709,7 +1700,7 @@ class Automation24H:
             return valid_odds[0]
         
         # Estrai solo i valori numerici per calcoli statistici
-        odds_values = [odd for odd, _ in valid_odds]
+        odds_values = [float(odd) for odd, _ in valid_odds]
         
         # Calcola statistiche
         mean_odds = statistics.mean(odds_values)
@@ -1730,16 +1721,19 @@ class Automation24H:
         outlier_threshold = mean_odds + (2 * std_dev) if std_dev > 0 else float('inf')
         
         for odd, bookmaker in valid_odds:
-            if odd <= outlier_threshold:
+            if float(odd) <= outlier_threshold:
                 filtered_odds.append((odd, bookmaker))
         
         # Se tutte le quote sono outlier, usa comunque la migliore (ma logga warning)
         if not filtered_odds:
             max_odd, max_bookmaker = max(valid_odds, key=lambda x: x[0])
+            diff_pct = 0.0
+            if mean_odds > 0:
+                diff_pct = ((float(max_odd) - mean_odds) / mean_odds) * 100
             logger.warning(
                 f"⚠️  QUOTE ANOMALE per {market_name}: tutte le quote sono outlier "
-                f"(media={mean_odds:.3f}, max={max_odd:.3f}, diff={((max_odd-mean_odds)/mean_odds*100):.1f}%). "
-                f"Uso comunque la migliore: {max_odd:.3f} da {max_bookmaker}"
+                f"(media={mean_odds:.3f}, max={float(max_odd):.3f}, diff={diff_pct:.1f}%). "
+                f"Uso comunque la migliore: {float(max_odd):.3f} da {max_bookmaker}"
             )
             return max_odd, max_bookmaker
         
@@ -1756,7 +1750,7 @@ class Automation24H:
         
         # Se la differenza tra 75° percentile e max è < 5%, preferisci la max (più competitiva)
         max_odd, max_bookmaker = sorted_odds[-1]
-        diff_pct = ((max_odd - selected_odd) / selected_odd) * 100 if selected_odd > 0 else 0
+        diff_pct = float(((max_odd - selected_odd) / selected_odd) * 100) if selected_odd > 0 else 0.0
         
         if diff_pct < 5.0 and len(filtered_odds) >= 3:
             # Usa la quota massima se è vicina al 75° percentile (non è un outlier)
@@ -1768,10 +1762,151 @@ class Automation24H:
             logger.info(
                 f"📊 {market_name}: {outliers_count} outlier filtrati su {len(valid_odds)} quote. "
                 f"Media={mean_odds:.3f}, Mediana={median_odds:.3f}, StdDev={std_dev:.3f}, "
-                f"Selezionata={selected_odd:.3f} (75° percentile) da {selected_bookmaker}"
+                f"Selezionata={float(selected_odd):.3f} (75° percentile) da {selected_bookmaker}"
             )
         
         return selected_odd, selected_bookmaker
+    
+    def _build_precision_snapshot(self, all_odds: Dict[str, Any], bookmaker_tracker: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Crea un riepilogo di precisione per tutte le quote presenti, includendo decimali esatti e bookmaker.
+        """
+        snapshot_time = datetime.now(timezone.utc).isoformat()
+        snapshot: Dict[str, Any] = {
+            'generated_at': snapshot_time,
+            'source': 'api-football',
+            'markets': {}
+        }
+        
+        def _store_precision(market: str, qualifier: str, value: Any, bookmaker: Optional[str]):
+            if value is None:
+                return
+            try:
+                decimal_value = Decimal(str(value))
+            except (InvalidOperation, ValueError):
+                return
+            market_entry = snapshot['markets'].setdefault(market, {})
+            market_entry[qualifier] = {
+                'decimal': format(decimal_value, 'f'),
+                'bookmaker': bookmaker,
+                'updated_at': snapshot_time
+            }
+        
+        for outcome in ['home', 'draw', 'away']:
+            _store_precision('match_winner', outcome, all_odds.get('match_winner', {}).get(outcome), bookmaker_tracker['match_winner'].get(outcome))
+        
+        for market_key in ['over_under', 'over_under_ht', 'first_half_goals', 'second_half_goals']:
+            market_dict = all_odds.get(market_key, {})
+            tracker_dict = bookmaker_tracker.get(market_key, {})
+            for threshold, odds in market_dict.items():
+                for outcome_type in ['over', 'under']:
+                    qualifier = f"{threshold}:{outcome_type}"
+                    bm = tracker_dict.get(threshold, {}).get(outcome_type) if isinstance(tracker_dict.get(threshold), dict) else None
+                    _store_precision(market_key, qualifier, odds.get(outcome_type), bm)
+        
+        for market_key in ['btts', 'btts_ht']:
+            for outcome in ['yes', 'no']:
+                _store_precision(market_key, outcome, all_odds.get(market_key, {}).get(outcome), bookmaker_tracker.get(market_key, {}).get(outcome))
+        
+        for outcome in ['1x', '12', 'x2']:
+            _store_precision('double_chance', outcome, all_odds.get('double_chance', {}).get(outcome), bookmaker_tracker.get('double_chance', {}).get(outcome))
+        
+        for outcome in ['home', 'away']:
+            _store_precision('draw_no_bet', outcome, all_odds.get('draw_no_bet', {}).get(outcome), bookmaker_tracker.get('draw_no_bet', {}).get(outcome))
+        
+        if all_odds.get('asian_handicap'):
+            for handicap, odd_value in all_odds['asian_handicap'].items():
+                _store_precision('asian_handicap', handicap, odd_value, bookmaker_tracker.get('asian_handicap', {}).get(handicap))
+        
+        return snapshot
+    
+    def _run_odds_precision_watchdog(self, matches: List[Dict], freshness_seconds: int = 120):
+        """Verifica che le quote di ogni match siano fresche e complete, altrimenti forza un refresh."""
+        if not matches:
+            return
+        
+        now = datetime.now(timezone.utc)
+        for match in matches:
+            precision_meta = match.get('all_odds_precision') or match.get('all_odds', {}).get('_precision_snapshot')
+            fixture_id = match.get('fixture_id') or match.get('id')
+            
+            if not precision_meta:
+                logger.warning(f"🕵️  Watchdog: fixture {fixture_id} senza precision metadata, provo refresh quote")
+                self._refresh_match_odds(match)
+                continue
+            
+            generated_at = precision_meta.get('generated_at')
+            markets_meta = precision_meta.get('markets', {})
+            stale = False
+            age_seconds = None
+            if generated_at:
+                try:
+                    generated_dt = datetime.fromisoformat(generated_at)
+                    if generated_dt.tzinfo is None:
+                        generated_dt = generated_dt.replace(tzinfo=timezone.utc)
+                    age_seconds = (now - generated_dt).total_seconds()
+                    if age_seconds > freshness_seconds:
+                        stale = True
+                except ValueError:
+                    stale = True
+            else:
+                stale = True
+            
+            match_winner_meta = markets_meta.get('match_winner', {})
+            missing_core = not all(match_winner_meta.get(outcome) for outcome in ['home', 'draw', 'away'])
+            
+            if not stale and not missing_core:
+                continue
+            
+            reasons = []
+            if stale:
+                if age_seconds is not None:
+                    reasons.append(f"stale {int(age_seconds)}s")
+                else:
+                    reasons.append("stale")
+            if missing_core:
+                reasons.append("missing_1x2")
+            
+            logger.warning(f"🕵️  Odds Precision Watchdog: fixture {fixture_id} richiede refresh ({', '.join(reasons)})")
+            self._refresh_match_odds(match)
+    
+    def _refresh_match_odds(self, match: Dict[str, Any]):
+        """Forza il refresh delle quote per un singolo match aggiornando il dict in-place."""
+        fixture_id = match.get('fixture_id') or match.get('id')
+        if not fixture_id:
+            logger.debug("🕵️  Watchdog: impossibile refresh, fixture_id mancante")
+            return
+        
+        api_key = os.getenv("API_FOOTBALL_KEY", "")
+        if not api_key:
+            logger.warning("🕵️  Watchdog: impossibile refresh quote, API_FOOTBALL_KEY non configurata")
+            return
+        
+        base_url = "https://v3.football.api-sports.io"
+        try:
+            odds_data = self._fetch_fixture_odds_from_api_football(int(fixture_id), api_key, base_url)
+        except Exception as e:
+            logger.warning(f"🕵️  Watchdog: errore imprevisto refresh quote fixture {fixture_id}: {e}")
+            return
+        
+        if not odds_data:
+            logger.warning(f"🕵️  Watchdog: nessuna quota disponibile per fixture {fixture_id} durante il refresh")
+            return
+        
+        refreshed_odds = self._extract_all_odds_from_api_football(odds_data)
+        if not refreshed_odds:
+            logger.warning(f"🕵️  Watchdog: estrazione quote fallita per fixture {fixture_id}")
+            return
+        
+        self.api_usage_today += 1
+        match['all_odds'] = refreshed_odds
+        match['all_odds_precision'] = refreshed_odds.get('_precision_snapshot')
+        if refreshed_odds.get('match_winner'):
+            match['odds_1'] = refreshed_odds['match_winner'].get('home')
+            match['odds_x'] = refreshed_odds['match_winner'].get('draw')
+            match['odds_2'] = refreshed_odds['match_winner'].get('away')
+        
+        logger.info(f"🔁 Watchdog: quote aggiornate per fixture {fixture_id}")
     
     def _retry_api_call(self, func, max_retries: int = 3, base_delay: float = 1.0, *args, **kwargs):
         """
@@ -1926,26 +2061,27 @@ class Automation24H:
                         outcome = value.get("value", "").lower()
                         odd = value.get("odd")
                         # 🎯 PRECISIONE MANIACALE: Validazione rigorosa quote prima di usarle
-                        odd = self._validate_odds(odd)
-                        if odd is None:
+                        odd_decimal = self._validate_odds(odd)
+                        if odd_decimal is None:
                             continue
+                        odd_float = float(odd_decimal)
                             
                         if outcome in ["home", "1"]:
                             # Raccogli quota da questo bookmaker
-                            all_bookmaker_odds['match_winner']['home'][bookmaker_name] = odd
+                            all_bookmaker_odds['match_winner']['home'][bookmaker_name] = odd_decimal
                             # Aggiorna se è la migliore (verrà poi sovrascritta da selezione intelligente)
-                            if all_odds['match_winner']['home'] is None or odd > all_odds['match_winner']['home']:
-                                all_odds['match_winner']['home'] = odd
+                            if all_odds['match_winner']['home'] is None or odd_float > all_odds['match_winner']['home']:
+                                all_odds['match_winner']['home'] = odd_float
                                 bookmaker_tracker['match_winner']['home'] = bookmaker_name
                         elif outcome in ["draw", "x"]:
-                            all_bookmaker_odds['match_winner']['draw'][bookmaker_name] = odd
-                            if all_odds['match_winner']['draw'] is None or odd > all_odds['match_winner']['draw']:
-                                all_odds['match_winner']['draw'] = odd
+                            all_bookmaker_odds['match_winner']['draw'][bookmaker_name] = odd_decimal
+                            if all_odds['match_winner']['draw'] is None or odd_float > all_odds['match_winner']['draw']:
+                                all_odds['match_winner']['draw'] = odd_float
                                 bookmaker_tracker['match_winner']['draw'] = bookmaker_name
                         elif outcome in ["away", "2"]:
-                            all_bookmaker_odds['match_winner']['away'][bookmaker_name] = odd
-                            if all_odds['match_winner']['away'] is None or odd > all_odds['match_winner']['away']:
-                                all_odds['match_winner']['away'] = odd
+                            all_bookmaker_odds['match_winner']['away'][bookmaker_name] = odd_decimal
+                            if all_odds['match_winner']['away'] is None or odd_float > all_odds['match_winner']['away']:
+                                all_odds['match_winner']['away'] = odd_float
                                 bookmaker_tracker['match_winner']['away'] = bookmaker_name
                 
                 # Over/Under - id: 5 (può essere FT o HT)
@@ -1960,9 +2096,10 @@ class Automation24H:
                         outcome = value.get("value", "").lower()
                         odd = value.get("odd")
                         # 🎯 PRECISIONE MANIACALE: Validazione rigorosa quote
-                        odd = self._validate_odds(odd)
-                        if odd is None:
+                        odd_decimal = self._validate_odds(odd)
+                        if odd_decimal is None:
                                 continue
+                        odd_float = float(odd_decimal)
                         
                         # Estrai threshold da qualsiasi valore (non solo hardcoded)
                         threshold = None
@@ -1980,14 +2117,14 @@ class Automation24H:
                             if "over" in outcome:
                                 if threshold not in target_dict:
                                     target_dict[threshold] = {'over': None, 'under': None}
-                                if target_dict[threshold]['over'] is None or odd > target_dict[threshold]['over']:
-                                    target_dict[threshold]['over'] = odd
+                                if target_dict[threshold]['over'] is None or odd_float > target_dict[threshold]['over']:
+                                    target_dict[threshold]['over'] = odd_float
                                     bookmaker_tracker[tracker_key][threshold]['over'] = bookmaker_name
                             elif "under" in outcome:
                                 if threshold not in target_dict:
                                     target_dict[threshold] = {'over': None, 'under': None}
-                                if target_dict[threshold]['under'] is None or odd > target_dict[threshold]['under']:
-                                    target_dict[threshold]['under'] = odd
+                                if target_dict[threshold]['under'] is None or odd_float > target_dict[threshold]['under']:
+                                    target_dict[threshold]['under'] = odd_float
                                     bookmaker_tracker[tracker_key][threshold]['under'] = bookmaker_name
                 
                 # First Half Goals - id: 16 o varianti
@@ -2111,40 +2248,34 @@ class Automation24H:
                 elif bet_id == 13 or "draw no bet" in bet_name:
                     for value in values:
                         outcome = value.get("value", "").lower()
-                        odd = value.get("odd")
-                        # Converti odd a float se è stringa
-                        if odd:
-                            try:
-                                odd = float(odd) if isinstance(odd, str) else odd
-                            except (ValueError, TypeError):
-                                continue
+                        odd_decimal = self._validate_odds(value.get("odd"))
+                        if odd_decimal is None:
+                            continue
+                        odd_float = float(odd_decimal)
                         
-                        if odd:
+                        if odd_float:
                             if "home" in outcome or "1" in outcome:
-                                if all_odds['draw_no_bet']['home'] is None or odd > all_odds['draw_no_bet']['home']:
-                                    all_odds['draw_no_bet']['home'] = odd
+                                if all_odds['draw_no_bet']['home'] is None or odd_float > all_odds['draw_no_bet']['home']:
+                                    all_odds['draw_no_bet']['home'] = odd_float
                             elif "away" in outcome or "2" in outcome:
-                                if all_odds['draw_no_bet']['away'] is None or odd > all_odds['draw_no_bet']['away']:
-                                    all_odds['draw_no_bet']['away'] = odd
+                                if all_odds['draw_no_bet']['away'] is None or odd_float > all_odds['draw_no_bet']['away']:
+                                    all_odds['draw_no_bet']['away'] = odd_float
                 
                 # Asian Handicap - id: 2
                 elif bet_id == 2 or "asian handicap" in bet_name:
                     for value in values:
                         outcome = value.get("value", "")
-                        odd = value.get("odd")
-                        # Converti odd a float se è stringa
-                        if odd:
-                            try:
-                                odd = float(odd) if isinstance(odd, str) else odd
-                            except (ValueError, TypeError):
-                                continue
+                        odd_decimal = self._validate_odds(value.get("odd"))
+                        if odd_decimal is None:
+                            continue
+                        odd_float = float(odd_decimal)
                         
-                        if odd and outcome:
+                        if odd_float and outcome:
                             # Salva con il valore dell'handicap come chiave
                             if outcome not in all_odds['asian_handicap']:
-                                all_odds['asian_handicap'][outcome] = odd
-                            elif odd > all_odds['asian_handicap'][outcome]:
-                                all_odds['asian_handicap'][outcome] = odd
+                                all_odds['asian_handicap'][outcome] = odd_float
+                            elif odd_float > all_odds['asian_handicap'][outcome]:
+                                all_odds['asian_handicap'][outcome] = odd_float
                 
                 # Altri mercati non categorizzati - salva per riferimento futuro
                 else:
@@ -2234,7 +2365,7 @@ class Automation24H:
                     f"1X2_{outcome}"
                 )
                 if selected_odd is not None:
-                    all_odds['match_winner'][outcome] = selected_odd
+                    all_odds['match_winner'][outcome] = float(selected_odd)
                     bookmaker_tracker['match_winner'][outcome] = selected_bookmaker
         
         # Over/Under FT e HT
@@ -2254,7 +2385,7 @@ class Automation24H:
                         if selected_odd is not None:
                             if threshold not in odds_key:
                                 odds_key[threshold] = {'over': None, 'under': None}
-                            odds_key[threshold][outcome_type] = selected_odd
+                            odds_key[threshold][outcome_type] = float(selected_odd)
                             if threshold not in tracker_key:
                                 tracker_key[threshold] = {'over': None, 'under': None}
                             tracker_key[threshold][outcome_type] = selected_bookmaker
@@ -2271,7 +2402,7 @@ class Automation24H:
                         f"{market_key}_{outcome}"
                     )
                     if selected_odd is not None:
-                        target_dict[outcome] = selected_odd
+                        target_dict[outcome] = float(selected_odd)
         
         # Double Chance
         for outcome in ['1x', '12', 'x2']:
@@ -2281,7 +2412,7 @@ class Automation24H:
                     f"double_chance_{outcome}"
                 )
                 if selected_odd is not None:
-                    all_odds['double_chance'][outcome] = selected_odd
+                    all_odds['double_chance'][outcome] = float(selected_odd)
         
         # Draw No Bet
         for outcome in ['home', 'away']:
@@ -2291,7 +2422,7 @@ class Automation24H:
                     f"dnb_{outcome}"
                 )
                 if selected_odd is not None:
-                    all_odds['draw_no_bet'][outcome] = selected_odd
+                    all_odds['draw_no_bet'][outcome] = float(selected_odd)
         
         # 🔧 OPZIONE 4: Applica logica ibrida - preferisci bet365 se differenza < 5%
         # Cerca bet365 in tutti i bookmaker (case-insensitive)
@@ -2415,6 +2546,7 @@ class Automation24H:
         all_odds['_bookmaker_counts'] = bookmaker_counts
         all_odds['_bookmaker_counts_flat'] = bookmaker_counts_flat
         all_odds['_best_offer_summary'] = best_offer_summary
+        all_odds['_precision_snapshot'] = self._build_precision_snapshot(all_odds, bookmaker_tracker)
         
         # 🔧 LOGGING: Mostra quale bookmaker fornisce le quote principali
         logger.info(f"📊 Bookmaker utilizzati per le quote:")
@@ -3396,8 +3528,9 @@ class Automation24H:
             # Questo assicura che EV sia sempre aggiornato con quote/confidence correnti
             
             # 🎯 Validazione rigorosa quote e confidence prima del calcolo EV
-            validated_odds = self._validate_odds(odds)
-            if validated_odds is None:
+            validated_odds = None
+            validated_odds_decimal = self._validate_odds(odds)
+            if validated_odds_decimal is None:
                 logger.warning(
                     f"⚠️  Quote invalide per {match_id}/{market}: odds={odds}, "
                     f"conf={confidence:.2f}%, salto calcolo EV"
@@ -3413,6 +3546,7 @@ class Automation24H:
                 try:
                     # Ricalcola EV con funzione precisa (usa Decimal per precisione assoluta)
                     ev_old = getattr(live_opp, 'ev', 0.0)
+                    validated_odds = float(validated_odds_decimal)
                     ev = self.live_betting_advisor._calculate_ev_from_values(confidence, validated_odds)
                     # Aggiorna anche l'oggetto live_opp per coerenza
                     live_opp.ev = ev
@@ -3434,7 +3568,7 @@ class Automation24H:
                 except Exception as e:
                     logger.error(
                         f"❌ Errore ricalcolo EV per {match_id}/{market}: {e}, "
-                        f"conf={confidence:.2f}%, odds={validated_odds:.4f}, uso valore cached"
+                        f"conf={confidence:.2f}%, odds={(validated_odds or odds):.4f}, uso valore cached"
                     )
                     ev = getattr(live_opp, 'ev', 0.0)
             else:
@@ -3442,7 +3576,7 @@ class Automation24H:
                 ev = getattr(live_opp, 'ev', 0.0)
                 logger.warning(
                     f"⚠️  LiveBettingAdvisor non disponibile per {match_id}/{market}, "
-                    f"uso EV cached: {ev:.4f}% (conf={confidence:.2f}%, odds={validated_odds:.4f})"
+                    f"uso EV cached: {ev:.4f}% (conf={confidence:.2f}%, odds={(validated_odds or odds):.4f})"
                 )
             
             # 🆕 Normalizzazione EV intelligente (funzione sigmoide/logaritmica)
