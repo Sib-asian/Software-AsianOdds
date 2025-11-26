@@ -945,23 +945,23 @@ class Automation24H:
             
             # 🎯 RETRY LOGIC: Usa retry con backoff esponenziale per resilienza
             def _make_fixtures_request():
-            with urllib.request.urlopen(req, timeout=15) as response:
-                        response_data = response.read().decode()
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    response_data = response.read().decode()
                     return json.loads(response_data)
             
             data = self._retry_api_call(_make_fixtures_request, max_retries=3, base_delay=1.0)
             if data is None:
                 logger.error("❌ Impossibile recuperare fixtures dopo retry")
                 return []
-                        
-                        if data.get("errors"):
+            
+            if data.get("errors"):
                 logger.error(f"❌ API-Football ha restituito errori: {data.get('errors')}")
                 return []
             
             if not data.get("response"):
                 logger.info(f"ℹ️  Nessuna partita LIVE trovata in questo momento (response vuoto)")
                 matches_found = []
-                        else:
+            else:
                 matches_found = data["response"]
                 logger.info(f"📊 Trovate {len(matches_found)} partite LIVE in corso dall'API!")
                 
@@ -1089,8 +1089,8 @@ class Automation24H:
                             
                             # 🎯 RETRY LOGIC: Usa retry con backoff esponenziale
                             def _make_odds_request():
-                            odds_req = urllib.request.Request(odds_url, headers=headers)
-                            with urllib.request.urlopen(odds_req, timeout=10) as odds_response:
+                                odds_req = urllib.request.Request(odds_url, headers=headers)
+                                with urllib.request.urlopen(odds_req, timeout=10) as odds_response:
                                     return json.loads(odds_response.read().decode())
                             
                             odds_data_response = self._retry_api_call(_make_odds_request, max_retries=3, base_delay=1.0)
@@ -2464,8 +2464,8 @@ class Automation24H:
             
             # 🎯 RETRY LOGIC: Usa retry con backoff esponenziale per resilienza
             def _make_request():
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as response:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as response:
                     return json.loads(response.read().decode())
             
             data = self._retry_api_call(_make_request, max_retries=3, base_delay=1.0)
@@ -3791,12 +3791,12 @@ class Automation24H:
                 
                 # 🎯 RIMOSSO: Filtro soglia minima score - l'utente vuole vedere tutte le opportunità
                 # Aggiungi sempre la migliore opportunità senza controllare soglie
-                    best.append(opp)
-                    live_opp = opp['opportunity'].get('live_opportunity')
-                    market = getattr(live_opp, 'market', 'unknown') if live_opp else 'unknown'
-                    logger.info(f"   ✅ Selezionata opportunità tipo '{market_type}' ({market})")
-                    logger.info(f"      📊 Score originale: {score_original:.3f} | Score finale: {score_final:.3f}")
-                    logger.info(f"      📈 EV: {opp['ev']:.1f}% | Conf: {opp['confidence']:.1f}% | Quality: {opp.get('quality_score', 0):.1f} | Odds: {opp.get('odds', 0):.2f}")
+                best.append(opp)
+                live_opp = opp['opportunity'].get('live_opportunity')
+                market = getattr(live_opp, 'market', 'unknown') if live_opp else 'unknown'
+                logger.info(f"   ✅ Selezionata opportunità tipo '{market_type}' ({market})")
+                logger.info(f"      📊 Score originale: {score_original:.3f} | Score finale: {score_final:.3f}")
+                logger.info(f"      📈 EV: {opp['ev']:.1f}% | Conf: {opp['confidence']:.1f}% | Quality: {opp.get('quality_score', 0):.1f} | Odds: {opp.get('odds', 0):.2f}")
                     # 🆕 Log dettagliato dei fattori di calcolo
                 logger.debug(
                     "      🔍 Dettagli calcolo: Base=%.3f | Sinergia=%.2fx | Tempo=%.2fx | Quote=%.2fx | EV_penalty=%.2fx | Pressione=%.2fx | Liquidità=%.2fx | Realismo=%.2fx",
@@ -3809,7 +3809,7 @@ class Automation24H:
                     opp.get('liquidity_factor', 1.0),
                     opp.get('realism_factor', 1.0)
                 )
-                    break
+                break
             
             # Log delle migliori per tipo (per debug)
             logger.debug(f"   📊 Top 5 opportunità per tipo di mercato:")
@@ -3856,7 +3856,7 @@ class Automation24H:
         minute = 0
         if hasattr(live_opp, 'match_stats') and live_opp.match_stats:
             if isinstance(live_opp.match_stats, dict):
-            minute = live_opp.match_stats.get('minute', 0)
+                minute = live_opp.match_stats.get('minute', 0)
         minute_rounded = (minute // 5) * 5
         opp_key = f"{match_id}_{market}_{minute_rounded}"
         
@@ -4050,7 +4050,7 @@ class Automation24H:
                     f"✅ Segnale {match_id}/{market} approvato (Quality Score: {score_value:.1f}/100)"
                     )
                 except Exception as e:
-                logger.debug(f"⚠️  Errore durante log quality_score: {e}")
+                    logger.debug(f"⚠️  Errore durante log quality_score: {e}")
         
         # 🔧 MIGLIORATO: Evita duplicati usando match_id + market + minuto
         # Questo evita di inviare la stessa opportunità più volte anche se rilevata in cicli diversi
@@ -4697,19 +4697,19 @@ def main():
         attempt += 1
         logger.info(f"🔁 Avvio Automation24H (tentativo {attempt})")
         
-    automation = Automation24H(
-        config_path=args.config,
-        telegram_token=args.telegram_token or config.get('telegram_token') or os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN'),
-        telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID'),
-        min_ev=args.min_ev or config.get('min_ev', 8.0),
-        min_confidence=args.min_confidence or config.get('min_confidence', 70.0),
-        update_interval=args.update_interval or config.get('update_interval', 600),
-        api_budget_per_day=config.get('api_budget_per_day', 7500),  # Piano Pro: 7500 chiamate/giorno
-        max_notifications_per_cycle=args.max_notifications or config.get('max_notifications_per_cycle', 2)
-    )
-    
+        automation = Automation24H(
+            config_path=args.config,
+            telegram_token=args.telegram_token or config.get('telegram_token') or os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN'),
+            telegram_chat_id=args.telegram_chat_id or config.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID'),
+            min_ev=args.min_ev or config.get('min_ev', 8.0),
+            min_confidence=args.min_confidence or config.get('min_confidence', 70.0),
+            update_interval=args.update_interval or config.get('update_interval', 600),
+            api_budget_per_day=config.get('api_budget_per_day', 7500),  # Piano Pro: 7500 chiamate/giorno
+            max_notifications_per_cycle=args.max_notifications or config.get('max_notifications_per_cycle', 2)
+        )
+        
         try:
-    automation.start(single_run=args.single_run)
+            automation.start(single_run=args.single_run)
             if args.single_run:
                 break
         except Exception as e:
@@ -4717,9 +4717,9 @@ def main():
         
         if args.single_run:
             break
-        
-        logger.info(f"⏳ Riavvio automatico tra {retry_delay} secondi...")
-        time.sleep(retry_delay)
+    
+    logger.info(f"⏳ Riavvio automatico tra {retry_delay} secondi...")
+    time.sleep(retry_delay)
 
 
 if __name__ == '__main__':
