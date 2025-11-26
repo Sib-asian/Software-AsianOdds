@@ -2614,7 +2614,19 @@ class LiveBettingAdvisor:
             # Calcola tasso gol atteso
             goals_per_minute = total_goals / minute if minute > 0 else 0
             expected_goals_final = goals_per_minute * 90 if minute > 0 else 0
-            
+
+            # 🛡️ FILTRI ANTI-OVVIETÀ per Over/Under
+            # Funzione helper per verificare se un mercato Over/Under è ovvio
+            def is_over_under_obvious(market_type: str, threshold: float, current_goals: int) -> bool:
+                """Verifica se un mercato Over/Under è ovvio dato lo score attuale"""
+                if 'over' in market_type:
+                    # Over X.5 è ovvio se total_goals > X
+                    return current_goals > threshold
+                else:  # under
+                    # Under X.5 è ovvio (impossibile) se total_goals > X
+                    # Esempio: Under 2.5 con 3+ gol = impossibile
+                    return current_goals > threshold
+
             # OVER 0.5: Nessun gol ma partita aperta
             # 🔧 ABBASSATO: shots/min > 0.15 (da 0.25), SOT >= 1 (da 2) per permettere più opportunità
             if total_goals == 0 and minute >= 20 and minute <= 70:
@@ -4527,7 +4539,20 @@ class LiveBettingAdvisor:
             # Scenario: Home vince 1-0, 2-1, ecc. e continua a dominare → alta probabilità mantiene vantaggio
             elif score_home > score_away and minute >= 60 and minute <= 85:
                 goal_diff = score_home - score_away
-                if goal_diff <= 2:  # Solo se vantaggio piccolo (1-2 gol, non 5-0)
+                total_goals = score_home + score_away
+
+                # 🛡️ FILTRI ANTI-OVVIETÀ
+                # Blocca se:
+                # 1. Quote troppo basse (< 1.30) = troppo ovvio
+                # 2. Vantaggio 2+ gol dopo 70' = quasi certo
+                # 3. Score alto (5+ gol) con vantaggio 2 = molto probabile
+                is_obvious = (
+                    odds_1 < 1.30 or  # Quote troppo basse
+                    (goal_diff >= 2 and minute > 70) or  # Vantaggio netto a fine partita
+                    (total_goals >= 5 and goal_diff >= 2)  # Tanti gol + vantaggio netto
+                )
+
+                if not is_obvious and goal_diff <= 2:  # Solo se NON ovvio e vantaggio piccolo (1-2 gol, non 5-0)
                     # Verifica dominio per confermare vittoria
                     if possession_home > 55 and shots_on_target_home > shots_on_target_away:
                         ai_boost = self._get_ai_market_confidence(match_data, live_data, 'home_win') if self.ai_pipeline else 0
@@ -4556,7 +4581,20 @@ class LiveBettingAdvisor:
             # 🆕 NUOVO: Away Win quando già in vantaggio e domina (conferma vittoria)
             elif score_away > score_home and minute >= 60 and minute <= 85:
                 goal_diff = score_away - score_home
-                if goal_diff <= 2:  # Solo se vantaggio piccolo (1-2 gol)
+                total_goals = score_home + score_away
+
+                # 🛡️ FILTRI ANTI-OVVIETÀ
+                # Blocca se:
+                # 1. Quote troppo basse (< 1.30) = troppo ovvio
+                # 2. Vantaggio 2+ gol dopo 70' = quasi certo (es. 2-4 al 71' come Real Madrid)
+                # 3. Score alto (5+ gol) con vantaggio 2 = molto probabile
+                is_obvious = (
+                    odds_2 < 1.30 or  # Quote troppo basse
+                    (goal_diff >= 2 and minute > 70) or  # Vantaggio netto a fine partita
+                    (total_goals >= 5 and goal_diff >= 2)  # Tanti gol + vantaggio netto
+                )
+
+                if not is_obvious and goal_diff <= 2:  # Solo se NON ovvio e vantaggio piccolo (1-2 gol)
                     possession_away = 100 - possession_home
                     if possession_away > 55 and shots_on_target_away > shots_on_target_home:
                         ai_boost = self._get_ai_market_confidence(match_data, live_data, 'away_win') if self.ai_pipeline else 0
