@@ -23,9 +23,10 @@ import sys
 import os
 import sqlite3
 import math
+import statistics
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Any
+from typing import Dict, List, Optional, Set, Any, Tuple
 import argparse
 
 # Carica variabili d'ambiente da .env
@@ -1685,7 +1686,17 @@ class Automation24H:
         'betfair exchange': 2.0,
     }
     
-    def _is_outlier_mad(self, values: List[float], x: float, k: float = 3.5) -> bool:
+    # MAD outlier detection threshold (k value)
+    # Higher = more permissive (fewer outliers detected)
+    # Lower = more aggressive (more outliers detected)
+    MAD_OUTLIER_THRESHOLD: float = 3.5
+    
+    # Constant for converting MAD to standard deviation equivalent
+    # This makes MAD comparable to std dev for normal distributions
+    # Mathematically: 1 / Φ^(-1)(0.75) ≈ 1.4826
+    MAD_NORMALIZATION_CONSTANT: float = 1.4826
+    
+    def _is_outlier_mad(self, values: List[float], x: float, k: float = None) -> bool:
         """
         🎯 MAD-based outlier detection (Median Absolute Deviation).
         
@@ -1695,14 +1706,15 @@ class Automation24H:
         Args:
             values: List of numeric values to compare against
             x: The value to test for being an outlier
-            k: Threshold multiplier (default 3.5 = conservative)
+            k: Threshold multiplier (default uses class constant MAD_OUTLIER_THRESHOLD)
                Lower k = more aggressive filtering
                Higher k = more permissive
         
         Returns:
             True if x is an outlier, False otherwise
         """
-        import statistics
+        if k is None:
+            k = self.MAD_OUTLIER_THRESHOLD
         
         if len(values) < 3:
             # Not enough data for reliable MAD calculation
@@ -1714,9 +1726,8 @@ class Automation24H:
             absolute_deviations = [abs(v - median_val) for v in values]
             mad = statistics.median(absolute_deviations)
             
-            # Constant factor for normal distribution approximation
-            # 1.4826 makes MAD comparable to standard deviation for normal dist
-            mad_adjusted = mad * 1.4826
+            # Use normalization constant to make MAD comparable to std dev
+            mad_adjusted = mad * self.MAD_NORMALIZATION_CONSTANT
             
             # Avoid division by zero
             if mad_adjusted < 0.0001:
@@ -1796,8 +1807,6 @@ class Automation24H:
             - aggregated_odd: The cleaned, aggregated odd, or None if invalid
             - metadata: Dict with details about the aggregation
         """
-        import statistics
-        
         metadata = {
             'method': 'vig_removed_weighted_avg',
             'bookmakers_used': 0,
@@ -1833,7 +1842,7 @@ class Automation24H:
         filtered_odds = {}
         
         for bookmaker, odd in valid_odds.items():
-            if len(odds_values) >= 3 and self._is_outlier_mad(odds_values, odd, k=3.5):
+            if len(odds_values) >= 3 and self._is_outlier_mad(odds_values, odd):
                 metadata['outliers_removed'].append({'bookmaker': bookmaker, 'odd': odd})
                 logger.info(f"📊 Outlier rimosso: {bookmaker} con quota {odd:.2f}")
             else:
