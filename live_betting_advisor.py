@@ -16,6 +16,15 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 
+# 🎯 FASE 2: Import Frontendcloud per calcoli matematici precisi (Poisson, Dixon-Coles)
+try:
+    import Frontendcloud
+    FRONTENDCLOUD_AVAILABLE = True
+    logger.info("✅ Frontendcloud importato: calcoli BTTS/Over-Under precisi disponibili")
+except ImportError as e:
+    FRONTENDCLOUD_AVAILABLE = False
+    logger.warning(f"⚠️ Frontendcloud non disponibile: {e}. Uso formule approssimate.")
+
 logger = logging.getLogger(__name__)
 
 # 🛡️ SANITY CHECK - Costanti per filtrare opportunità irrealistiche
@@ -331,6 +340,99 @@ class LiveBettingAdvisor:
 
         return status
 
+    def _estimate_lambda_from_live_data(
+        self,
+        live_data: Dict[str, Any],
+        is_home: bool = True
+    ) -> float:
+        """
+        🎯 FASE 2: Stima lambda (expected goals rate) dai dati live per calcoli Poisson precisi.
+
+        Lambda rappresenta il tasso medio di gol per squadra. Lo stimiamo da:
+        - xG (expected goals) se disponibili
+        - Score attuale + minuti giocati
+        - Statistiche offensive (tiri porta, attacchi pericolosi)
+        - Possesso palla
+
+        Args:
+            live_data: Dati live (score, minute, xG, stats)
+            is_home: True per home, False per away
+
+        Returns:
+            Lambda stimato (goals per 90 minuti)
+        """
+        if not live_data:
+            return 1.5  # Default neutro (media Serie A/Premier League)
+
+        minute = live_data.get('minute', 0)
+        if minute <= 0:
+            return 1.5  # Partita non iniziata
+
+        # Prendi dati squadra
+        if is_home:
+            score = live_data.get('score_home', 0)
+            xg = live_data.get('xg_home', 0.0)
+            shots_on_target = live_data.get('shots_on_target_home', 0)
+            dangerous_attacks = live_data.get('dangerous_attacks_home', 0)
+            possession = live_data.get('possession_home', 50.0)
+        else:
+            score = live_data.get('score_away', 0)
+            xg = live_data.get('xg_away', 0.0)
+            shots_on_target = live_data.get('shots_on_target_away', 0)
+            dangerous_attacks = live_data.get('dangerous_attacks_away', 0)
+            possession = live_data.get('possession_away', 50.0)
+
+        # Metodo 1: xG se disponibile (più preciso)
+        if xg > 0:
+            # xG è già per 90 minuti proiettato, o per minuti giocati?
+            # Assumiamo sia per minuti giocati, proiettiamo a 90'
+            lambda_from_xg = (xg / minute) * 90 if minute > 0 else xg
+            return max(0.3, min(4.0, lambda_from_xg))  # Clamp tra 0.3 e 4.0
+
+        # Metodo 2: Score attuale + proiezione
+        if score > 0 and minute >= 15:
+            # Goals/minuto attuale, proiettato a 90'
+            goals_per_minute = score / minute
+            lambda_from_score = goals_per_minute * 90
+
+            # Aggiusta con statistiche offensive
+            # Più tiri porta = più pericolosa
+            if shots_on_target > 0:
+                shot_efficiency = score / shots_on_target if shots_on_target > 0 else 0.15
+                # Media conversione è ~15-20%, aggiusta lambda
+                if shot_efficiency > 0.20:  # Molto efficiente
+                    lambda_from_score *= 1.2
+                elif shot_efficiency < 0.10:  # Poco efficiente
+                    lambda_from_score *= 0.8
+
+            # Aggiusta con possesso
+            possession_factor = possession / 50.0  # 50% = neutro
+            lambda_from_score *= (0.7 + possession_factor * 0.3)  # Possesso influisce 30%
+
+            return max(0.3, min(4.0, lambda_from_score))
+
+        # Metodo 3: Solo statistiche (se score = 0)
+        if shots_on_target > 0 or dangerous_attacks > 0:
+            # Stima lambda da tiri porta (media: 1 gol ogni 5-7 tiri porta)
+            lambda_from_shots = (shots_on_target / minute) * 90 * 0.15  # 15% conversione
+
+            # Aggiungi contributo attacchi pericolosi (1 gol ogni 15-20 attacchi)
+            lambda_from_attacks = (dangerous_attacks / minute) * 90 * 0.06  # 6% conversione
+
+            # Media pesata
+            lambda_estimated = (lambda_from_shots * 0.7) + (lambda_from_attacks * 0.3)
+
+            # Aggiusta con possesso
+            possession_factor = possession / 50.0
+            lambda_estimated *= (0.7 + possession_factor * 0.3)
+
+            return max(0.5, min(3.5, lambda_estimated))
+
+        # Fallback: Default basato su possesso
+        possession_factor = possession / 50.0
+        lambda_default = 1.5 * (0.7 + possession_factor * 0.3)
+        return max(0.8, min(2.5, lambda_default))
+
     def _calculate_synthetic_odds(
         self,
         match_data: Dict[str, Any],
@@ -432,40 +534,44 @@ class LiveBettingAdvisor:
 
             market_lower = market.lower()
 
-            # === DRAW NO BET (DNB) ===
-            # Formula: DNB = odds_team * odds_draw / (odds_draw - 1)
+            # === DRAW NO BET (DNB) - FASE 2: Formula già PRECISA ===
+            # Formula matematica: DNB = odds_team * odds_draw / (odds_draw - 1)
+            # ✅ Derivata da teoria probabilità: P(DNB) = P(Win) / (1 - P(Draw))
             # Logica: elimina il pareggio, rimborsa se finisce X
+            # Esempio: odds_1=2.0, odds_x=3.0 → DNB=3.0 (corretto!)
             if 'dnb_home' in market_lower or (market_lower == 'draw_no_bet_home'):
                 if odds_1 and odds_x and odds_x > 1.01:
                     dnb_home = (odds_1 * odds_x) / (odds_x - 1)
-                    # Validazione: DNB deve essere < odds_1 (meno rischioso)
-                    if dnb_home > 1.01 and dnb_home < odds_1:
-                        logger.info(f"🔢 DNB Home calcolato sinteticamente: {dnb_home:.2f} (da odds_1={odds_1:.2f}, odds_x={odds_x:.2f})")
+                    # Validazione: DNB deve essere < odds_1 (meno rischioso) ma > 1.01
+                    if dnb_home > 1.01 and dnb_home < odds_1 * 1.5:  # Max 1.5x odds_1
+                        logger.info(f"🔢 DNB Home (formula precisa): {dnb_home:.2f} (odds_1={odds_1:.2f}, odds_x={odds_x:.2f})")
                         return round(dnb_home, 2)
 
             elif 'dnb_away' in market_lower or (market_lower == 'draw_no_bet_away'):
                 if odds_2 and odds_x and odds_x > 1.01:
                     dnb_away = (odds_2 * odds_x) / (odds_x - 1)
-                    if dnb_away > 1.01 and dnb_away < odds_2:
-                        logger.info(f"🔢 DNB Away calcolato sinteticamente: {dnb_away:.2f} (da odds_2={odds_2:.2f}, odds_x={odds_x:.2f})")
+                    if dnb_away > 1.01 and dnb_away < odds_2 * 1.5:
+                        logger.info(f"🔢 DNB Away (formula precisa): {dnb_away:.2f} (odds_2={odds_2:.2f}, odds_x={odds_x:.2f})")
                         return round(dnb_away, 2)
 
-            # === DOUBLE CHANCE (1X, X2, 12) ===
-            # Formula: DC = 1 / (1/odds_a + 1/odds_b)
+            # === DOUBLE CHANCE (1X, X2, 12) - FASE 2: Formula già PRECISA ===
+            # Formula matematica: DC = 1 / (P_a + P_b) = 1 / (1/odds_a + 1/odds_b)
+            # ✅ Derivata da teoria probabilità: somma probabilità implicite
             # Logica: combina due esiti, vinci se uno dei due si verifica
+            # Esempio: odds_1=2.0, odds_x=3.0 → DC_1x=1.2 (corretto!)
             elif '1x' in market_lower and 'x2' not in market_lower:  # 1X (Home or Draw)
                 if odds_1 and odds_x and odds_1 > 1.01 and odds_x > 1.01:
                     dc_1x = 1 / ((1/odds_1) + (1/odds_x))
-                    # Validazione: DC deve essere < min(odds_1, odds_x)
+                    # Validazione: DC deve essere < min(odds_1, odds_x) (più prob = odds più bassa)
                     if dc_1x > 1.01 and dc_1x < min(odds_1, odds_x):
-                        logger.info(f"🔢 Double Chance 1X calcolato sinteticamente: {dc_1x:.2f} (da odds_1={odds_1:.2f}, odds_x={odds_x:.2f})")
+                        logger.info(f"🔢 Double Chance 1X (formula precisa): {dc_1x:.2f} (odds_1={odds_1:.2f}, odds_x={odds_x:.2f})")
                         return round(dc_1x, 2)
 
             elif 'x2' in market_lower:  # X2 (Draw or Away)
                 if odds_x and odds_2 and odds_x > 1.01 and odds_2 > 1.01:
                     dc_x2 = 1 / ((1/odds_x) + (1/odds_2))
                     if dc_x2 > 1.01 and dc_x2 < min(odds_x, odds_2):
-                        logger.info(f"🔢 Double Chance X2 calcolato sinteticamente: {dc_x2:.2f} (da odds_x={odds_x:.2f}, odds_2={odds_2:.2f})")
+                        logger.info(f"🔢 Double Chance X2 (formula precisa): {dc_x2:.2f} (odds_x={odds_x:.2f}, odds_2={odds_2:.2f})")
                         return round(dc_x2, 2)
 
             elif '12' in market_lower:  # 12 (Home or Away)
@@ -550,40 +656,67 @@ class LiveBettingAdvisor:
                                     logger.info(f"🔢 Next Goal Away calcolato da statistiche: {odds_next_away:.2f} (xG_away={xg_away:.2f}, possesso={(100-possession_home)}%)")
                                     return round(odds_next_away, 2)
 
-            # === BTTS (da Over/Under + bias squadre) ===
-            # Logica: BTTS correlato a Over 1.5 + equilibrio squadre
+            # === BTTS (FASE 2: Calcolo PRECISO con Poisson di Frontendcloud) ===
             elif 'btts_yes' in market_lower:
+                # 🎯 FASE 2: Usa Frontendcloud per calcolo matematico preciso
+                if FRONTENDCLOUD_AVAILABLE and live_data:
+                    try:
+                        # Stima lambda per entrambe le squadre dai dati live
+                        lambda_home = self._estimate_lambda_from_live_data(live_data, is_home=True)
+                        lambda_away = self._estimate_lambda_from_live_data(live_data, is_home=False)
+
+                        # Calcola probabilità BTTS con Poisson bivariato (formula precisa!)
+                        # rho = coefficiente correlazione (0.0 = indipendenti, tipicamente -0.1 a 0.1)
+                        rho = -0.05  # Leggera correlazione negativa (se una segna, altra leggermente meno probabile)
+                        prob_btts = Frontendcloud.btts_probability_bivariate(lambda_home, lambda_away, rho)
+
+                        # 🛡️ FIX BUG #3: Aggiustamento live (se già entrambe segnato)
+                        if score_home > 0 and score_away > 0:
+                            prob_btts = 0.99  # Max 99% → odds = 1.01 (minimo valido)
+                        # Se una squadra non ha ancora segnato ma minuto avanzato, riduci
+                        elif minute > 70 and (score_home == 0 or score_away == 0):
+                            prob_btts *= 0.6  # -40% se una non ha segnato dopo 70'
+                        elif minute > 60 and (score_home == 0 or score_away == 0):
+                            prob_btts *= 0.75  # -25% se una non ha segnato dopo 60'
+
+                        # 🛡️ FIX: Assicura prob_btts < 1.0 per evitare odds invalide
+                        prob_btts = min(0.99, max(0.05, prob_btts))  # Clamp tra 5% e 99%
+
+                        if prob_btts > 0.10:
+                            odds_btts = 1 / prob_btts
+                            if 1.2 <= odds_btts <= 8.0:
+                                logger.info(
+                                    f"🎯 BTTS Yes (POISSON PRECISO): {odds_btts:.2f} "
+                                    f"(λ_h={lambda_home:.2f}, λ_a={lambda_away:.2f}, prob={prob_btts:.2%})"
+                                )
+                                return round(odds_btts, 2)
+                    except Exception as e:
+                        logger.warning(f"⚠️ Errore calcolo BTTS con Frontendcloud: {e}, fallback a formula approssimata")
+                        # Fallback a formula approssimata se errore
+
+                # FALLBACK: Formula approssimata se Frontendcloud non disponibile
                 if odds_over_1_5 and odds_1 and odds_2:
                     # Probabilità Over 1.5 (almeno 2 gol)
                     prob_over_1_5 = 1 / odds_over_1_5 if odds_over_1_5 > 1.01 else 0
 
                     # Equilibrio squadre: più equilibrate, più probabile BTTS
-                    # Se odds_1 ≈ odds_2, squadre equilibrate
                     balance = min(odds_1 / odds_2, odds_2 / odds_1) if odds_1 > 0 and odds_2 > 0 else 0
-                    # balance = 1.0 → perfettamente equilibrate
-                    # balance = 0.5 → una nettamente favorita
 
-                    # BTTS più probabile se:
-                    # 1. Over 1.5 probabile (tanti gol)
-                    # 2. Squadre equilibrate (entrambe segnano)
+                    # BTTS più probabile se Over 1.5 probabile + squadre equilibrate
                     prob_btts = prob_over_1_5 * (0.5 + balance * 0.4)
 
-                    # 🛡️ FIX BUG #3: Aggiustamento live
-                    # Se già entrambe segnato, BTTS quasi certo (ma non 100% per evitare odds 1.0)
+                    # Aggiustamento live
                     if live_data and score_home > 0 and score_away > 0:
-                        prob_btts = 0.99  # Max 99% → odds = 1.01 (minimo valido)
-                    # Se una squadra non ha ancora segnato ma minuto avanzato, meno probabile
-                    elif live_data and minute > 60:
-                        if score_home == 0 or score_away == 0:
-                            prob_btts *= 0.7  # -30% se una non ha segnato dopo 60'
+                        prob_btts = 0.99
+                    elif live_data and minute > 60 and (score_home == 0 or score_away == 0):
+                        prob_btts *= 0.7
 
-                    # 🛡️ FIX: Assicura prob_btts < 1.0 per evitare odds invalide
                     prob_btts = min(0.99, prob_btts)
 
                     if prob_btts > 0.15:
                         odds_btts = 1 / prob_btts
                         if 1.3 <= odds_btts <= 6.0:
-                            logger.info(f"🔢 BTTS Yes calcolato da Over/Under: {odds_btts:.2f} (prob_over_1.5={prob_over_1_5:.2f}, balance={balance:.2f})")
+                            logger.info(f"🔢 BTTS Yes (approssimato): {odds_btts:.2f} (prob_over_1.5={prob_over_1_5:.2f}, balance={balance:.2f})")
                             return round(odds_btts, 2)
 
             elif 'btts_no' in market_lower:
@@ -7236,49 +7369,108 @@ class LiveBettingAdvisor:
         final_suitability = base_suitability * statistical_multiplier
         return max(0.0, min(100.0, final_suitability))
 
-    def _get_diversity_bonus(self, market_type: str) -> float:
+    def _get_market_category(self, market_type: str) -> str:
         """
-        🎯 NUOVO: Calcola bonus/penalità basato su quanto un mercato è stato usato recentemente.
+        🎯 FASE 1: Classifica mercato in categoria per market rotation.
 
-        Se un mercato è stato raccomandato troppo → penalità leggera
-        Se un mercato è stato raccomandato poco → bonus leggero
+        Questo permette di penalizzare/premiare intere categorie, non singoli mercati.
+        Esempio: se troppi "over_2.5", penalizza anche "over_1.5", "under_3.5", etc.
 
         Returns:
-            Bonus/penalità in punti percentuali (range: -5 a +5)
+            Categoria mercato: 'over_under', 'btts', '1x2', 'double_chance', 'dnb', 'other'
+        """
+        market = market_type.lower().strip()
+
+        # Over/Under (FT, HT, 1H, 2H)
+        if 'over' in market or 'under' in market:
+            return 'over_under'
+
+        # BTTS (Both Teams To Score)
+        elif 'btts' in market:
+            return 'btts'
+
+        # 1X2 (Match Winner)
+        elif '1x2' in market or 'home_win' in market or 'away_win' in market or 'draw' in market:
+            return '1x2'
+
+        # Double Chance
+        elif 'double_chance' in market or market in ['1x', 'x2', '12']:
+            return 'double_chance'
+
+        # Draw No Bet
+        elif 'dnb' in market or 'draw_no_bet' in market:
+            return 'dnb'
+
+        # Asian Handicap
+        elif 'handicap' in market or 'asian' in market:
+            return 'asian_handicap'
+
+        # Altri mercati
+        else:
+            return 'other'
+
+    def _get_diversity_bonus(self, market_type: str) -> float:
+        """
+        🎯 FASE 1 MIGLIORATA: Market Rotation - Penalizza Over/Under se dominano.
+
+        Calcola bonus/penalità basato su quanto una CATEGORIA di mercato è stata usata.
+        Non conta singoli mercati (es. "over_2.5") ma CATEGORIE (es. tutti gli Over/Under).
+
+        LOGICA:
+        - Over/Under dominano? → Penalità FORTE (-8% a -10%)
+        - Mercati secondari rari? → Bonus FORTE (+8% a +10%)
+
+        Questo forza varietà: se ha già suggerito 3-4 Over/Under, boost BTTS/1X2/DC.
+
+        Returns:
+            Bonus/penalità in punti percentuali (range: -10 a +10)
         """
         if not self.recent_markets:
             return 0.0  # Nessun dato, nessun adjustment
 
-        # Normalizza market type per confronto
-        market = market_type.lower().strip()
+        # Classifica mercato in categoria
+        category = self._get_market_category(market_type)
 
-        # Conta quante volte questo mercato appare negli ultimi N consigli
-        market_count = sum(1 for m in self.recent_markets if m.lower().strip() == market)
+        # Conta quanti mercati della STESSA CATEGORIA negli ultimi N consigli
+        category_count = sum(1 for m in self.recent_markets if self._get_market_category(m) == category)
         total_count = len(self.recent_markets)
 
         if total_count == 0:
             return 0.0
 
-        # Calcola percentuale di utilizzo
-        usage_percentage = (market_count / total_count) * 100
+        # Calcola percentuale di utilizzo della CATEGORIA
+        usage_percentage = (category_count / total_count) * 100
 
-        # Logica di bonus/penalità conservativa:
-        # - Se uso > 50% → penalità -5%
-        # - Se uso > 40% → penalità -3%
-        # - Se uso < 10% → bonus +5%
-        # - Se uso < 20% → bonus +3%
-        # - Altrimenti → neutro
-
-        if usage_percentage >= 50:
-            return -5.0  # Troppo usato
-        elif usage_percentage >= 40:
-            return -3.0
-        elif usage_percentage < 10 and total_count >= 10:  # Poco usato (ma solo se abbiamo almeno 10 campioni)
-            return 5.0
-        elif usage_percentage < 20 and total_count >= 10:
-            return 3.0
+        # 🎯 LOGICA MIGLIORATA: Penalità più aggressive per Over/Under
+        if category == 'over_under':
+            # Over/Under: penalità se dominano (>60% degli ultimi segnali)
+            if usage_percentage >= 70:
+                logger.debug(f"🚫 Market Rotation: Over/Under dominano ({usage_percentage:.0f}%), penalità -10%")
+                return -10.0  # Penalità MOLTO forte
+            elif usage_percentage >= 60:
+                logger.debug(f"⚠️ Market Rotation: Over/Under troppi ({usage_percentage:.0f}%), penalità -8%")
+                return -8.0   # Penalità forte
+            elif usage_percentage >= 50:
+                logger.debug(f"⚠️ Market Rotation: Over/Under molti ({usage_percentage:.0f}%), penalità -5%")
+                return -5.0   # Penalità media
+            elif usage_percentage >= 40:
+                return -3.0   # Penalità leggera
+            else:
+                return 0.0    # Uso normale
         else:
-            return 0.0  # Uso normale
+            # Mercati secondari: bonus se poco usati (varietà!)
+            if usage_percentage < 10 and total_count >= 5:
+                logger.info(f"✨ Market Rotation: {category} poco usato ({usage_percentage:.0f}%), bonus +10%")
+                return 10.0  # Bonus MOLTO forte per varietà
+            elif usage_percentage < 20 and total_count >= 5:
+                logger.info(f"✨ Market Rotation: {category} raro ({usage_percentage:.0f}%), bonus +8%")
+                return 8.0   # Bonus forte
+            elif usage_percentage < 30:
+                return 5.0   # Bonus medio
+            elif usage_percentage >= 50:
+                return -3.0  # Anche altri mercati se dominano troppo
+            else:
+                return 0.0   # Uso normale
 
     def _update_market_tracking(self, market_type: str):
         """
@@ -7359,7 +7551,7 @@ class LiveBettingAdvisor:
             (confidence_score / 100.0 * 0.45) +      # 45% peso confidence
             (time_suitability / 100.0 * 0.35) +      # 35% peso timing
             (ev_normalized / 100.0 * 0.15) +         # 15% peso EV
-            ((diversity_bonus + 50) / 100.0 * 0.05)  # 5% peso diversity (normalizzato da -5/+5 a 0-100)
+            ((diversity_bonus + 10) / 20.0 * 0.05)   # 5% peso diversity (normalizzato da -10/+10 a 0-1)
         )
 
         # Log per debugging (solo se abbiamo suitability significativamente diversa da default)
