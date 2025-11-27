@@ -1586,7 +1586,16 @@ class Automation24H:
             "x-rapidapi-key": api_key,
             "x-rapidapi-host": "v3.football.api-sports.io"
         }
+        # 🔧 FIX: Aggiungi parametri per ottenere quote da tutti i bookmaker disponibili
+        # L'API supporta parametri opzionali per filtrare bookmaker, ma senza specificarli
+        # dovrebbe restituire tutti i bookmaker disponibili
+        # Proviamo senza filtri prima, poi se non funziona aggiungiamo bookmaker specifici
         odds_url = f"{base_url}/odds?fixture={fixture_id}"
+        
+        # 🆕 PROVA: Aggiungi parametro per richiedere tutti i bookmaker (se supportato)
+        # Alcune versioni dell'API supportano bookmaker=all o bookmaker=1 per tutti
+        # Proviamo prima senza, poi logghiamo cosa restituisce
+        logger.debug(f"📡 Fetching odds per fixture {fixture_id} da {odds_url}")
         
         def _make_odds_request():
             odds_req = urllib.request.Request(odds_url, headers=headers)
@@ -1595,18 +1604,69 @@ class Automation24H:
         
         odds_data_response = self._retry_api_call(_make_odds_request, max_retries=3, base_delay=1.0)
         if odds_data_response is None:
+            logger.warning(f"⚠️  Nessuna risposta dall'API per odds fixture {fixture_id}")
+            return None
+        
+        # 🔧 DEBUG: Log struttura risposta per capire cosa restituisce l'API
+        if odds_data_response.get("errors"):
+            logger.error(f"❌ API-Football errori per odds fixture {fixture_id}: {odds_data_response.get('errors')}")
             return None
         
         response = odds_data_response.get("response")
         if not response:
+            logger.warning(f"⚠️  Risposta API vuota per odds fixture {fixture_id}. Response keys: {list(odds_data_response.keys())}")
+            # 🔧 DEBUG: Log completo della risposta per capire la struttura
+            logger.debug(f"   Full response: {json.dumps(odds_data_response, indent=2, default=str)[:500]}")
             return None
+        
+        # 🔧 DEBUG: Log struttura response per capire formato
+        logger.debug(f"📊 Risposta odds fixture {fixture_id}: type={type(response)}, length={len(response) if isinstance(response, list) else 'N/A'}")
+        if isinstance(response, list) and len(response) > 0:
+            first_item = response[0]
+            logger.debug(f"   Primo elemento keys: {list(first_item.keys()) if isinstance(first_item, dict) else 'NOT_DICT'}")
+            if isinstance(first_item, dict):
+                if "bookmakers" in first_item:
+                    logger.debug(f"   Struttura con 'bookmakers': {len(first_item.get('bookmakers', []))} bookmaker nel primo elemento")
+                else:
+                    logger.debug(f"   Struttura diretta (bookmaker direttamente): {first_item.get('bookmaker', {}).get('name', 'N/A')}")
         
         bookmakers_list: List[Dict[str, Any]] = []
         for item in response:
-            if isinstance(item, dict) and item.get("bookmakers"):
-                bookmakers_list.extend(item.get("bookmakers") or [])
+            if isinstance(item, dict):
+                # Caso 1: Item ha "bookmakers" come lista annidata
+                if item.get("bookmakers"):
+                    bookmakers = item.get("bookmakers", [])
+                    bookmakers_list.extend(bookmakers)
+                    logger.debug(f"   Aggiunti {len(bookmakers)} bookmaker da struttura annidata")
+                # Caso 2: Item è direttamente un bookmaker (ha "bookmaker" key)
+                elif item.get("bookmaker"):
+                    bookmakers_list.append(item)
+                    logger.debug(f"   Aggiunto bookmaker diretto: {item.get('bookmaker', {}).get('name', 'N/A')}")
+                # Caso 3: Item potrebbe essere già nella forma corretta
+                else:
+                    bookmakers_list.append(item)
+                    logger.debug(f"   Aggiunto item diretto (struttura sconosciuta)")
             else:
                 bookmakers_list.append(item)
+        
+        logger.info(f"✅ Totale {len(bookmakers_list)} bookmaker estratti per fixture {fixture_id}")
+        if bookmakers_list:
+            # Log nomi dei primi 3 bookmaker per debug
+            for i, bm in enumerate(bookmakers_list[:3]):
+                bm_name = bm.get("bookmaker", {}).get("name", "Unknown") if isinstance(bm, dict) else "Unknown"
+                logger.debug(f"   Bookmaker {i+1}: {bm_name}")
+        else:
+            # 🔧 FIX: Se non otteniamo bookmaker, la risposta potrebbe essere vuota o struttura diversa
+            # L'API-Football /odds dovrebbe restituire tutti i bookmaker disponibili senza parametri aggiuntivi
+            # Se non ci sono bookmaker, significa che:
+            # 1. Non ci sono quote disponibili per questa partita (normale per alcune partite live)
+            # 2. La struttura della risposta è diversa (da verificare con logging)
+            # 3. L'API richiede parametri aggiuntivi (non documentato, ma possibile)
+            logger.warning(
+                f"⚠️  Nessun bookmaker estratto per fixture {fixture_id}. "
+                f"Questo potrebbe essere normale se la partita non ha quote disponibili, "
+                f"o potrebbe indicare un problema con la struttura della risposta API."
+            )
         
         return bookmakers_list or None
     
