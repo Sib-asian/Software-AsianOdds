@@ -1667,7 +1667,7 @@ class Automation24H:
         return {
             'bet365': 1.0,           # Massima fiducia
             'pinnacle': 0.95,        # Bookmaker professionale
-            'betfair': 0.90,         # Exchange affidabile
+            'betfair': 0.95,         # Exchange affidabile - margini più bassi (aumentato da 0.90)
             'william hill': 0.85,    # Bookmaker storico
             'bwin': 0.85,
             'unibet': 0.85,
@@ -1711,22 +1711,72 @@ class Automation24H:
         # Bookmaker non nella lista: peso medio-basso ma non zero
         return 0.5
     
+    def _calculate_consensus_score(self, odd: Decimal, all_odds_list: List[Decimal]) -> float:
+        """
+        🎯 MIGLIORAMENTO 2: Calcola score di consenso per una quota.
+        
+        Se molti bookmaker hanno quote simili, significa che la quota è più affidabile.
+        Score alto = molti bookmaker concordano, score basso = quota isolata.
+        
+        Args:
+            odd: Quota da valutare
+            all_odds_list: Lista di tutte le quote disponibili per questo mercato
+        
+        Returns:
+            Score di consenso (0.0-1.0), dove 1.0 = massimo consenso
+        """
+        if not all_odds_list or len(all_odds_list) < 2:
+            return 0.5  # Consenso neutro se poche quote
+        
+        try:
+            odd_float = float(odd)
+            consensus_count = 0
+            total_count = len(all_odds_list)
+            
+            # Considera quote "vicine" come consenso (entro ±5%)
+            consensus_threshold = 0.05  # 5%
+            
+            for other_odd in all_odds_list:
+                other_float = float(other_odd)
+                if other_float > 0:
+                    diff_pct = abs(odd_float - other_float) / other_float
+                    if diff_pct <= consensus_threshold:
+                        consensus_count += 1
+            
+            # Score basato su percentuale di bookmaker che concordano
+            consensus_ratio = consensus_count / total_count
+            
+            # Normalizza: 50%+ consenso = score alto, <30% = score basso
+            if consensus_ratio >= 0.5:
+                return min(1.0, consensus_ratio * 1.5)  # Bonus per alto consenso
+            elif consensus_ratio >= 0.3:
+                return 0.5 + (consensus_ratio - 0.3) * 2.5  # 0.5-0.95
+            else:
+                return consensus_ratio * 1.5  # 0-0.45
+            
+        except Exception as e:
+            logger.debug(f"⚠️  Errore calcolo consensus score: {e}")
+            return 0.5
+    
     def _calculate_odds_quality_score(self, odd: Decimal, bookmaker: str, total_odds_count: int, 
-                                      has_trusted_bookmakers: bool = True) -> float:
+                                      has_trusted_bookmakers: bool = True, 
+                                      all_odds_list: Optional[List[Decimal]] = None) -> float:
         """
         🎯 CALCOLA QUALITÀ QUOTA: Restituisce uno score (0-1) per la qualità di una quota.
         
         Fattori considerati:
-        1. Affidabilità bookmaker (peso 40%)
-        2. Numero totale quote disponibili (peso 20%)
-        3. Presenza di bookmaker affidabili (peso 20%)
-        4. Valore quota (peso 20%)
+        1. Affidabilità bookmaker (peso 35%)
+        2. Numero totale quote disponibili (peso 15%)
+        3. Presenza di bookmaker affidabili (peso 15%)
+        4. Valore quota (peso 15%)
+        5. 🆕 Consenso tra bookmaker (peso 20%) - MIGLIORAMENTO 2
         
         Args:
             odd: Quota da valutare
             bookmaker: Nome del bookmaker
             total_odds_count: Numero totale di quote disponibili per questo mercato
             has_trusted_bookmakers: Se ci sono bookmaker affidabili tra le quote
+            all_odds_list: Lista di tutte le quote per calcolare consenso (opzionale)
         
         Returns:
             Score di qualità (0.0-1.0), dove 1.0 è la migliore qualità
@@ -1734,11 +1784,11 @@ class Automation24H:
         try:
             quality_score = 0.0
             
-            # 1. Affidabilità bookmaker (40%)
+            # 1. Affidabilità bookmaker (35% - ridotto da 40% per fare spazio al consenso)
             bookmaker_weight = self._get_bookmaker_weight(bookmaker)
-            quality_score += bookmaker_weight * 0.4
+            quality_score += bookmaker_weight * 0.35
             
-            # 2. Numero quote disponibili (20%)
+            # 2. Numero quote disponibili (15% - ridotto da 20%)
             # Più quote = più affidabile (più bookmaker concordano)
             if total_odds_count >= 10:
                 odds_availability_score = 1.0
@@ -1748,15 +1798,15 @@ class Automation24H:
                 odds_availability_score = 0.5
             else:
                 odds_availability_score = 0.3
-            quality_score += odds_availability_score * 0.2
+            quality_score += odds_availability_score * 0.15
             
-            # 3. Presenza bookmaker affidabili (20%)
+            # 3. Presenza bookmaker affidabili (15% - ridotto da 20%)
             if has_trusted_bookmakers:
-                quality_score += 1.0 * 0.2
+                quality_score += 1.0 * 0.15
             else:
-                quality_score += 0.5 * 0.2
+                quality_score += 0.5 * 0.15
             
-            # 4. Valore quota (20%)
+            # 4. Valore quota (15% - ridotto da 20%)
             # Quote troppo basse (< 1.1) o troppo alte (> 100) sono sospette
             odd_float = float(odd)
             if 1.1 <= odd_float <= 50:
@@ -1765,7 +1815,14 @@ class Automation24H:
                 value_score = 0.7
             else:
                 value_score = 0.3
-            quality_score += value_score * 0.2
+            quality_score += value_score * 0.15
+            
+            # 5. 🆕 MIGLIORAMENTO 2: Consenso tra bookmaker (20%)
+            if all_odds_list and len(all_odds_list) >= 2:
+                consensus_score = self._calculate_consensus_score(odd, all_odds_list)
+                quality_score += consensus_score * 0.2
+            else:
+                quality_score += 0.5 * 0.2  # Consenso neutro se non disponibile
             
             return min(1.0, max(0.0, quality_score))
             
@@ -1879,6 +1936,67 @@ class Automation24H:
             logger.debug(f"⚠️  Errore validazione probabilità implicite per {market_type}: {e}")
             return True  # In caso di errore, accettiamo per non escludere quote valide
     
+    def _is_odds_stale(self, odds_timestamp: Optional[str], is_match_live: bool = False, max_age_minutes: int = 10) -> bool:
+        """
+        🎯 MIGLIORAMENTO 5: Rileva se una quota è troppo vecchia (stale) per essere utilizzata.
+        
+        Per partite live, le quote devono essere aggiornate di recente (max 5-10 minuti).
+        Per partite pre-match, possiamo accettare quote più vecchie.
+        
+        Args:
+            odds_timestamp: Timestamp ISO della quota (da precision snapshot)
+            is_match_live: True se la partita è in corso
+            max_age_minutes: Minuti massimi di età per quote live (default: 10)
+        
+        Returns:
+            True se la quota è troppo vecchia, False altrimenti
+        """
+        if not odds_timestamp:
+            # Se non abbiamo timestamp, assumiamo che non sia stale (conservativo)
+            return False
+        
+        try:
+            # Parse timestamp
+            if isinstance(odds_timestamp, str):
+                # Rimuovi timezone info se presente e converti
+                timestamp_str = odds_timestamp.replace('Z', '+00:00')
+                odds_time = datetime.fromisoformat(timestamp_str)
+            else:
+                return False  # Timestamp non valido
+            
+            # Calcola età della quota
+            now = datetime.now(timezone.utc)
+            if odds_time.tzinfo is None:
+                odds_time = odds_time.replace(tzinfo=timezone.utc)
+            
+            age_seconds = (now - odds_time).total_seconds()
+            age_minutes = age_seconds / 60.0
+            
+            # Per partite live, le quote devono essere più recenti
+            if is_match_live:
+                # Per partite live, usiamo un threshold più stretto (5-7 minuti)
+                stale_threshold = min(7, max_age_minutes)
+                if age_minutes > stale_threshold:
+                    logger.debug(
+                        f"⏰ Quota stale rilevata: {age_minutes:.1f} minuti fa "
+                        f"(threshold: {stale_threshold} min per partita live)"
+                    )
+                    return True
+            else:
+                # Per partite pre-match, possiamo accettare quote fino a 30-60 minuti
+                if age_minutes > 60:
+                    logger.debug(
+                        f"⏰ Quota stale rilevata: {age_minutes:.1f} minuti fa "
+                        f"(threshold: 60 min per partita pre-match)"
+                    )
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.debug(f"⚠️  Errore controllo stale quota: {e}")
+            return False  # In caso di errore, assumiamo non stale (conservativo)
+    
     def _select_realistic_odds(self, odds_dict: Dict[str, Decimal], market_name: str = "unknown") -> Tuple[Optional[Decimal], Optional[str]]:
         """
         🎯 SELEZIONE INTELLIGENTE QUOTE: Seleziona una quota "realistica" evitando outlier.
@@ -1986,12 +2104,13 @@ class Automation24H:
         # Filtra quote trusted che sono nel range filtrato
         filtered_trusted = [(odd, bm, w) for odd, bm, w in filtered_odds if w >= 0.75]
         
-        # 🆕 Calcola quality score per ogni quota filtrata
+        # 🆕 Calcola quality score per ogni quota filtrata (include consensus - MIGLIORAMENTO 2)
         has_trusted = len(filtered_trusted) > 0
+        all_odds_list = [odd for odd, _, _ in filtered_odds]  # Lista per consensus
         filtered_odds_with_quality = []
         for odd, bookmaker, weight in filtered_odds:
             quality_score = self._calculate_odds_quality_score(
-                odd, bookmaker, len(filtered_odds), has_trusted
+                odd, bookmaker, len(filtered_odds), has_trusted, all_odds_list
             )
             filtered_odds_with_quality.append((odd, bookmaker, weight, quality_score))
         
@@ -2011,21 +2130,64 @@ class Automation24H:
             
             # 🆕 Trova la quota trusted con il miglior quality score che è vicina alla media
             if trusted_weighted_avg:
-                # Calcola quality score per trusted odds
-                trusted_with_quality = []
+                # 🆕 MIGLIORAMENTO 1: Priorità Exchange - Cerca Betfair tra le quote trusted
+                exchange_bookmakers = ['betfair']
+                exchange_odds = []
+                other_trusted_odds = []
+                
                 for odd, bookmaker, weight in filtered_trusted:
+                    is_exchange = any(exc.lower() in bookmaker.lower() for exc in exchange_bookmakers)
                     quality_score = self._calculate_odds_quality_score(
-                        odd, bookmaker, len(filtered_odds), True
+                        odd, bookmaker, len(filtered_odds), True, all_odds_list
                     )
                     diff_from_avg = abs(float(odd) - trusted_weighted_avg) / trusted_weighted_avg * 100
-                    # Combina quality score e prossimità alla media
                     combined_score = quality_score * 0.6 + (1.0 - min(diff_from_avg / 10.0, 1.0)) * 0.4
-                    trusted_with_quality.append((odd, bookmaker, weight, quality_score, combined_score, diff_from_avg))
+                    
+                    odds_data = (odd, bookmaker, weight, quality_score, combined_score, diff_from_avg, is_exchange)
+                    
+                    if is_exchange:
+                        exchange_odds.append(odds_data)
+                    else:
+                        other_trusted_odds.append(odds_data)
                 
-                # Seleziona la quota con il miglior combined score
+                # 🆕 Preferisci Exchange (Betfair) se disponibile e competitivo
+                if exchange_odds:
+                    best_exchange = max(exchange_odds, key=lambda x: (x[0], x[4]))  # Max quota, poi combined score
+                    odd, bookmaker, weight, quality, combined, diff_avg, is_exchange = best_exchange
+                    
+                    # Trova la miglior quota non-exchange per confronto
+                    best_non_exchange = None
+                    if other_trusted_odds:
+                        best_non_exchange = max(other_trusted_odds, key=lambda x: x[4])
+                    
+                    # Usa Exchange se:
+                    # 1. La quota è entro 3% dalla miglior non-exchange (se disponibile)
+                    # 2. O se la quota è competitiva (entro 5% dalla media)
+                    use_exchange = False
+                    if best_non_exchange:
+                        non_ex_odd, non_ex_bm = best_non_exchange[0], best_non_exchange[1]
+                        diff_from_best = ((float(odd) - float(non_ex_odd)) / float(non_ex_odd)) * 100
+                        if diff_from_best >= -3.0:  # Exchange è entro 3% dalla miglior non-exchange
+                            use_exchange = True
+                            logger.info(
+                                f"✅ {market_name}: Preferita quota Exchange (Betfair) {float(odd):.3f} "
+                                f"(vs miglior non-exchange {float(non_ex_odd):.3f} da {non_ex_bm}, diff={diff_from_best:+.2f}%)"
+                            )
+                    elif diff_avg < 5.0 or quality > 0.8:
+                        use_exchange = True
+                        logger.info(
+                            f"✅ {market_name}: Preferita quota Exchange (Betfair) {float(odd):.3f} "
+                            f"(quality={quality:.2f}, diff={diff_avg:.1f}% dalla media)"
+                        )
+                    
+                    if use_exchange:
+                        return odd, bookmaker
+                
+                # Se Exchange non disponibile o non competitivo, usa logica normale
+                trusted_with_quality = exchange_odds + other_trusted_odds
                 if trusted_with_quality:
                     best_trusted = max(trusted_with_quality, key=lambda x: x[4])  # Max combined score
-                    odd, bookmaker, weight, quality, combined, diff_avg = best_trusted
+                    odd, bookmaker, weight, quality, combined, diff_avg, _ = best_trusted
                     
                     # Usa se è entro 5% dalla media o se ha quality score molto alto (> 0.8)
                     if diff_avg < 5.0 or quality > 0.8:
