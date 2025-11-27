@@ -8,6 +8,15 @@ Analizza partite in corso e suggerisce scommesse basate su:
 - Eventi in campo (cartellini, possesso, ecc.)
 """
 
+import sys
+import os
+from pathlib import Path
+
+# Assicura che la directory root del progetto sia nel sys.path
+project_root = Path(__file__).parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import logging
 import re
 import math
