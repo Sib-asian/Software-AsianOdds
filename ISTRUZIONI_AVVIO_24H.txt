@@ -1,0 +1,120 @@
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║     🤖 AVVIO SISTEMA 24/7 - ISTRUZIONI RAPIDE                ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+🎯 COME AVVIARE IL SISTEMA 24/7:
+
+1️⃣  Doppio-click su: AVVIA_24H.bat
+   
+   → Il sistema partirà in background
+   → Riceverai segnali live su Telegram automaticamente
+   → Il sistema gira 24/7 fino a quando non lo fermi
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📱 TELEGRAM:
+
+Il sistema è già configurato per inviare segnali su Telegram.
+Se vuoi cambiare il bot o il chat ID, modifica il file:
+   → automation_service_wrapper.py (righe 120-125)
+
+Oppure crea un file .env con:
+   TELEGRAM_BOT_TOKEN=il_tuo_token
+   TELEGRAM_CHAT_ID=il_tuo_chat_id
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🛑 FERMARE IL SISTEMA:
+
+Doppio-click su: FERMA_24H.bat
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 VERIFICARE STATO:
+
+Doppio-click su: STATO_24H.bat
+
+Mostra:
+   → Se il sistema è in esecuzione
+   → Ultimi log del sistema
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 LOG E MONITORAGGIO:
+
+I log sono salvati in: logs\automation_service_*.log
+
+Per vedere i log in tempo reale:
+   → monitor_logs.bat (se esiste)
+   → Oppure apri manualmente il file .log più recente
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ COSA FA IL SISTEMA:
+
+✓ Monitora partite live 24/7
+✓ Analizza opportunità di value betting
+✓ Invia segnali su Telegram quando trova opportunità
+✓ Si riavvia automaticamente se crasha
+✓ Gestisce errori e API in modo intelligente
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚙️ CONFIGURAZIONE AVANZATA:
+
+Puoi modificare i parametri nel file automation_service_wrapper.py:
+
+   min_ev = 8.0              # EV minimo (default: 8%)
+   min_confidence = 72.0     # Confidence minima (default: 72%)
+   update_interval = 300     # Intervallo aggiornamento in secondi (default: 5 min)
+
+Oppure crea un file .env con:
+   AUTOMATION_MIN_EV=8.0
+   AUTOMATION_MIN_CONFIDENCE=72.0
+   AUTOMATION_UPDATE_INTERVAL=300
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+❓ PROBLEMI?
+
+1. Verifica che Python sia installato:
+   → Apri PowerShell e digita: python --version
+
+2. Verifica che tutte le dipendenze siano installate:
+   → Apri PowerShell nella cartella del progetto
+   → Digita: pip install -r requirements.txt
+
+3. Controlla i log per errori:
+   → logs\automation_service_*.log
+
+4. Verifica la connessione a Internet
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🚀 PRONTO!
+
+Basta fare doppio-click su AVVIA_24H.bat e il sistema partirà!
+
+Il sistema funzionerà 24/7 e ti invierà segnali su Telegram
+quando trova opportunità di value betting.
+
+Buona fortuna! 🍀
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -125,3 +125,8 @@ Dopo il deploy, verifica:
 
 **🎉 Fatto! Il sistema gira 24/7 su Render.com!**
 
+
+
+
+
+

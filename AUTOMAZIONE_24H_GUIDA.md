@@ -305,3 +305,8 @@ Get-Content automation_24h.log -Wait
 
 **🎉 Sistema pronto! Ora gira 24/7 e ti notifica solo le vere opportunità!**
 
+
+
+
+
+

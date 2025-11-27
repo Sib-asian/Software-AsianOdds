@@ -58,3 +58,8 @@ except KeyboardInterrupt:
     print("\n\n🛑 Monitoraggio fermato")
 
 
+
+
+
+
+
