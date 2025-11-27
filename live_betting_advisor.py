@@ -16,6 +16,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 
+logger = logging.getLogger(__name__)
+
 # 🎯 FASE 2: Import Frontendcloud per calcoli matematici precisi (Poisson, Dixon-Coles)
 try:
     import Frontendcloud
@@ -24,8 +26,6 @@ try:
 except ImportError as e:
     FRONTENDCLOUD_AVAILABLE = False
     logger.warning(f"⚠️ Frontendcloud non disponibile: {e}. Uso formule approssimate.")
-
-logger = logging.getLogger(__name__)
 
 # 🛡️ SANITY CHECK - Costanti per filtrare opportunità irrealistiche
 # OPZIONE B (BILANCIATA): Permette value betting dove AI trova valore sottostimato dal mercato
