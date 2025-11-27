@@ -1813,18 +1813,20 @@ class Automation24H:
             total_implied_prob_float = float(total_implied_prob)
             
             # 🎯 VALIDAZIONE MIGLIORATA: Range diversi per tipo di mercato
-            # Per mercati 1X2: margine tipico 1.03-1.07
-            # Per Over/Under: margine tipico 1.04-1.08 (più variabilità)
-            # Per BTTS: margine tipico 1.03-1.08
+            # Per mercati 1X2: margine tipico 1.03-1.09 (rilassato per league minori e live)
+            # Per Over/Under: margine tipico 1.04-1.12 (più variabilità, specialmente per live)
+            # Per BTTS: margine tipico 1.03-1.10
             
             if 'over_under' in market_type.lower() or 'goals' in market_type.lower():
-                # Over/Under: accetta range più ampio
+                # Over/Under: accetta range più ampio (margini più alti sono normali per Over/Under)
                 min_total = Decimal('1.02')
-                max_total = Decimal('1.10')  # Leggermente più permissivo per live
+                max_total = Decimal('1.12')  # Più permissivo - margini fino al 12% sono accettabili
+                soft_limit = Decimal('1.15')  # Soft limit: accetta se leggermente sopra ma logga warning
             else:
-                # 1X2, BTTS, etc.: range più stretto
+                # 1X2, BTTS, etc.: range più stretto ma rilassato
                 min_total = Decimal('1.01')
-                max_total = Decimal('1.08')
+                max_total = Decimal('1.09')  # Rilassato da 1.08 a 1.09
+                soft_limit = Decimal('1.12')  # Soft limit per 1X2
             
             if total_implied_prob < min_total:
                 logger.debug(
@@ -1837,12 +1839,22 @@ class Automation24H:
                     return total_implied_prob >= Decimal('0.98')
                 return False
             
+            # 🆕 LOGICA MIGLIORATA: Accetta quote anche se leggermente sopra il threshold
             if total_implied_prob > max_total:
-                logger.warning(
-                    f"⚠️  {market_type}: Probabilità implicita totale troppo alta ({total_implied_prob_float:.4f} > {float(max_total):.2f}), "
-                    f"quote probabilmente errate o margine troppo alto. Scarto."
-                )
-                return False
+                # Se supera il soft limit, scarta sempre
+                if total_implied_prob > soft_limit:
+                    logger.warning(
+                        f"⚠️  {market_type}: Probabilità implicita totale molto alta ({total_implied_prob_float:.4f} > {float(soft_limit):.2f}), "
+                        f"quote probabilmente errate. Scarto."
+                    )
+                    return False
+                else:
+                    # Se è tra max_total e soft_limit, accetta ma logga warning (non error)
+                    logger.info(
+                        f"ℹ️  {market_type}: Probabilità implicita leggermente alta ({total_implied_prob_float:.4f}, threshold={float(max_total):.2f}), "
+                        f"accetto comunque (margine ancora accettabile per league minori/live)"
+                    )
+                    return True  # Accetta quote con margine leggermente alto ma ancora ragionevole
             
             # 🆕 VALIDAZIONE AGGIUNTIVA: Controlla se le quote sono troppo vicine tra loro
             # (potrebbe indicare che non sono state aggiornate o sono errate)
@@ -1860,7 +1872,7 @@ class Automation24H:
                         )
                         # Accettiamo comunque se la probabilità implicita è valida
             
-            # Se siamo nel range accettabile
+            # Se siamo nel range accettabile (tra min_total e max_total)
             return True
             
         except Exception as e:
@@ -2840,22 +2852,39 @@ class Automation24H:
                 all_odds['match_winner'], '1X2'
             )
             if not match_winner_valid:
-                logger.warning(
-                    f"⚠️  Quote 1X2 incoerenti (probabilità implicite non valide), "
-                    f"mantenute solo se almeno 2 quote valide: "
-                    f"home={all_odds['match_winner'].get('home')}, "
-                    f"draw={all_odds['match_winner'].get('draw')}, "
-                    f"away={all_odds['match_winner'].get('away')}"
-                )
-                # Se non valide ma abbiamo almeno 2 quote, manteniamole ma logga warning
-                # (potrebbero essere quote live che cambiano rapidamente)
                 valid_count = sum([
                     1 for v in all_odds['match_winner'].values() if v is not None
                 ])
-                if valid_count < 2:
-                    # Reset se abbiamo meno di 2 quote valide
-                    logger.warning("⚠️  Reset quote 1X2: meno di 2 quote valide dopo validazione")
-                    all_odds['match_winner'] = {'home': None, 'draw': None, 'away': None}
+                
+                # 🆕 LOGICA MIGLIORATA: Calcola probabilità implicita per vedere quanto è sopra il threshold
+                try:
+                    total_implied = Decimal('0')
+                    for v in all_odds['match_winner'].values():
+                        if v is not None:
+                            odd_dec = self._validate_odds(v)
+                            if odd_dec:
+                                total_implied += Decimal('1') / odd_dec
+                    total_implied_float = float(total_implied)
+                    
+                    # Se abbiamo almeno 2 quote e il margine è < 1.12, manteniamo comunque
+                    # (il nuovo threshold è 1.09, ma accettiamo fino a 1.12 per non perdere quote utili)
+                    if valid_count >= 2 and total_implied_float <= 1.12:
+                        logger.info(
+                            f"ℹ️  Quote 1X2 con margine leggermente alto ({total_implied_float:.4f}), "
+                            f"mantenute comunque (home={all_odds['match_winner'].get('home')}, "
+                            f"draw={all_odds['match_winner'].get('draw')}, away={all_odds['match_winner'].get('away')})"
+                        )
+                        # Non reset, mantieni le quote
+                    else:
+                        logger.warning(
+                            f"⚠️  Quote 1X2 con margine troppo alto ({total_implied_float:.4f} > 1.12), "
+                            f"mantenute solo se almeno 2 quote valide (count={valid_count})"
+                        )
+                        if valid_count < 2:
+                            logger.warning("⚠️  Reset quote 1X2: meno di 2 quote valide")
+                            all_odds['match_winner'] = {'home': None, 'draw': None, 'away': None}
+                except Exception as e:
+                    logger.debug(f"Errore calcolo probabilità implicite 1X2: {e}, mantengo quote")
         
         # Valida Over/Under per ogni threshold
         for market_type in ['over_under', 'over_under_ht', 'first_half_goals', 'second_half_goals']:
@@ -2864,11 +2893,39 @@ class Automation24H:
                 if isinstance(odds_pair, dict) and ('over' in odds_pair or 'under' in odds_pair):
                     is_valid = self._validate_market_implied_probabilities(odds_pair, f"{market_type}_{threshold}")
                     if not is_valid:
-                        logger.warning(
-                            f"⚠️  Quote {market_type} {threshold} incoerenti, reset"
-                        )
-                        # Reset le quote per questo threshold
-                        all_odds[market_type][threshold] = {'over': None, 'under': None}
+                        # 🆕 LOGICA MIGLIORATA: Calcola probabilità implicita per vedere se è accettabile
+                        try:
+                            total_implied = Decimal('0')
+                            valid_odds_count = 0
+                            for outcome_type in ['over', 'under']:
+                                odd_val = odds_pair.get(outcome_type)
+                                if odd_val is not None:
+                                    odd_dec = self._validate_odds(odd_val)
+                                    if odd_dec:
+                                        total_implied += Decimal('1') / odd_dec
+                                        valid_odds_count += 1
+                            
+                            if valid_odds_count > 0:
+                                total_implied_float = float(total_implied)
+                                # Per Over/Under: accetta fino a 1.15 (più permissivo per live/league minori)
+                                if total_implied_float <= 1.15:
+                                    logger.debug(
+                                        f"ℹ️  Quote {market_type} {threshold} con margine {total_implied_float:.4f}, "
+                                        f"mantenute (leggermente sopra threshold ma accettabile)"
+                                    )
+                                    # Non reset, mantieni le quote
+                                else:
+                                    logger.warning(
+                                        f"⚠️  Quote {market_type} {threshold} con margine troppo alto ({total_implied_float:.4f} > 1.15), reset"
+                                    )
+                                    all_odds[market_type][threshold] = {'over': None, 'under': None}
+                            else:
+                                # Nessuna quota valida, reset
+                                all_odds[market_type][threshold] = {'over': None, 'under': None}
+                        except Exception as e:
+                            logger.debug(f"Errore validazione {market_type} {threshold}: {e}, reset conservativo")
+                            # Reset conservativo in caso di errore
+                            all_odds[market_type][threshold] = {'over': None, 'under': None}
         
         # Valida BTTS
         for market_type in ['btts', 'btts_ht']:
