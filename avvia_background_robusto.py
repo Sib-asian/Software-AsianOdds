@@ -23,3 +23,8 @@ print("📊 I log sono in: logs/automation_service_*.log")
 print("🛑 Per fermare: FERMA_24H.bat")
 
 
+
+
+
+
+

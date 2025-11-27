@@ -37,3 +37,8 @@ Opzioni:
 2. Usare Render.com (limite 10 GB)
 3. Ottimizzare ulteriormente rimuovendo più dipendenze
 
+
+
+
+
+

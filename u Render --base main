@@ -1,0 +1,5 @@
+[33mc2e83cc[m Fix: Normalizzato encoding e fine riga in live_betting_advisor.py per risolvere IndentationError su Render
+[33me238bfb[m feat: miglioramenti deduplicazione e filtri conservativi per live betting
+[33mb5c98c8[m feat: Miglioramenti sistema live betting e configurazione Telegram
+[33m09589f5[m[33m ([m[1;31morigin/feature/compact-messages-13min-interval-market-diversification[m[33m, [m[1;32mfeature/compact-messages-13min-interval-market-diversification[m[33m)[m feat: Messaggi compatti, intervallo 13min, diversificazione mercati
+[33mb76babf[m[33m ([m[1;31morigin/fix/restrictions-lower-leagues-and-clean-sheet-alternatives[m[33m, [m[1;32mfix/restrictions-lower-leagues-and-clean-sheet-alternatives[m[33m)[m Fix: Restrizioni campionati inferiori e alternative Clean Sheet

@@ -92,3 +92,8 @@ RUN apt-get clean && \
 # Comando di avvio
 CMD ["python", "start_automation.py"]
 
+
+
+
+
+

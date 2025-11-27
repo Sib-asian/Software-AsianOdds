@@ -50,3 +50,8 @@ else:
     print("❌ File log non trovato!")
 
 
+
+
+
+
+

@@ -57,3 +57,8 @@ Il wrapper (`automation_service_wrapper.py`) ha auto-restart integrato per gesti
 
 
 
+
+
+
+
+

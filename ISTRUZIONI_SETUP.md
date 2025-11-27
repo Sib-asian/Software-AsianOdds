@@ -118,3 +118,8 @@ Versione semplificata per uso veloce
 
 **Pronto! Ora puoi creare PR con un comando! 🎉**
 
+
+
+
+
+
