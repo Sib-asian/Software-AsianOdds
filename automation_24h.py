@@ -2601,7 +2601,36 @@ class Automation24H:
         
         # Itera su tutti i bookmaker per raccogliere tutte le quote
         for bookmaker in odds_list:
-            bookmaker_name = bookmaker.get("bookmaker", {}).get("name", "")
+            # 🔧 FIX CRITICO: La struttura può essere diversa!
+            # Dai log: "Primo bookmaker keys: ['id', 'name', 'bets']"
+            # Quindi la struttura è DIRETTA: {"id": ..., "name": "...", "bets": [...]}
+            # NON annidata: {"bookmaker": {"name": "..."}, "bets": [...]}
+            
+            if not isinstance(bookmaker, dict):
+                continue
+            
+            # Prova prima struttura diretta (come mostrato nei log)
+            bookmaker_name = bookmaker.get("name", "")
+            
+            # Se non trovato, prova struttura annidata (per compatibilità)
+            if not bookmaker_name and bookmaker.get("bookmaker"):
+                bookmaker_name = bookmaker.get("bookmaker", {}).get("name", "")
+            
+            # 🔧 DEBUG: Log se nome non trovato
+            if not bookmaker_name:
+                logger.warning(
+                    f"⚠️  Bookmaker senza nome trovato! Keys disponibili: {list(bookmaker.keys())}. "
+                    f"Usa 'Unknown' come fallback. Bookmaker completo (primi 200 char): {str(bookmaker)[:200]}"
+                )
+                bookmaker_name = "Unknown"  # Fallback per non perdere quote
+            else:
+                # 🔧 DEBUG: Log nome bookmaker estratto (solo primi 2 per non intasare i log)
+                if not hasattr(self, '_logged_bookmaker_names'):
+                    self._logged_bookmaker_names = set()
+                if len(self._logged_bookmaker_names) < 2:
+                    self._logged_bookmaker_names.add(bookmaker_name)
+                    logger.debug(f"✅ Nome bookmaker estratto correttamente: '{bookmaker_name}' (keys: {list(bookmaker.keys())})")
+            
             bets = bookmaker.get("bets", [])
             
             for bet in bets:
@@ -2946,9 +2975,9 @@ class Automation24H:
         
         # BTTS FT e HT
         for outcome in ['yes', 'no']:
-            for market_key, target_dict in [
-                ('btts', all_odds['btts']),
-                ('btts_ht', all_odds['btts_ht'])
+            for market_key, target_dict, tracker_dict in [
+                ('btts', all_odds['btts'], bookmaker_tracker['btts']),
+                ('btts_ht', all_odds['btts_ht'], bookmaker_tracker['btts_ht'])
             ]:
                 if all_bookmaker_odds[market_key][outcome]:
                     selected_odd, selected_bookmaker = self._select_realistic_odds(
@@ -2957,6 +2986,8 @@ class Automation24H:
                     )
                     if selected_odd is not None:
                         target_dict[outcome] = float(selected_odd)
+                        # 🔧 FIX: Aggiorna anche bookmaker_tracker per BTTS
+                        tracker_dict[outcome] = selected_bookmaker
         
         # Double Chance
         for outcome in ['1x', '12', 'x2']:
@@ -2967,6 +2998,8 @@ class Automation24H:
                 )
                 if selected_odd is not None:
                     all_odds['double_chance'][outcome] = float(selected_odd)
+                    # 🔧 FIX: Aggiorna anche bookmaker_tracker per Double Chance
+                    bookmaker_tracker['double_chance'][outcome] = selected_bookmaker
         
         # Draw No Bet
         for outcome in ['home', 'away']:
@@ -2977,6 +3010,8 @@ class Automation24H:
                 )
                 if selected_odd is not None:
                     all_odds['draw_no_bet'][outcome] = float(selected_odd)
+                    # 🔧 FIX: Aggiorna anche bookmaker_tracker per Draw No Bet
+                    bookmaker_tracker['draw_no_bet'][outcome] = selected_bookmaker
         
         # 🔧 OPZIONE 4: Applica logica ibrida - preferisci bet365 se differenza < 5%
         # Cerca bet365 in tutti i bookmaker (case-insensitive)
