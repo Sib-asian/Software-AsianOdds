@@ -1145,9 +1145,14 @@ class Automation24H:
                     # L'utente vuole notifiche solo con quote principali (1X2 o Over/Under)
                     has_1x2 = all_odds.get('match_winner', {}).get('home') is not None
                     has_over_under = len(all_odds.get('over_under', {})) > 0
+                    
+                    # 🔧 DEBUG: Log dettagliato per capire perché viene scartata
+                    logger.info(f"🔍 Verifica mercati principali per {home_team} vs {away_team}:")
+                    logger.info(f"   has_1x2 (home presente): {has_1x2} (valore: {all_odds.get('match_winner', {}).get('home')})")
+                    logger.info(f"   has_over_under: {has_over_under} (thresholds: {len(all_odds.get('over_under', {}))})")
 
                     if not has_1x2 and not has_over_under:
-                        logger.warning(f"⏭️ SALTATA: {home_team} vs {away_team} - nessun mercato principale (1X2 o Over/Under) disponibile")
+                        logger.warning(f"⏭️ SALTATA: {home_team} vs {away_team} - nessun mercato principale (1X2 o Over/Under) disponibile (has_1x2={has_1x2}, has_over_under={has_over_under})")
                         skipped_no_odds += 1
                         continue  # Salta partite senza mercati principali
 
@@ -1544,7 +1549,10 @@ class Automation24H:
                         logger.debug(f"⏭️  Match {home_team} vs {away_team} senza quote sufficienti (1X2: {bool(odds_1)}/{bool(odds_x)}/{bool(odds_2)}, altre: {has_other_odds}), skip (necessarie per EV preciso)")
                 
                 except Exception as e:
-                    logger.debug(f"⚠️  Error processing fixture: {e}")
+                    logger.error(f"❌ ERRORE CRITICO durante processamento fixture {fixture_id} ({home_team} vs {away_team}): {e}")
+                    import traceback
+                    logger.error(f"   Traceback completo:\n{traceback.format_exc()}")
+                    skipped_no_odds += 1
                     continue
             
             logger.info(f"✅ Riepilogo estrazione partite LIVE:")
@@ -3142,8 +3150,11 @@ class Automation24H:
         # 🔧 DEBUG: Log quote PRIMA della validazione
         logger.info(f"📊 Quote 1X2 PRIMA della validazione: home={all_odds['match_winner'].get('home')}, draw={all_odds['match_winner'].get('draw')}, away={all_odds['match_winner'].get('away')}")
         
-        # Valida 1X2
-        if all_odds['match_winner']:
+        # Valida 1X2 - verifica se ci sono quote da validare
+        has_any_1x2_odds = any([all_odds['match_winner'].get('home'), all_odds['match_winner'].get('draw'), all_odds['match_winner'].get('away')])
+        logger.info(f"🔍 Ha almeno una quota 1X2 prima della validazione: {has_any_1x2_odds}")
+        
+        if all_odds['match_winner'] and has_any_1x2_odds:
             match_winner_valid = self._validate_market_implied_probabilities(
                 all_odds['match_winner'], '1X2'
             )
