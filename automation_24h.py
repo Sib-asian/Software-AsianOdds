@@ -3093,7 +3093,7 @@ class Automation24H:
                         bet365_odds[f'second_half_goals_{threshold}_{outcome_type}'] = list(bet365_quota.values())[0]
         
         # Applica logica ibrida: se bet365 disponibile e differenza < 5%, usa bet365
-        def apply_hybrid_logic(best_odd, bet365_odd_key, market_path, outcome_key=None):
+        def apply_hybrid_logic(best_odd, bet365_odd_key, market_path, outcome_key=None, market_name=None):
             """Applica logica ibrida: preferisci bet365 se differenza < 5%"""
             if bet365_odd_key not in bet365_odds:
                 return best_odd, None  # Nessuna quota bet365 disponibile
@@ -3119,17 +3119,20 @@ class Automation24H:
                     pass  # Gestito separatamente
                 return bet365_odd_float, 'bet365'
             else:
-                return best_odd_float, bookmaker_tracker.get(market_path, {}).get(outcome_key) if outcome_key else None
+                # 🔧 FIX: Restituisci None per bookmaker - viene già tracciato in bookmaker_tracker
+                # Non possiamo usare market_path come chiave perché è un dict non hashable
+                return best_odd_float, None
         
         # Applica logica ibrida per match_winner
         for outcome in ['home', 'draw', 'away']:
             best_odd = all_odds['match_winner'][outcome]
             bet365_key = f'match_winner_{outcome}'
-            new_odd, used_bookmaker = apply_hybrid_logic(best_odd, bet365_key, all_odds['match_winner'], outcome)
+            new_odd, used_bookmaker = apply_hybrid_logic(best_odd, bet365_key, all_odds['match_winner'], outcome, market_name='match_winner')
             if used_bookmaker == 'bet365':
                 all_odds['match_winner'][outcome] = new_odd
                 bookmaker_tracker['match_winner'][outcome] = 'bet365'
                 logger.info(f"✅ Preferita bet365 per 1X2 {outcome}: {new_odd} (differenza < 5% dalla quota migliore {best_odd})")
+            # Se used_bookmaker è None, il bookmaker è già tracciato in bookmaker_tracker dalla selezione precedente
         
         # Applica logica ibrida per over/under e second_half_goals
         for market_type in ['over_under', 'second_half_goals']:
