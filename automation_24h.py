@@ -996,6 +996,7 @@ class Automation24H:
             skipped_not_live = 0
             skipped_no_stats = 0
             skipped_no_odds = 0
+            skipped_errors = 0  # 🎯 Nuovo contatore per eccezioni
             
             for fixture in data["response"]:
                 try:
@@ -1146,8 +1147,16 @@ class Automation24H:
                     has_1x2 = all_odds.get('match_winner', {}).get('home') is not None
                     has_over_under = len(all_odds.get('over_under', {})) > 0
 
+                    logger.info(f"🎯 Verifica mercati principali per {home_team} vs {away_team}:")
+                    logger.info(f"   - ha_1x2: {has_1x2}, ha_over_under: {has_over_under}")
+                    if has_1x2:
+                        logger.info(f"   - 1X2: {all_odds.get('match_winner', {})}")
+                    if has_over_under:
+                        logger.info(f"   - O/U thresholds: {list(all_odds.get('over_under', {}).keys())}")
+
                     if not has_1x2 and not has_over_under:
                         logger.warning(f"⏭️ SALTATA: {home_team} vs {away_team} - nessun mercato principale (1X2 o Over/Under) disponibile")
+                        logger.warning(f"   Quote disponibili: {list(all_odds.keys())}")
                         skipped_no_odds += 1
                         continue  # Salta partite senza mercati principali
 
@@ -1541,10 +1550,11 @@ class Automation24H:
                             logger.warning(f"⚠️  Match {home_team} vs {away_team} aggiunto SENZA statistiche (ha quote: 1X2={has_1x2_complete or has_1x2_partial}, altre={has_other_odds}), confidence sarà ridotta")
                     else:
                         skipped_no_odds += 1
-                        logger.debug(f"⏭️  Match {home_team} vs {away_team} senza quote sufficienti (1X2: {bool(odds_1)}/{bool(odds_x)}/{bool(odds_2)}, altre: {has_other_odds}), skip (necessarie per EV preciso)")
-                
+                        logger.warning(f"⏭️ SALTATA: {home_team} vs {away_team} - quote insufficienti (1X2: {bool(odds_1)}/{bool(odds_x)}/{bool(odds_2)}, altre: {has_other_odds})")
+
                 except Exception as e:
-                    logger.debug(f"⚠️  Error processing fixture: {e}")
+                    skipped_errors += 1
+                    logger.error(f"❌ ERRORE processing fixture: {e}", exc_info=True)
                     continue
             
             logger.info(f"✅ Riepilogo estrazione partite LIVE:")
@@ -1552,7 +1562,9 @@ class Automation24H:
             logger.info(f"   - Partite LIVE processate: {live_count}")
             logger.info(f"   - Partite finite (skipped): {skipped_finished}")
             logger.info(f"   - Partite troppo vecchie (skipped): {skipped_not_live}")
+            logger.info(f"   - Partite LIVE senza statistiche (skipped): {skipped_no_stats}")
             logger.info(f"   - Partite LIVE senza quote sufficienti (skipped): {skipped_no_odds}")
+            logger.info(f"   - Partite con errori di processing (skipped): {skipped_errors}")
             logger.info(f"   - Partite aggiunte al monitoraggio: {len(matches)}")
             
             if len(matches) == 0:
