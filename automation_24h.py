@@ -3100,22 +3100,26 @@ class Automation24H:
             
             bet365_odd = bet365_odds[bet365_odd_key]
             if best_odd is None:
-                return bet365_odd, 'bet365'
+                return float(bet365_odd) if isinstance(bet365_odd, Decimal) else bet365_odd, 'bet365'
+            
+            # 🔧 FIX: Converti entrambi a float per evitare TypeError (float - Decimal)
+            best_odd_float = float(best_odd) if not isinstance(best_odd, float) else best_odd
+            bet365_odd_float = float(bet365_odd) if isinstance(bet365_odd, Decimal) else bet365_odd
             
             # Calcola differenza percentuale
-            diff_pct = ((best_odd - bet365_odd) / bet365_odd) * 100
+            diff_pct = ((best_odd_float - bet365_odd_float) / bet365_odd_float) * 100
             
             if diff_pct < 5.0:  # Differenza < 5%, preferisci bet365
                 # Aggiorna all_odds con quota bet365
                 if outcome_key:
                     if isinstance(market_path, dict) and outcome_key in market_path:
-                        market_path[outcome_key] = bet365_odd
+                        market_path[outcome_key] = bet365_odd_float
                 elif isinstance(market_path, dict) and 'over' in market_path and 'under' in market_path:
                     # Per over/under, devo sapere quale outcome
                     pass  # Gestito separatamente
-                return bet365_odd, 'bet365'
+                return bet365_odd_float, 'bet365'
             else:
-                return best_odd, bookmaker_tracker.get(market_path, {}).get(outcome_key) if outcome_key else None
+                return best_odd_float, bookmaker_tracker.get(market_path, {}).get(outcome_key) if outcome_key else None
         
         # Applica logica ibrida per match_winner
         for outcome in ['home', 'draw', 'away']:
@@ -3137,11 +3141,14 @@ class Automation24H:
                         bet365_key = f'{market_type}_{threshold}_{outcome_type}'
                         if bet365_key in bet365_odds:
                             bet365_odd = bet365_odds[bet365_key]
-                            diff_pct = ((best_odd - bet365_odd) / bet365_odd) * 100
+                            # 🔧 FIX: Converti entrambi a float per evitare TypeError (float - Decimal)
+                            best_odd_float = float(best_odd) if not isinstance(best_odd, float) else best_odd
+                            bet365_odd_float = float(bet365_odd) if isinstance(bet365_odd, Decimal) else bet365_odd
+                            diff_pct = ((best_odd_float - bet365_odd_float) / bet365_odd_float) * 100
                             if diff_pct < 5.0:
-                                market_dict[threshold][outcome_type] = bet365_odd
+                                market_dict[threshold][outcome_type] = float(bet365_odd) if isinstance(bet365_odd, Decimal) else bet365_odd
                                 bookmaker_tracker[market_type][threshold][outcome_type] = 'bet365'
-                                logger.info(f"✅ Preferita bet365 per {market_type} {threshold} {outcome_type}: {bet365_odd} (differenza {diff_pct:.1f}% < 5%)")
+                                logger.info(f"✅ Preferita bet365 per {market_type} {threshold} {outcome_type}: {bet365_odd_float} (differenza {diff_pct:.1f}% < 5%)")
         
         # 🎯 VALIDAZIONE PROBABILITÀ IMPLICITE: Verifica coerenza delle quote
         # Rimuovi quote incoerenti prima di restituirle
