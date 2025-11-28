@@ -906,6 +906,33 @@ class MarketMovementAnalyzer:
         return ConfidenceLevel.MEDIUM
 
 
+def format_spread_display(spread_value: float) -> str:
+    """
+    Formatta lo spread per la visualizzazione corretta.
+    - (-) indica casa (home)
+    - (+) indica trasferta (away)
+    
+    Args:
+        spread_value: Valore spread (lambda_h - lambda_a)
+    
+    Returns:
+        Stringa formattata con segno corretto
+    """
+    if spread_value is None:
+        return "N/A"
+    
+    # Se spread viene calcolato come lambda_h - lambda_a:
+    # - spread > 0: Casa favorita → mostra (-)
+    # - spread < 0: Trasferta favorita → mostra (+)
+    # Quindi invertiamo il segno per la visualizzazione
+    if spread_value > 0:
+        return f"-{abs(spread_value):.2f}"
+    elif spread_value < 0:
+        return f"+{abs(spread_value):.2f}"
+    else:
+        return "0.00"
+
+
 def format_output(result: AnalysisResult) -> str:
     """Formatta l'output in modo leggibile"""
     
@@ -917,7 +944,7 @@ def format_output(result: AnalysisResult) -> str:
     
     # Movimenti
     output.append("📈 MOVIMENTI:")
-    output.append(f"   Spread: {result.spread_analysis.opening_value:.2f} → {result.spread_analysis.closing_value:.2f}")
+    output.append(f"   Spread: {format_spread_display(result.spread_analysis.opening_value)} → {format_spread_display(result.spread_analysis.closing_value)}")
     output.append(f"           {result.spread_analysis.direction.value} {result.spread_analysis.intensity.value}")
     output.append(f"   Total:  {result.total_analysis.opening_value:.2f} → {result.total_analysis.closing_value:.2f}")
     output.append(f"           {result.total_analysis.direction.value} {result.total_analysis.intensity.value}")
