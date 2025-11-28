@@ -124,8 +124,9 @@ class AnalysisResult:
     spread_analysis: MovementAnalysis
     total_analysis: MovementAnalysis
     combination_interpretation: str
-    ft_markets: List[MarketRecommendation]
-    ht_markets: List[MarketRecommendation]
+    core_recommendations: List[MarketRecommendation]  # Consigli principali (HIGH/MEDIUM confidence)
+    alternative_recommendations: List[MarketRecommendation]  # Opzioni alternative (MEDIUM confidence)
+    value_recommendations: List[MarketRecommendation]  # Value bets (LOW confidence, high value)
     overall_confidence: ConfidenceLevel
 
 
@@ -329,16 +330,20 @@ class MarketMovementAnalyzer:
             spread_analysis, total_analysis, spread_dir_key, total_dir_key
         )
         
-        ft_markets = self._calculate_ft_markets(spread_analysis, total_analysis, combination)
-        ht_markets = self._calculate_ht_markets(spread_analysis, total_analysis, total_close)
+        # Calcola mercati nelle 3 categorie
+        core_recs = self._calculate_core_markets(spread_analysis, total_analysis, combination)
+        alternative_recs = self._calculate_alternative_markets(spread_analysis, total_analysis, combination)
+        value_recs = self._calculate_value_markets(spread_analysis, total_analysis, combination)
+
         overall_confidence = self._calculate_confidence(spread_analysis, total_analysis)
-        
+
         return AnalysisResult(
             spread_analysis=spread_analysis,
             total_analysis=total_analysis,
             combination_interpretation=combination["interpretation"],
-            ft_markets=ft_markets,
-            ht_markets=ht_markets,
+            core_recommendations=core_recs,
+            alternative_recommendations=alternative_recs,
+            value_recommendations=value_recs,
             overall_confidence=overall_confidence
         )
     
@@ -379,128 +384,349 @@ class MarketMovementAnalyzer:
             "tendency": "Neutra"
         }
     
-    def _calculate_ft_markets(self, spread: MovementAnalysis, 
-                             total: MovementAnalysis, combination: Dict) -> List[MarketRecommendation]:
-        """Calcola mercati FT consigliati"""
+    def _calculate_core_markets(self, spread: MovementAnalysis,
+                                total: MovementAnalysis, combination: Dict) -> List[MarketRecommendation]:
+        """Calcola raccomandazioni principali (CORE) - Alta/Media confidenza"""
         recommendations = []
-        
+
+        # 1X2 - Sempre presente
         if spread.direction == MovementDirection.HARDEN:
-            rec = MarketRecommendation(
+            conf = ConfidenceLevel.HIGH if spread.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
+            recommendations.append(MarketRecommendation(
                 market_name="1X2",
                 recommendation="1 (Favorito)",
-                confidence=ConfidenceLevel.MEDIUM if spread.intensity == MovementIntensity.MEDIUM else ConfidenceLevel.HIGH,
-                explanation=spread.interpretation
-            )
-            recommendations.append(rec)
-        elif spread.direction == MovementDirection.SOFTEN and spread.closing_value < -0.5:
-            rec = MarketRecommendation(
-                market_name="1X2",
-                recommendation="X2 o Underdog + Handicap",
-                confidence=ConfidenceLevel.MEDIUM,
-                explanation="Favorito vulnerabile"
-            )
-            recommendations.append(rec)
-        
+                confidence=conf,
+                explanation=f"Spread si indurisce: {spread.interpretation}"
+            ))
+        elif spread.direction == MovementDirection.SOFTEN:
+            if abs(spread.closing_value) < 0.5:
+                recommendations.append(MarketRecommendation(
+                    market_name="1X2",
+                    recommendation="X (Pareggio) o X2",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation="Spread molto equilibrato, favorito debole"
+                ))
+            else:
+                recommendations.append(MarketRecommendation(
+                    market_name="1X2",
+                    recommendation="X2 (Pareggio o Underdog)",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation=f"Spread si ammorbidisce: {spread.interpretation}"
+                ))
+
+        # Over/Under - Sempre presente
         if total.direction == MovementDirection.HARDEN:
-            rec = MarketRecommendation(
-                market_name=f"Over/Under",
+            conf = ConfidenceLevel.HIGH if total.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
+            recommendations.append(MarketRecommendation(
+                market_name="Over/Under",
                 recommendation=f"Over {total.closing_value}",
-                confidence=ConfidenceLevel.HIGH if total.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM,
-                explanation=total.interpretation
-            )
-            recommendations.append(rec)
+                confidence=conf,
+                explanation=f"Total sale: {total.interpretation}"
+            ))
         elif total.direction == MovementDirection.SOFTEN:
-            rec = MarketRecommendation(
-                market_name=f"Over/Under",
+            conf = ConfidenceLevel.HIGH if total.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
+            recommendations.append(MarketRecommendation(
+                market_name="Over/Under",
                 recommendation=f"Under {total.closing_value}",
-                confidence=ConfidenceLevel.HIGH if total.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM,
-                explanation=total.interpretation
-            )
-            recommendations.append(rec)
-        
-        if total.direction == MovementDirection.HARDEN or (combination.get("tendency", "").find("GOAL") != -1):
-            rec = MarketRecommendation(
+                confidence=conf,
+                explanation=f"Total scende: {total.interpretation}"
+            ))
+        elif total.direction == MovementDirection.STABLE:
+            # Total stabile, consiglia comunque
+            if total.closing_value >= 2.75:
+                recommendations.append(MarketRecommendation(
+                    market_name="Over/Under",
+                    recommendation=f"Over {total.closing_value}",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation="Total alto e stabile, partita aperta attesa"
+                ))
+            elif total.closing_value <= 2.25:
+                recommendations.append(MarketRecommendation(
+                    market_name="Over/Under",
+                    recommendation=f"Under {total.closing_value}",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation="Total basso e stabile, partita tattica attesa"
+                ))
+
+        # GOAL/NOGOAL - Sempre presente
+        if total.direction == MovementDirection.HARDEN or total.closing_value >= 2.75:
+            conf = ConfidenceLevel.HIGH if total.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
+            recommendations.append(MarketRecommendation(
                 market_name="GOAL/NOGOAL",
-                recommendation="GOAL",
-                confidence=ConfidenceLevel.HIGH if total.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM,
-                explanation="Partita viva, gol da entrambe"
-            )
-            recommendations.append(rec)
-        elif total.direction == MovementDirection.SOFTEN or (combination.get("tendency", "").find("NOGOAL") != -1):
-            rec = MarketRecommendation(
+                recommendation="GOAL (Entrambe segnano)",
+                confidence=conf,
+                explanation="Partita viva, gol da entrambe attesi"
+            ))
+        elif total.direction == MovementDirection.SOFTEN or total.closing_value <= 2.0:
+            recommendations.append(MarketRecommendation(
                 market_name="GOAL/NOGOAL",
-                recommendation="NOGOAL",
+                recommendation="NOGOAL (Almeno una non segna)",
                 confidence=ConfidenceLevel.MEDIUM,
-                explanation="Ritmo basso, partita chiusa"
-            )
-            recommendations.append(rec)
-        
-        if "recommendations" in combination:
-            for rec_name in combination["recommendations"]:
-                if not any(r.market_name == rec_name or rec_name in r.recommendation for r in recommendations):
-                    recommendations.append(MarketRecommendation(
-                        market_name="Alternativa",
-                        recommendation=rec_name,
-                        confidence=ConfidenceLevel.MEDIUM,
-                        explanation="Dalla matrice combinazione"
-                    ))
-        
-        return recommendations
-    
-    def _calculate_ht_markets(self, spread: MovementAnalysis,
-                              total: MovementAnalysis, total_close: float) -> List[MarketRecommendation]:
-        """Calcola mercati HT derivati da FT"""
+                explanation="Ritmo basso o partita chiusa"
+            ))
+
+        # Handicap Asiatico - Se spread si muove
+        if spread.direction != MovementDirection.STABLE:
+            handicap_value = abs(spread.closing_value)
+            if spread.direction == MovementDirection.HARDEN:
+                recommendations.append(MarketRecommendation(
+                    market_name="Handicap Asiatico",
+                    recommendation=f"Favorito -{handicap_value}",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation=f"Favorito copre spread {spread.closing_value}"
+                ))
+            else:  # SOFTEN
+                recommendations.append(MarketRecommendation(
+                    market_name="Handicap Asiatico",
+                    recommendation=f"Underdog +{handicap_value}",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation="Underdog resiste con handicap"
+                ))
+
+        # HT Winner - Basato su spread
+        if spread.direction == MovementDirection.HARDEN and spread.intensity in [MovementIntensity.MEDIUM, MovementIntensity.STRONG]:
+            recommendations.append(MarketRecommendation(
+                market_name="1X2 HT",
+                recommendation="1 HT (Favorito vince primo tempo)",
+                confidence=ConfidenceLevel.MEDIUM,
+                explanation="Favorito forte parte bene"
+            ))
+        elif spread.direction == MovementDirection.SOFTEN or (spread.direction == MovementDirection.STABLE and abs(spread.closing_value) < 0.75):
+            recommendations.append(MarketRecommendation(
+                market_name="1X2 HT",
+                recommendation="X HT (Pareggio primo tempo)",
+                confidence=ConfidenceLevel.MEDIUM,
+                explanation="Primo tempo equilibrato atteso"
+            ))
+
+        return recommendations[:5]  # Max 5 core recommendations
+
+
+    def _calculate_alternative_markets(self, spread: MovementAnalysis,
+                                       total: MovementAnalysis, combination: Dict) -> List[MarketRecommendation]:
+        """Calcola raccomandazioni alternative - Media confidenza"""
         recommendations = []
-        
-        ht_total_estimate = total_close * 0.5
-        ht_spread_estimate = spread.closing_value * 0.5
-        
-        if spread.direction == MovementDirection.SOFTEN:
-            ht_spread_estimate = ht_spread_estimate * 0.8
-        
+
+        # Combo 1 + Over/Under
+        if spread.direction == MovementDirection.HARDEN and total.direction == MovementDirection.HARDEN:
+            recommendations.append(MarketRecommendation(
+                market_name="Combo",
+                recommendation=f"1 + Over {total.closing_value}",
+                confidence=ConfidenceLevel.MEDIUM,
+                explanation="Favorito vince con gol"
+            ))
+        elif spread.direction == MovementDirection.HARDEN and total.direction == MovementDirection.SOFTEN:
+            recommendations.append(MarketRecommendation(
+                market_name="Combo",
+                recommendation=f"1 + Under {total.closing_value}",
+                confidence=ConfidenceLevel.MEDIUM,
+                explanation="Favorito vince di corto"
+            ))
+        elif spread.direction == MovementDirection.SOFTEN and total.direction == MovementDirection.SOFTEN:
+            recommendations.append(MarketRecommendation(
+                market_name="Combo",
+                recommendation=f"X + Under {total.closing_value}",
+                confidence=ConfidenceLevel.MEDIUM,
+                explanation="Match equilibrato e chiuso"
+            ))
+
+        # HT/FT Combinations
+        if spread.direction == MovementDirection.HARDEN:
+            if spread.intensity == MovementIntensity.STRONG:
+                recommendations.append(MarketRecommendation(
+                    market_name="HT/FT",
+                    recommendation="1/1 (Favorito HT e FT)",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation="Favorito domina dall'inizio"
+                ))
+            else:
+                recommendations.append(MarketRecommendation(
+                    market_name="HT/FT",
+                    recommendation="X/1 (Pareggio HT, Favorito FT)",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation="Favorito decide nella ripresa"
+                ))
+        elif spread.direction == MovementDirection.SOFTEN:
+            recommendations.append(MarketRecommendation(
+                market_name="HT/FT",
+                recommendation="X/X (Pareggio HT e FT)",
+                confidence=ConfidenceLevel.MEDIUM,
+                explanation="Match equilibrato tutto il tempo"
+            ))
+
+        # Over/Under HT
+        ht_total_estimate = total.closing_value * 0.5
         if total.direction == MovementDirection.HARDEN:
             if ht_total_estimate >= 1.0:
-                rec = MarketRecommendation(
+                recommendations.append(MarketRecommendation(
                     market_name="Over/Under HT",
-                    recommendation=f"Over 1.0 HT o Over 1.25 HT",
+                    recommendation="Over 1.0 HT",
                     confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"FT Total {total_close} → HT stimato {ht_total_estimate:.2f}, partenza aggressiva"
-                )
+                    explanation=f"Total alto ({total.closing_value}), partenza aggressiva"
+                ))
             else:
-                rec = MarketRecommendation(
+                recommendations.append(MarketRecommendation(
                     market_name="Over/Under HT",
-                    recommendation="Over 0.75 HT",
+                    recommendation="Over 0.5 HT",
                     confidence=ConfidenceLevel.MEDIUM,
-                    explanation="Total FT in aumento, ritmo crescente nel 1°T"
-                )
-            recommendations.append(rec)
-        elif total.direction == MovementDirection.SOFTEN:
-            rec = MarketRecommendation(
+                    explanation="Almeno 1 gol nel primo tempo"
+                ))
+        elif total.direction == MovementDirection.SOFTEN or total.closing_value <= 2.25:
+            recommendations.append(MarketRecommendation(
                 market_name="Over/Under HT",
                 recommendation="Under 1.0 HT",
                 confidence=ConfidenceLevel.MEDIUM,
-                explanation="Total FT in calo, fase di studio probabile"
-            )
-            recommendations.append(rec)
-        
+                explanation="Primo tempo tattico, massimo 1 gol"
+            ))
+
+        # GOAL HT
         if total.direction == MovementDirection.HARDEN and ht_total_estimate >= 1.0:
-            rec = MarketRecommendation(
-                market_name="GOAL HT",
-                recommendation="GOAL 1°T",
+            recommendations.append(MarketRecommendation(
+                market_name="GOAL/NOGOAL HT",
+                recommendation="GOAL 1T (Entrambe segnano 1T)",
                 confidence=ConfidenceLevel.MEDIUM,
-                explanation="Almeno 1 gol atteso nel primo tempo"
-            )
-            recommendations.append(rec)
+                explanation="Gol da entrambe già nel primo tempo"
+            ))
         elif total.direction == MovementDirection.SOFTEN:
-            rec = MarketRecommendation(
-                market_name="GOAL HT",
-                recommendation="NOGOAL 1°T o X HT",
+            recommendations.append(MarketRecommendation(
+                market_name="GOAL/NOGOAL HT",
+                recommendation="NOGOAL 1T",
                 confidence=ConfidenceLevel.MEDIUM,
-                explanation="Ritmo basso, partita tattica"
-            )
-            recommendations.append(rec)
-        
-        return recommendations
+                explanation="Almeno una squadra non segna nel 1T"
+            ))
+
+        # Multigol (se rilevante)
+        if total.closing_value >= 2.5:
+            if total.direction == MovementDirection.HARDEN:
+                recommendations.append(MarketRecommendation(
+                    market_name="Multigol",
+                    recommendation="2-4 gol o 3-5 gol",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation="Partita con molti gol attesi"
+                ))
+            else:
+                recommendations.append(MarketRecommendation(
+                    market_name="Multigol",
+                    recommendation="1-3 gol",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation="Gol moderati attesi"
+                ))
+        elif total.closing_value <= 2.0:
+            recommendations.append(MarketRecommendation(
+                market_name="Multigol",
+                recommendation="1-2 gol",
+                confidence=ConfidenceLevel.MEDIUM,
+                explanation="Pochi gol attesi"
+            ))
+
+        return recommendations[:5]  # Max 5 alternative recommendations
+
+
+    def _calculate_value_markets(self, spread: MovementAnalysis,
+                                 total: MovementAnalysis, combination: Dict) -> List[MarketRecommendation]:
+        """Calcola value bets - Bassa confidenza ma potenziale valore"""
+        recommendations = []
+
+        # Risultati esatti - Top 2-3 più probabili
+        exact_scores = self._get_likely_exact_scores(spread, total)
+        for score, explanation in exact_scores[:3]:  # Max 3
+            recommendations.append(MarketRecommendation(
+                market_name="Risultato Esatto",
+                recommendation=score,
+                confidence=ConfidenceLevel.LOW,
+                explanation=explanation
+            ))
+
+        # Double Chance (opzione sicura)
+        if spread.direction == MovementDirection.HARDEN:
+            recommendations.append(MarketRecommendation(
+                market_name="Double Chance",
+                recommendation="1X (Favorito o Pareggio)",
+                confidence=ConfidenceLevel.LOW,
+                explanation="Opzione sicura, favorito non perde"
+            ))
+        elif spread.direction == MovementDirection.SOFTEN:
+            recommendations.append(MarketRecommendation(
+                market_name="Double Chance",
+                recommendation="X2 (Pareggio o Underdog)",
+                confidence=ConfidenceLevel.LOW,
+                explanation="Opzione sicura contro favorito debole"
+            ))
+
+        # Primo gol timing (se rilevante)
+        if total.direction == MovementDirection.HARDEN and total.intensity == MovementIntensity.STRONG:
+            recommendations.append(MarketRecommendation(
+                market_name="Timing",
+                recommendation="Primo gol prima del 30' minuto",
+                confidence=ConfidenceLevel.LOW,
+                explanation="Partita viva, inizio aggressivo"
+            ))
+        elif total.direction == MovementDirection.SOFTEN:
+            recommendations.append(MarketRecommendation(
+                market_name="Timing",
+                recommendation="Primo gol dopo il 30' minuto",
+                confidence=ConfidenceLevel.LOW,
+                explanation="Partita tattica, fase di studio"
+            ))
+
+        return recommendations[:3]  # Max 3 value recommendations
+
+
+    def _get_likely_exact_scores(self, spread: MovementAnalysis, total: MovementAnalysis) -> List[Tuple[str, str]]:
+        """Restituisce i risultati esatti più probabili basati su spread e total"""
+        scores = []
+
+        # Favorito forte + molti gol
+        if spread.direction == MovementDirection.HARDEN and total.closing_value >= 2.75:
+            if spread.intensity == MovementIntensity.STRONG:
+                scores.append(("3-0", "Favorito dominante con molti gol"))
+                scores.append(("3-1", "Favorito vince largamente"))
+                scores.append(("2-0", "Favorito controlla"))
+            else:
+                scores.append(("2-0", "Favorito vince con gol"))
+                scores.append(("2-1", "Favorito vince, underdog segna"))
+                scores.append(("3-1", "Vittoria larga"))
+
+        # Favorito forte + pochi gol
+        elif spread.direction == MovementDirection.HARDEN and total.closing_value <= 2.25:
+            scores.append(("1-0", "Favorito vince di corto"))
+            scores.append(("2-0", "Favorito controlla, pochi gol"))
+            scores.append(("2-1", "Vittoria solida"))
+
+        # Favorito debole + molti gol
+        elif spread.direction == MovementDirection.SOFTEN and total.closing_value >= 2.75:
+            scores.append(("2-2", "Match aperto e equilibrato"))
+            scores.append(("1-2", "Underdog sorprende"))
+            scores.append(("2-1", "Match combattuto"))
+
+        # Favorito debole + pochi gol
+        elif spread.direction == MovementDirection.SOFTEN and total.closing_value <= 2.25:
+            scores.append(("1-1", "Pareggio equilibrato"))
+            scores.append(("0-0", "Nessun gol, match chiuso"))
+            scores.append(("1-0", "Vittoria risicata"))
+
+        # Spread stabile
+        elif spread.direction == MovementDirection.STABLE:
+            if total.closing_value >= 2.75:
+                scores.append(("2-1", "Match normale con gol"))
+                scores.append(("2-2", "Pareggio con gol"))
+                scores.append(("1-2", "Match combattuto"))
+            elif total.closing_value <= 2.25:
+                scores.append(("1-0", "Vittoria di misura"))
+                scores.append(("0-1", "Singolo gol decide"))
+                scores.append(("1-1", "Pareggio"))
+            else:  # Total medio
+                scores.append(("1-1", "Pareggio standard"))
+                scores.append(("2-1", "Vittoria normale"))
+                scores.append(("1-0", "Gol decisivo"))
+
+        # Default
+        if not scores:
+            scores.append(("1-1", "Pareggio possibile"))
+            scores.append(("2-1", "Risultato comune"))
+            scores.append(("1-0", "Vittoria di misura"))
+
+        return scores
     
     def _calculate_confidence(self, spread: MovementAnalysis,
                              total: MovementAnalysis) -> ConfidenceLevel:
@@ -678,21 +904,31 @@ def main():
         
         st.markdown("---")
         
-        # Mercati FT
-        st.header("💡 Mercati FT Consigliati")
-        
-        if result.ft_markets:
-            for i, rec in enumerate(result.ft_markets, 1):
+        # CORE RECOMMENDATIONS
+        st.header("🎯 Raccomandazioni CORE")
+        st.caption("Alta/Media confidenza - I consigli più solidi")
+
+        if result.core_recommendations:
+            for i, rec in enumerate(result.core_recommendations, 1):
                 render_recommendation(rec, i)
         else:
-            st.warning("Nessuna raccomandazione FT disponibile")
-        
+            st.warning("Nessuna raccomandazione core disponibile")
+
         st.markdown("---")
-        
-        # Mercati HT
-        if result.ht_markets:
-            st.header("💡 Mercati HT Consigliati")
-            for i, rec in enumerate(result.ht_markets, 1):
+
+        # ALTERNATIVE RECOMMENDATIONS
+        if result.alternative_recommendations:
+            st.header("💼 Opzioni Alternative")
+            st.caption("Media confidenza - Opzioni tattiche")
+            for i, rec in enumerate(result.alternative_recommendations, 1):
+                render_recommendation(rec, i)
+            st.markdown("---")
+
+        # VALUE BETS
+        if result.value_recommendations:
+            st.header("💎 Value Bets")
+            st.caption("Bassa confidenza ma potenziale valore - Per chi vuole rischiare")
+            for i, rec in enumerate(result.value_recommendations, 1):
                 render_recommendation(rec, i)
         
         st.markdown("---")
