@@ -153,8 +153,11 @@ class SpreadAnalyzer:
     
     def analyze(self, opening: float, closing: float) -> MovementAnalysis:
         """Analizza il movimento dello spread"""
-        movement = closing - opening
-        
+        # Per lo spread, confrontiamo i valori assoluti per determinare se si indurisce o ammorbidisce
+        abs_opening = abs(opening)
+        abs_closing = abs(closing)
+        movement = abs_closing - abs_opening  # Se negativo = si ammorbidisce, positivo = si indurisce
+
         if abs(movement) < 0.01:
             direction = MovementDirection.STABLE
             intensity = MovementIntensity.NONE
