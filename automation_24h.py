@@ -2184,6 +2184,50 @@ class Automation24H:
                                 f"{'...' if len(stale_bookmakers) > 3 else ''} "
                                 f"(risultato: {total_goals_current} gol, threshold {threshold} già superato, max accettabile: {max_allowed})"
                             )
+                    
+                    # 🆕 MIGLIORAMENTO 1: Se threshold già superato, "under" è IMPOSSIBILE - rimuovi quote basse
+                    if 'under' in outcomes_dict and isinstance(outcomes_dict['under'], dict):
+                        impossible_bookmakers = []
+                        for bookmaker_name, odd_value in list(outcomes_dict['under'].items()):
+                            try:
+                                odd_float = float(odd_value) if not isinstance(odd_value, float) else odd_value
+                                # Se il threshold è già superato, under è impossibile - quota dovrebbe essere molto alta (>50)
+                                if odd_float < 50.0:
+                                    # Quota irrealistica - under è già perso, quota troppo bassa
+                                    del outcomes_dict['under'][bookmaker_name]
+                                    impossible_bookmakers.append((bookmaker_name, odd_value))
+                                    filtered += 1
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        if impossible_bookmakers:
+                            logger.warning(
+                                f"❌ Rimosse quote IMPOSSIBILI per Under {threshold} {market_type} da {len(impossible_bookmakers)} bookmaker: "
+                                f"{[(bm, f'{odd:.2f}') for bm, odd in impossible_bookmakers[:3]]}"
+                                f"{'...' if len(impossible_bookmakers) > 3 else ''} "
+                                f"(risultato: {total_goals_current} gol, threshold {threshold} già superato, under è IMPOSSIBILE)"
+                            )
+                
+                # 🆕 MIGLIORAMENTO 2: Filtra quote troppo basse (< 1.01) - probabilmente errori
+                for outcome_type in ['over', 'under']:
+                    if outcome_type in outcomes_dict and isinstance(outcomes_dict[outcome_type], dict):
+                        invalid_bookmakers = []
+                        for bookmaker_name, odd_value in list(outcomes_dict[outcome_type].items()):
+                            try:
+                                odd_float = float(odd_value) if not isinstance(odd_value, float) else odd_value
+                                if odd_float < 1.01:
+                                    # Quota troppo bassa - probabilmente errore
+                                    del outcomes_dict[outcome_type][bookmaker_name]
+                                    invalid_bookmakers.append((bookmaker_name, odd_float))
+                                    filtered += 1
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        if invalid_bookmakers:
+                            logger.warning(
+                                f"⚠️  Rimosse quote INVALIDE (troppo basse < 1.01) per {outcome_type} {threshold} {market_type} "
+                                f"da {len(invalid_bookmakers)} bookmaker: {[(bm, f'{odd:.3f}') for bm, odd in invalid_bookmakers[:2]]}"
+                            )
             
             return filtered
         
