@@ -347,8 +347,24 @@ class MarketMovementAnalyzer:
 
         abs_spread = abs(spread.closing_value)
 
-        # 1X2 - Sempre presente - LOGICA FISSATA: considera movimento + closing value
-        if spread.direction == MovementDirection.HARDEN:
+        # EDGE CASE: Spread quasi pick'em (< 0.25) - Match 50-50
+        if abs_spread < 0.25:
+            recommendations.append(MarketRecommendation(
+                market_name="1X2",
+                recommendation="X o 12 (Risultato incerto)",
+                confidence=ConfidenceLevel.LOW,
+                explanation=f"Spread quasi pick'em ({spread.closing_value}), match 50-50, evita favorito"
+            ))
+        # EDGE CASE: Spread molto alto (> 2.0) - Favorito schiacciante
+        elif abs_spread > 2.0:
+            recommendations.append(MarketRecommendation(
+                market_name="1X2",
+                recommendation="1 (Favorito dominante)",
+                confidence=ConfidenceLevel.HIGH,
+                explanation=f"Spread schiacciante ({spread.closing_value}), favorito nettamente superiore"
+            ))
+        # 1X2 - LOGICA NORMALE: considera movimento + closing value
+        elif spread.direction == MovementDirection.HARDEN:
             # Spread si indurisce verso favorito → sempre "1"
             conf = ConfidenceLevel.HIGH if spread.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
             recommendations.append(MarketRecommendation(
@@ -358,7 +374,7 @@ class MarketMovementAnalyzer:
                 explanation=f"Spread si indurisce: {spread.interpretation}"
             ))
         elif spread.direction == MovementDirection.SOFTEN:
-            # Spread si ammorbidisce → guarda closing value
+            # Spread si ammorbidisce → guarda closing value con THRESHOLDS GRANULARI
             if abs_spread < 0.5:
                 # Match molto equilibrato
                 recommendations.append(MarketRecommendation(
@@ -367,24 +383,40 @@ class MarketMovementAnalyzer:
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation=f"Spread equilibrato ({spread.closing_value}), favorito molto debole"
                 ))
-            elif abs_spread < 1.0:
-                # Match abbastanza equilibrato
+            elif abs_spread < 0.75:
+                # Match abbastanza equilibrato - threshold più granulare
                 recommendations.append(MarketRecommendation(
                     market_name="1X2",
-                    recommendation="1X o X (Favorito o Pareggio)",
+                    recommendation="X o 1X (Incertezza, evita underdog)",
                     confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Spread si ammorbidisce a {spread.closing_value}, incertezza"
+                    explanation=f"Spread si ammorbidisce a {spread.closing_value}, match equilibrato"
                 ))
-            else:
-                # Favorito ancora forte nonostante ammorbidimento
+            elif abs_spread < 1.0:
+                # Leggero favorito - threshold più granulare
+                recommendations.append(MarketRecommendation(
+                    market_name="1X2",
+                    recommendation="1X o 1 (Leggero favorito)",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation=f"Spread {spread.closing_value}, leggero favorito"
+                ))
+            elif abs_spread < 1.5:
+                # Favorito medio - threshold più granulare
                 recommendations.append(MarketRecommendation(
                     market_name="1X2",
                     recommendation="1 (Favorito)",
                     confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Spread si ammorbidisce ma closing {spread.closing_value} indica favorito ancora forte"
+                    explanation=f"Spread {spread.closing_value}, favorito medio nonostante ammorbidimento"
+                ))
+            else:
+                # Favorito forte - threshold più granulare
+                recommendations.append(MarketRecommendation(
+                    market_name="1X2",
+                    recommendation="1 (Favorito forte)",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation=f"Spread {spread.closing_value}, favorito ancora forte nonostante ammorbidimento"
                 ))
         else:  # STABLE
-            # Spread stabile → guarda solo closing value
+            # Spread stabile → guarda solo closing value con THRESHOLDS GRANULARI
             if abs_spread < 0.5:
                 recommendations.append(MarketRecommendation(
                     market_name="1X2",
@@ -392,18 +424,36 @@ class MarketMovementAnalyzer:
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation=f"Match equilibrato, spread {spread.closing_value}"
                 ))
-            elif abs_spread < 1.0:
+            elif abs_spread < 0.75:
+                # Threshold granulare
                 recommendations.append(MarketRecommendation(
                     market_name="1X2",
-                    recommendation="1X (Favorito o Pareggio)",
+                    recommendation="X o 1X",
                     confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Spread moderato {spread.closing_value}"
+                    explanation=f"Spread equilibrato {spread.closing_value}"
                 ))
-            else:
+            elif abs_spread < 1.0:
+                # Threshold granulare
+                recommendations.append(MarketRecommendation(
+                    market_name="1X2",
+                    recommendation="1X o 1 (Leggero favorito)",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation=f"Spread {spread.closing_value}, leggero favorito"
+                ))
+            elif abs_spread < 1.5:
+                # Threshold granulare
                 recommendations.append(MarketRecommendation(
                     market_name="1X2",
                     recommendation="1 (Favorito)",
                     confidence=ConfidenceLevel.MEDIUM,
+                    explanation=f"Favorito medio, spread {spread.closing_value}"
+                ))
+            else:
+                # Threshold granulare
+                recommendations.append(MarketRecommendation(
+                    market_name="1X2",
+                    recommendation="1 (Favorito forte)",
+                    confidence=ConfidenceLevel.HIGH,
                     explanation=f"Favorito forte, spread {spread.closing_value}"
                 ))
 
@@ -453,8 +503,25 @@ class MarketMovementAnalyzer:
                     explanation="Total basso e stabile, partita tattica attesa"
                 ))
 
-        # GOAL/NOGOAL - LOGICA MIGLIORATA
-        if total.direction == MovementDirection.HARDEN or total.closing_value >= 2.75:
+        # GOAL/NOGOAL - EDGE CASES + LOGICA MIGLIORATA
+        # EDGE CASE: Total molto basso (< 1.75) - Partita chiusissima
+        if total.closing_value < 1.75:
+            recommendations.append(MarketRecommendation(
+                market_name="GOAL/NOGOAL",
+                recommendation="NOGOAL + Under (Partita chiusissima)",
+                confidence=ConfidenceLevel.HIGH,
+                explanation=f"Total molto basso ({total.closing_value}), pochi/nessun gol atteso"
+            ))
+        # EDGE CASE: Total molto alto (> 3.5) - Goleada
+        elif total.closing_value > 3.5:
+            recommendations.append(MarketRecommendation(
+                market_name="GOAL/NOGOAL",
+                recommendation="GOAL + Over (Goleada attesa)",
+                confidence=ConfidenceLevel.HIGH,
+                explanation=f"Total molto alto ({total.closing_value}), molti gol e GOAL sicuro"
+            ))
+        # LOGICA NORMALE
+        elif total.direction == MovementDirection.HARDEN or total.closing_value >= 2.75:
             conf = ConfidenceLevel.HIGH if total.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
             recommendations.append(MarketRecommendation(
                 market_name="GOAL/NOGOAL",
@@ -815,24 +882,27 @@ class MarketMovementAnalyzer:
     
     def _calculate_confidence(self, spread: MovementAnalysis,
                              total: MovementAnalysis) -> ConfidenceLevel:
-        """Calcola confidenza generale"""
-        
-        # Se entrambi concordi e forti → alta
-        if (spread.direction == total.direction and 
+        """Calcola confidenza generale - FIX: considera segnali contrastanti"""
+
+        # SEGNALI CONTRASTANTI: uno HARDEN, uno SOFTEN → mai HIGH, sempre MEDIUM
+        # Es: Spread HARDEN (favorito forte) ma Total SOFTEN (pochi gol) = segnali contrastanti
+        if (spread.direction == MovementDirection.HARDEN and total.direction == MovementDirection.SOFTEN) or \
+           (spread.direction == MovementDirection.SOFTEN and total.direction == MovementDirection.HARDEN):
+            return ConfidenceLevel.MEDIUM  # Mai HIGH con segnali contrastanti!
+
+        # Se entrambi concordi (stessa direzione) e forti → HIGH
+        if (spread.direction == total.direction and
+            spread.direction != MovementDirection.STABLE and
             spread.intensity in [MovementIntensity.MEDIUM, MovementIntensity.STRONG] and
             total.intensity in [MovementIntensity.MEDIUM, MovementIntensity.STRONG]):
             return ConfidenceLevel.HIGH
-        
-        # Se concordi ma uno leggero → media
-        if spread.direction == total.direction:
+
+        # Se concordi ma uno leggero → MEDIUM
+        if spread.direction == total.direction and spread.direction != MovementDirection.STABLE:
             return ConfidenceLevel.MEDIUM
-        
-        # Se discordi → bassa
-        if spread.direction != MovementDirection.STABLE and total.direction != MovementDirection.STABLE:
-            if spread.direction != total.direction:
-                return ConfidenceLevel.LOW
-        
-        # Default: media
+
+        # Se uno o entrambi STABLE → MEDIUM
+        # Default: MEDIUM
         return ConfidenceLevel.MEDIUM
 
 
