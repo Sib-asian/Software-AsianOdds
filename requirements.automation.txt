@@ -11,8 +11,9 @@ python-dotenv>=0.21.0
 # AI System (solo base, senza ML pesanti)
 scikit-learn>=1.2.0
 
-# Telegram
+# Telegram / UI helpers
 # (requests già incluso sopra)
+streamlit>=1.28.0
 
 # Date/Time
 python-dateutil>=2.8.2
@@ -22,11 +23,16 @@ python-dateutil>=2.8.2
 
 # NO torch - troppo pesante (2-3 GB)
 # NO transformers - troppo pesante (1-2 GB)
-# NO streamlit - non necessario per automazione
+# OK streamlit - richiesto da Frontendcloud
 # NO plotly - non necessario
 # NO seaborn - non necessario
 # NO xgboost - troppo pesante (500 MB)
 # NO numba - opzionale
 # NO statsbombpy - non necessario
 # NO chronos - non necessario
+
+
+
+
+
 

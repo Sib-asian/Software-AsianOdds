@@ -132,3 +132,8 @@ Autenticazione: ⚠️ Da configurare
 
 **🎊 Setup completato! Configura l'autenticazione GitHub e inizia a creare PR!**
 
+
+
+
+
+

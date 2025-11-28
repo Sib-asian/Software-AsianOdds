@@ -149,3 +149,8 @@ Il tuo sistema ora gira su Render.com!
 - Verifica che le notifiche arrivino correttamente
 - Se tutto ok, considera upgrade a Starter per sempre attivo
 
+
+
+
+
+

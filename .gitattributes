@@ -1,0 +1,9 @@
+# Normalizza fine riga per Python
+*.py text eol=lf
+
+# Mantieni binari
+*.pkl binary
+*.pth binary
+*.h5 binary
+*.model binary
+

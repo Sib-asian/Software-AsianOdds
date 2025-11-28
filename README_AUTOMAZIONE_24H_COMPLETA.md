@@ -253,6 +253,47 @@ Software-AsianOdds-main/
 
 ---
 
+## 🧪 Manual Testing
+
+To test the automation system with a single run and verify log creation:
+
+### Linux/Mac:
+```bash
+# Set log directory
+export AUTOMATION_LOG_DIR=./logs
+
+# Run single cycle
+python3 automation_24h.py --single-run
+
+# Verify logs were created
+ls -la ./logs/automation_24h.log
+```
+
+### Windows:
+```powershell
+# Set log directory
+$env:AUTOMATION_LOG_DIR="./logs"
+
+# Run single cycle
+python automation_24h.py --single-run
+
+# Verify logs were created
+Get-ChildItem ./logs/automation_24h.log
+```
+
+The `--single-run` flag will:
+- Execute one complete analysis cycle
+- Exit after completion (no continuous monitoring)
+- Useful for testing, debugging, or cron job scheduling
+
+**Expected behavior:**
+- Logs directory created at `./logs/` (or custom path from `AUTOMATION_LOG_DIR`)
+- Log file `automation_24h.log` created with rotation (10MB max, 5 backups)
+- Console output shows initialization and cycle execution
+- File logs contain the same information with timestamps
+
+---
+
 ## 🎉 Fatto!
 
 **Il sistema ora gira 24/7 automaticamente!**

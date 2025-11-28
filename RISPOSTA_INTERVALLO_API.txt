@@ -1,0 +1,55 @@
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║     ⏱️  INTERVALLO CHIAMATE API - ANALISI                    ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+📊 SITUAZIONE ATTUALE:
+
+   ⏱️  Intervallo: 300 secondi (5 minuti)
+   📞 Chiamate possibili/giorno: ~288
+   💰 Budget configurato: 100 chiamate/giorno
+   📅 Chiamate effettive: Limitato dal budget
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ SÌ, CONVIENE AUMENTARE L'INTERVALLO!
+
+   Raccomandazione: Aumenta a 10 minuti (600 secondi)
+
+   Motivi:
+   • Risparmio quota: 50% delle chiamate
+   • Sufficiente per pre-match (quote non cambiano così rapidamente)
+   • Ancora accettabile per live (10 minuti è ragionevole)
+   • Sicuro per non esaurire quota
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 CONFRONTO:
+
+   Intervallo    | Chiamate/Giorno | Risparmio | Adatto per
+   ──────────────┼─────────────────┼───────────┼────────────
+   5 min (attuale) | 288            | -         | Live + Pre-match
+   10 min         | 144            | 50%       | Pre-match + Live ⭐
+   15 min         | 96             | 67%       | Pre-match
+   20 min         | 72             | 75%       | Solo pre-match
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔧 COME MODIFICARE:
+
+   Modifica il file .env:
+   
+   AUTOMATION_UPDATE_INTERVAL=600  # 10 minuti (600 secondi)
+
+   Poi riavvia il servizio.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ CONCLUSIONE:
+
+   Aumenta a 10 minuti per:
+   • Risparmiare quota API
+   • Mantenere frequenza sufficiente
+   • Essere sicuro di non esaurire quota
+

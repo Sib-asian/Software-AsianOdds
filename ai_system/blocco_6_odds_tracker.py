@@ -29,7 +29,12 @@ except ImportError:
     TORCH_AVAILABLE = False
 
 from .config import AIConfig
-from .models.chronos_forecaster import ChronosForecaster
+try:
+    from .models.chronos_forecaster import ChronosForecaster
+    CHRONOS_FORECASTER_AVAILABLE = True
+except ImportError:
+    CHRONOS_FORECASTER_AVAILABLE = False
+    ChronosForecaster = None
 from .utils.theodds_api_client import TheOddsAPIClient
 
 logger = logging.getLogger(__name__)
@@ -67,7 +72,7 @@ class OddsMovementTracker:
         self.lstm_selection = "home"
         self.model_path = Path(self.config.models_dir) / "odds_lstm.pth"
         self.is_trained = False
-        self.chronos = ChronosForecaster(self.config) if self.config.chronos_enabled else None
+        self.chronos = ChronosForecaster(self.config) if (self.config.chronos_enabled and CHRONOS_FORECASTER_AVAILABLE) else None
         self.theodds_client = TheOddsAPIClient(
             api_key=self.config.theodds_api_key,
             regions=self.config.theodds_regions,

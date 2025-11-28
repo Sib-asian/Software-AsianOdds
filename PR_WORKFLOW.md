@@ -228,3 +228,8 @@ powershell.exe -File ".\create_pr.ps1" -CommitMessage "$(git log -1 --pretty=%B)
 
 **Pronto! Ora puoi creare PR con un solo comando! 🎉**
 
+
+
+
+
+

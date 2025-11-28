@@ -1,10 +1,11 @@
 name: Automation 24/7 (Cron)
 
+# DISABILITATO: L'automazione gira sul PC locale, non serve su GitHub Actions
 on:
-  schedule:
-    # Esegue ogni 5 minuti
-    - cron: '*/5 * * * *'
-  workflow_dispatch:  # Permette esecuzione manuale
+  # schedule:
+  #   # Esegue ogni 5 minuti
+  #   - cron: '*/5 * * * *'
+  workflow_dispatch:  # Permette esecuzione manuale (opzionale)
 
 jobs:
   automation:

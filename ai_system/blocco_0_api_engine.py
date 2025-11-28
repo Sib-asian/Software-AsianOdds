@@ -117,6 +117,24 @@ class APIDataEngine:
         logger.info("✅ API Data Engine initialized")
         self._prefetch_executor = ThreadPoolExecutor(max_workers=self.config.api_prefetch_max_workers)
 
+    def _normalize_match_dict(self, match: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normalizza match dict convertendo datetime objects a stringhe ISO.
+        Questo previene errori quando il codice chiama metodi stringa su datetime.
+        """
+        normalized = dict(match)
+        
+        # Normalizza 'date' e 'match_date'
+        for key in ['date', 'match_date']:
+            if key in normalized and normalized[key] is not None:
+                value = normalized[key]
+                if isinstance(value, datetime):
+                    normalized[key] = value.isoformat()
+                elif not isinstance(value, str):
+                    normalized[key] = str(value)
+        
+        return normalized
+
     def collect(
         self,
         match: Dict[str, Any],
@@ -133,6 +151,9 @@ class APIDataEngine:
             Dizionario con dati arricchiti + metadata
         """
         self.stats["total_requests"] += 1
+
+        # Normalizza match dict: converte datetime objects a stringhe
+        match = self._normalize_match_dict(match)
 
         try:
             # Calculate match importance
@@ -201,7 +222,9 @@ class APIDataEngine:
             return enriched
 
         except Exception as e:
+            import traceback
             logger.error(f"❌ Error collecting data for match: {e}")
+            logger.debug(f"Traceback: {traceback.format_exc()}")
             return self._get_fallback_context(match)
 
     def _calculate_importance(self, match: Dict[str, Any]) -> float:
@@ -731,7 +754,14 @@ class APIDataEngine:
         if not date_str:
             return None
 
+        # Se è già un oggetto datetime, restituiscilo direttamente
+        if isinstance(date_str, datetime):
+            return date_str
+
         def _from_iso(value: str) -> Optional[datetime]:
+            # Assicurati che value sia una stringa
+            if not isinstance(value, str):
+                value = str(value)
             value = value.strip()
             if value.endswith("Z"):
                 value = value[:-1] + "+00:00"
@@ -745,7 +775,9 @@ class APIDataEngine:
             return dt
 
         time_str = match.get("time") or match.get("match_time") or "00:00"
-        combined = f"{date_str} {time_str}".strip()
+        # Assicurati che date_str sia una stringa prima di concatenare
+        date_str_for_combined = str(date_str) if not isinstance(date_str, str) else date_str
+        combined = f"{date_str_for_combined} {time_str}".strip()
         dt = _from_iso(combined)
         if dt:
             return dt
@@ -881,7 +913,12 @@ class APIDataEngine:
     def _get_match_identifier(self, match: Dict[str, Any], market: Optional[str]) -> str:
         home = (match.get("home") or "home").lower().replace(" ", "_")
         away = (match.get("away") or "away").lower().replace(" ", "_")
-        date = (match.get("date") or match.get("match_date") or "unknown").replace(":", "-")
+        date_val = match.get("date") or match.get("match_date") or "unknown"
+        # Convert datetime to string if needed
+        if isinstance(date_val, datetime):
+            date = date_val.isoformat().replace(":", "-")
+        else:
+            date = str(date_val).replace(":", "-")
         market_key = (market or "h2h").lower()
         return f"{home}__{away}__{date}__{market_key}"
 

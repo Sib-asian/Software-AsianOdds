@@ -245,13 +245,34 @@ class TelegramNotifier:
             confidence_emoji = "🔴"
             confidence_text = "LOW"
 
+        # Determina se è live o pre-match
+        is_live = match_data.get('is_live', False)
+        match_status = match_data.get('match_status', '')
+        match_date = match_data.get('match_date')
+        
+        # Formatta data/ora partita
+        time_info = ""
+        if match_date:
+            try:
+                if isinstance(match_date, str):
+                    from datetime import datetime
+                    match_date = datetime.fromisoformat(match_date.replace('Z', '+00:00'))
+                if isinstance(match_date, datetime):
+                    time_info = match_date.strftime("🕐 %H:%M")
+            except:
+                pass
+        
         # Build message
+        status_emoji = "🔴 LIVE" if is_live else "⚽ PRE-MATCH"
+        status_text = f"{status_emoji} {time_info}" if time_info else status_emoji
+        
         message = f"""
 {emoji} <b>{opportunity_type} BETTING OPPORTUNITY</b> {emoji}
 
 <b>📅 Match</b>
 {home} vs {away}
 🏆 {league}
+{status_text}
 
 <b>💰 Recommendation</b>
 Market: <b>{market}</b>

@@ -63,10 +63,10 @@ class AIConfig:
     telegram_min_ev: float = 5.0           # Min EV% per inviare notifica
     telegram_min_confidence: float = 60.0  # Min confidence per inviare
     telegram_rate_limit_seconds: int = 3   # Secondi tra messaggi
-    telegram_live_alerts_enabled: bool = False  # Disattiva notifiche live di default
+    telegram_live_alerts_enabled: bool = True  # ✅ ATTIVATO: Notifiche live abilitate
 
     # Live monitoring settings
-    live_monitoring_enabled: bool = False  # Enable auto-monitoring
+    live_monitoring_enabled: bool = True  # ✅ ATTIVATO: Auto-monitoring abilitato
     live_update_interval: int = 60         # Secondi tra aggiornamenti (default: 60s)
     live_min_ev_alert: float = 8.0         # Min EV per alert live (default: 8%)
 

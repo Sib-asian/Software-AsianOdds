@@ -22,3 +22,8 @@ if ([string]::IsNullOrWhiteSpace($Description)) {
 # Chiama lo script principale
 & "$PSScriptRoot\create_pr.ps1" -CommitMessage $Message -PRDescription $Description
 
+
+
+
+
+

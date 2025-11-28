@@ -33,7 +33,7 @@ def main():
     
     min_ev = float(os.getenv('AUTOMATION_MIN_EV', '8.0'))
     min_confidence = float(os.getenv('AUTOMATION_MIN_CONFIDENCE', '70.0'))
-    update_interval = int(os.getenv('AUTOMATION_UPDATE_INTERVAL', '300'))
+    update_interval = int(os.getenv('AUTOMATION_UPDATE_INTERVAL', '1200'))
     
     print(f"✅ Telegram configurato:")
     print(f"   Token: {'***' + telegram_token[-10:] if len(telegram_token) > 10 else '***'}")
