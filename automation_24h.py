@@ -2599,7 +2599,14 @@ class Automation24H:
             'asian_handicap': {}
         }
         
+        # 🔧 DEBUG: Log iniziale per capire cosa viene passato
+        logger.info(f"📡 Estrazione quote: ricevuti {len(odds_list)} bookmaker dall'API")
+        
         # Itera su tutti i bookmaker per raccogliere tutte le quote
+        bets_1x2_found = 0
+        bets_over_under_found = 0
+        total_bookmakers_processed = 0
+        
         for bookmaker in odds_list:
             # 🔧 FIX CRITICO: La struttura può essere diversa!
             # Dai log: "Primo bookmaker keys: ['id', 'name', 'bets']"
@@ -2608,6 +2615,8 @@ class Automation24H:
             
             if not isinstance(bookmaker, dict):
                 continue
+            
+            total_bookmakers_processed += 1
             
             # Prova prima struttura diretta (come mostrato nei log)
             bookmaker_name = bookmaker.get("name", "")
@@ -2634,6 +2643,14 @@ class Automation24H:
             bets = bookmaker.get("bets", [])
             
             for bet in bets:
+                bet_id = bet.get("id")
+                bet_name = bet.get("name", "").lower()
+                
+                # 🔧 DEBUG: Conta mercati trovati
+                if bet_id == 1 or "match winner" in bet_name or "1x2" in bet_name:
+                    bets_1x2_found += 1
+                elif bet_id == 5 or "over/under" in bet_name or "total goals" in bet_name:
+                    bets_over_under_found += 1
                 bet_id = bet.get("id")
                 bet_name = bet.get("name", "").lower()
                 values = bet.get("values", [])
@@ -2884,6 +2901,13 @@ class Automation24H:
                             except (ValueError, TypeError):
                                 continue
         
+        # 🔧 DEBUG: Log riepilogo quote raccolte
+        logger.info(f"📊 Riepilogo estrazione quote:")
+        logger.info(f"   Bookmaker processati: {total_bookmakers_processed}")
+        logger.info(f"   Mercati 1X2 trovati: {bets_1x2_found}")
+        logger.info(f"   Mercati Over/Under trovati: {bets_over_under_found}")
+        logger.info(f"   Quote 1X2 raccolte: home={len(all_bookmaker_odds['match_winner']['home'])}, draw={len(all_bookmaker_odds['match_winner']['draw'])}, away={len(all_bookmaker_odds['match_winner']['away'])}")
+        
         # 🔧 NUOVO: Calcola numero di bookmaker disponibili per ogni mercato/outcome
         bookmaker_counts = {
             'match_winner': {'home': 0, 'draw': 0, 'away': 0},
@@ -2940,6 +2964,15 @@ class Automation24H:
         # Sostituisce le quote massime con quote "realistiche" (75° percentile, filtra outlier)
         logger.debug("🔍 Applicazione selezione intelligente quote (filtro outlier)...")
         
+        # 🔧 DEBUG: Log quote RAW prima della selezione intelligente
+        for outcome in ['home', 'draw', 'away']:
+            raw_odds_count = len(all_bookmaker_odds['match_winner'][outcome])
+            if raw_odds_count > 0:
+                raw_odds_list = list(all_bookmaker_odds['match_winner'][outcome].values())
+                logger.info(f"📊 Quote RAW 1X2 {outcome}: {raw_odds_count} bookmaker, valori: {[float(odd) for odd in raw_odds_list[:5]]}")
+            else:
+                logger.warning(f"⚠️  Nessuna quota RAW trovata per 1X2 {outcome}")
+        
         # Match Winner (1X2)
         for outcome in ['home', 'draw', 'away']:
             if all_bookmaker_odds['match_winner'][outcome]:
@@ -2950,6 +2983,9 @@ class Automation24H:
                 if selected_odd is not None:
                     all_odds['match_winner'][outcome] = float(selected_odd)
                     bookmaker_tracker['match_winner'][outcome] = selected_bookmaker
+                    logger.info(f"✅ Quota 1X2 {outcome} selezionata: {float(selected_odd)} da {selected_bookmaker}")
+                else:
+                    logger.warning(f"⚠️  _select_realistic_odds ha restituito None per 1X2 {outcome} (quote disponibili: {len(all_bookmaker_odds['match_winner'][outcome])})")
         
         # Over/Under FT e HT
         for threshold_dict, market_key, odds_key, tracker_key in [
@@ -3103,6 +3139,9 @@ class Automation24H:
         # Rimuovi quote incoerenti prima di restituirle
         logger.debug("🔍 Validazione probabilità implicite per coerenza quote...")
         
+        # 🔧 DEBUG: Log quote PRIMA della validazione
+        logger.info(f"📊 Quote 1X2 PRIMA della validazione: home={all_odds['match_winner'].get('home')}, draw={all_odds['match_winner'].get('draw')}, away={all_odds['match_winner'].get('away')}")
+        
         # Valida 1X2
         if all_odds['match_winner']:
             match_winner_valid = self._validate_market_implied_probabilities(
@@ -3142,6 +3181,9 @@ class Automation24H:
                             all_odds['match_winner'] = {'home': None, 'draw': None, 'away': None}
                 except Exception as e:
                     logger.debug(f"Errore calcolo probabilità implicite 1X2: {e}, mantengo quote")
+        
+        # 🔧 DEBUG: Log quote DOPO la validazione
+        logger.info(f"📊 Quote 1X2 DOPO la validazione: home={all_odds['match_winner'].get('home')}, draw={all_odds['match_winner'].get('draw')}, away={all_odds['match_winner'].get('away')}")
         
         # Valida Over/Under per ogni threshold
         for market_type in ['over_under', 'over_under_ht', 'first_half_goals', 'second_half_goals']:
