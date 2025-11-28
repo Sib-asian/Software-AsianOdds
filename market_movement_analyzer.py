@@ -346,6 +346,11 @@ class MarketMovementAnalyzer:
         recommendations = []
 
         abs_spread = abs(spread.closing_value)
+        
+        # Determina chi è favorito in base al segno dello spread
+        # spread > 0: Casa favorita (1)
+        # spread < 0: Trasferta favorita (2)
+        favorito = "1" if spread.closing_value > 0 else "2" if spread.closing_value < 0 else "X"
 
         # EDGE CASE: Spread quasi pick'em (< 0.25) - Match 50-50
         if abs_spread < 0.25:
@@ -359,17 +364,17 @@ class MarketMovementAnalyzer:
         elif abs_spread > 2.0:
             recommendations.append(MarketRecommendation(
                 market_name="1X2",
-                recommendation="1 (Favorito dominante)",
+                recommendation=f"{favorito} (Favorito dominante)",
                 confidence=ConfidenceLevel.HIGH,
-                explanation=f"Spread schiacciante ({spread.closing_value}), favorito nettamente superiore"
+                explanation=f"Spread schiacciante ({format_spread_display(spread.closing_value)}), favorito nettamente superiore"
             ))
         # 1X2 - LOGICA NORMALE: considera movimento + closing value
         elif spread.direction == MovementDirection.HARDEN:
-            # Spread si indurisce verso favorito → sempre "1"
+            # Spread si indurisce verso favorito
             conf = ConfidenceLevel.HIGH if spread.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
             recommendations.append(MarketRecommendation(
                 market_name="1X2",
-                recommendation="1 (Favorito)",
+                recommendation=f"{favorito} (Favorito)",
                 confidence=conf,
                 explanation=f"Spread si indurisce: {spread.interpretation}"
             ))
@@ -385,35 +390,37 @@ class MarketMovementAnalyzer:
                 ))
             elif abs_spread < 0.75:
                 # Match abbastanza equilibrato - threshold più granulare
+                favorito_x = f"{favorito}X" if favorito != "X" else "X"
                 recommendations.append(MarketRecommendation(
                     market_name="1X2",
-                    recommendation="X o 1X (Incertezza, evita underdog)",
+                    recommendation=f"X o {favorito_x} (Incertezza, evita underdog)",
                     confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Spread si ammorbidisce a {spread.closing_value}, match equilibrato"
+                    explanation=f"Spread si ammorbidisce a {format_spread_display(spread.closing_value)}, match equilibrato"
                 ))
             elif abs_spread < 1.0:
                 # Leggero favorito - threshold più granulare
+                favorito_x = f"{favorito}X" if favorito != "X" else "X"
                 recommendations.append(MarketRecommendation(
                     market_name="1X2",
-                    recommendation="1X o 1 (Leggero favorito)",
+                    recommendation=f"{favorito_x} o {favorito} (Leggero favorito)",
                     confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Spread {spread.closing_value}, leggero favorito"
+                    explanation=f"Spread {format_spread_display(spread.closing_value)}, leggero favorito"
                 ))
             elif abs_spread < 1.5:
                 # Favorito medio - threshold più granulare
                 recommendations.append(MarketRecommendation(
                     market_name="1X2",
-                    recommendation="1 (Favorito)",
+                    recommendation=f"{favorito} (Favorito)",
                     confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Spread {spread.closing_value}, favorito medio nonostante ammorbidimento"
+                    explanation=f"Spread {format_spread_display(spread.closing_value)}, favorito medio nonostante ammorbidimento"
                 ))
             else:
                 # Favorito forte - threshold più granulare
                 recommendations.append(MarketRecommendation(
                     market_name="1X2",
-                    recommendation="1 (Favorito forte)",
+                    recommendation=f"{favorito} (Favorito forte)",
                     confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Spread {spread.closing_value}, favorito ancora forte nonostante ammorbidimento"
+                    explanation=f"Spread {format_spread_display(spread.closing_value)}, favorito ancora forte nonostante ammorbidimento"
                 ))
         else:  # STABLE
             # Spread stabile → guarda solo closing value con THRESHOLDS GRANULARI
@@ -426,35 +433,37 @@ class MarketMovementAnalyzer:
                 ))
             elif abs_spread < 0.75:
                 # Threshold granulare
+                favorito_x = f"{favorito}X" if favorito != "X" else "X"
                 recommendations.append(MarketRecommendation(
                     market_name="1X2",
-                    recommendation="X o 1X",
+                    recommendation=f"X o {favorito_x}",
                     confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Spread equilibrato {spread.closing_value}"
+                    explanation=f"Spread equilibrato {format_spread_display(spread.closing_value)}"
                 ))
             elif abs_spread < 1.0:
                 # Threshold granulare
+                favorito_x = f"{favorito}X" if favorito != "X" else "X"
                 recommendations.append(MarketRecommendation(
                     market_name="1X2",
-                    recommendation="1X o 1 (Leggero favorito)",
+                    recommendation=f"{favorito_x} o {favorito} (Leggero favorito)",
                     confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Spread {spread.closing_value}, leggero favorito"
+                    explanation=f"Spread {format_spread_display(spread.closing_value)}, leggero favorito"
                 ))
             elif abs_spread < 1.5:
                 # Threshold granulare
                 recommendations.append(MarketRecommendation(
                     market_name="1X2",
-                    recommendation="1 (Favorito)",
+                    recommendation=f"{favorito} (Favorito)",
                     confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Favorito medio, spread {spread.closing_value}"
+                    explanation=f"Favorito medio, spread {format_spread_display(spread.closing_value)}"
                 ))
             else:
                 # Threshold granulare
                 recommendations.append(MarketRecommendation(
                     market_name="1X2",
-                    recommendation="1 (Favorito forte)",
+                    recommendation=f"{favorito} (Favorito forte)",
                     confidence=ConfidenceLevel.HIGH,
-                    explanation=f"Favorito forte, spread {spread.closing_value}"
+                    explanation=f"Favorito forte, spread {format_spread_display(spread.closing_value)}"
                 ))
 
         # Over/Under - LOGICA MIGLIORATA: considera movimento + closing value
@@ -542,37 +551,43 @@ class MarketMovementAnalyzer:
             handicap_value = abs_spread
             if spread.direction == MovementDirection.HARDEN:
                 # Favorito si rafforza → gioca favorito con handicap
+                # Se spread > 0, favorito è casa (1), quindi handicap negativo
+                # Se spread < 0, favorito è trasferta (2), quindi handicap positivo
+                handicap_sign = "-" if spread.closing_value > 0 else "+"
                 recommendations.append(MarketRecommendation(
                     market_name="Handicap Asiatico",
-                    recommendation=f"Favorito -{handicap_value}",
+                    recommendation=f"{favorito} {handicap_sign}{handicap_value}",
                     confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Favorito copre spread {spread.closing_value}"
+                    explanation=f"Favorito copre spread {format_spread_display(spread.closing_value)}"
                 ))
             else:  # SOFTEN
                 # Spread si ammorbidisce
                 if abs_spread >= 1.0:
                     # Ancora favorito forte → Favorito con handicap ridotto
+                    handicap_sign = "-" if spread.closing_value > 0 else "+"
                     recommendations.append(MarketRecommendation(
                         market_name="Handicap Asiatico",
-                        recommendation=f"Favorito -{handicap_value} (valore)",
+                        recommendation=f"{favorito} {handicap_sign}{handicap_value} (valore)",
                         confidence=ConfidenceLevel.MEDIUM,
-                        explanation=f"Spread si ammorbidisce ma {spread.closing_value} ancora vantaggioso"
+                        explanation=f"Spread si ammorbidisce ma {format_spread_display(spread.closing_value)} ancora vantaggioso"
                     ))
                 else:
                     # Match equilibrato → Underdog con handicap
+                    # Se favorito è casa (1), underdog è trasferta (2) e viceversa
+                    underdog = "2" if favorito == "1" else "1" if favorito == "2" else "X"
                     recommendations.append(MarketRecommendation(
                         market_name="Handicap Asiatico",
-                        recommendation=f"Underdog +{handicap_value}",
+                        recommendation=f"{underdog} +{handicap_value}",
                         confidence=ConfidenceLevel.MEDIUM,
-                        explanation=f"Match equilibrato, underdog copre {spread.closing_value}"
+                        explanation=f"Match equilibrato, underdog copre {format_spread_display(spread.closing_value)}"
                     ))
 
         # HT Winner - LOGICA MIGLIORATA: considera closing value
         if spread.direction == MovementDirection.HARDEN and spread.intensity in [MovementIntensity.MEDIUM, MovementIntensity.STRONG]:
-            # Favorito si rafforza → 1 HT
+            # Favorito si rafforza → favorito HT
             recommendations.append(MarketRecommendation(
                 market_name="1X2 HT",
-                recommendation="1 HT (Favorito vince primo tempo)",
+                recommendation=f"{favorito} HT (Favorito vince primo tempo)",
                 confidence=ConfidenceLevel.MEDIUM,
                 explanation="Favorito forte parte bene"
             ))
@@ -596,14 +611,17 @@ class MarketMovementAnalyzer:
         recommendations = []
 
         abs_spread = abs(spread.closing_value)
+        
+        # Determina chi è favorito in base al segno dello spread
+        favorito = "1" if spread.closing_value > 0 else "2" if spread.closing_value < 0 else "X"
 
-        # Combo 1 + Over/Under - LOGICA MIGLIORATA: considera closing value
+        # Combo favorito + Over/Under - LOGICA MIGLIORATA: considera closing value
         if spread.direction == MovementDirection.HARDEN:
             # Favorito si rafforza
             if total.direction == MovementDirection.HARDEN:
                 recommendations.append(MarketRecommendation(
                     market_name="Combo",
-                    recommendation=f"1 + Over {total.closing_value}",
+                    recommendation=f"{favorito} + Over {total.closing_value}",
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation="Favorito vince con gol"
                 ))
@@ -611,7 +629,7 @@ class MarketMovementAnalyzer:
                 # Total scende ma ancora alto
                 recommendations.append(MarketRecommendation(
                     market_name="Combo",
-                    recommendation=f"1 + Over {total.closing_value}",
+                    recommendation=f"{favorito} + Over {total.closing_value}",
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation="Favorito vince, total ancora alto"
                 ))
@@ -619,7 +637,7 @@ class MarketMovementAnalyzer:
                 # Total basso
                 recommendations.append(MarketRecommendation(
                     market_name="Combo",
-                    recommendation=f"1 + Under {total.closing_value}",
+                    recommendation=f"{favorito} + Under {total.closing_value}",
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation="Favorito vince di corto"
                 ))
@@ -630,9 +648,9 @@ class MarketMovementAnalyzer:
                 if total.closing_value <= 2.25:
                     recommendations.append(MarketRecommendation(
                         market_name="Combo",
-                        recommendation=f"1 + Under {total.closing_value}",
+                        recommendation=f"{favorito} + Under {total.closing_value}",
                         confidence=ConfidenceLevel.MEDIUM,
-                        explanation=f"Favorito vince corto ({spread.closing_value})"
+                        explanation=f"Favorito vince corto ({format_spread_display(spread.closing_value)})"
                     ))
             else:
                 # Match equilibrato
@@ -650,7 +668,7 @@ class MarketMovementAnalyzer:
             if spread.intensity == MovementIntensity.STRONG:
                 recommendations.append(MarketRecommendation(
                     market_name="HT/FT",
-                    recommendation="1/1 (Favorito HT e FT)",
+                    recommendation=f"{favorito}/{favorito} (Favorito HT e FT)",
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation="Favorito domina dall'inizio"
                 ))
@@ -777,6 +795,9 @@ class MarketMovementAnalyzer:
         recommendations = []
 
         abs_spread = abs(spread.closing_value)
+        
+        # Determina chi è favorito in base al segno dello spread
+        favorito = "1" if spread.closing_value > 0 else "2" if spread.closing_value < 0 else "X"
 
         # Risultati esatti - Top 2-3 più probabili
         exact_scores = self._get_likely_exact_scores(spread, total)
@@ -791,11 +812,12 @@ class MarketMovementAnalyzer:
         # Double Chance - LOGICA FISSATA: considera closing value
         if spread.direction == MovementDirection.HARDEN or abs_spread >= 1.0:
             # Favorito si rafforza O è comunque forte
+            favorito_x = f"{favorito}X" if favorito != "X" else "X"
             recommendations.append(MarketRecommendation(
                 market_name="Double Chance",
-                recommendation="1X (Favorito o Pareggio)",
+                recommendation=f"{favorito_x} (Favorito o Pareggio)",
                 confidence=ConfidenceLevel.LOW,
-                explanation=f"Opzione sicura, favorito non perde ({spread.closing_value})"
+                explanation=f"Opzione sicura, favorito non perde ({format_spread_display(spread.closing_value)})"
             ))
         elif spread.direction == MovementDirection.SOFTEN and abs_spread < 0.75:
             # Spread si ammorbidisce E match molto equilibrato
