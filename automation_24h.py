@@ -1053,7 +1053,7 @@ class Automation24H:
                     
                     if not home_team or not away_team:
                         continue
-
+                    
                     # 🎯 MODIFICATO: Le statistiche sono OBBLIGATORIE per le notifiche
                     # L'utente vuole ricevere notifiche SOLO per partite con statistiche E quote disponibili
                     logger.debug(f"🔍 Verificando statistiche per {home_team} vs {away_team} (fixture {fixture_id}, status: {status_short})...")
@@ -1185,7 +1185,7 @@ class Automation24H:
                         logger.info(f"📊 Mercati trovati per {home_team} vs {away_team}: {', '.join(markets_found)}")
                     else:
                         logger.warning(f"⚠️  Nessun mercato trovato per {home_team} vs {away_team} (fixture {fixture_id})")
-
+                    
                     # 🎯 NUOVO: Verifica che almeno i mercati principali siano disponibili
                     # L'utente vuole notifiche solo con quote principali (1X2 o Over/Under)
                     has_1x2 = all_odds.get('match_winner', {}).get('home') is not None
@@ -1200,7 +1200,7 @@ class Automation24H:
                         logger.warning(f"⏭️ SALTATA: {home_team} vs {away_team} - nessun mercato principale (1X2 o Over/Under) disponibile (has_1x2={has_1x2}, has_over_under={has_over_under})")
                         skipped_no_odds += 1
                         continue  # Salta partite senza mercati principali
-
+                    
                     # Estrai score e minute dalla fixture
                     # 🔧 FIX CRITICO: Lo score NON è in fixture_data['score'] ma probabilmente in fixture['goals']
                     score_data = fixture_data.get("score", {})
@@ -2271,7 +2271,8 @@ class Automation24H:
         # ma la validazione principale ora avviene sulle quote RAW
         return all_odds
     
-    def _select_realistic_odds(self, odds_dict: Dict[str, Decimal], market_name: str = "unknown") -> Tuple[Optional[Decimal], Optional[str]]:
+    def _select_realistic_odds(self, odds_dict: Dict[str, Decimal], market_name: str = "unknown",
+                                is_live: bool = False, total_goals: int = 0, threshold: float = None) -> Tuple[Optional[Decimal], Optional[str]]:
         """
         🎯 SELEZIONE INTELLIGENTE QUOTE: Seleziona una quota "realistica" evitando outlier.
         
@@ -2282,6 +2283,16 @@ class Automation24H:
         4. Filtra outlier (> 2 deviazioni standard dalla media)
         5. Calcola media ponderata per affidabilità bookmaker
         6. Seleziona tra media ponderata, 75° percentile o mediana
+        
+        🆕 MIGLIORAMENTO LIVE: Per partite live, preferisce quote più vicine alla media/media ponderata
+        invece di sempre la più alta, perché quote più alte potrebbero essere stale.
+        
+        Args:
+            odds_dict: Dict {bookmaker_name: quota} con tutte le quote disponibili
+            market_name: Nome del mercato per logging
+            is_live: True se la partita è in corso (default: False)
+            total_goals: Gol totali della partita (default: 0)
+            threshold: Threshold del mercato (es. 1.5 per Over/Under, default: None)
         
         Args:
             odds_dict: Dict {bookmaker_name: quota} con tutte le quote disponibili
@@ -2358,11 +2369,11 @@ class Automation24H:
                 if mean_odds > 0:
                     diff_pct = ((float(max_odd) - mean_odds) / mean_odds) * 100
                 logger.warning(
-                    f"⚠️  QUOTE ANOMALE per {market_name}: tutte le quote sono outlier "
-                    f"(media={mean_odds:.3f}, max={float(max_odd):.3f}, diff={diff_pct:.1f}%). "
-                    f"Uso comunque la migliore: {float(max_odd):.3f} da {max_bookmaker}"
-                )
-                return max_odd, max_bookmaker
+                f"⚠️  QUOTE ANOMALE per {market_name}: tutte le quote sono outlier "
+                f"(media={mean_odds:.3f}, max={float(max_odd):.3f}, diff={diff_pct:.1f}%). "
+                f"Uso comunque la migliore: {float(max_odd):.3f} da {max_bookmaker}"
+            )
+            return max_odd, max_bookmaker
         
         # 🆕 NUOVO: Calcola media ponderata per affidabilità bookmaker
         # Le quote da bookmaker più affidabili hanno più peso
@@ -2501,20 +2512,62 @@ class Automation24H:
         # Fallback: usa 75° percentile o mediana (strategia originale)
         sorted_odds = sorted(filtered_odds, key=lambda x: float(x[0]))
         
-        # Calcola 75° percentile
-        percentile_75_idx = int(len(sorted_odds) * 0.75)
-        if percentile_75_idx >= len(sorted_odds):
-            percentile_75_idx = len(sorted_odds) - 1
-        
-        selected_odd, selected_bookmaker, selected_weight = sorted_odds[percentile_75_idx]
-        
-        # Se la differenza tra 75° percentile e max è < 5%, preferisci la max (più competitiva)
-        max_odd, max_bookmaker, max_weight = sorted_odds[-1]
-        diff_pct = float(((max_odd - selected_odd) / selected_odd) * 100) if selected_odd > 0 else 0.0
-        
-        if diff_pct < 5.0 and len(filtered_odds) >= 3:
-            # Usa la quota massima se è vicina al 75° percentile (non è un outlier)
-            selected_odd, selected_bookmaker, selected_weight = max_odd, max_bookmaker, max_weight
+        # 🆕 MIGLIORAMENTO LIVE: Per partite live, preferisce quote più vicine alla media/media ponderata
+        # invece di sempre la più alta (che potrebbe essere stale)
+        if is_live and len(filtered_odds) >= 3:
+            # Calcola la media ponderata come target "realistico"
+            target_odd = weighted_average if weighted_average > 0 else median_odds
+            
+            # Trova la quota più vicina alla media/media ponderata (più realistica)
+            closest_to_target = min(
+                filtered_odds,
+                key=lambda x: abs(float(x[0]) - target_odd)
+            )
+            closest_odd, closest_bookmaker, closest_weight = closest_to_target
+            diff_from_target = abs(float(closest_odd) - target_odd) / target_odd * 100
+            
+            # Prendi anche la max e la min per confronto
+            max_odd, max_bookmaker, max_weight = sorted_odds[-1]
+            min_odd, min_bookmaker, min_weight = sorted_odds[0]
+            
+            # Se la quota più vicina alla media è molto diversa dalla max (> 5%),
+            # preferisci quella più vicina alla media (più realistica)
+            diff_max_vs_closest = abs(float(max_odd) - float(closest_odd)) / float(closest_odd) * 100
+            
+            if diff_max_vs_closest > 5.0 and diff_from_target < 10.0:
+                # La quota più vicina alla media è significativamente diversa dalla max
+                # e è vicina alla media (< 10% di differenza) -> preferiscila
+                selected_odd, selected_bookmaker, selected_weight = closest_odd, closest_bookmaker, closest_weight
+                logger.info(
+                    f"📊 {market_name} (LIVE): Preferita quota REALISTICA {float(selected_odd):.3f} da {selected_bookmaker} "
+                    f"(vicina alla media/media ponderata {target_odd:.3f}, diff={diff_from_target:.1f}%) "
+                    f"invece della max {float(max_odd):.3f} (diff={diff_max_vs_closest:.1f}%)"
+                )
+            else:
+                # Le quote sono simili o la quota vicina alla media non è abbastanza vicina
+                # Usa logica normale: 75° percentile o max se vicina
+                percentile_75_idx = int(len(sorted_odds) * 0.75)
+                if percentile_75_idx >= len(sorted_odds):
+                    percentile_75_idx = len(sorted_odds) - 1
+                
+                selected_odd, selected_bookmaker, selected_weight = sorted_odds[percentile_75_idx]
+                diff_pct = float(((max_odd - selected_odd) / selected_odd) * 100) if selected_odd > 0 else 0.0
+                
+                if diff_pct < 5.0:
+                    selected_odd, selected_bookmaker, selected_weight = max_odd, max_bookmaker, max_weight
+        else:
+            # Per partite pre-match, usa logica originale: preferisci max se vicina al 75° percentile
+            percentile_75_idx = int(len(sorted_odds) * 0.75)
+            if percentile_75_idx >= len(sorted_odds):
+                percentile_75_idx = len(sorted_odds) - 1
+            
+            selected_odd, selected_bookmaker, selected_weight = sorted_odds[percentile_75_idx]
+            max_odd, max_bookmaker, max_weight = sorted_odds[-1]
+            diff_pct = float(((max_odd - selected_odd) / selected_odd) * 100) if selected_odd > 0 else 0.0
+            
+            if diff_pct < 5.0 and len(filtered_odds) >= 3:
+                # Usa la quota massima se è vicina al 75° percentile (non è un outlier)
+                selected_odd, selected_bookmaker, selected_weight = max_odd, max_bookmaker, max_weight
         
         # Log dettagliato
         outliers_count = len(valid_odds) - len(filtered_odds)
@@ -2529,7 +2582,7 @@ class Automation24H:
             f"📊 {market_name}: {outliers_count} outlier filtrati su {len(valid_odds)} quote. "
             f"Media={mean_odds:.3f}, Mediana={median_odds:.3f}, MediaPonderata={weighted_average:.3f}, "
             f"BookmakerAffidabili={trusted_count}/{len(filtered_odds)}, "
-            f"Selezionata={float(selected_odd):.3f} (75° percentile) da {selected_bookmaker} "
+            f"Selezionata={float(selected_odd):.3f} da {selected_bookmaker} "
             f"(affidabilità={selected_weight:.2f}, quality={selected_quality:.2f})"
         )
         
@@ -3206,9 +3259,13 @@ class Automation24H:
         # Match Winner (1X2)
         for outcome in ['home', 'draw', 'away']:
             if all_bookmaker_odds['match_winner'][outcome]:
+                # 🆕 Passa parametri per selezione intelligente in partite live
                 selected_odd, selected_bookmaker = self._select_realistic_odds(
                     all_bookmaker_odds['match_winner'][outcome],
-                    f"1X2_{outcome}"
+                    f"1X2_{outcome}",
+                    is_live=is_live,
+                    total_goals=score_home + score_away,
+                    threshold=None  # 1X2 non ha threshold
                 )
                 if selected_odd is not None:
                     all_odds['match_winner'][outcome] = float(selected_odd)
@@ -3227,9 +3284,13 @@ class Automation24H:
             for threshold, outcomes in threshold_dict.items():
                 for outcome_type in ['over', 'under']:
                     if outcome_type in outcomes and outcomes[outcome_type]:
+                        # 🆕 Passa parametri per selezione intelligente in partite live
                         selected_odd, selected_bookmaker = self._select_realistic_odds(
                             outcomes[outcome_type],
-                            f"{market_key}_{threshold}_{outcome_type}"
+                            f"{market_key}_{threshold}_{outcome_type}",
+                            is_live=is_live,
+                            total_goals=score_home + score_away,
+                            threshold=float(threshold) if isinstance(threshold, (int, float)) else None
                         )
                         if selected_odd is not None:
                             if threshold not in odds_key:
@@ -3246,9 +3307,13 @@ class Automation24H:
                 ('btts_ht', all_odds['btts_ht'], bookmaker_tracker['btts_ht'])
             ]:
                 if all_bookmaker_odds[market_key][outcome]:
+                    # 🆕 Passa parametri per selezione intelligente in partite live
                     selected_odd, selected_bookmaker = self._select_realistic_odds(
                         all_bookmaker_odds[market_key][outcome],
-                        f"{market_key}_{outcome}"
+                        f"{market_key}_{outcome}",
+                        is_live=is_live,
+                        total_goals=score_home + score_away,
+                        threshold=None
                     )
                     if selected_odd is not None:
                         target_dict[outcome] = float(selected_odd)
@@ -3258,9 +3323,13 @@ class Automation24H:
         # Double Chance
         for outcome in ['1x', '12', 'x2']:
             if all_bookmaker_odds['double_chance'][outcome]:
+                # 🆕 Passa parametri per selezione intelligente in partite live
                 selected_odd, selected_bookmaker = self._select_realistic_odds(
                     all_bookmaker_odds['double_chance'][outcome],
-                    f"double_chance_{outcome}"
+                    f"double_chance_{outcome}",
+                    is_live=is_live,
+                    total_goals=score_home + score_away,
+                    threshold=None
                 )
                 if selected_odd is not None:
                     all_odds['double_chance'][outcome] = float(selected_odd)
@@ -3270,9 +3339,13 @@ class Automation24H:
         # Draw No Bet
         for outcome in ['home', 'away']:
             if all_bookmaker_odds['draw_no_bet'][outcome]:
+                # 🆕 Passa parametri per selezione intelligente in partite live
                 selected_odd, selected_bookmaker = self._select_realistic_odds(
                     all_bookmaker_odds['draw_no_bet'][outcome],
-                    f"dnb_{outcome}"
+                    f"dnb_{outcome}",
+                    is_live=is_live,
+                    total_goals=score_home + score_away,
+                    threshold=None
                 )
                 if selected_odd is not None:
                     all_odds['draw_no_bet'][outcome] = float(selected_odd)
