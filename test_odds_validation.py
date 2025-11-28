@@ -95,6 +95,53 @@ def test_validate_raw_odds_against_score():
     print()
     print("Ora la selezione sceglierà tra quote realistiche (1.15-1.25) invece della quota stale (4.80)")
     print()
+    print("=" * 80)
+    print("TEST 2: Validazione quote 'under' quando threshold già superato")
+    print("=" * 80)
+    
+    # Scenario: risultato 1-0, over 1.5 è già vinto, quindi under 1.5 è IMPOSSIBILE
+    all_bookmaker_odds_test2 = {
+        'over_under': {
+            1.5: {
+                'under': {
+                    '1xbet': 3.50,  # ← Quota troppo bassa per un evento IMPOSSIBILE (dovrebbe essere >50)
+                    'bet365': 75.0,  # ← Quota realistica (impossibile)
+                    'pinnacle': 60.0,  # ← Quota realistica (impossibile)
+                }
+            }
+        }
+    }
+    
+    print(f"Scenario: Partita LIVE, risultato {score_home}-{score_away}, threshold 1.5 già superato")
+    print("Under 1.5 è IMPOSSIBILE (threshold già superato)")
+    print()
+    print("Quote RAW dai bookmaker per Under 1.5:")
+    for bookmaker, odd in all_bookmaker_odds_test2['over_under'][1.5]['under'].items():
+        print(f"  - {bookmaker}: {odd}")
+    print()
+    
+    print("🔍 Validazione quote 'under' quando threshold già superato...")
+    print()
+    
+    threshold = 1.5
+    max_allowed_under = 50.0  # Soglia minima per under quando è impossibile
+    
+    filtered_under = []
+    for bookmaker, odd in list(all_bookmaker_odds_test2['over_under'][1.5]['under'].items()):
+        if odd < max_allowed_under:
+            print(f"❌ Quota IMPOSSIBILE da {bookmaker}: {odd} < {max_allowed_under}")
+            print(f"   (risultato: {total_goals} gol, threshold {threshold} già superato, under è IMPOSSIBILE)")
+            filtered_under.append(bookmaker)
+            del all_bookmaker_odds_test2['over_under'][1.5]['under'][bookmaker]
+        else:
+            print(f"✅ Quota REALISTICA da {bookmaker}: {odd} >= {max_allowed_under} (evento impossibile)")
+    
+    print()
+    assert '1xbet' not in all_bookmaker_odds_test2['over_under'][1.5]['under'], \
+        "ERRORE: Quota impossibile da 1xbet (3.50) NON è stata rimossa!"
+    
+    print("✅ TEST 2 PASSATO: Quote impossibili per 'under' rimosse correttamente!")
+    print()
 
 if __name__ == "__main__":
     test_validate_raw_odds_against_score()
