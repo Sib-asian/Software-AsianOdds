@@ -1090,13 +1090,58 @@ class Automation24H:
                     else:
                         logger.debug(f"✅ Quote già presenti in /fixtures per {home_team} vs {away_team} ({len(odds_data)} bookmaker)")
                     
-                    # Estrai TUTTE le quote disponibili
+                    # 🎯 NUOVO: Estrai score e minuto PRIMA di chiamare _extract_all_odds_from_api_football
+                    # (necessario per validare quote RAW rispetto al risultato)
+                    score_home = 0
+                    score_away = 0
+                    score_home_ht = 0
+                    score_away_ht = 0
+                    minute = 0
+                    
+                    # Estrai score da goals_data (se disponibile)
+                    if isinstance(goals_data, dict):
+                        score_home = goals_data.get("home") or 0
+                        score_away = goals_data.get("away") or 0
+                    
+                    # Estrai minuto da status
+                    status_data = fixture_data.get("status", {})
+                    if isinstance(status_data, dict):
+                        minute = (status_data.get("elapsed") or 
+                                 status_data.get("elapsed_time") or 
+                                 status_data.get("elapsedTime") or
+                                 status_data.get("minute") or
+                                 status_data.get("time") or 0)
+                        if minute is None:
+                            minute = 0
+                        else:
+                            try:
+                                minute = int(minute)
+                            except (ValueError, TypeError):
+                                minute = 0
+                        
+                        # Estrai score halftime se disponibile
+                        score_data = fixture.get("score", {})
+                        if isinstance(score_data, dict):
+                            halftime = score_data.get("halftime", {})
+                            if isinstance(halftime, dict):
+                                score_home_ht = halftime.get("home") or 0
+                                score_away_ht = halftime.get("away") or 0
+                    
+                    # Estrai TUTTE le quote disponibili (con validazione rispetto al risultato per partite live)
                     logger.info(f"🔍 Estraendo quote per {home_team} vs {away_team} (fixture {fixture_id})...")
                     logger.info(f"   odds_data type: {type(odds_data)}, length: {len(odds_data) if isinstance(odds_data, list) else 'N/A'}")
                     if odds_data and len(odds_data) > 0:
                         logger.info(f"   Primo bookmaker keys: {list(odds_data[0].keys()) if isinstance(odds_data[0], dict) else 'NOT_DICT'}")
                     
-                    all_odds = self._extract_all_odds_from_api_football(odds_data)
+                    all_odds = self._extract_all_odds_from_api_football(
+                        odds_data,
+                        score_home=score_home,
+                        score_away=score_away,
+                        score_home_ht=score_home_ht,
+                        score_away_ht=score_away_ht,
+                        is_live=is_live,
+                        minute=minute
+                    )
                     
                     # 🔧 DEBUG: Log dettagliato quote estratte (INFO per vedere nei log)
                     logger.info(f"📊 Quote estratte per {home_team} vs {away_team}:")
@@ -1213,7 +1258,7 @@ class Automation24H:
                                 score_away = ht_away or score_away
                                 logger.info(f"   ⚽ Score da halftime: {score_home}-{score_away}")
                     
-                    logger.info(f"   ⚽ Score FINALE estratto: {score_home}-{score_away}")
+                    logger.info(f"   ⚽ Score FINALE estratto: {score_home}-{score_away} (HT: {score_home_ht}-{score_away_ht}, min {minute}')")
                     
                     # 🔧 DEBUG: Log RAW fixture_data per capire struttura completa
                     logger.info(f"🔍 RAW fixture_data per {home_team} vs {away_team}:")
@@ -2065,6 +2110,123 @@ class Automation24H:
             logger.debug(f"⚠️  Errore controllo stale quota: {e}")
             return False  # In caso di errore, assumiamo non stale (conservativo)
     
+    def _validate_raw_odds_against_score(self, all_bookmaker_odds: Dict[str, Any], score_home: int, score_away: int, 
+                                          score_home_ht: int = 0, score_away_ht: int = 0, 
+                                          is_live: bool = False, minute: int = 0) -> Dict[str, Any]:
+        """
+        🎯 NUOVO: Valida le quote RAW dai bookmaker rispetto al risultato corrente (PRIMA della selezione).
+        
+        Rimuove quote stale/irrealistiche dai bookmaker prima che vengano selezionate.
+        Questo è CRUCIALE per partite live - filtra quote che sono chiaramente obsolete.
+        
+        Args:
+            all_bookmaker_odds: Dizionario con tutte le quote RAW dai bookmaker (per ogni bookmaker)
+            score_home: Gol della squadra di casa (risultato totale)
+            score_away: Gol della squadra ospite (risultato totale)
+            score_home_ht: Gol della squadra di casa al primo tempo (default: 0)
+            score_away_ht: Gol della squadra ospite al primo tempo (default: 0)
+            is_live: True se la partita è in corso
+            minute: Minuto della partita (default: 0)
+        
+        Returns:
+            all_bookmaker_odds modificato con quote irrealistiche/stale rimosse
+        """
+        if not is_live:
+            # Per partite non live, non validiamo contro lo score (è pre-match)
+            return all_bookmaker_odds
+        
+        total_goals = score_home + score_away
+        total_goals_ht = score_home_ht + score_away_ht
+        
+        logger.info(f"🔍 Validazione quote RAW vs risultato LIVE: {score_home}-{score_away} ({total_goals} gol totali, min {minute}')")
+        
+        if total_goals == 0:
+            # Nessun gol ancora segnato, tutte le quote over sono valide
+            return all_bookmaker_odds
+        
+        MAX_ODDS_THRESHOLD = 2.0  # Quota massima per over già superati
+        odds_filtered_count = 0
+        
+        def _validate_over_under_market(bookmaker_odds_dict: Dict[str, Any], total_goals_current: int, 
+                                       market_type: str = "FT") -> int:
+            """Valida un mercato Over/Under rimuovendo quote stale"""
+            filtered = 0
+            for threshold, outcomes_dict in bookmaker_odds_dict.items():
+                if not isinstance(threshold, (int, float)):
+                    try:
+                        threshold = float(str(threshold).replace('_', '.'))
+                    except (ValueError, TypeError):
+                        continue
+                
+                # Controlla se il risultato attuale supera già il threshold
+                if total_goals_current > threshold:
+                    # Threshold già superato - le quote "over" dovrebbero essere molto basse
+                    if 'over' in outcomes_dict and isinstance(outcomes_dict['over'], dict):
+                        stale_bookmakers = []
+                        for bookmaker_name, odd_value in list(outcomes_dict['over'].items()):
+                            try:
+                                odd_float = float(odd_value) if not isinstance(odd_value, float) else odd_value
+                                goals_beyond = total_goals_current - threshold
+                                max_allowed = 1.8 if goals_beyond >= 1.0 else MAX_ODDS_THRESHOLD
+                                
+                                if odd_float > max_allowed:
+                                    # Quota irrealistica/stale - rimuovi dal bookmaker
+                                    del outcomes_dict['over'][bookmaker_name]
+                                    stale_bookmakers.append((bookmaker_name, odd_float))
+                                    filtered += 1
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        if stale_bookmakers:
+                            logger.warning(
+                                f"❌ Rimosse quote STALE per Over {threshold} {market_type} da {len(stale_bookmakers)} bookmaker: "
+                                f"{[(bm, f'{odd:.2f}') for bm, odd in stale_bookmakers[:3]]}"
+                                f"{'...' if len(stale_bookmakers) > 3 else ''} "
+                                f"(risultato: {total_goals_current} gol, threshold {threshold} già superato, max accettabile: {max_allowed})"
+                            )
+            
+            return filtered
+        
+        # Valida Over/Under FT
+        if 'over_under' in all_bookmaker_odds:
+            odds_filtered_count += _validate_over_under_market(
+                all_bookmaker_odds['over_under'], total_goals, "FT"
+            )
+        
+        # Valida Over/Under HT (usa risultato primo tempo)
+        if 'over_under_ht' in all_bookmaker_odds and minute > 45:
+            # Se siamo nel secondo tempo, le quote HT sono già determinate
+            odds_filtered_count += _validate_over_under_market(
+                all_bookmaker_odds['over_under_ht'], total_goals_ht, "HT"
+            )
+        
+        # Valida First Half Goals (se siamo nel secondo tempo, il primo tempo è finito)
+        if 'first_half_goals' in all_bookmaker_odds and minute > 45:
+            odds_filtered_count += _validate_over_under_market(
+                all_bookmaker_odds['first_half_goals'], total_goals_ht, "1H"
+            )
+        
+        # Valida Second Half Goals (usa solo gol del secondo tempo)
+        if 'second_half_goals' in all_bookmaker_odds and minute > 45:
+            second_half_goals = total_goals - total_goals_ht
+            odds_filtered_count += _validate_over_under_market(
+                all_bookmaker_odds['second_half_goals'], second_half_goals, "2H"
+            )
+        
+        if odds_filtered_count > 0:
+            logger.info(f"✅ Validazione quote RAW: rimosse {odds_filtered_count} quote stale/irrealistiche da bookmaker")
+        
+        return all_bookmaker_odds
+    
+    def _validate_odds_against_score(self, all_odds: Dict[str, Any], score_home: int, score_away: int, is_live: bool = False) -> Dict[str, Any]:
+        """
+        🎯 DEPRECATO: Mantenuto per compatibilità. 
+        La validazione ora avviene PRIMA della selezione tramite _validate_raw_odds_against_score.
+        """
+        # Questa funzione viene ancora chiamata dopo la selezione come doppio controllo
+        # ma la validazione principale ora avviene sulle quote RAW
+        return all_odds
+    
     def _select_realistic_odds(self, odds_dict: Dict[str, Decimal], market_name: str = "unknown") -> Tuple[Optional[Decimal], Optional[str]]:
         """
         🎯 SELEZIONE INTELLIGENTE QUOTE: Seleziona una quota "realistica" evitando outlier.
@@ -2455,7 +2617,12 @@ class Automation24H:
             logger.warning(f"🕵️  Watchdog: nessuna quota disponibile per fixture {fixture_id} durante il refresh")
             return
         
-        refreshed_odds = self._extract_all_odds_from_api_football(odds_data)
+        # Per refresh durante watchdog, non abbiamo info su score/minuto, usa default (validazione saltata)
+        refreshed_odds = self._extract_all_odds_from_api_football(
+            odds_data,
+            score_home=0, score_away=0, score_home_ht=0, score_away_ht=0,
+            is_live=False, minute=0
+        )
         if not refreshed_odds:
             logger.warning(f"🕵️  Watchdog: estrazione quote fallita per fixture {fixture_id}")
             return
@@ -2541,7 +2708,10 @@ class Automation24H:
         logger.error(f"❌ Tutti i {max_retries} tentativi falliti, ultimo errore: {last_exception}")
         return None
     
-    def _extract_all_odds_from_api_football(self, odds_list: List[Dict]) -> Dict[str, Any]:
+    def _extract_all_odds_from_api_football(self, odds_list: List[Dict], 
+                                             score_home: int = 0, score_away: int = 0,
+                                             score_home_ht: int = 0, score_away_ht: int = 0,
+                                             is_live: bool = False, minute: int = 0) -> Dict[str, Any]:
         """
         Estrae TUTTE le quote disponibili da API-Football.
         
@@ -2948,6 +3118,14 @@ class Automation24H:
         _populate_counts_for_threshold(all_bookmaker_odds['over_under_ht'], 'over_under_ht')
         _populate_counts_for_threshold(all_bookmaker_odds['first_half_goals'], 'first_half_goals')
         _populate_counts_for_threshold(all_bookmaker_odds['second_half_goals'], 'second_half_goals')
+        
+        # 🎯 NUOVO: Valida quote RAW rispetto al risultato PRIMA della selezione (per partite live)
+        # Questo filtra quote stale/irrealistiche dai bookmaker prima che vengano selezionate
+        if is_live and (score_home > 0 or score_away > 0):
+            all_bookmaker_odds = self._validate_raw_odds_against_score(
+                all_bookmaker_odds, score_home, score_away, 
+                score_home_ht, score_away_ht, is_live=True, minute=minute
+            )
 
         for outcome in ['yes', 'no']:
             count = len(all_bookmaker_odds['btts'][outcome])
