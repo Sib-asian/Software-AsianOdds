@@ -670,8 +670,16 @@ class MarketMovementAnalyzer:
 
         # HT/FT Combinations - LOGICA MIGLIORATA: considera closing value
         if spread.direction == MovementDirection.HARDEN:
-            # Favorito si rafforza
-            if spread.intensity == MovementIntensity.STRONG:
+            # Favorito si rafforza → ma controlla anche che spread sia significativo
+            if abs_spread < 0.5:
+                # Spread troppo basso, match equilibrato → X/X
+                recommendations.append(MarketRecommendation(
+                    market_name="HT/FT",
+                    recommendation="X/X (Pareggio HT e FT)",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation=f"Match equilibrato ({format_spread_display(spread.closing_value)}), spread troppo basso"
+                ))
+            elif spread.intensity == MovementIntensity.STRONG:
                 recommendations.append(MarketRecommendation(
                     market_name="HT/FT",
                     recommendation=f"{favorito}/{favorito} (Favorito HT e FT)",
@@ -752,6 +760,22 @@ class MarketMovementAnalyzer:
                 confidence=ConfidenceLevel.MEDIUM,
                 explanation="Primo tempo tattico, massimo 1 gol"
             ))
+        else:
+            # Total stabile con valore medio/alto
+            if total.closing_value >= 2.5:
+                recommendations.append(MarketRecommendation(
+                    market_name="Over/Under HT",
+                    recommendation="Over 0.5 HT",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation=f"Total {total.closing_value} stabile, almeno 1 gol 1T probabile"
+                ))
+            else:
+                recommendations.append(MarketRecommendation(
+                    market_name="Over/Under HT",
+                    recommendation="Under 1.0 HT",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation=f"Total {total.closing_value} medio, primo tempo equilibrato"
+                ))
 
         # GOAL HT
         if total.direction == MovementDirection.HARDEN and ht_total_estimate >= 1.0:
