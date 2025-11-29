@@ -66,6 +66,7 @@ class AnalysisResult:
     core_recommendations: List[MarketRecommendation]  # Consigli principali (HIGH/MEDIUM confidence)
     alternative_recommendations: List[MarketRecommendation]  # Opzioni alternative (MEDIUM confidence)
     value_recommendations: List[MarketRecommendation]  # Value bets (LOW confidence, high value)
+    exchange_recommendations: List[MarketRecommendation]  # Consigli Exchange (Punta/Banca)
     overall_confidence: ConfidenceLevel
 
 
@@ -282,10 +283,11 @@ class MarketMovementAnalyzer:
             spread_analysis, total_analysis, spread_dir_key, total_dir_key
         )
         
-        # Calcola mercati nelle 3 categorie
+        # Calcola mercati nelle 4 categorie
         core_recs = self._calculate_core_markets(spread_analysis, total_analysis, combination)
         alternative_recs = self._calculate_alternative_markets(spread_analysis, total_analysis, combination)
         value_recs = self._calculate_value_markets(spread_analysis, total_analysis, combination)
+        exchange_recs = self._calculate_exchange_recommendations(spread_analysis, total_analysis)
 
         # Calcola confidenza generale
         overall_confidence = self._calculate_confidence(spread_analysis, total_analysis)
@@ -297,6 +299,7 @@ class MarketMovementAnalyzer:
             core_recommendations=core_recs,
             alternative_recommendations=alternative_recs,
             value_recommendations=value_recs,
+            exchange_recommendations=exchange_recs,
             overall_confidence=overall_confidence
         )
     
@@ -514,6 +517,14 @@ class MarketMovementAnalyzer:
                     recommendation=f"Under {total.closing_value}",
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation="Total basso e stabile, partita tattica attesa"
+                ))
+            else:
+                # Total medio stabile (2.25-2.75) → raccomandazione neutra
+                recommendations.append(MarketRecommendation(
+                    market_name="Over/Under",
+                    recommendation=f"Over {total.closing_value} o Under {total.closing_value}",
+                    confidence=ConfidenceLevel.LOW,
+                    explanation=f"Total {total.closing_value} neutro, valuta quote exchange"
                 ))
 
         # GOAL/NOGOAL - EDGE CASES + LOGICA MIGLIORATA
@@ -896,6 +907,98 @@ class MarketMovementAnalyzer:
 
         return recommendations[:3]  # Max 3 value recommendations
 
+    def _calculate_exchange_recommendations(self, spread: MovementAnalysis,
+                                           total: MovementAnalysis) -> List[MarketRecommendation]:
+        """Calcola consigli Exchange - Punta (Back) vs Banca (Lay)"""
+        recommendations = []
+
+        abs_spread = abs(spread.closing_value)
+
+        # Determina chi è favorito
+        favorito = "1" if spread.closing_value < 0 else "2" if spread.closing_value > 0 else "X"
+        underdog = "2" if favorito == "1" else "1" if favorito == "2" else "X"
+
+        # === SPREAD: Punta/Banca sul favorito ===
+        if spread.direction == MovementDirection.HARDEN and spread.intensity in [MovementIntensity.MEDIUM, MovementIntensity.STRONG]:
+            # Spread si indurisce verso favorito → Punta favorito, Banca underdog
+            conf = ConfidenceLevel.HIGH if spread.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
+            recommendations.append(MarketRecommendation(
+                market_name="Exchange 1X2",
+                recommendation=f"✅ PUNTA {favorito} / ❌ BANCA {underdog}",
+                confidence=conf,
+                explanation=f"Favorito {favorito} si rafforza ({spread.intensity.value.lower()})"
+            ))
+        elif spread.direction == MovementDirection.SOFTEN and abs_spread < 1.0:
+            # Spread si ammorbidisce e basso → Banca favorito, Punta underdog
+            recommendations.append(MarketRecommendation(
+                market_name="Exchange 1X2",
+                recommendation=f"✅ PUNTA {underdog} o X / ❌ BANCA {favorito}",
+                confidence=ConfidenceLevel.MEDIUM,
+                explanation=f"Favorito perde fiducia, spread {format_spread_display(spread.closing_value)}"
+            ))
+        elif abs_spread >= 1.5 and spread.direction != MovementDirection.SOFTEN:
+            # Spread molto alto e non in calo → Punta favorito
+            recommendations.append(MarketRecommendation(
+                market_name="Exchange 1X2",
+                recommendation=f"✅ PUNTA {favorito}",
+                confidence=ConfidenceLevel.MEDIUM,
+                explanation=f"Spread alto {format_spread_display(spread.closing_value)}, favorito forte"
+            ))
+
+        # === TOTAL: Punta/Banca Over/Under ===
+        if total.direction == MovementDirection.HARDEN:
+            # Total sale → Punta Over, Banca Under
+            conf = ConfidenceLevel.HIGH if total.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
+            recommendations.append(MarketRecommendation(
+                market_name="Exchange Over/Under",
+                recommendation=f"✅ PUNTA Over {total.closing_value} / ❌ BANCA Under {total.closing_value}",
+                confidence=conf,
+                explanation=f"Total sale a {total.closing_value} ({total.intensity.value.lower()})"
+            ))
+        elif total.direction == MovementDirection.SOFTEN:
+            # Total scende → Punta Under, Banca Over
+            conf = ConfidenceLevel.HIGH if total.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
+            recommendations.append(MarketRecommendation(
+                market_name="Exchange Over/Under",
+                recommendation=f"✅ PUNTA Under {total.closing_value} / ❌ BANCA Over {total.closing_value}",
+                confidence=conf,
+                explanation=f"Total scende a {total.closing_value} ({total.intensity.value.lower()})"
+            ))
+        elif total.closing_value >= 3.0:
+            # Total molto alto → Punta Over
+            recommendations.append(MarketRecommendation(
+                market_name="Exchange Over/Under",
+                recommendation=f"✅ PUNTA Over {total.closing_value}",
+                confidence=ConfidenceLevel.MEDIUM,
+                explanation="Total molto alto, molti gol attesi"
+            ))
+        elif total.closing_value <= 2.0:
+            # Total molto basso → Punta Under
+            recommendations.append(MarketRecommendation(
+                market_name="Exchange Over/Under",
+                recommendation=f"✅ PUNTA Under {total.closing_value}",
+                confidence=ConfidenceLevel.MEDIUM,
+                explanation="Total molto basso, pochi gol attesi"
+            ))
+
+        # === GOAL/NOGOAL Exchange ===
+        if total.closing_value >= 2.75 and total.direction != MovementDirection.SOFTEN:
+            recommendations.append(MarketRecommendation(
+                market_name="Exchange GOAL",
+                recommendation="✅ PUNTA GOAL / ❌ BANCA NOGOAL",
+                confidence=ConfidenceLevel.MEDIUM,
+                explanation=f"Total {total.closing_value}, partita viva"
+            ))
+        elif total.closing_value <= 2.0 and total.direction != MovementDirection.HARDEN:
+            recommendations.append(MarketRecommendation(
+                market_name="Exchange GOAL",
+                recommendation="✅ PUNTA NOGOAL / ❌ BANCA GOAL",
+                confidence=ConfidenceLevel.MEDIUM,
+                explanation=f"Total {total.closing_value}, partita chiusa"
+            ))
+
+        return recommendations[:4]  # Max 4 exchange recommendations
+
     def _get_likely_exact_scores(self, spread: MovementAnalysis, total: MovementAnalysis) -> List[Tuple[str, str]]:
         """Restituisce i risultati esatti più probabili basati su spread e total"""
         scores = []
@@ -997,25 +1100,25 @@ class MarketMovementAnalyzer:
 def format_spread_display(spread_value: float) -> str:
     """
     Formatta lo spread per la visualizzazione corretta.
-    - (-) indica casa (home)
-    - (+) indica trasferta (away)
-    
+    - (-) indica casa (home) favorita
+    - (+) indica trasferta (away) favorita
+
     Args:
-        spread_value: Valore spread (lambda_h - lambda_a)
-    
+        spread_value: Valore spread
+                      (negativo = casa favorita, positivo = trasferta favorita)
+
     Returns:
         Stringa formattata con segno corretto
     """
     if spread_value is None:
         return "N/A"
-    
-    # Se spread viene calcolato come lambda_h - lambda_a:
-    # - spread > 0: Casa favorita → mostra (-)
-    # - spread < 0: Trasferta favorita → mostra (+)
-    # Quindi invertiamo il segno per la visualizzazione
-    if spread_value > 0:
+
+    # Visualizza spread senza inversione
+    # spread < 0 → casa favorita → mostra con -
+    # spread > 0 → trasferta favorita → mostra con +
+    if spread_value < 0:
         return f"-{abs(spread_value):.2f}"
-    elif spread_value < 0:
+    elif spread_value > 0:
         return f"+{abs(spread_value):.2f}"
     else:
         return "0.00"
@@ -1072,7 +1175,16 @@ def format_output(result: AnalysisResult) -> str:
             output.append(f"   {i}  {conf_icon} {market.market_name}: {market.recommendation}")
             output.append(f"      └─ {market.explanation}")
         output.append("")
-    
+
+    # EXCHANGE RECOMMENDATIONS (PUNTA/BANCA)
+    if result.exchange_recommendations:
+        output.append("🔄 CONSIGLI EXCHANGE (Punta/Banca):")
+        for i, market in enumerate(result.exchange_recommendations, 1):
+            conf_icon = "🟢" if market.confidence == ConfidenceLevel.HIGH else "🟡" if market.confidence == ConfidenceLevel.MEDIUM else "🔴"
+            output.append(f"   {i}  {conf_icon} {market.market_name}: {market.recommendation}")
+            output.append(f"      └─ {market.explanation}")
+        output.append("")
+
     output.append("=" * 60)
     
     return "\n".join(output)
