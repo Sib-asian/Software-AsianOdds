@@ -279,7 +279,50 @@ def main():
                 render_recommendation(rec, i)
 
         st.markdown("---")
-        
+
+        # Expected Goals (xG) e Probabilità
+        st.header("📊 Expected Goals (xG) & Probabilità")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric(
+                "xG Casa",
+                f"{result.expected_goals.home_xg:.2f}",
+                help="Expected Goals squadra casa (calcolati da spread e total)"
+            )
+            st.metric(
+                "P(Casa vince)",
+                f"{result.expected_goals.home_win_prob:.1%}",
+                help="Probabilità vittoria casa (Poisson)"
+            )
+
+        with col2:
+            st.metric(
+                "xG Trasferta",
+                f"{result.expected_goals.away_xg:.2f}",
+                help="Expected Goals squadra trasferta (calcolati da spread e total)"
+            )
+            st.metric(
+                "P(Trasferta vince)",
+                f"{result.expected_goals.away_win_prob:.1%}",
+                help="Probabilità vittoria trasferta (Poisson)"
+            )
+
+        with col3:
+            st.metric(
+                "P(Pareggio)",
+                f"{result.expected_goals.draw_prob:.1%}",
+                help="Probabilità pareggio (Poisson)"
+            )
+            st.metric(
+                "P(BTTS)",
+                f"{result.expected_goals.btts_prob:.1%}",
+                help="Probabilità Both Teams To Score"
+            )
+
+        st.markdown("---")
+
         # Dettagli tecnici (espandibile)
         with st.expander("🔧 Dettagli Tecnici"):
             st.write("**Spread Analysis:**")
