@@ -188,6 +188,191 @@ def get_most_likely_score(home_xg: float, away_xg: float, top_n: int = 5) -> Lis
     return scores[:top_n]
 
 
+def calculate_halftime_probabilities(home_xg: float, away_xg: float) -> Dict:
+    """
+    Calcola probabilità per il Primo Tempo (HT) usando xG.
+
+    Assunzione: circa 45% dei gol totali avvengono nel primo tempo.
+
+    Args:
+        home_xg: Expected goals casa (full time)
+        away_xg: Expected goals trasferta (full time)
+
+    Returns:
+        Dict con probabilità HT: home_win, draw, away_win, btts, total_goals
+    """
+    # xG primo tempo (tipicamente 45% del totale)
+    home_xg_ht = home_xg * 0.45
+    away_xg_ht = away_xg * 0.45
+
+    # Calcola probabilità 1X2 HT usando Poisson
+    home_win_ht = 0.0
+    draw_ht = 0.0
+    away_win_ht = 0.0
+
+    for home_goals in range(5):
+        for away_goals in range(5):
+            prob = poisson_probability(home_goals, home_xg_ht) * poisson_probability(away_goals, away_xg_ht)
+
+            if home_goals > away_goals:
+                home_win_ht += prob
+            elif home_goals == away_goals:
+                draw_ht += prob
+            else:
+                away_win_ht += prob
+
+    # Calcola P(BTTS HT)
+    home_cs_ht = math.exp(-away_xg_ht)
+    away_cs_ht = math.exp(-home_xg_ht)
+    btts_ht = (1 - home_cs_ht) * (1 - away_cs_ht)
+
+    # Calcola P(Over/Under HT)
+    total_xg_ht = home_xg_ht + away_xg_ht
+
+    # P(Over 0.5 HT) = 1 - P(0 gol totali)
+    over_05_ht = 1 - (math.exp(-home_xg_ht) * math.exp(-away_xg_ht))
+
+    # P(Over 1.5 HT) = somma probabilità >= 2 gol
+    over_15_ht = 0.0
+    for total_goals in range(2, 8):
+        for home_goals in range(total_goals + 1):
+            away_goals = total_goals - home_goals
+            over_15_ht += poisson_probability(home_goals, home_xg_ht) * poisson_probability(away_goals, away_xg_ht)
+
+    return {
+        "home_xg_ht": home_xg_ht,
+        "away_xg_ht": away_xg_ht,
+        "total_xg_ht": total_xg_ht,
+        "home_win_ht": home_win_ht,
+        "draw_ht": draw_ht,
+        "away_win_ht": away_win_ht,
+        "btts_ht": btts_ht,
+        "over_05_ht": over_05_ht,
+        "over_15_ht": over_15_ht
+    }
+
+
+def calculate_total_goals_distribution(home_xg: float, away_xg: float) -> Dict[int, float]:
+    """
+    Calcola distribuzione probabilità per numero totale di gol usando Poisson.
+
+    Returns:
+        Dict {numero_gol: probabilità}
+    """
+    distribution = {}
+    total_xg = home_xg + away_xg
+
+    for total_goals in range(10):
+        # Somma tutte le combinazioni che danno questo totale
+        prob = 0.0
+        for home_goals in range(total_goals + 1):
+            away_goals = total_goals - home_goals
+            prob += poisson_probability(home_goals, home_xg) * poisson_probability(away_goals, away_xg)
+        distribution[total_goals] = prob
+
+    return distribution
+
+
+def calculate_team_totals(home_xg: float, away_xg: float) -> Dict:
+    """
+    Calcola probabilità Over/Under per singole squadre.
+
+    Returns:
+        Dict con probabilità per team totals
+    """
+    # P(Casa Over 0.5) = 1 - P(Casa 0 gol)
+    home_over_05 = 1 - poisson_probability(0, home_xg)
+    home_over_15 = 1 - poisson_probability(0, home_xg) - poisson_probability(1, home_xg)
+    home_over_25 = sum(poisson_probability(k, home_xg) for k in range(3, 8))
+
+    # P(Trasferta Over 0.5) = 1 - P(Trasferta 0 gol)
+    away_over_05 = 1 - poisson_probability(0, away_xg)
+    away_over_15 = 1 - poisson_probability(0, away_xg) - poisson_probability(1, away_xg)
+    away_over_25 = sum(poisson_probability(k, away_xg) for k in range(3, 8))
+
+    return {
+        "home_over_05": home_over_05,
+        "home_over_15": home_over_15,
+        "home_over_25": home_over_25,
+        "away_over_05": away_over_05,
+        "away_over_15": away_over_15,
+        "away_over_25": away_over_25
+    }
+
+
+def calculate_winning_margin(home_xg: float, away_xg: float) -> Dict[str, float]:
+    """
+    Calcola probabilità margini di vittoria usando Poisson.
+
+    Returns:
+        Dict con probabilità per ogni margine
+    """
+    margins = {
+        "draw": 0.0,
+        "home_1": 0.0,  # Casa vince per 1 gol
+        "home_2": 0.0,  # Casa vince per 2 gol
+        "home_3+": 0.0,  # Casa vince per 3+ gol
+        "away_1": 0.0,
+        "away_2": 0.0,
+        "away_3+": 0.0
+    }
+
+    for home_goals in range(8):
+        for away_goals in range(8):
+            prob = poisson_probability(home_goals, home_xg) * poisson_probability(away_goals, away_xg)
+            diff = home_goals - away_goals
+
+            if diff == 0:
+                margins["draw"] += prob
+            elif diff == 1:
+                margins["home_1"] += prob
+            elif diff == 2:
+                margins["home_2"] += prob
+            elif diff >= 3:
+                margins["home_3+"] += prob
+            elif diff == -1:
+                margins["away_1"] += prob
+            elif diff == -2:
+                margins["away_2"] += prob
+            elif diff <= -3:
+                margins["away_3+"] += prob
+
+    return margins
+
+
+def calculate_first_to_score(home_xg: float, away_xg: float) -> Dict[str, float]:
+    """
+    Calcola probabilità chi segna per primo.
+
+    Formula approssimata:
+    P(Casa prima) ≈ home_xg / (home_xg + away_xg) * (1 - P(0-0))
+
+    Returns:
+        Dict con probabilità first scorer
+    """
+    total_xg = home_xg + away_xg
+
+    # P(0-0)
+    prob_00 = poisson_probability(0, home_xg) * poisson_probability(0, away_xg)
+
+    # P(qualcuno segna)
+    prob_goals = 1 - prob_00
+
+    # Distribuzione basata su xG ratio
+    if total_xg > 0:
+        home_ratio = home_xg / total_xg
+        away_ratio = away_xg / total_xg
+    else:
+        home_ratio = 0.5
+        away_ratio = 0.5
+
+    return {
+        "home_first": home_ratio * prob_goals,
+        "away_first": away_ratio * prob_goals,
+        "no_goal": prob_00
+    }
+
+
 class SpreadAnalyzer:
     """Analizzatore per movimenti Spread"""
     
@@ -790,232 +975,169 @@ class MarketMovementAnalyzer:
     def _calculate_alternative_markets(self, spread: MovementAnalysis,
                                        total: MovementAnalysis, combination: Dict,
                                        xg: ExpectedGoals) -> List[MarketRecommendation]:
-        """Calcola raccomandazioni alternative - Media confidenza"""
+        """
+        Calcola raccomandazioni alternative - MIGLIORATO con xG e Poisson.
+
+        Usa probabilità precise per HT/FT, Over/Under HT, GOAL HT, Multigol.
+        """
         recommendations = []
 
         abs_spread = abs(spread.closing_value)
 
-        # Determina chi è favorito in base al segno dello spread
-        # spread < 0 (negativo): Casa favorita (1)
-        # spread > 0 (positivo): Trasferta favorita (2)
+        # Determina chi è favorito
         favorito = "1" if spread.closing_value < 0 else "2" if spread.closing_value > 0 else "X"
 
-        # Combo favorito + Over/Under - LOGICA MIGLIORATA: considera closing value
-        if spread.direction == MovementDirection.HARDEN:
-            # Favorito si rafforza
-            if total.direction == MovementDirection.HARDEN:
-                recommendations.append(MarketRecommendation(
-                    market_name="Combo",
-                    recommendation=f"{favorito} + Over {total.closing_value}",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation="Favorito vince con gol"
-                ))
-            elif total.closing_value >= 2.75:
-                # Total scende ma ancora alto
-                recommendations.append(MarketRecommendation(
-                    market_name="Combo",
-                    recommendation=f"{favorito} + Over {total.closing_value}",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation="Favorito vince, total ancora alto"
-                ))
-            else:
-                # Total basso
-                recommendations.append(MarketRecommendation(
-                    market_name="Combo",
-                    recommendation=f"{favorito} + Under {total.closing_value}",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation="Favorito vince di corto"
-                ))
-        elif spread.direction == MovementDirection.SOFTEN:
-            # Spread si ammorbidisce → guarda closing value
-            if abs_spread >= 1.0:
-                # Favorito ancora forte
-                if total.closing_value <= 2.25:
-                    recommendations.append(MarketRecommendation(
-                        market_name="Combo",
-                        recommendation=f"{favorito} + Under {total.closing_value}",
-                        confidence=ConfidenceLevel.MEDIUM,
-                        explanation=f"Favorito vince corto ({format_spread_display(spread.closing_value)})"
-                    ))
-            else:
-                # Match equilibrato
-                if total.direction == MovementDirection.SOFTEN or total.closing_value <= 2.25:
-                    recommendations.append(MarketRecommendation(
-                        market_name="Combo",
-                        recommendation=f"X + Under {total.closing_value}",
-                        confidence=ConfidenceLevel.MEDIUM,
-                        explanation="Match equilibrato e chiuso"
-                    ))
+        # Calcola probabilità HT usando xG
+        ht_probs = calculate_halftime_probabilities(xg.home_xg, xg.away_xg)
 
-        # HT/FT Combinations - LOGICA MIGLIORATA: considera closing value
-        if spread.direction == MovementDirection.HARDEN:
-            # Favorito si rafforza → ma controlla anche che spread sia significativo
-            if abs_spread < 0.5:
-                # Spread troppo basso, match equilibrato → X/X
-                recommendations.append(MarketRecommendation(
-                    market_name="HT/FT",
-                    recommendation="X/X (Pareggio HT e FT)",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Match equilibrato ({format_spread_display(spread.closing_value)}), spread troppo basso"
-                ))
-            elif spread.intensity == MovementIntensity.STRONG:
-                recommendations.append(MarketRecommendation(
-                    market_name="HT/FT",
-                    recommendation=f"{favorito}/{favorito} (Favorito HT e FT)",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation="Favorito domina dall'inizio"
-                ))
-            else:
-                recommendations.append(MarketRecommendation(
-                    market_name="HT/FT",
-                    recommendation=f"X/{favorito} (Pareggio HT, Favorito FT)",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation="Favorito decide nella ripresa"
-                ))
-        elif spread.direction == MovementDirection.SOFTEN:
-            # Spread si ammorbidisce → guarda closing value
-            if abs_spread < 0.75:
-                # Match molto equilibrato
-                recommendations.append(MarketRecommendation(
-                    market_name="HT/FT",
-                    recommendation="X/X (Pareggio HT e FT)",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Match equilibrato ({spread.closing_value})"
-                ))
-            elif abs_spread >= 1.0:
-                # Favorito ancora presente
-                recommendations.append(MarketRecommendation(
-                    market_name="HT/FT",
-                    recommendation=f"X/{favorito} (Pareggio HT, Favorito FT)",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Favorito decide nella ripresa ({spread.closing_value})"
-                ))
-            else:
-                # Incertezza
-                recommendations.append(MarketRecommendation(
-                    market_name="HT/FT",
-                    recommendation=f"X/X o X/{favorito}",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Match incerto ({spread.closing_value})"
-                ))
-        else:  # STABLE
-            # Spread stabile → guarda closing value
-            if abs_spread >= 1.0:
-                recommendations.append(MarketRecommendation(
-                    market_name="HT/FT",
-                    recommendation=f"X/{favorito} (Pareggio HT, Favorito FT)",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Favorito vince ({spread.closing_value})"
-                ))
-            else:
-                recommendations.append(MarketRecommendation(
-                    market_name="HT/FT",
-                    recommendation="X/X (Pareggio HT e FT)",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Match equilibrato ({spread.closing_value})"
-                ))
+        # === 1. HT/FT COMBINATIONS - Basato su probabilità Poisson HT e FT ===
+        ht_home_prob = ht_probs["home_win_ht"]
+        ht_draw_prob = ht_probs["draw_ht"]
+        ht_away_prob = ht_probs["away_win_ht"]
 
-        # Over/Under HT
-        ht_total_estimate = total.closing_value * 0.5
-        if total.direction == MovementDirection.HARDEN:
-            if ht_total_estimate >= 1.0:
-                recommendations.append(MarketRecommendation(
-                    market_name="Over/Under HT",
-                    recommendation="Over 1.0 HT",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Total alto ({total.closing_value}), partenza aggressiva"
-                ))
-            else:
-                recommendations.append(MarketRecommendation(
-                    market_name="Over/Under HT",
-                    recommendation="Over 0.5 HT",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation="Almeno 1 gol nel primo tempo"
-                ))
-        elif total.direction == MovementDirection.SOFTEN or total.closing_value <= 2.25:
+        ft_home_prob = xg.home_win_prob
+        ft_draw_prob = xg.draw_prob
+        ft_away_prob = xg.away_win_prob
+
+        # Trova combinazione HT/FT più probabile
+        ht_ft_combinations = [
+            ("1/1", ht_home_prob * ft_home_prob),
+            ("X/1", ht_draw_prob * ft_home_prob),
+            ("2/1", ht_away_prob * ft_home_prob),
+            ("1/X", ht_home_prob * ft_draw_prob),
+            ("X/X", ht_draw_prob * ft_draw_prob),
+            ("2/X", ht_away_prob * ft_draw_prob),
+            ("1/2", ht_home_prob * ft_away_prob),
+            ("X/2", ht_draw_prob * ft_away_prob),
+            ("2/2", ht_away_prob * ft_away_prob)
+        ]
+        ht_ft_combinations.sort(key=lambda x: x[1], reverse=True)
+
+        # Raccomanda top 1-2 combinazioni HT/FT
+        top_ht_ft = ht_ft_combinations[0]
+        if top_ht_ft[1] >= 0.15:  # Almeno 15% probabilità
+            conf = ConfidenceLevel.HIGH if top_ht_ft[1] >= 0.25 else ConfidenceLevel.MEDIUM
+            recommendations.append(MarketRecommendation(
+                market_name="HT/FT",
+                recommendation=f"{top_ht_ft[0]}",
+                confidence=conf,
+                explanation=f"Probabilità Poisson: {top_ht_ft[1]:.1%} (HT xG: {ht_probs['home_xg_ht']:.2f} vs {ht_probs['away_xg_ht']:.2f})"
+            ))
+
+        # === 2. OVER/UNDER HT - Basato su xG HT ===
+        total_xg_ht = ht_probs["total_xg_ht"]
+        over_05_ht_prob = ht_probs["over_05_ht"]
+        over_15_ht_prob = ht_probs["over_15_ht"]
+
+        if over_15_ht_prob >= 0.55:
+            # Alta prob Over 1.5 HT
             recommendations.append(MarketRecommendation(
                 market_name="Over/Under HT",
-                recommendation="Under 1.0 HT",
+                recommendation="Over 1.5 HT",
                 confidence=ConfidenceLevel.MEDIUM,
-                explanation="Primo tempo tattico, massimo 1 gol"
+                explanation=f"P(Over 1.5 HT)={over_15_ht_prob:.1%}, xG HT totale={total_xg_ht:.2f}"
+            ))
+        elif over_05_ht_prob >= 0.70:
+            # Alta prob Over 0.5 HT
+            recommendations.append(MarketRecommendation(
+                market_name="Over/Under HT",
+                recommendation="Over 0.5 HT",
+                confidence=ConfidenceLevel.MEDIUM,
+                explanation=f"P(Over 0.5 HT)={over_05_ht_prob:.1%}, almeno 1 gol 1T probabile"
             ))
         else:
-            # Total stabile con valore medio/alto
-            if total.closing_value >= 2.5:
-                recommendations.append(MarketRecommendation(
-                    market_name="Over/Under HT",
-                    recommendation="Over 0.5 HT",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Total {total.closing_value} stabile, almeno 1 gol 1T probabile"
-                ))
-            else:
-                recommendations.append(MarketRecommendation(
-                    market_name="Over/Under HT",
-                    recommendation="Under 1.0 HT",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Total {total.closing_value} medio, primo tempo equilibrato"
-                ))
+            # Under HT
+            recommendations.append(MarketRecommendation(
+                market_name="Over/Under HT",
+                recommendation="Under 0.5 HT",
+                confidence=ConfidenceLevel.MEDIUM,
+                explanation=f"P(0 gol HT)={(1-over_05_ht_prob):.1%}, primo tempo tattico"
+            ))
 
-        # GOAL HT
-        if total.direction == MovementDirection.HARDEN and ht_total_estimate >= 1.0:
+        # === 3. GOAL/NOGOAL HT - Basato su P(BTTS HT) ===
+        btts_ht_prob = ht_probs["btts_ht"]
+
+        if btts_ht_prob >= 0.40:
+            conf = ConfidenceLevel.HIGH if btts_ht_prob >= 0.55 else ConfidenceLevel.MEDIUM
             recommendations.append(MarketRecommendation(
                 market_name="GOAL/NOGOAL HT",
                 recommendation="GOAL 1T (Entrambe segnano 1T)",
-                confidence=ConfidenceLevel.MEDIUM,
-                explanation="Gol da entrambe già nel primo tempo"
+                confidence=conf,
+                explanation=f"P(BTTS HT)={btts_ht_prob:.1%}, entrambe offensive nel 1T"
             ))
-        elif total.direction == MovementDirection.SOFTEN:
+        else:
             recommendations.append(MarketRecommendation(
                 market_name="GOAL/NOGOAL HT",
                 recommendation="NOGOAL 1T",
                 confidence=ConfidenceLevel.MEDIUM,
-                explanation="Almeno una squadra non segna nel 1T"
+                explanation=f"P(BTTS HT)={btts_ht_prob:.1%}, almeno una squadra non segna 1T"
             ))
 
-        # Multigol (se rilevante)
-        if total.closing_value >= 2.5:
-            if total.direction == MovementDirection.HARDEN:
-                recommendations.append(MarketRecommendation(
-                    market_name="Multigol",
-                    recommendation="2-4 gol o 3-5 gol",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation="Partita con molti gol attesi"
-                ))
-            else:
-                recommendations.append(MarketRecommendation(
-                    market_name="Multigol",
-                    recommendation="1-3 gol",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation="Gol moderati attesi"
-                ))
-        elif total.closing_value <= 2.0:
+        # === 4. MULTIGOL - Basato su distribuzione Poisson ===
+        goals_dist = calculate_total_goals_distribution(xg.home_xg, xg.away_xg)
+
+        # Calcola probabilità per range multigol
+        prob_0_1 = goals_dist.get(0, 0) + goals_dist.get(1, 0)
+        prob_1_2 = goals_dist.get(1, 0) + goals_dist.get(2, 0)
+        prob_1_3 = sum(goals_dist.get(i, 0) for i in range(1, 4))
+        prob_2_3 = goals_dist.get(2, 0) + goals_dist.get(3, 0)
+        prob_2_4 = sum(goals_dist.get(i, 0) for i in range(2, 5))
+        prob_3_5 = sum(goals_dist.get(i, 0) for i in range(3, 6))
+
+        # Trova range multigol più probabile
+        multigol_ranges = [
+            ("0-1 gol", prob_0_1),
+            ("1-2 gol", prob_1_2),
+            ("1-3 gol", prob_1_3),
+            ("2-3 gol", prob_2_3),
+            ("2-4 gol", prob_2_4),
+            ("3-5 gol", prob_3_5)
+        ]
+        multigol_ranges.sort(key=lambda x: x[1], reverse=True)
+
+        top_multigol = multigol_ranges[0]
+        if top_multigol[1] >= 0.30:  # Almeno 30% probabilità
             recommendations.append(MarketRecommendation(
                 market_name="Multigol",
-                recommendation="1-2 gol",
+                recommendation=top_multigol[0],
                 confidence=ConfidenceLevel.MEDIUM,
-                explanation="Pochi gol attesi"
+                explanation=f"Probabilità {top_multigol[1]:.1%} (xG totale={xg.home_xg + xg.away_xg:.2f})"
             ))
 
-        return recommendations[:5]  # Max 5 alternative recommendations
+        # === 5. COMBO - Basato su probabilità 1X2 e O/U ===
+        # Trova miglior combo favorito + O/U
+        if favorito in ["1", "2"]:
+            fav_prob = ft_home_prob if favorito == "1" else ft_away_prob
+
+            # Determina Over o Under più probabile
+            total_xg_ft = xg.home_xg + xg.away_xg
+            ou_rec = f"Over {total.closing_value}" if total_xg_ft > total.closing_value else f"Under {total.closing_value}"
+
+            if fav_prob >= 0.50:
+                recommendations.append(MarketRecommendation(
+                    market_name="Combo",
+                    recommendation=f"{favorito} + {ou_rec}",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation=f"P({favorito})={fav_prob:.1%}, xG totale={total_xg_ft:.2f}"
+                ))
+
+        return recommendations[:6]  # Max 6 alternative recommendations
 
     def _calculate_value_markets(self, spread: MovementAnalysis,
                                  total: MovementAnalysis, combination: Dict,
                                  xg: ExpectedGoals) -> List[MarketRecommendation]:
-        """Calcola value bets - Bassa confidenza ma potenziale valore"""
+        """
+        Calcola value bets - Mercati avanzati con xG e Poisson.
+
+        Include: Risultati Esatti, First to Score, Winning Margin, Team Totals
+        """
         recommendations = []
 
         abs_spread = abs(spread.closing_value)
-
-        # Determina chi è favorito in base al segno dello spread
-        # spread < 0 (negativo): Casa favorita (1)
-        # spread > 0 (positivo): Trasferta favorita (2)
         favorito = "1" if spread.closing_value < 0 else "2" if spread.closing_value > 0 else "X"
-
-        # Determina underdog (l'opposto del favorito)
         underdog = "2" if favorito == "1" else "1" if favorito == "2" else "X"
-        underdog_x = f"X{underdog}" if underdog != "X" else "X"
 
-        # Risultati esatti - Top 3 più probabili usando Poisson e xG
+        # === 1. RISULTATI ESATTI - Top 3 usando Poisson ===
         exact_scores_poisson = get_most_likely_score(xg.home_xg, xg.away_xg, top_n=5)
         for score, prob in exact_scores_poisson[:3]:  # Max 3
             recommendations.append(MarketRecommendation(
@@ -1025,42 +1147,94 @@ class MarketMovementAnalyzer:
                 explanation=f"Probabilità Poisson: {prob:.1%} (xG {xg.home_xg:.2f} vs {xg.away_xg:.2f})"
             ))
 
-        # Double Chance - LOGICA FISSATA: considera closing value
-        if spread.direction == MovementDirection.HARDEN or abs_spread >= 1.0:
-            # Favorito si rafforza O è comunque forte
-            favorito_x = f"{favorito}X" if favorito != "X" else "X"
+        # === 2. FIRST TO SCORE - Chi segna per primo ===
+        first_scorer = calculate_first_to_score(xg.home_xg, xg.away_xg)
+
+        if first_scorer["home_first"] > first_scorer["away_first"] * 1.3:
+            # Casa nettamente favorita a segnare prima
             recommendations.append(MarketRecommendation(
-                market_name="Double Chance",
-                recommendation=f"{favorito_x} (Favorito o Pareggio)",
+                market_name="First to Score",
+                recommendation="Casa segna per prima",
                 confidence=ConfidenceLevel.LOW,
-                explanation=f"Opzione sicura, favorito non perde ({format_spread_display(spread.closing_value)})"
+                explanation=f"P(Casa prima)={first_scorer['home_first']:.1%}, più offensiva"
             ))
-        elif spread.direction == MovementDirection.SOFTEN and abs_spread < 0.75:
-            # Spread si ammorbidisce E match molto equilibrato
+        elif first_scorer["away_first"] > first_scorer["home_first"] * 1.3:
+            # Trasferta favorita a segnare prima
             recommendations.append(MarketRecommendation(
-                market_name="Double Chance",
-                recommendation=f"{underdog_x} (Pareggio o Underdog)",
+                market_name="First to Score",
+                recommendation="Trasferta segna per prima",
                 confidence=ConfidenceLevel.LOW,
-                explanation="Opzione sicura contro favorito debole"
+                explanation=f"P(Trasferta prima)={first_scorer['away_first']:.1%}, più pericolosa"
+            ))
+        elif first_scorer["no_goal"] >= 0.15:
+            # Alta probabilità 0-0
+            recommendations.append(MarketRecommendation(
+                market_name="First to Score",
+                recommendation="Nessun gol (0-0)",
+                confidence=ConfidenceLevel.LOW,
+                explanation=f"P(0-0)={first_scorer['no_goal']:.1%}, partita bloccata"
             ))
 
-        # Primo gol timing (se rilevante)
-        if total.direction == MovementDirection.HARDEN and total.intensity == MovementIntensity.STRONG:
+        # === 3. WINNING MARGIN - Margine di vittoria ===
+        margins = calculate_winning_margin(xg.home_xg, xg.away_xg)
+
+        # Trova margine più probabile
+        margins_sorted = sorted(margins.items(), key=lambda x: x[1], reverse=True)
+        top_margin = margins_sorted[0]
+
+        if top_margin[0] != "draw" and top_margin[1] >= 0.20:
+            margin_names = {
+                "home_1": "Casa vince per 1 gol",
+                "home_2": "Casa vince per 2 gol",
+                "home_3+": "Casa vince per 3+ gol",
+                "away_1": "Trasferta vince per 1 gol",
+                "away_2": "Trasferta vince per 2 gol",
+                "away_3+": "Trasferta vince per 3+ gol"
+            }
+            if top_margin[0] in margin_names:
+                recommendations.append(MarketRecommendation(
+                    market_name="Winning Margin",
+                    recommendation=margin_names[top_margin[0]],
+                    confidence=ConfidenceLevel.LOW,
+                    explanation=f"Probabilità {top_margin[1]:.1%} (xG gap={abs(xg.home_xg - xg.away_xg):.2f})"
+                ))
+
+        # === 4. TEAM TOTALS - Over/Under per singola squadra ===
+        team_totals = calculate_team_totals(xg.home_xg, xg.away_xg)
+
+        # Casa Over/Under
+        if team_totals["home_over_15"] >= 0.55:
             recommendations.append(MarketRecommendation(
-                market_name="Timing",
-                recommendation="Primo gol prima del 30' minuto",
+                market_name="Team Total Casa",
+                recommendation="Casa Over 1.5 gol",
                 confidence=ConfidenceLevel.LOW,
-                explanation="Partita viva, inizio aggressivo"
+                explanation=f"P(Casa >1.5)={team_totals['home_over_15']:.1%}, xG casa={xg.home_xg:.2f}"
             ))
-        elif total.direction == MovementDirection.SOFTEN:
+        elif team_totals["home_over_05"] >= 0.70:
             recommendations.append(MarketRecommendation(
-                market_name="Timing",
-                recommendation="Primo gol dopo il 30' minuto",
+                market_name="Team Total Casa",
+                recommendation="Casa Over 0.5 gol",
                 confidence=ConfidenceLevel.LOW,
-                explanation="Partita tattica, fase di studio"
+                explanation=f"P(Casa >0.5)={team_totals['home_over_05']:.1%}"
             ))
 
-        return recommendations[:3]  # Max 3 value recommendations
+        # Trasferta Over/Under
+        if team_totals["away_over_15"] >= 0.55:
+            recommendations.append(MarketRecommendation(
+                market_name="Team Total Trasferta",
+                recommendation="Trasferta Over 1.5 gol",
+                confidence=ConfidenceLevel.LOW,
+                explanation=f"P(Trasferta >1.5)={team_totals['away_over_15']:.1%}, xG trasferta={xg.away_xg:.2f}"
+            ))
+        elif team_totals["away_over_05"] >= 0.70:
+            recommendations.append(MarketRecommendation(
+                market_name="Team Total Trasferta",
+                recommendation="Trasferta Over 0.5 gol",
+                confidence=ConfidenceLevel.LOW,
+                explanation=f"P(Trasferta >0.5)={team_totals['away_over_05']:.1%}"
+            ))
+
+        return recommendations[:8]  # Max 8 value recommendations (aumentato per nuovi mercati)
 
     def _calculate_exchange_recommendations(self, spread: MovementAnalysis,
                                            total: MovementAnalysis) -> List[MarketRecommendation]:
