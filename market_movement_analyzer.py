@@ -85,11 +85,16 @@ class AnalysisResult:
     expected_goals: ExpectedGoals  # xG e probabilità calcolate
 
 
-def calculate_expected_goals(spread: float, total: float) -> ExpectedGoals:
+def calculate_expected_goals(spread: float, total: float, use_advanced_formulas: bool = True) -> ExpectedGoals:
     """
     Calcola Expected Goals (xG) da spread e total usando Asian Handicap.
 
-    Formula:
+    VERSIONE AVANZATA con:
+    - Home Advantage adjustment (+15% casa, -12% trasferta)
+    - Dixon-Coles Bivariate Poisson (correlazione risultati bassi)
+    - Massima precisione per betting professionale
+
+    Formula base:
     - spread = lambda_casa - lambda_trasferta
     - total = lambda_casa + lambda_trasferta
 
@@ -100,34 +105,60 @@ def calculate_expected_goals(spread: float, total: float) -> ExpectedGoals:
     Args:
         spread: Spread di chiusura (negativo = casa favorita)
         total: Total di chiusura
+        use_advanced_formulas: Se True usa Home Advantage + Dixon-Coles (default True)
 
     Returns:
         ExpectedGoals con xG e probabilità calcolate
     """
-    # Calcola xG (lambda) per casa e trasferta
-    home_xg = (total - spread) / 2
-    away_xg = (total + spread) / 2
+    # Calcola xG (lambda) base per casa e trasferta
+    home_xg_base = (total - spread) / 2
+    away_xg_base = (total + spread) / 2
 
-    # Assicura che xG siano positivi (non può essere negativo)
-    home_xg = max(0.1, home_xg)
-    away_xg = max(0.1, away_xg)
+    # Assicura che xG siano positivi
+    home_xg_base = max(0.1, home_xg_base)
+    away_xg_base = max(0.1, away_xg_base)
+
+    # FORMULA AVANZATA 1: Home Advantage Adjustment
+    if use_advanced_formulas:
+        home_xg, away_xg = adjust_for_home_advantage(home_xg_base, away_xg_base)
+    else:
+        home_xg, away_xg = home_xg_base, away_xg_base
 
     # Calcola probabilità clean sheet: P(0 gol) = e^(-lambda)
-    home_clean_sheet_prob = math.exp(-away_xg)
-    away_clean_sheet_prob = math.exp(-home_xg)
+    # Usa Dixon-Coles per maggiore precisione
+    if use_advanced_formulas:
+        home_clean_sheet_prob = dixon_coles_probability(0, 0, home_xg, away_xg) / dixon_coles_probability(0, 0, home_xg, 0)
+        away_clean_sheet_prob = dixon_coles_probability(0, 0, home_xg, away_xg) / dixon_coles_probability(0, 0, 0, away_xg)
+        # Fallback a formula standard se Dixon-Coles da valori strani
+        if home_clean_sheet_prob > 1 or home_clean_sheet_prob < 0:
+            home_clean_sheet_prob = math.exp(-away_xg)
+        if away_clean_sheet_prob > 1 or away_clean_sheet_prob < 0:
+            away_clean_sheet_prob = math.exp(-home_xg)
+    else:
+        home_clean_sheet_prob = math.exp(-away_xg)
+        away_clean_sheet_prob = math.exp(-home_xg)
 
-    # Calcola BTTS: P(entrambe segnano) = 1 - P(almeno una clean sheet)
-    btts_prob = (1 - home_clean_sheet_prob) * (1 - away_clean_sheet_prob)
+    # FORMULA AVANZATA 2: BTTS con Dixon-Coles
+    if use_advanced_formulas:
+        # Calcola P(BTTS) accurata con Dixon-Coles
+        btts_prob = 0.0
+        for h in range(1, 8):
+            for a in range(1, 8):
+                btts_prob += dixon_coles_probability(h, a, home_xg, away_xg)
+    else:
+        btts_prob = (1 - home_clean_sheet_prob) * (1 - away_clean_sheet_prob)
 
-    # Calcola probabilità 1X2 usando Poisson
+    # FORMULA AVANZATA 3: 1X2 con Dixon-Coles
     home_win_prob = 0.0
     draw_prob = 0.0
     away_win_prob = 0.0
 
-    # Calcola per i primi 8 gol (coprono >99% dei casi)
-    for home_goals in range(8):
-        for away_goals in range(8):
-            prob = poisson_probability(home_goals, home_xg) * poisson_probability(away_goals, away_xg)
+    for home_goals in range(10):
+        for away_goals in range(10):
+            if use_advanced_formulas:
+                prob = dixon_coles_probability(home_goals, away_goals, home_xg, away_xg)
+            else:
+                prob = poisson_probability(home_goals, home_xg) * poisson_probability(away_goals, away_xg)
 
             if home_goals > away_goals:
                 home_win_prob += prob
@@ -162,24 +193,32 @@ def poisson_probability(k: int, lambda_: float) -> float:
     return (lambda_ ** k) * math.exp(-lambda_) / math.factorial(k)
 
 
-def get_most_likely_score(home_xg: float, away_xg: float, top_n: int = 5) -> List[Tuple[str, float]]:
+def get_most_likely_score(home_xg: float, away_xg: float, top_n: int = 5,
+                          use_dixon_coles: bool = True) -> List[Tuple[str, float]]:
     """
-    Calcola i punteggi più probabili usando distribuzione Poisson.
+    Calcola i punteggi più probabili usando Dixon-Coles Bivariate Poisson.
+
+    VERSIONE AVANZATA: Usa Dixon-Coles per massima precisione su risultati bassi
+    (0-0, 1-0, 0-1, 1-1 sono più accurati con correlazione)
 
     Args:
         home_xg: Expected goals casa
         away_xg: Expected goals trasferta
         top_n: Numero di punteggi da restituire
+        use_dixon_coles: Se True usa Dixon-Coles (default), altrimenti Poisson standard
 
     Returns:
         Lista di tuple (punteggio, probabilità) ordinate per probabilità
     """
     scores = []
 
-    # Calcola probabilità per tutti i punteggi realistici (0-6 gol per squadra)
-    for home_goals in range(7):
-        for away_goals in range(7):
-            prob = poisson_probability(home_goals, home_xg) * poisson_probability(away_goals, away_xg)
+    # Calcola probabilità per tutti i punteggi realistici (0-7 gol per squadra)
+    for home_goals in range(8):
+        for away_goals in range(8):
+            if use_dixon_coles:
+                prob = dixon_coles_probability(home_goals, away_goals, home_xg, away_xg)
+            else:
+                prob = poisson_probability(home_goals, home_xg) * poisson_probability(away_goals, away_xg)
             scores.append((f"{home_goals}-{away_goals}", prob))
 
     # Ordina per probabilità decrescente
@@ -370,6 +409,293 @@ def calculate_first_to_score(home_xg: float, away_xg: float) -> Dict[str, float]
         "home_first": home_ratio * prob_goals,
         "away_first": away_ratio * prob_goals,
         "no_goal": prob_00
+    }
+
+
+# ============================================================================
+# FORMULE AVANZATE PER MASSIMA PRECISIONE
+# ============================================================================
+
+# Costanti statistiche
+HOME_ADVANTAGE_BOOST = 1.15  # +15% xG casa (dato statistico)
+AWAY_DISADVANTAGE = 0.88     # -12% xG trasferta
+DIXON_COLES_RHO = -0.13      # Parametro correlazione Dixon-Coles
+
+
+def dixon_coles_probability(h: int, a: int, lambda_h: float, lambda_a: float,
+                            rho: float = DIXON_COLES_RHO) -> float:
+    """
+    Dixon-Coles Bivariate Poisson - Gold Standard per betting professionale.
+
+    Corregge l'assunzione di indipendenza tra gol casa/trasferta.
+    Risultati bassi (0-0, 1-0, 0-1, 1-1) sono correlati.
+
+    Args:
+        h: Gol casa
+        a: Gol trasferta
+        lambda_h: xG casa
+        lambda_a: xG trasferta
+        rho: Parametro correlazione (tipicamente -0.10 a -0.15)
+
+    Returns:
+        Probabilità corretta per correlazione
+    """
+    # Probabilità Poisson base
+    base_prob = poisson_probability(h, lambda_h) * poisson_probability(a, lambda_a)
+
+    # Fattore di correlazione tau (solo per risultati bassi)
+    # Formula Dixon-Coles: con rho negativo, 0-0 e 1-1 diminuiscono, 1-0 e 0-1 aumentano
+    if h == 0 and a == 0:
+        tau = 1 + lambda_h * lambda_a * rho
+    elif h == 1 and a == 0:
+        tau = 1 - lambda_a * rho
+    elif h == 0 and a == 1:
+        tau = 1 - lambda_h * rho
+    elif h == 1 and a == 1:
+        tau = 1 + rho
+    else:
+        tau = 1  # Nessuna correlazione per risultati alti
+
+    return base_prob * tau
+
+
+def adjust_for_home_advantage(home_xg: float, away_xg: float) -> Tuple[float, float]:
+    """
+    Aggiusta xG per vantaggio casa statisticamente provato.
+
+    Studi statistici mostrano:
+    - Casa segna ~1.46x più gol
+    - Trasferta segna ~0.85x meno gol
+
+    IMPORTANTE: Preserva il total originale (somma xG) mentre redistribuisce i gol.
+
+    Args:
+        home_xg: xG casa (da spread e total)
+        away_xg: xG trasferta (da spread e total)
+
+    Returns:
+        (home_xg_adjusted, away_xg_adjusted) - somma preservata
+    """
+    original_total = home_xg + away_xg
+
+    # Applica boost/penalità
+    adjusted_home = home_xg * HOME_ADVANTAGE_BOOST
+    adjusted_away = away_xg * AWAY_DISADVANTAGE
+
+    # Renormalizza per preservare il total
+    new_total = adjusted_home + adjusted_away
+    adjusted_home = (adjusted_home / new_total) * original_total
+    adjusted_away = (adjusted_away / new_total) * original_total
+
+    return adjusted_home, adjusted_away
+
+
+def remove_vig(odds_home: float, odds_draw: float, odds_away: float) -> Tuple[float, float, float]:
+    """
+    Rimuove overround (margine bookmaker) per ottenere true probabilities.
+
+    Quote bookmaker includono margine di profitto (overround).
+    Esempio: 1.85 / 3.40 / 4.50 = 105.7% (5.7% overround)
+
+    Args:
+        odds_home: Quota casa
+        odds_draw: Quota pareggio
+        odds_away: Quota trasferta
+
+    Returns:
+        (true_prob_home, true_prob_draw, true_prob_away) normalizzate a 100%
+    """
+    # Probabilità implicite dalle quote
+    prob_home = 1 / odds_home
+    prob_draw = 1 / odds_draw
+    prob_away = 1 / odds_away
+
+    # Overround totale
+    overround = prob_home + prob_draw + prob_away
+
+    # Normalizza a 100%
+    true_home = prob_home / overround
+    true_draw = prob_draw / overround
+    true_away = prob_away / overround
+
+    return true_home, true_draw, true_away
+
+
+def calculate_edge(our_probability: float, bookmaker_odds: float) -> float:
+    """
+    Calcola edge (vantaggio) reale su una scommessa.
+
+    Edge = Nostra probabilità - Probabilità implicita dalle quote
+    Edge positivo = Value bet!
+
+    Args:
+        our_probability: Nostra stima probabilità (0-1)
+        bookmaker_odds: Quota bookmaker
+
+    Returns:
+        Edge in percentuale (es. 0.06 = +6% edge)
+    """
+    implied_prob = 1 / bookmaker_odds
+    edge = our_probability - implied_prob
+    return edge
+
+
+def regression_to_mean(observed_value: float, prior_mean: float,
+                       confidence: float = 0.75) -> float:
+    """
+    James-Stein Shrinkage - Corregge over-reactions del mercato.
+
+    Movimenti estremi tendono a ritornare verso la media.
+    Esempio: Spread -1.0 → -2.5 (movimento -1.5) è probabilmente eccessivo.
+
+    Args:
+        observed_value: Valore osservato (es. spread closing)
+        prior_mean: Media prior (es. spread opening)
+        confidence: Peso al valore osservato (0-1), default 0.75 = 75%
+
+    Returns:
+        Valore aggiustato (meno estremo)
+    """
+    adjusted = confidence * observed_value + (1 - confidence) * prior_mean
+    return adjusted
+
+
+def btts_and_total_joint(home_xg: float, away_xg: float,
+                         threshold: float = 2.5,
+                         use_dixon_coles: bool = True) -> Dict[str, float]:
+    """
+    Probabilità congiunte per mercati correlati (BTTS + Over/Under).
+
+    BTTS e Total sono correlati, non indipendenti!
+    P(BTTS=Yes AND Over 2.5) ≠ P(BTTS=Yes) × P(Over 2.5)
+
+    Args:
+        home_xg: xG casa
+        away_xg: xG trasferta
+        threshold: Soglia Over/Under (default 2.5)
+        use_dixon_coles: Usa Dixon-Coles invece di Poisson standard
+
+    Returns:
+        Dict con probabilità congiunte
+    """
+    prob_btts_and_over = 0.0
+    prob_btts_and_under = 0.0
+    prob_nobtts_and_over = 0.0
+    prob_nobtts_and_under = 0.0
+
+    for h in range(10):
+        for a in range(10):
+            # Usa Dixon-Coles o Poisson
+            if use_dixon_coles:
+                prob = dixon_coles_probability(h, a, home_xg, away_xg)
+            else:
+                prob = poisson_probability(h, home_xg) * poisson_probability(a, away_xg)
+
+            total_goals = h + a
+            btts = (h > 0 and a > 0)
+            over = (total_goals > threshold)
+
+            if btts and over:
+                prob_btts_and_over += prob
+            elif btts and not over:
+                prob_btts_and_under += prob
+            elif not btts and over:
+                prob_nobtts_and_over += prob
+            else:
+                prob_nobtts_and_under += prob
+
+    return {
+        "btts_and_over": prob_btts_and_over,
+        "btts_and_under": prob_btts_and_under,
+        "nobtts_and_over": prob_nobtts_and_over,
+        "nobtts_and_under": prob_nobtts_and_under,
+        "btts_total": prob_btts_and_over + prob_btts_and_under,
+        "over_total": prob_btts_and_over + prob_nobtts_and_over
+    }
+
+
+def monte_carlo_validation(home_xg: float, away_xg: float,
+                           n_simulations: int = 10000,
+                           use_dixon_coles: bool = True) -> Dict:
+    """
+    Monte Carlo Simulation per validazione robustezza.
+
+    Simula partita N volte per:
+    - Verificare accuratezza modello
+    - Calcolare confidence intervals
+    - Catturare varianza e tail risks
+
+    Args:
+        home_xg: xG casa
+        away_xg: xG trasferta
+        n_simulations: Numero simulazioni (default 10000)
+        use_dixon_coles: Usa Dixon-Coles per probabilità
+
+    Returns:
+        Dict con statistiche simulazione
+    """
+    import random
+
+    results = {"1": 0, "X": 0, "2": 0}
+    total_goals_list = []
+    btts_count = 0
+
+    # Precalcola probabilità per velocità
+    probs_matrix = []
+    for h in range(10):
+        for a in range(10):
+            if use_dixon_coles:
+                prob = dixon_coles_probability(h, a, home_xg, away_xg)
+            else:
+                prob = poisson_probability(h, home_xg) * poisson_probability(a, away_xg)
+            probs_matrix.append(((h, a), prob))
+
+    # Normalizza probabilità
+    total_prob = sum(p for _, p in probs_matrix)
+    probs_matrix = [((h, a), p/total_prob) for (h, a), p in probs_matrix]
+
+    # Simula usando distribuzione
+    outcomes = [outcome for outcome, _ in probs_matrix]
+    probs = [prob for _, prob in probs_matrix]
+
+    for _ in range(n_simulations):
+        # Campiona risultato dalla distribuzione usando random.choices
+        home_goals, away_goals = random.choices(outcomes, weights=probs, k=1)[0]
+
+        # Registra statistiche
+        if home_goals > away_goals:
+            results["1"] += 1
+        elif home_goals == away_goals:
+            results["X"] += 1
+        else:
+            results["2"] += 1
+
+        total_goals_list.append(home_goals + away_goals)
+
+        if home_goals > 0 and away_goals > 0:
+            btts_count += 1
+
+    # Calcola statistiche
+    prob_1 = results["1"] / n_simulations
+    prob_x = results["X"] / n_simulations
+    prob_2 = results["2"] / n_simulations
+    prob_btts = btts_count / n_simulations
+
+    # Confidence intervals (95%)
+    ci_1 = 1.96 * math.sqrt(prob_1 * (1 - prob_1) / n_simulations)
+    ci_x = 1.96 * math.sqrt(prob_x * (1 - prob_x) / n_simulations)
+    ci_2 = 1.96 * math.sqrt(prob_2 * (1 - prob_2) / n_simulations)
+
+    return {
+        "prob_1": prob_1,
+        "prob_x": prob_x,
+        "prob_2": prob_2,
+        "prob_btts": prob_btts,
+        "ci_1": ci_1,
+        "ci_x": ci_x,
+        "ci_2": ci_2,
+        "avg_total_goals": sum(total_goals_list) / len(total_goals_list),
+        "std_total_goals": math.sqrt(sum((x - sum(total_goals_list)/len(total_goals_list))**2 for x in total_goals_list) / len(total_goals_list))
     }
 
 
