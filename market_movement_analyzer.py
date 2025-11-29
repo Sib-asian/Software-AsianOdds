@@ -352,6 +352,10 @@ class MarketMovementAnalyzer:
         # spread > 0 (positivo): Trasferta favorita (2)
         favorito = "1" if spread.closing_value < 0 else "2" if spread.closing_value > 0 else "X"
 
+        # Determina underdog (l'opposto del favorito)
+        underdog = "2" if favorito == "1" else "1" if favorito == "2" else "X"
+        underdog_x = f"X{underdog}" if underdog != "X" else "X"
+
         # EDGE CASE: Spread quasi pick'em (< 0.25) - Match 50-50
         if abs_spread < 0.25:
             recommendations.append(MarketRecommendation(
@@ -384,7 +388,7 @@ class MarketMovementAnalyzer:
                 # Match molto equilibrato
                 recommendations.append(MarketRecommendation(
                     market_name="1X2",
-                    recommendation="X (Pareggio) o X2",
+                    recommendation=f"X (Pareggio) o {underdog_x}",
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation=f"Spread equilibrato ({spread.closing_value}), favorito molto debole"
                 ))
@@ -803,6 +807,10 @@ class MarketMovementAnalyzer:
         # spread > 0 (positivo): Trasferta favorita (2)
         favorito = "1" if spread.closing_value < 0 else "2" if spread.closing_value > 0 else "X"
 
+        # Determina underdog (l'opposto del favorito)
+        underdog = "2" if favorito == "1" else "1" if favorito == "2" else "X"
+        underdog_x = f"X{underdog}" if underdog != "X" else "X"
+
         # Risultati esatti - Top 2-3 più probabili
         exact_scores = self._get_likely_exact_scores(spread, total)
         for score, explanation in exact_scores[:3]:  # Max 3
@@ -827,7 +835,7 @@ class MarketMovementAnalyzer:
             # Spread si ammorbidisce E match molto equilibrato
             recommendations.append(MarketRecommendation(
                 market_name="Double Chance",
-                recommendation="X2 (Pareggio o Underdog)",
+                recommendation=f"{underdog_x} (Pareggio o Underdog)",
                 confidence=ConfidenceLevel.LOW,
                 explanation="Opzione sicura contro favorito debole"
             ))
@@ -853,6 +861,11 @@ class MarketMovementAnalyzer:
     def _get_likely_exact_scores(self, spread: MovementAnalysis, total: MovementAnalysis) -> List[Tuple[str, str]]:
         """Restituisce i risultati esatti più probabili basati su spread e total"""
         scores = []
+
+        # Determina chi è favorito
+        # spread < 0 (negativo): Casa favorita (1)
+        # spread > 0 (positivo): Trasferta favorita (2)
+        favorito = "1" if spread.closing_value < 0 else "2" if spread.closing_value > 0 else "X"
 
         # Favorito forte + molti gol
         if spread.direction == MovementDirection.HARDEN and total.closing_value >= 2.75:
@@ -903,6 +916,17 @@ class MarketMovementAnalyzer:
             scores.append(("1-1", "Pareggio possibile"))
             scores.append(("2-1", "Risultato comune"))
             scores.append(("1-0", "Vittoria di misura"))
+
+        # Se favorito è trasferta (2), inverti tutti i punteggi
+        # Es: "3-0" diventa "0-3", "2-1" diventa "1-2"
+        if favorito == "2":
+            inverted_scores = []
+            for score, explanation in scores:
+                # Inverti il punteggio
+                parts = score.split('-')
+                inverted_score = f"{parts[1]}-{parts[0]}"
+                inverted_scores.append((inverted_score, explanation))
+            scores = inverted_scores
 
         return scores
     
