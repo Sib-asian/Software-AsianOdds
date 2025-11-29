@@ -677,7 +677,7 @@ class MarketMovementAnalyzer:
             else:
                 recommendations.append(MarketRecommendation(
                     market_name="HT/FT",
-                    recommendation="X/1 (Pareggio HT, Favorito FT)",
+                    recommendation=f"X/{favorito} (Pareggio HT, Favorito FT)",
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation="Favorito decide nella ripresa"
                 ))
@@ -695,7 +695,7 @@ class MarketMovementAnalyzer:
                 # Favorito ancora presente
                 recommendations.append(MarketRecommendation(
                     market_name="HT/FT",
-                    recommendation="X/1 (Pareggio HT, Favorito FT)",
+                    recommendation=f"X/{favorito} (Pareggio HT, Favorito FT)",
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation=f"Favorito decide nella ripresa ({spread.closing_value})"
                 ))
@@ -703,7 +703,7 @@ class MarketMovementAnalyzer:
                 # Incertezza
                 recommendations.append(MarketRecommendation(
                     market_name="HT/FT",
-                    recommendation="X/X o X/1",
+                    recommendation=f"X/X o X/{favorito}",
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation=f"Match incerto ({spread.closing_value})"
                 ))
@@ -712,7 +712,7 @@ class MarketMovementAnalyzer:
             if abs_spread >= 1.0:
                 recommendations.append(MarketRecommendation(
                     market_name="HT/FT",
-                    recommendation="X/1 (Pareggio HT, Favorito FT)",
+                    recommendation=f"X/{favorito} (Pareggio HT, Favorito FT)",
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation=f"Favorito vince ({spread.closing_value})"
                 ))
