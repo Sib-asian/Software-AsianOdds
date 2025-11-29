@@ -348,9 +348,9 @@ class MarketMovementAnalyzer:
         abs_spread = abs(spread.closing_value)
         
         # Determina chi è favorito in base al segno dello spread
-        # spread > 0: Casa favorita (1)
-        # spread < 0: Trasferta favorita (2)
-        favorito = "1" if spread.closing_value > 0 else "2" if spread.closing_value < 0 else "X"
+        # spread < 0 (negativo): Casa favorita (1)
+        # spread > 0 (positivo): Trasferta favorita (2)
+        favorito = "1" if spread.closing_value < 0 else "2" if spread.closing_value > 0 else "X"
 
         # EDGE CASE: Spread quasi pick'em (< 0.25) - Match 50-50
         if abs_spread < 0.25:
@@ -551,9 +551,9 @@ class MarketMovementAnalyzer:
             handicap_value = abs_spread
             if spread.direction == MovementDirection.HARDEN:
                 # Favorito si rafforza → gioca favorito con handicap
-                # Se spread > 0, favorito è casa (1), quindi handicap negativo
-                # Se spread < 0, favorito è trasferta (2), quindi handicap positivo
-                handicap_sign = "-" if spread.closing_value > 0 else "+"
+                # Se spread < 0, favorito è casa (1), quindi handicap negativo
+                # Se spread > 0, favorito è trasferta (2), quindi handicap positivo
+                handicap_sign = "-" if spread.closing_value < 0 else "+"
                 recommendations.append(MarketRecommendation(
                     market_name="Handicap Asiatico",
                     recommendation=f"{favorito} {handicap_sign}{handicap_value}",
@@ -564,7 +564,7 @@ class MarketMovementAnalyzer:
                 # Spread si ammorbidisce
                 if abs_spread >= 1.0:
                     # Ancora favorito forte → Favorito con handicap ridotto
-                    handicap_sign = "-" if spread.closing_value > 0 else "+"
+                    handicap_sign = "-" if spread.closing_value < 0 else "+"
                     recommendations.append(MarketRecommendation(
                         market_name="Handicap Asiatico",
                         recommendation=f"{favorito} {handicap_sign}{handicap_value} (valore)",
@@ -611,9 +611,11 @@ class MarketMovementAnalyzer:
         recommendations = []
 
         abs_spread = abs(spread.closing_value)
-        
+
         # Determina chi è favorito in base al segno dello spread
-        favorito = "1" if spread.closing_value > 0 else "2" if spread.closing_value < 0 else "X"
+        # spread < 0 (negativo): Casa favorita (1)
+        # spread > 0 (positivo): Trasferta favorita (2)
+        favorito = "1" if spread.closing_value < 0 else "2" if spread.closing_value > 0 else "X"
 
         # Combo favorito + Over/Under - LOGICA MIGLIORATA: considera closing value
         if spread.direction == MovementDirection.HARDEN:
@@ -795,9 +797,11 @@ class MarketMovementAnalyzer:
         recommendations = []
 
         abs_spread = abs(spread.closing_value)
-        
+
         # Determina chi è favorito in base al segno dello spread
-        favorito = "1" if spread.closing_value > 0 else "2" if spread.closing_value < 0 else "X"
+        # spread < 0 (negativo): Casa favorita (1)
+        # spread > 0 (positivo): Trasferta favorita (2)
+        favorito = "1" if spread.closing_value < 0 else "2" if spread.closing_value > 0 else "X"
 
         # Risultati esatti - Top 2-3 più probabili
         exact_scores = self._get_likely_exact_scores(spread, total)
