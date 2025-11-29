@@ -269,7 +269,15 @@ def main():
             st.caption("Bassa confidenza ma potenziale valore - Per chi vuole rischiare")
             for i, rec in enumerate(result.value_recommendations, 1):
                 render_recommendation(rec, i)
-        
+            st.markdown("---")
+
+        # EXCHANGE RECOMMENDATIONS (Punta/Banca)
+        if result.exchange_recommendations:
+            st.header("💱 Exchange - Punta/Banca")
+            st.caption("Consigli per mercato Exchange (Back/Lay)")
+            for i, rec in enumerate(result.exchange_recommendations, 1):
+                render_recommendation(rec, i)
+
         st.markdown("---")
         
         # Dettagli tecnici (espandibile)
