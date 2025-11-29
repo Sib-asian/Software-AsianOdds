@@ -550,18 +550,33 @@ class MarketMovementAnalyzer:
                 explanation=f"Partita chiusa, total {total.closing_value}"
             ))
 
-        # Handicap Asiatico - LOGICA MIGLIORATA: considera closing value
+        # Handicap Asiatico - LOGICA MIGLIORATA: bilancia intensità movimento e spread
+        # Raccomanda solo se:
+        # - Intensità STRONG: abs_spread >= 0.75
+        # - Intensità MEDIUM: abs_spread >= 1.0
+        # - Intensità LIGHT: abs_spread >= 1.5 (solo spread molto alti)
+        should_recommend_handicap = False
         if spread.direction != MovementDirection.STABLE:
+            if spread.intensity == MovementIntensity.STRONG and abs_spread >= 0.75:
+                should_recommend_handicap = True
+            elif spread.intensity == MovementIntensity.MEDIUM and abs_spread >= 1.0:
+                should_recommend_handicap = True
+            elif spread.intensity == MovementIntensity.LIGHT and abs_spread >= 1.5:
+                should_recommend_handicap = True
+
+        if should_recommend_handicap:
+
             handicap_value = abs_spread
             if spread.direction == MovementDirection.HARDEN:
                 # Favorito si rafforza → gioca favorito con handicap
                 # Se spread < 0, favorito è casa (1), quindi handicap negativo
                 # Se spread > 0, favorito è trasferta (2), quindi handicap positivo
                 handicap_sign = "-" if spread.closing_value < 0 else "+"
+                conf = ConfidenceLevel.HIGH if spread.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
                 recommendations.append(MarketRecommendation(
                     market_name="Handicap Asiatico",
                     recommendation=f"{favorito} {handicap_sign}{handicap_value}",
-                    confidence=ConfidenceLevel.MEDIUM,
+                    confidence=conf,
                     explanation=f"Favorito copre spread {format_spread_display(spread.closing_value)}"
                 ))
             else:  # SOFTEN
@@ -578,7 +593,6 @@ class MarketMovementAnalyzer:
                 else:
                     # Match equilibrato → Underdog con handicap
                     # Se favorito è casa (1), underdog è trasferta (2) e viceversa
-                    underdog = "2" if favorito == "1" else "1" if favorito == "2" else "X"
                     recommendations.append(MarketRecommendation(
                         market_name="Handicap Asiatico",
                         recommendation=f"{underdog} +{handicap_value}",
