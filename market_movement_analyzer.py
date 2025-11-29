@@ -13,6 +13,7 @@ Usage:
 from typing import Dict, List, Tuple, Optional
 from enum import Enum
 from dataclasses import dataclass
+import math
 
 
 class MovementDirection(Enum):
@@ -58,6 +59,19 @@ class MarketRecommendation:
 
 
 @dataclass
+class ExpectedGoals:
+    """Expected Goals (xG) calcolati da spread e total"""
+    home_xg: float  # lambda casa
+    away_xg: float  # lambda trasferta
+    home_clean_sheet_prob: float  # P(casa clean sheet)
+    away_clean_sheet_prob: float  # P(trasferta clean sheet)
+    btts_prob: float  # P(Both Teams To Score)
+    home_win_prob: float  # P(casa vince) via Poisson
+    draw_prob: float  # P(pareggio) via Poisson
+    away_win_prob: float  # P(trasferta vince) via Poisson
+
+
+@dataclass
 class AnalysisResult:
     """Risultato completo dell'analisi"""
     spread_analysis: MovementAnalysis
@@ -68,6 +82,110 @@ class AnalysisResult:
     value_recommendations: List[MarketRecommendation]  # Value bets (LOW confidence, high value)
     exchange_recommendations: List[MarketRecommendation]  # Consigli Exchange (Punta/Banca)
     overall_confidence: ConfidenceLevel
+    expected_goals: ExpectedGoals  # xG e probabilità calcolate
+
+
+def calculate_expected_goals(spread: float, total: float) -> ExpectedGoals:
+    """
+    Calcola Expected Goals (xG) da spread e total usando Asian Handicap.
+
+    Formula:
+    - spread = lambda_casa - lambda_trasferta
+    - total = lambda_casa + lambda_trasferta
+
+    Quindi:
+    - lambda_casa = (total - spread) / 2
+    - lambda_trasferta = (total + spread) / 2
+
+    Args:
+        spread: Spread di chiusura (negativo = casa favorita)
+        total: Total di chiusura
+
+    Returns:
+        ExpectedGoals con xG e probabilità calcolate
+    """
+    # Calcola xG (lambda) per casa e trasferta
+    home_xg = (total - spread) / 2
+    away_xg = (total + spread) / 2
+
+    # Assicura che xG siano positivi (non può essere negativo)
+    home_xg = max(0.1, home_xg)
+    away_xg = max(0.1, away_xg)
+
+    # Calcola probabilità clean sheet: P(0 gol) = e^(-lambda)
+    home_clean_sheet_prob = math.exp(-away_xg)
+    away_clean_sheet_prob = math.exp(-home_xg)
+
+    # Calcola BTTS: P(entrambe segnano) = 1 - P(almeno una clean sheet)
+    btts_prob = (1 - home_clean_sheet_prob) * (1 - away_clean_sheet_prob)
+
+    # Calcola probabilità 1X2 usando Poisson
+    home_win_prob = 0.0
+    draw_prob = 0.0
+    away_win_prob = 0.0
+
+    # Calcola per i primi 8 gol (coprono >99% dei casi)
+    for home_goals in range(8):
+        for away_goals in range(8):
+            prob = poisson_probability(home_goals, home_xg) * poisson_probability(away_goals, away_xg)
+
+            if home_goals > away_goals:
+                home_win_prob += prob
+            elif home_goals == away_goals:
+                draw_prob += prob
+            else:
+                away_win_prob += prob
+
+    return ExpectedGoals(
+        home_xg=home_xg,
+        away_xg=away_xg,
+        home_clean_sheet_prob=home_clean_sheet_prob,
+        away_clean_sheet_prob=away_clean_sheet_prob,
+        btts_prob=btts_prob,
+        home_win_prob=home_win_prob,
+        draw_prob=draw_prob,
+        away_win_prob=away_win_prob
+    )
+
+
+def poisson_probability(k: int, lambda_: float) -> float:
+    """
+    Calcola probabilità Poisson: P(X = k) = (λ^k * e^(-λ)) / k!
+
+    Args:
+        k: Numero di gol
+        lambda_: Expected goals (xG)
+
+    Returns:
+        Probabilità che vengano segnati esattamente k gol
+    """
+    return (lambda_ ** k) * math.exp(-lambda_) / math.factorial(k)
+
+
+def get_most_likely_score(home_xg: float, away_xg: float, top_n: int = 5) -> List[Tuple[str, float]]:
+    """
+    Calcola i punteggi più probabili usando distribuzione Poisson.
+
+    Args:
+        home_xg: Expected goals casa
+        away_xg: Expected goals trasferta
+        top_n: Numero di punteggi da restituire
+
+    Returns:
+        Lista di tuple (punteggio, probabilità) ordinate per probabilità
+    """
+    scores = []
+
+    # Calcola probabilità per tutti i punteggi realistici (0-6 gol per squadra)
+    for home_goals in range(7):
+        for away_goals in range(7):
+            prob = poisson_probability(home_goals, home_xg) * poisson_probability(away_goals, away_xg)
+            scores.append((f"{home_goals}-{away_goals}", prob))
+
+    # Ordina per probabilità decrescente
+    scores.sort(key=lambda x: x[1], reverse=True)
+
+    return scores[:top_n]
 
 
 class SpreadAnalyzer:
@@ -269,28 +387,40 @@ class MarketMovementAnalyzer:
     def analyze(self, spread_open: float, spread_close: float,
                 total_open: float, total_close: float) -> AnalysisResult:
         """Esegue analisi completa"""
-        
+
         # Analizza spread e total
         spread_analysis = self.spread_analyzer.analyze(spread_open, spread_close)
         total_analysis = self.total_analyzer.analyze(total_open, total_close)
-        
+
+        # Calcola Expected Goals (xG) dai valori di chiusura
+        expected_goals = calculate_expected_goals(spread_close, total_close)
+
         # Gestisci casi stabili
         spread_dir_key = spread_analysis.direction.name if spread_analysis.direction != MovementDirection.STABLE else "STABLE"
         total_dir_key = total_analysis.direction.name if total_analysis.direction != MovementDirection.STABLE else "STABLE"
-        
+
         # Ottieni combinazione
         combination = self._get_combination_interpretation(
             spread_analysis, total_analysis, spread_dir_key, total_dir_key
         )
-        
-        # Calcola mercati nelle 4 categorie
-        core_recs = self._calculate_core_markets(spread_analysis, total_analysis, combination)
-        alternative_recs = self._calculate_alternative_markets(spread_analysis, total_analysis, combination)
-        value_recs = self._calculate_value_markets(spread_analysis, total_analysis, combination)
+
+        # Calcola mercati nelle 4 categorie (ora con xG)
+        core_recs = self._calculate_core_markets(spread_analysis, total_analysis, combination, expected_goals)
+        alternative_recs = self._calculate_alternative_markets(spread_analysis, total_analysis, combination, expected_goals)
+        value_recs = self._calculate_value_markets(spread_analysis, total_analysis, combination, expected_goals)
         exchange_recs = self._calculate_exchange_recommendations(spread_analysis, total_analysis)
 
-        # Calcola confidenza generale
-        overall_confidence = self._calculate_confidence(spread_analysis, total_analysis)
+        # Valida coerenza tra tutte le raccomandazioni
+        all_recs = core_recs + alternative_recs + value_recs
+        validated_recs = self._validate_market_coherence(all_recs, expected_goals, spread_analysis, total_analysis)
+
+        # Riassegna alle categorie (mantieni ordine originale)
+        core_recs = [r for r in validated_recs if r in core_recs]
+        alternative_recs = [r for r in validated_recs if r in alternative_recs]
+        value_recs = [r for r in validated_recs if r in value_recs]
+
+        # Calcola confidenza generale (migliorata con xG)
+        overall_confidence = self._calculate_confidence(spread_analysis, total_analysis, expected_goals)
 
         return AnalysisResult(
             spread_analysis=spread_analysis,
@@ -300,7 +430,8 @@ class MarketMovementAnalyzer:
             alternative_recommendations=alternative_recs,
             value_recommendations=value_recs,
             exchange_recommendations=exchange_recs,
-            overall_confidence=overall_confidence
+            overall_confidence=overall_confidence,
+            expected_goals=expected_goals
         )
     
     def _get_combination_interpretation(self, spread: MovementAnalysis, 
@@ -344,7 +475,8 @@ class MarketMovementAnalyzer:
         }
     
     def _calculate_core_markets(self, spread: MovementAnalysis,
-                                total: MovementAnalysis, combination: Dict) -> List[MarketRecommendation]:
+                                total: MovementAnalysis, combination: Dict,
+                                xg: ExpectedGoals) -> List[MarketRecommendation]:
         """Calcola raccomandazioni principali (CORE) - Alta/Media confidenza"""
         recommendations = []
 
@@ -527,14 +659,19 @@ class MarketMovementAnalyzer:
                     explanation=f"Total {total.closing_value} neutro, valuta quote exchange"
                 ))
 
-        # GOAL/NOGOAL - EDGE CASES + LOGICA MIGLIORATA
+        # GOAL/NOGOAL - LOGICA MIGLIORATA con xG e probabilità Poisson
+        # Usa probabilità BTTS calcolate da xG per decisioni più precise
+        btts_prob = xg.btts_prob
+        home_cs_prob = xg.home_clean_sheet_prob
+        away_cs_prob = xg.away_clean_sheet_prob
+
         # EDGE CASE: Total molto basso (< 1.75) - Partita chiusissima
         if total.closing_value < 1.75:
             recommendations.append(MarketRecommendation(
                 market_name="GOAL/NOGOAL",
                 recommendation="NOGOAL + Under (Partita chiusissima)",
                 confidence=ConfidenceLevel.HIGH,
-                explanation=f"Total molto basso ({total.closing_value}), pochi/nessun gol atteso"
+                explanation=f"Total molto basso ({total.closing_value}), P(BTTS)={btts_prob:.1%} molto bassa"
             ))
         # EDGE CASE: Total molto alto (> 3.5) - Goleada
         elif total.closing_value > 3.5:
@@ -542,23 +679,39 @@ class MarketMovementAnalyzer:
                 market_name="GOAL/NOGOAL",
                 recommendation="GOAL + Over (Goleada attesa)",
                 confidence=ConfidenceLevel.HIGH,
-                explanation=f"Total molto alto ({total.closing_value}), molti gol e GOAL sicuro"
+                explanation=f"Total molto alto ({total.closing_value}), P(BTTS)={btts_prob:.1%} molto alta"
             ))
-        # LOGICA NORMALE
-        elif total.direction == MovementDirection.HARDEN or total.closing_value >= 2.75:
-            conf = ConfidenceLevel.HIGH if total.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
+        # LOGICA CON PROBABILITÀ xG
+        elif btts_prob >= 0.65:
+            # Alta probabilità BTTS
+            conf = ConfidenceLevel.HIGH if btts_prob >= 0.75 else ConfidenceLevel.MEDIUM
             recommendations.append(MarketRecommendation(
                 market_name="GOAL/NOGOAL",
                 recommendation="GOAL (Entrambe segnano)",
                 confidence=conf,
-                explanation=f"Partita viva, total {total.closing_value}"
+                explanation=f"Partita viva, P(BTTS)={btts_prob:.1%} (xG: {xg.home_xg:.2f} vs {xg.away_xg:.2f})"
             ))
-        elif total.direction == MovementDirection.SOFTEN or total.closing_value <= 2.0:
+        elif btts_prob <= 0.40:
+            # Bassa probabilità BTTS
+            conf = ConfidenceLevel.HIGH if btts_prob <= 0.30 else ConfidenceLevel.MEDIUM
+            # Determina quale squadra ha più probabilità clean sheet
+            if home_cs_prob > away_cs_prob:
+                clean_sheet_team = "1" if spread.closing_value < 0 else "2"
+            else:
+                clean_sheet_team = "2" if spread.closing_value < 0 else "1"
             recommendations.append(MarketRecommendation(
                 market_name="GOAL/NOGOAL",
-                recommendation="NOGOAL (Almeno una non segna)",
-                confidence=ConfidenceLevel.MEDIUM,
-                explanation=f"Partita chiusa, total {total.closing_value}"
+                recommendation=f"NOGOAL (Almeno una non segna)",
+                confidence=conf,
+                explanation=f"Partita chiusa, P(BTTS)={btts_prob:.1%}, squadra {clean_sheet_team} potrebbe clean sheet"
+            ))
+        else:
+            # Zona grigia (0.40 - 0.65)
+            recommendations.append(MarketRecommendation(
+                market_name="GOAL/NOGOAL",
+                recommendation=f"GOAL (lievemente favorito)",
+                confidence=ConfidenceLevel.LOW,
+                explanation=f"Incertezza, P(BTTS)={btts_prob:.1%} in zona media, valuta quote"
             ))
 
         # Handicap Asiatico - LOGICA MIGLIORATA: bilancia intensità movimento e spread
@@ -635,7 +788,8 @@ class MarketMovementAnalyzer:
         return recommendations[:5]  # Max 5 core recommendations
 
     def _calculate_alternative_markets(self, spread: MovementAnalysis,
-                                       total: MovementAnalysis, combination: Dict) -> List[MarketRecommendation]:
+                                       total: MovementAnalysis, combination: Dict,
+                                       xg: ExpectedGoals) -> List[MarketRecommendation]:
         """Calcola raccomandazioni alternative - Media confidenza"""
         recommendations = []
 
@@ -845,7 +999,8 @@ class MarketMovementAnalyzer:
         return recommendations[:5]  # Max 5 alternative recommendations
 
     def _calculate_value_markets(self, spread: MovementAnalysis,
-                                 total: MovementAnalysis, combination: Dict) -> List[MarketRecommendation]:
+                                 total: MovementAnalysis, combination: Dict,
+                                 xg: ExpectedGoals) -> List[MarketRecommendation]:
         """Calcola value bets - Bassa confidenza ma potenziale valore"""
         recommendations = []
 
@@ -860,14 +1015,14 @@ class MarketMovementAnalyzer:
         underdog = "2" if favorito == "1" else "1" if favorito == "2" else "X"
         underdog_x = f"X{underdog}" if underdog != "X" else "X"
 
-        # Risultati esatti - Top 2-3 più probabili
-        exact_scores = self._get_likely_exact_scores(spread, total)
-        for score, explanation in exact_scores[:3]:  # Max 3
+        # Risultati esatti - Top 3 più probabili usando Poisson e xG
+        exact_scores_poisson = get_most_likely_score(xg.home_xg, xg.away_xg, top_n=5)
+        for score, prob in exact_scores_poisson[:3]:  # Max 3
             recommendations.append(MarketRecommendation(
                 market_name="Risultato Esatto",
                 recommendation=score,
                 confidence=ConfidenceLevel.LOW,
-                explanation=explanation
+                explanation=f"Probabilità Poisson: {prob:.1%} (xG {xg.home_xg:.2f} vs {xg.away_xg:.2f})"
             ))
 
         # Double Chance - LOGICA FISSATA: considera closing value
@@ -1072,29 +1227,206 @@ class MarketMovementAnalyzer:
         return scores
     
     def _calculate_confidence(self, spread: MovementAnalysis,
-                             total: MovementAnalysis) -> ConfidenceLevel:
-        """Calcola confidenza generale - FIX: considera segnali contrastanti"""
+                             total: MovementAnalysis,
+                             xg: ExpectedGoals) -> ConfidenceLevel:
+        """Calcola confidenza generale - MIGLIORATO: considera intensità relativa, coerenza e xG"""
 
-        # SEGNALI CONTRASTANTI: uno HARDEN, uno SOFTEN → mai HIGH, sempre MEDIUM
-        # Es: Spread HARDEN (favorito forte) ma Total SOFTEN (pochi gol) = segnali contrastanti
-        if (spread.direction == MovementDirection.HARDEN and total.direction == MovementDirection.SOFTEN) or \
-           (spread.direction == MovementDirection.SOFTEN and total.direction == MovementDirection.HARDEN):
-            return ConfidenceLevel.MEDIUM  # Mai HIGH con segnali contrastanti!
+        # Calcola score di confidence (0-100)
+        confidence_score = 50  # Base: MEDIUM
 
-        # Se entrambi concordi (stessa direzione) e forti → HIGH
-        if (spread.direction == total.direction and
-            spread.direction != MovementDirection.STABLE and
-            spread.intensity in [MovementIntensity.MEDIUM, MovementIntensity.STRONG] and
-            total.intensity in [MovementIntensity.MEDIUM, MovementIntensity.STRONG]):
-            return ConfidenceLevel.HIGH
-
-        # Se concordi ma uno leggero → MEDIUM
+        # 1. DIREZIONE MOVIMENTI (±20 punti)
         if spread.direction == total.direction and spread.direction != MovementDirection.STABLE:
-            return ConfidenceLevel.MEDIUM
+            # Movimenti concordi (stessa direzione) → +20 confidence
+            confidence_score += 20
+        elif (spread.direction == MovementDirection.HARDEN and total.direction == MovementDirection.SOFTEN) or \
+             (spread.direction == MovementDirection.SOFTEN and total.direction == MovementDirection.HARDEN):
+            # Segnali contrastanti (direzioni opposte) → -20 confidence
+            confidence_score -= 20
+        # STABLE non cambia score
 
-        # Se uno o entrambi STABLE → MEDIUM
-        # Default: MEDIUM
-        return ConfidenceLevel.MEDIUM
+        # 2. INTENSITÀ RELATIVA (±15 punti)
+        strong_movements = 0
+        if spread.intensity == MovementIntensity.STRONG:
+            strong_movements += 1
+        if total.intensity == MovementIntensity.STRONG:
+            strong_movements += 1
+
+        if strong_movements == 2:
+            # Entrambi STRONG → +15
+            confidence_score += 15
+        elif strong_movements == 1:
+            # Uno STRONG → +5
+            confidence_score += 5
+        elif spread.intensity == MovementIntensity.LIGHT and total.intensity == MovementIntensity.LIGHT:
+            # Entrambi LIGHT → -10
+            confidence_score -= 10
+
+        # 3. COERENZA xG con Spread (±15 punti)
+        # Verifica che le probabilità 1X2 siano coerenti con spread
+        abs_spread = abs(spread.closing_value)
+        home_prob = xg.home_win_prob
+        away_prob = xg.away_win_prob
+        draw_prob = xg.draw_prob
+
+        # Determina favorito da xG
+        if home_prob > away_prob + 0.15:
+            xg_favorite = "1"  # Casa favorita
+        elif away_prob > home_prob + 0.15:
+            xg_favorite = "2"  # Trasferta favorita
+        else:
+            xg_favorite = "X"  # Equilibrio
+
+        # Determina favorito da spread
+        if spread.closing_value < -0.5:
+            spread_favorite = "1"
+        elif spread.closing_value > 0.5:
+            spread_favorite = "2"
+        else:
+            spread_favorite = "X"
+
+        # Verifica coerenza
+        if xg_favorite == spread_favorite:
+            # xG e spread concordano → +15
+            confidence_score += 15
+        elif (xg_favorite == "X" or spread_favorite == "X"):
+            # Uno dice equilibrio, l'altro no → neutra (0)
+            pass
+        else:
+            # xG e spread in disaccordo → -15
+            confidence_score -= 15
+
+        # 4. VALORE ASSOLUTO MOVIMENTI (±10 punti)
+        # Movimenti più grandi = più fiducia
+        total_movement = abs(spread.movement_steps) + abs(total.movement_steps)
+        if total_movement >= 3.0:
+            # Movimento totale >= 0.75 (3 steps) → +10
+            confidence_score += 10
+        elif total_movement <= 1.0:
+            # Movimento totale <= 0.25 (1 step) → -10
+            confidence_score -= 10
+
+        # Converti score in ConfidenceLevel
+        if confidence_score >= 70:
+            return ConfidenceLevel.HIGH
+        elif confidence_score >= 40:
+            return ConfidenceLevel.MEDIUM
+        else:
+            return ConfidenceLevel.LOW
+
+
+    def _validate_market_coherence(self, all_recommendations: List[MarketRecommendation],
+                                   xg: ExpectedGoals, spread: MovementAnalysis,
+                                   total: MovementAnalysis) -> List[MarketRecommendation]:
+        """
+        Valida coerenza tra raccomandazioni e rimuove/modifica quelle contraddittorie.
+
+        Regole di coerenza:
+        1. Over/Under: se raccomando "Over X", non raccomandare "Under Y" se Y > X
+        2. GOAL/NOGOAL: GOAL dovrebbe allinearsi con Over, NOGOAL con Under
+        3. Favorito forte (spread > 1.5) non dovrebbe avere "X" come raccomandazione primaria
+        4. BTTS alto (>70%) incompatibile con NOGOAL HIGH confidence
+        """
+        coherent_recs = []
+
+        # Raccogli informazioni dalle raccomandazioni
+        has_over = False
+        has_under = False
+        has_goal = False
+        has_nogoal = False
+        over_value = None
+        under_value = None
+
+        for rec in all_recommendations:
+            if "Over" in rec.recommendation and "Over/Under" in rec.market_name:
+                has_over = True
+                # Estrai valore (es. "Over 2.5" → 2.5)
+                try:
+                    over_value = float(rec.recommendation.split()[-1])
+                except:
+                    pass
+
+            if "Under" in rec.recommendation and "Over/Under" in rec.market_name:
+                has_under = True
+                try:
+                    under_value = float(rec.recommendation.split()[-1])
+                except:
+                    pass
+
+            if rec.market_name == "GOAL/NOGOAL":
+                if "GOAL" in rec.recommendation and "NOGOAL" not in rec.recommendation:
+                    has_goal = True
+                elif "NOGOAL" in rec.recommendation:
+                    has_nogoal = True
+
+        # Validazione 1: Over/Under contraddittori
+        if has_over and has_under and over_value and under_value:
+            if over_value == under_value:
+                # Raccomando sia Over che Under dello stesso valore → rimuovi quello con confidence più bassa
+                # Filtra e mantieni solo quello con confidence più alta
+                over_rec = None
+                under_rec = None
+                for rec in all_recommendations:
+                    if "Over" in rec.recommendation and "Over/Under" in rec.market_name:
+                        over_rec = rec
+                    if "Under" in rec.recommendation and "Over/Under" in rec.market_name:
+                        under_rec = rec
+
+                if over_rec and under_rec:
+                    # Usa xG per decidere quale mantenere
+                    total_xg = xg.home_xg + xg.away_xg
+                    if total_xg > under_value:
+                        # xG suggerisce Over → rimuovi Under
+                        all_recommendations = [r for r in all_recommendations if r != under_rec]
+                    else:
+                        # xG suggerisce Under → rimuovi Over
+                        all_recommendations = [r for r in all_recommendations if r != over_rec]
+
+        # Validazione 2: GOAL/NOGOAL vs Over/Under
+        if has_goal and has_under:
+            # GOAL incompatibile con Under (specialmente se total basso)
+            if total.closing_value <= 2.25:
+                # Contraddizione: mantengo quello con confidence più alta
+                goal_rec = next((r for r in all_recommendations if r.market_name == "GOAL/NOGOAL" and "GOAL" in r.recommendation), None)
+                under_rec = next((r for r in all_recommendations if "Under" in r.recommendation and "Over/Under" in r.market_name), None)
+
+                if goal_rec and under_rec:
+                    # Usa xG BTTS per decidere
+                    if xg.btts_prob > 0.5:
+                        # Favorisci GOAL → rimuovi Under se ha confidence <= MEDIUM
+                        if under_rec.confidence in [ConfidenceLevel.LOW, ConfidenceLevel.MEDIUM]:
+                            all_recommendations = [r for r in all_recommendations if r != under_rec]
+                    else:
+                        # Favorisci Under → rimuovi GOAL se ha confidence <= MEDIUM
+                        if goal_rec.confidence in [ConfidenceLevel.LOW, ConfidenceLevel.MEDIUM]:
+                            all_recommendations = [r for r in all_recommendations if r != goal_rec]
+
+        if has_nogoal and has_over:
+            # NOGOAL incompatibile con Over (specialmente se total alto)
+            if total.closing_value >= 2.75:
+                nogoal_rec = next((r for r in all_recommendations if r.market_name == "GOAL/NOGOAL" and "NOGOAL" in r.recommendation), None)
+                over_rec = next((r for r in all_recommendations if "Over" in r.recommendation and "Over/Under" in r.market_name), None)
+
+                if nogoal_rec and over_rec:
+                    # Usa xG BTTS per decidere
+                    if xg.btts_prob > 0.5:
+                        # Favorisci Over → rimuovi NOGOAL se ha confidence <= MEDIUM
+                        if nogoal_rec.confidence in [ConfidenceLevel.LOW, ConfidenceLevel.MEDIUM]:
+                            all_recommendations = [r for r in all_recommendations if r != nogoal_rec]
+                    else:
+                        # Favorisci NOGOAL → rimuovi Over se ha confidence <= MEDIUM
+                        if over_rec.confidence in [ConfidenceLevel.LOW, ConfidenceLevel.MEDIUM]:
+                            all_recommendations = [r for r in all_recommendations if r != over_rec]
+
+        # Validazione 3: Favorito forte non dovrebbe avere "X" primario
+        abs_spread = abs(spread.closing_value)
+        if abs_spread >= 1.5:
+            # Favorito molto forte → rimuovi raccomandazioni "X" (Pareggio) con HIGH confidence
+            all_recommendations = [
+                r for r in all_recommendations
+                if not (r.recommendation.strip() == "X (Pareggio)" and r.confidence == ConfidenceLevel.HIGH)
+            ]
+
+        return all_recommendations
 
 
 def format_spread_display(spread_value: float) -> str:
