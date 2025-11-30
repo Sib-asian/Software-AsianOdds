@@ -364,8 +364,8 @@ def test_confidence_score():
             total_close=scenario['total_close']
         )
 
-        if hasattr(result.expected_goals, 'market_confidence_score'):
-            score = result.expected_goals.market_confidence_score
+        if hasattr(result.expected_goals, 'confidence_score'):
+            score = result.expected_goals.confidence_score
             print(f"    Confidence Score: {score}")
 
             if 0 <= score <= 100:
@@ -374,7 +374,7 @@ def test_confidence_score():
                 print(f"    ❌ Score fuori range: {score}")
                 all_ok = False
         else:
-            print(f"    ⚠️ market_confidence_score non presente")
+            print(f"    ⚠️ confidence_score non presente")
 
     return all_ok
 
