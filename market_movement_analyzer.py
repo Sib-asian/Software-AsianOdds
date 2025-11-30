@@ -72,6 +72,35 @@ class ExpectedGoals:
 
 
 @dataclass
+class MarketIntelligence:
+    """Advanced Market Intelligence indicators"""
+    sharp_money_detected: bool
+    sharp_spread_velocity: float  # % velocity spread
+    sharp_total_velocity: float  # % velocity total
+    contrarian_signal: bool
+    sharp_confidence_boost: float
+
+    steam_move_detected: bool
+    steam_magnitude: float
+    reverse_steam: bool
+    steam_direction: str  # "favorito" o "underdog"
+
+    correlation_score: float  # -1 to +1
+    correlation_interpretation: str
+    market_coherent: bool
+
+    on_key_spread: bool
+    on_key_total: bool
+    spread_key_number: Optional[float]
+    total_key_number: Optional[float]
+    key_confidence_boost: float
+
+    efficiency_score: float  # 0-100
+    efficiency_status: str  # "Efficient", "Normal", "Inefficient"
+    value_opportunity: bool
+
+
+@dataclass
 class AnalysisResult:
     """Risultato completo dell'analisi"""
     spread_analysis: MovementAnalysis
@@ -83,6 +112,245 @@ class AnalysisResult:
     exchange_recommendations: List[MarketRecommendation]  # Consigli Exchange (Punta/Banca)
     overall_confidence: ConfidenceLevel
     expected_goals: ExpectedGoals  # xG e probabilità calcolate
+    market_intelligence: MarketIntelligence  # Advanced market indicators
+
+
+# ============================================================================
+# ADVANCED MARKET INTELLIGENCE FUNCTIONS
+# ============================================================================
+
+def detect_sharp_money(spread_open: float, spread_close: float,
+                      total_open: float, total_close: float) -> Dict:
+    """
+    Rileva movimento 'sharp' (professionisti) vs 'public' (amatori).
+
+    Sharp money indicators:
+    - Movimento rapido (>15% spread, >10% total)
+    - Movimento contrastante (spread e total in direzioni opposte)
+
+    Args:
+        spread_open: Spread apertura
+        spread_close: Spread chiusura
+        total_open: Total apertura
+        total_close: Total chiusura
+
+    Returns:
+        Dict con sharp money indicators
+    """
+    # Calcola velocità movimento in %
+    spread_change = abs(spread_close - spread_open)
+    total_change = abs(total_close - total_open)
+
+    # Evita divisione per zero
+    spread_base = max(abs(spread_open), 0.1)
+    total_base = max(abs(total_open), 0.1)
+
+    spread_velocity = (spread_change / spread_base) * 100
+    total_velocity = (total_change / total_base) * 100
+
+    # Sharp thresholds
+    is_sharp_spread = spread_velocity > 15  # >15% = sharp
+    is_sharp_total = total_velocity > 10    # >10% = sharp
+
+    # Contrarian signal: direzioni opposte
+    spread_direction = spread_close - spread_open
+    total_direction = total_close - total_open
+    contrarian = (spread_direction * total_direction) < 0
+
+    # Sharp money detected se almeno uno è sharp
+    sharp_detected = is_sharp_spread or is_sharp_total
+
+    # Confidence boost
+    confidence_boost = 0.0
+    if contrarian:
+        confidence_boost += 0.15
+    if is_sharp_spread and is_sharp_total:
+        confidence_boost += 0.10
+
+    return {
+        "sharp_detected": sharp_detected,
+        "spread_velocity": spread_velocity,
+        "total_velocity": total_velocity,
+        "contrarian": contrarian,
+        "confidence_boost": confidence_boost
+    }
+
+
+def detect_steam_move(spread_open: float, spread_close: float) -> Dict:
+    """
+    Steam Move = movimento improvviso >0.5 punti in spread.
+    Indica denaro istituzionale massiccio.
+
+    Args:
+        spread_open: Spread apertura
+        spread_close: Spread chiusura
+
+    Returns:
+        Dict con steam move indicators
+    """
+    movement = abs(spread_close - spread_open)
+
+    # Steam threshold: >=0.5 punti
+    is_steam = movement >= 0.5
+
+    # Reverse steam: cambia segno (favorito diventa underdog o viceversa)
+    reverse_steam = (spread_open * spread_close) < 0
+
+    # Direzione steam
+    if spread_close < spread_open:
+        direction = "favorito"  # Spread scende = favorito si rafforza
+    elif spread_close > spread_open:
+        direction = "underdog"  # Spread sale = underdog si rafforza
+    else:
+        direction = "neutro"
+
+    return {
+        "is_steam": is_steam,
+        "magnitude": movement,
+        "reverse_steam": reverse_steam,
+        "direction": direction
+    }
+
+
+def calculate_market_correlation(spread_open: float, spread_close: float,
+                                 total_open: float, total_close: float) -> Dict:
+    """
+    Calcola correlazione tra movimenti spread e total.
+
+    Correlation:
+    - Positiva (+1): si muovono insieme = mercato coerente
+    - Negativa (-1): direzioni opposte = segnali contrastanti
+    - Zero: indipendenti
+
+    Args:
+        spread_open: Spread apertura
+        spread_close: Spread chiusura
+        total_open: Total apertura
+        total_close: Total chiusura
+
+    Returns:
+        Dict con correlation indicators
+    """
+    spread_movement = spread_close - spread_open
+    total_movement = total_close - total_open
+
+    # Normalizza movimenti
+    spread_norm = spread_movement / max(abs(spread_movement), 0.01)
+    total_norm = total_movement / max(abs(total_movement), 0.01)
+
+    # Correlazione semplice (-1 a +1)
+    correlation = spread_norm * total_norm
+
+    # Interpreta
+    if correlation > 0.5:
+        interpretation = "Alta correlazione positiva - Mercato COERENTE"
+        coherent = True
+    elif correlation < -0.5:
+        interpretation = "Correlazione negativa - Segnali CONTRASTANTI"
+        coherent = False
+    else:
+        interpretation = "Mercati INDIPENDENTI"
+        coherent = True  # Non è incoerente, sono solo indipendenti
+
+    return {
+        "score": correlation,
+        "interpretation": interpretation,
+        "coherent": coherent
+    }
+
+
+def analyze_key_numbers(spread_value: float, total_value: float) -> Dict:
+    """
+    Identifica se spread/total sono su 'key numbers' statisticamente cruciali.
+
+    Key numbers per Asian Handicap:
+    - Spread: -3, -2.5, -2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, 2.5, 3
+    - Total: 1.5, 2.0, 2.5, 2.75, 3.0, 3.5
+
+    Args:
+        spread_value: Valore spread attuale
+        total_value: Valore total attuale
+
+    Returns:
+        Dict con key numbers indicators
+    """
+    # Key numbers per soccer/asian handicap
+    spread_key_numbers = [-3, -2.5, -2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, 2.5, 3]
+    total_key_numbers = [1.5, 2.0, 2.5, 2.75, 3.0, 3.5]
+
+    # Trova key number più vicino
+    closest_spread_key = min(spread_key_numbers, key=lambda x: abs(x - spread_value))
+    closest_total_key = min(total_key_numbers, key=lambda x: abs(x - total_value))
+
+    # Distanza da key number
+    spread_distance = abs(spread_value - closest_spread_key)
+    total_distance = abs(total_value - closest_total_key)
+
+    # Su key number se distanza < 0.1
+    on_key_spread = spread_distance < 0.1
+    on_key_total = total_distance < 0.1
+
+    # Confidence boost
+    confidence_boost = 0.0
+    if on_key_spread or on_key_total:
+        confidence_boost = 0.10
+
+    return {
+        "on_key_spread": on_key_spread,
+        "on_key_total": on_key_total,
+        "spread_key": closest_spread_key if on_key_spread else None,
+        "total_key": closest_total_key if on_key_total else None,
+        "spread_distance": spread_distance,
+        "total_distance": total_distance,
+        "confidence_boost": confidence_boost
+    }
+
+
+def calculate_market_efficiency(spread_open: float, spread_close: float,
+                                total_open: float, total_close: float) -> Dict:
+    """
+    Calcola quanto è efficiente il mercato.
+
+    Efficienza:
+    - Alta (90-100): piccoli movimenti = prezzi accurati
+    - Normale (70-89): movimenti moderati
+    - Bassa (<70): grandi movimenti = possibili value bets
+
+    Args:
+        spread_open: Spread apertura
+        spread_close: Spread chiusura
+        total_open: Total apertura
+        total_close: Total chiusura
+
+    Returns:
+        Dict con efficiency indicators
+    """
+    # Calcola % di cambiamento
+    spread_change_pct = abs((spread_close - spread_open) / max(abs(spread_open), 0.1))
+    total_change_pct = abs((total_close - total_open) / total_open)
+
+    # Media movimenti
+    avg_movement = (spread_change_pct + total_change_pct) / 2
+
+    # Score 0-100 (100 = massima efficienza = pochi movimenti)
+    efficiency = max(0, min(100, 100 - (avg_movement * 200)))
+
+    # Interpreta
+    if efficiency >= 90:
+        status = "Efficient"
+        value_opp = False
+    elif efficiency >= 70:
+        status = "Normal"
+        value_opp = False
+    else:
+        status = "Inefficient"
+        value_opp = True
+
+    return {
+        "score": efficiency,
+        "status": status,
+        "value_opportunity": value_opp
+    }
 
 
 def calculate_expected_goals(spread: float, total: float, use_advanced_formulas: bool = True) -> ExpectedGoals:
@@ -906,6 +1174,47 @@ class MarketMovementAnalyzer:
         # Calcola Expected Goals (xG) dai valori di chiusura
         expected_goals = calculate_expected_goals(spread_close, total_close)
 
+        # ============== ADVANCED MARKET INTELLIGENCE ==============
+        # 1. Sharp Money Detection
+        sharp = detect_sharp_money(spread_open, spread_close, total_open, total_close)
+
+        # 2. Steam Move Detection
+        steam = detect_steam_move(spread_open, spread_close)
+
+        # 3. Market Correlation
+        correlation = calculate_market_correlation(spread_open, spread_close, total_open, total_close)
+
+        # 4. Key Numbers Analysis
+        key_numbers = analyze_key_numbers(spread_close, total_close)
+
+        # 5. Market Efficiency
+        efficiency = calculate_market_efficiency(spread_open, spread_close, total_open, total_close)
+
+        # Crea oggetto MarketIntelligence
+        market_intelligence = MarketIntelligence(
+            sharp_money_detected=sharp["sharp_detected"],
+            sharp_spread_velocity=sharp["spread_velocity"],
+            sharp_total_velocity=sharp["total_velocity"],
+            contrarian_signal=sharp["contrarian"],
+            sharp_confidence_boost=sharp["confidence_boost"],
+            steam_move_detected=steam["is_steam"],
+            steam_magnitude=steam["magnitude"],
+            reverse_steam=steam["reverse_steam"],
+            steam_direction=steam["direction"],
+            correlation_score=correlation["score"],
+            correlation_interpretation=correlation["interpretation"],
+            market_coherent=correlation["coherent"],
+            on_key_spread=key_numbers["on_key_spread"],
+            on_key_total=key_numbers["on_key_total"],
+            spread_key_number=key_numbers["spread_key"],
+            total_key_number=key_numbers["total_key"],
+            key_confidence_boost=key_numbers["confidence_boost"],
+            efficiency_score=efficiency["score"],
+            efficiency_status=efficiency["status"],
+            value_opportunity=efficiency["value_opportunity"]
+        )
+        # ==========================================================
+
         # Gestisci casi stabili
         spread_dir_key = spread_analysis.direction.name if spread_analysis.direction != MovementDirection.STABLE else "STABLE"
         total_dir_key = total_analysis.direction.name if total_analysis.direction != MovementDirection.STABLE else "STABLE"
@@ -915,7 +1224,7 @@ class MarketMovementAnalyzer:
             spread_analysis, total_analysis, spread_dir_key, total_dir_key
         )
 
-        # Calcola mercati nelle 4 categorie (ora con xG)
+        # Calcola mercati nelle 4 categorie (ora con xG e market intelligence)
         core_recs = self._calculate_core_markets(spread_analysis, total_analysis, combination, expected_goals)
         alternative_recs = self._calculate_alternative_markets(spread_analysis, total_analysis, combination, expected_goals)
         value_recs = self._calculate_value_markets(spread_analysis, total_analysis, combination, expected_goals)
@@ -930,7 +1239,7 @@ class MarketMovementAnalyzer:
         alternative_recs = [r for r in validated_recs if r in alternative_recs]
         value_recs = [r for r in validated_recs if r in value_recs]
 
-        # Calcola confidenza generale (migliorata con xG)
+        # Calcola confidenza generale (migliorata con xG e market intelligence)
         overall_confidence = self._calculate_confidence(spread_analysis, total_analysis, expected_goals)
 
         return AnalysisResult(
@@ -942,7 +1251,8 @@ class MarketMovementAnalyzer:
             value_recommendations=value_recs,
             exchange_recommendations=exchange_recs,
             overall_confidence=overall_confidence,
-            expected_goals=expected_goals
+            expected_goals=expected_goals,
+            market_intelligence=market_intelligence
         )
     
     def _get_combination_interpretation(self, spread: MovementAnalysis, 
