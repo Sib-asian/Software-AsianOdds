@@ -2218,6 +2218,156 @@ class MarketMovementAnalyzer:
             "tendency": "Neutra"
         }
     
+    def _validate_ou_with_xg(self, movement_rec: str, movement_conf: ConfidenceLevel,
+                             movement_explanation: str, total_value: float,
+                             xg: ExpectedGoals) -> tuple:
+        """
+        OPZIONE B: Valida raccomandazione O/U movimento-based con xG totale.
+
+        Se movimento e xG discordano, riduce confidence e aggiunge warning.
+
+        Args:
+            movement_rec: Raccomandazione basata su movimento (es. "Over 2.5")
+            movement_conf: Confidence della raccomandazione movimento
+            movement_explanation: Spiegazione movimento-based
+            total_value: Valore total closing
+            xg: ExpectedGoals con home_xg e away_xg
+
+        Returns:
+            (recommendation, confidence, explanation) aggiustati
+        """
+        # Calcola xG totale
+        total_xg = xg.home_xg + xg.away_xg
+
+        # Determina raccomandazione xG-based
+        xg_rec = "Over" if total_xg > total_value else "Under"
+
+        # Estrai raccomandazione movimento (Over o Under)
+        movement_type = "Over" if "Over" in movement_rec else "Under" if "Under" in movement_rec else None
+
+        if movement_type is None:
+            # Neutrale o altro → ritorna originale
+            return movement_rec, movement_conf, movement_explanation
+
+        # Verifica concordanza
+        if movement_type == xg_rec:
+            # CONCORDANTI → tutto ok, boost confidence se entrambi d'accordo
+            diff = abs(total_xg - total_value)
+            if diff >= 0.3:
+                # xG molto lontano da total → forte segnale
+                boosted_expl = movement_explanation + f" ✓ xG conferma ({total_xg:.1f})"
+                # Non aumentare confidence oltre HIGH
+                boosted_conf = ConfidenceLevel.HIGH if movement_conf != ConfidenceLevel.HIGH else movement_conf
+                return movement_rec, boosted_conf, boosted_expl
+            else:
+                # Concordanti ma xG vicino a total
+                return movement_rec, movement_conf, movement_explanation
+
+        else:
+            # DISCORDANTI → riduce confidence e aggiunge warning
+            diff = abs(total_xg - total_value)
+
+            if diff >= 0.5:
+                # xG molto lontano → forte discordanza
+                warning = f" ⚠️ xG suggerisce {xg_rec} ({total_xg:.1f} vs {total_value})"
+                return movement_rec, ConfidenceLevel.LOW, movement_explanation + warning
+            else:
+                # xG vicino a total → discordanza lieve
+                warning = f" (xG {total_xg:.1f} vicino a {total_value})"
+                # Riduci di un livello
+                reduced_conf = (ConfidenceLevel.MEDIUM if movement_conf == ConfidenceLevel.HIGH
+                                else ConfidenceLevel.LOW)
+                return movement_rec, reduced_conf, movement_explanation + warning
+
+    def _validate_1x2_with_bayesian(self, spread_rec: str, spread_conf: ConfidenceLevel,
+                                     spread_explanation: str, xg: ExpectedGoals,
+                                     favorito: str) -> tuple:
+        """
+        OPZIONE C: Valida raccomandazione 1X2 spread-based con probabilità Market-Adjusted Bayesian.
+
+        Se discrepanza > 20%, aggiunge warning.
+        Se discrepanza > 30%, override con Bayesian.
+
+        Args:
+            spread_rec: Raccomandazione basata su spread (es. "1", "X", "1X")
+            spread_conf: Confidence della raccomandazione spread
+            spread_explanation: Spiegazione spread-based
+            xg: ExpectedGoals con market_adjusted_1x2
+            favorito: Chi è il favorito ("1", "2", "X")
+
+        Returns:
+            (recommendation, confidence, explanation) aggiustati
+        """
+        # Se non abbiamo market-adjusted, ritorna originale
+        if xg.market_adjusted_1x2 is None:
+            return spread_rec, spread_conf, spread_explanation
+
+        # Estrai probabilità Bayesian
+        bayesian_home = xg.market_adjusted_1x2['home_win']
+        bayesian_draw = xg.market_adjusted_1x2['draw']
+        bayesian_away = xg.market_adjusted_1x2['away_win']
+
+        # Determina raccomandazione Bayesian
+        max_prob = max(bayesian_home, bayesian_draw, bayesian_away)
+
+        if max_prob == bayesian_home:
+            bayesian_rec = "1"
+            bayesian_prob = bayesian_home
+        elif max_prob == bayesian_draw:
+            bayesian_rec = "X"
+            bayesian_prob = bayesian_draw
+        else:
+            bayesian_rec = "2"
+            bayesian_prob = bayesian_away
+
+        # Verifica se spread_rec è compatibile con bayesian_rec
+        # "1" compatibile con "1", "1X", "12"
+        # "X" compatibile con "X", "1X", "X2", "12"
+        # "2" compatibile con "2", "X2", "12"
+
+        def is_compatible(spread_r: str, bayesian_r: str) -> bool:
+            # Normalizza spread_rec (rimuovi spazi e parentesi)
+            spread_r_clean = spread_r.split()[0] if ' ' in spread_r else spread_r
+
+            if bayesian_r == "1":
+                return "1" in spread_r_clean
+            elif bayesian_r == "X":
+                return "X" in spread_r_clean
+            elif bayesian_r == "2":
+                return "2" in spread_r_clean
+            return False
+
+        # Calcola discrepanza
+        # Se spread raccomanda favorito, confronta con probabilità favorito
+        if is_compatible(spread_rec, bayesian_rec):
+            # Compatibile → tutto ok
+            discrepancy = 0.0
+        else:
+            # Incompatibile → calcola discrepanza
+            discrepancy = abs(bayesian_prob - 0.5)  # Quanto è sicuro Bayesian?
+
+        # DECISIONE BASATA SU DISCREPANZA
+
+        if discrepancy <= 0.20:
+            # Discrepanza bassa (≤ 20%) → mantieni spread-based
+            return spread_rec, spread_conf, spread_explanation
+
+        elif discrepancy <= 0.30:
+            # Discrepanza media (20-30%) → warning ma mantieni spread
+            warning = f" ⚠️ Market-Adjusted suggerisce {bayesian_rec} ({bayesian_prob:.0%})"
+            return spread_rec, ConfidenceLevel.LOW, spread_explanation + warning
+
+        else:
+            # Discrepanza alta (> 30%) → override con Bayesian
+            override_rec = bayesian_rec
+            override_conf = ConfidenceLevel.MEDIUM if bayesian_prob >= 0.60 else ConfidenceLevel.LOW
+            override_explanation = (
+                f"Market-Adjusted Bayesian: {bayesian_rec} {bayesian_prob:.0%} "
+                f"(Home {bayesian_home:.0%}, Draw {bayesian_draw:.0%}, Away {bayesian_away:.0%}). "
+                f"Override spread-based ({spread_rec}) per alta discrepanza."
+            )
+            return override_rec, override_conf, override_explanation
+
     def _calculate_core_markets(self, spread: MovementAnalysis,
                                 total: MovementAnalysis, combination: Dict,
                                 xg: ExpectedGoals) -> List[MarketRecommendation]:
@@ -3160,6 +3310,60 @@ class MarketMovementAnalyzer:
                         # Favorisci NOGOAL → rimuovi Over se ha confidence <= MEDIUM
                         if over_rec.confidence in [ConfidenceLevel.LOW, ConfidenceLevel.MEDIUM]:
                             all_recommendations = [r for r in all_recommendations if r != over_rec]
+
+        # ===== OPZIONE C: Validazione 1X2 con Market-Adjusted Bayesian =====
+        # Trova raccomandazione 1X2
+        x2_rec_idx = next((i for i, r in enumerate(all_recommendations) if r.market_name == "1X2"), None)
+
+        if x2_rec_idx is not None and xg.market_adjusted_1x2 is not None:
+            x2_rec = all_recommendations[x2_rec_idx]
+
+            # Usa la funzione di validazione
+            validated_rec, validated_conf, validated_expl = self._validate_1x2_with_bayesian(
+                x2_rec.recommendation,
+                x2_rec.confidence,
+                x2_rec.explanation,
+                xg,
+                "1" if spread.closing_value < 0 else "2" if spread.closing_value > 0 else "X"
+            )
+
+            # Se cambiato, sostituisci
+            if (validated_rec != x2_rec.recommendation or
+                validated_conf != x2_rec.confidence or
+                validated_expl != x2_rec.explanation):
+                all_recommendations[x2_rec_idx] = MarketRecommendation(
+                    market_name="1X2",
+                    recommendation=validated_rec,
+                    confidence=validated_conf,
+                    explanation=validated_expl
+                )
+
+        # ===== OPZIONE B: Validazione Over/Under con xG =====
+        # Trova raccomandazione Over/Under
+        ou_rec_idx = next((i for i, r in enumerate(all_recommendations) if r.market_name == "Over/Under"), None)
+
+        if ou_rec_idx is not None:
+            ou_rec = all_recommendations[ou_rec_idx]
+
+            # Usa la funzione di validazione
+            validated_rec, validated_conf, validated_expl = self._validate_ou_with_xg(
+                ou_rec.recommendation,
+                ou_rec.confidence,
+                ou_rec.explanation,
+                total.closing_value,
+                xg
+            )
+
+            # Se cambiato, sostituisci
+            if (validated_rec != ou_rec.recommendation or
+                validated_conf != ou_rec.confidence or
+                validated_expl != ou_rec.explanation):
+                all_recommendations[ou_rec_idx] = MarketRecommendation(
+                    market_name="Over/Under",
+                    recommendation=validated_rec,
+                    confidence=validated_conf,
+                    explanation=validated_expl
+                )
 
         # Validazione 3: Favorito forte non dovrebbe avere "X" primario
         abs_spread = abs(spread.closing_value)
