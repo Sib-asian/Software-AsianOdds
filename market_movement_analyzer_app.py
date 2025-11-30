@@ -217,18 +217,170 @@ def main():
         
         # Sezione Movimenti
         st.header("📈 Analisi Movimenti")
-        
+
         col1, col2 = st.columns(2)
         with col1:
             render_movement_box("Spread", result.spread_analysis)
             st.caption(f"*{result.spread_analysis.interpretation}*")
-        
+
         with col2:
             render_movement_box("Total", result.total_analysis)
             st.caption(f"*{result.total_analysis.interpretation}*")
-        
+
         st.markdown("---")
-        
+
+        # ============== ADVANCED MARKET INTELLIGENCE ==============
+        st.header("🔬 Advanced Market Intelligence")
+        st.caption("Analisi avanzata basata su pattern professionali")
+
+        intel = result.market_intelligence
+
+        # Summary box
+        summary_signals = []
+        if intel.sharp_money_detected:
+            summary_signals.append("🟢 Sharp Money")
+        if intel.steam_move_detected:
+            summary_signals.append("🔥 Steam Move")
+        if intel.contrarian_signal:
+            summary_signals.append("⚡ Contrarian")
+        if intel.on_key_spread or intel.on_key_total:
+            summary_signals.append("🎯 Key Number")
+
+        if summary_signals:
+            st.info(f"**Segnali rilevati:** {' • '.join(summary_signals)}")
+
+        # Tabs per organizzare meglio
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "💰 Sharp Money",
+            "🚂 Steam Move",
+            "📊 Correlation",
+            "🔢 Key Numbers",
+            "💯 Efficiency"
+        ])
+
+        with tab1:
+            # Sharp Money
+            if intel.sharp_money_detected:
+                st.success("🟢 **SHARP MONEY DETECTED**")
+            else:
+                st.info("⚪ Movimento normale (public money)")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                velocity_color = "🟢" if intel.sharp_spread_velocity > 15 else "🟡" if intel.sharp_spread_velocity > 8 else "⚪"
+                st.metric("Spread Velocity", f"{velocity_color} {intel.sharp_spread_velocity:.1f}%")
+            with col2:
+                velocity_color = "🟢" if intel.sharp_total_velocity > 10 else "🟡" if intel.sharp_total_velocity > 5 else "⚪"
+                st.metric("Total Velocity", f"{velocity_color} {intel.sharp_total_velocity:.1f}%")
+
+            if intel.contrarian_signal:
+                st.warning("⚡ **CONTRARIAN SIGNAL**: Spread e Total si muovono in direzioni opposte - Forte segnale professionale!")
+
+            if intel.sharp_confidence_boost > 0:
+                st.success(f"✅ Confidence Boost: +{intel.sharp_confidence_boost*100:.0f}%")
+
+        with tab2:
+            # Steam Move
+            if intel.steam_move_detected:
+                st.error("🚨 **STEAM MOVE DETECTED!**")
+                st.markdown(f"**Magnitude:** {intel.steam_magnitude:.2f} punti")
+                st.markdown(f"**Direction:** {intel.steam_direction.upper()}")
+
+                if intel.reverse_steam:
+                    st.warning("🔄 **REVERSE STEAM**: Il favorito è cambiato!")
+
+                st.info("""
+                💡 **Azione consigliata:**
+                Movimento massiccio di denaro istituzionale. Considera di seguire la direzione
+                prima che la quota peggiori ulteriormente.
+                """)
+            else:
+                st.success(f"✅ Nessun Steam Move rilevato (movimento: {intel.steam_magnitude:.2f} punti)")
+                st.caption("Il movimento è nella norma")
+
+        with tab3:
+            # Correlation
+            score_color = "🟢" if intel.correlation_score > 0.5 else "🔴" if intel.correlation_score < -0.5 else "🟡"
+            st.metric("Correlation Score", f"{score_color} {intel.correlation_score:+.2f}")
+
+            if intel.market_coherent:
+                st.success("✅ **MERCATO COERENTE**")
+            else:
+                st.warning("⚠️ **SEGNALI CONTRASTANTI**")
+
+            st.info(f"**Interpretazione:** {intel.correlation_interpretation}")
+
+            # Visual gauge
+            import plotly.graph_objects as go
+            fig = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=intel.correlation_score,
+                domain={'x': [0, 1], 'y': [0, 1]},
+                gauge={
+                    'axis': {'range': [-1, 1]},
+                    'bar': {'color': "darkblue"},
+                    'steps': [
+                        {'range': [-1, -0.5], 'color': "lightcoral"},
+                        {'range': [-0.5, 0.5], 'color': "lightyellow"},
+                        {'range': [0.5, 1], 'color': "lightgreen"}
+                    ],
+                    'threshold': {
+                        'line': {'color': "red", 'width': 4},
+                        'thickness': 0.75,
+                        'value': 0
+                    }
+                }
+            ))
+            fig.update_layout(height=250, margin=dict(l=20, r=20, t=20, b=20))
+            st.plotly_chart(fig, use_container_width=True)
+
+        with tab4:
+            # Key Numbers
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.subheader("Spread")
+                if intel.on_key_spread:
+                    st.success(f"🟢 **ON KEY NUMBER**: {intel.spread_key_number}")
+                    st.caption("Linea più affidabile possibile")
+                else:
+                    st.info(f"📍 Nearest: {intel.spread_key_number if intel.spread_key_number else 'N/A'}")
+
+            with col2:
+                st.subheader("Total")
+                if intel.on_key_total:
+                    st.success(f"🟢 **ON KEY NUMBER**: {intel.total_key_number}")
+                    st.caption("Linea più affidabile possibile")
+                else:
+                    st.info(f"📍 Nearest: {intel.total_key_number if intel.total_key_number else 'N/A'}")
+
+            if intel.key_confidence_boost > 0:
+                st.success(f"✅ Confidence Boost: +{intel.key_confidence_boost*100:.0f}%")
+
+        with tab5:
+            # Market Efficiency
+            efficiency_color = "🟢" if intel.efficiency_score >= 90 else "🟡" if intel.efficiency_score >= 70 else "🔴"
+            st.metric("Efficiency Score", f"{efficiency_color} {intel.efficiency_score:.0f}/100")
+
+            # Progress bar
+            st.progress(intel.efficiency_score / 100)
+
+            status_color = {
+                "Efficient": "success",
+                "Normal": "info",
+                "Inefficient": "warning"
+            }.get(intel.efficiency_status, "info")
+
+            getattr(st, status_color)(f"**Status:** {intel.efficiency_status.upper()}")
+
+            if intel.value_opportunity:
+                st.warning("💎 **VALUE OPPORTUNITY DETECTED**: Mercato inefficiente - possibili value bets!")
+            else:
+                st.info("Mercato efficiente - prezzi accurati")
+
+        st.markdown("---")
+        # ==========================================================
+
         # Interpretazione combinata
         st.header("🎯 Interpretazione Combinata")
         
