@@ -2404,8 +2404,13 @@ class MarketMovementAnalyzer:
                 ))
 
         # GOAL/NOGOAL - LOGICA MIGLIORATA con xG e probabilità Poisson
-        # Usa probabilità BTTS calcolate da xG per decisioni più precise
-        btts_prob = xg.btts_prob
+        # Usa probabilità BTTS AVANZATA (Bayesian) se disponibile, altrimenti base Poisson
+        # IMPORTANTE: Bayesian include movimenti mercato → più accurato!
+        if xg.bayesian_btts is not None:
+            btts_prob = xg.bayesian_btts['btts_prob']
+        else:
+            btts_prob = xg.btts_prob
+
         home_cs_prob = xg.home_clean_sheet_prob
         away_cs_prob = xg.away_clean_sheet_prob
 
@@ -2450,13 +2455,23 @@ class MarketMovementAnalyzer:
                 explanation=f"Partita chiusa, P(BTTS)={btts_prob:.1%}, squadra {clean_sheet_team} potrebbe clean sheet"
             ))
         else:
-            # Zona grigia (0.40 - 0.65)
-            recommendations.append(MarketRecommendation(
-                market_name="GOAL/NOGOAL",
-                recommendation=f"GOAL (lievemente favorito)",
-                confidence=ConfidenceLevel.LOW,
-                explanation=f"Incertezza, P(BTTS)={btts_prob:.1%} in zona media, valuta quote"
-            ))
+            # Zona grigia (0.40 - 0.65): usa soglia 50% per decidere
+            if btts_prob >= 0.50:
+                # BTTS >= 50% → GOAL lievemente favorito
+                recommendations.append(MarketRecommendation(
+                    market_name="GOAL/NOGOAL",
+                    recommendation=f"GOAL (lievemente favorito)",
+                    confidence=ConfidenceLevel.LOW,
+                    explanation=f"P(BTTS)={btts_prob:.1%} > 50%, entrambe probabilmente segnano"
+                ))
+            else:
+                # BTTS < 50% → NOGOAL lievemente favorito
+                recommendations.append(MarketRecommendation(
+                    market_name="GOAL/NOGOAL",
+                    recommendation=f"NOGOAL (lievemente favorito)",
+                    confidence=ConfidenceLevel.LOW,
+                    explanation=f"P(BTTS)={btts_prob:.1%} < 50%, almeno una probabilmente non segna"
+                ))
 
         # Handicap Asiatico - LOGICA MIGLIORATA: bilancia intensità movimento e spread
         # Raccomanda solo se:
