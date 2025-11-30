@@ -392,9 +392,193 @@ def main():
         
         st.info(f"**{result.combination_interpretation}**")
         st.metric("Confidenza", f"{conf_color} {result.overall_confidence.value}")
-        
+
         st.markdown("---")
-        
+
+        # ============== OPZIONE C: ADVANCED PREDICTIONS ==============
+        st.header("🎯 Opzione C: Advanced Predictions")
+        st.caption("Predizioni avanzate con Bayesian Inference + Monte Carlo")
+
+        xg = result.expected_goals
+
+        # CONFIDENCE SCORE GAUGE
+        if xg.confidence_score is not None:
+            st.subheader("📊 Market Confidence Score")
+
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                # Gauge visuale
+                import plotly.graph_objects as go
+
+                conf_score = xg.confidence_score
+
+                # Colore basato su score
+                if conf_score >= 80:
+                    bar_color = "green"
+                elif conf_score >= 60:
+                    bar_color = "orange"
+                else:
+                    bar_color = "red"
+
+                fig = go.Figure(go.Indicator(
+                    mode="gauge+number+delta",
+                    value=conf_score,
+                    domain={'x': [0, 1], 'y': [0, 1]},
+                    title={'text': "Affidabilità Predizione"},
+                    delta={'reference': 50},
+                    gauge={
+                        'axis': {'range': [0, 100]},
+                        'bar': {'color': bar_color},
+                        'steps': [
+                            {'range': [0, 50], 'color': "lightgray"},
+                            {'range': [50, 70], 'color': "lightyellow"},
+                            {'range': [70, 85], 'color': "lightgreen"},
+                            {'range': [85, 100], 'color': "green"}
+                        ],
+                        'threshold': {
+                            'line': {'color': "darkblue", 'width': 4},
+                            'thickness': 0.75,
+                            'value': 80
+                        }
+                    }
+                ))
+                fig.update_layout(height=300, margin=dict(l=20, r=20, t=50, b=20))
+                st.plotly_chart(fig, use_container_width=True)
+
+            with col2:
+                st.metric("Score", f"{conf_score:.0f}/100")
+
+                if conf_score >= 80:
+                    st.success("🟢 **ALTA AFFIDABILITÀ**")
+                    st.caption("Predizione molto affidabile")
+                elif conf_score >= 60:
+                    st.warning("🟡 **MEDIA AFFIDABILITÀ**")
+                    st.caption("Predizione moderatamente affidabile")
+                else:
+                    st.error("🔴 **BASSA AFFIDABILITÀ**")
+                    st.caption("Usare con cautela")
+
+                st.caption(f"Metodo: {xg.prediction_method or 'N/A'}")
+
+        # 1X2 MARKET-ADJUSTED vs BASE
+        if xg.market_adjusted_1x2 is not None:
+            st.subheader("📈 1X2 Market-Adjusted (Bayesian Ensemble)")
+
+            ma = xg.market_adjusted_1x2
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.metric(
+                    "Home Win",
+                    f"{ma['home_win']:.1%}",
+                    help="Probabilità vittoria casa (Bayesian + Ensemble)"
+                )
+                if ma.get('base_probs'):
+                    delta = ma['home_win'] - ma['base_probs']['home']
+                    st.caption(f"Base xG: {ma['base_probs']['home']:.1%} ({delta:+.1%})")
+
+            with col2:
+                st.metric(
+                    "Draw",
+                    f"{ma['draw']:.1%}",
+                    help="Probabilità pareggio"
+                )
+                if ma.get('base_probs'):
+                    delta = ma['draw'] - ma['base_probs']['draw']
+                    st.caption(f"Base xG: {ma['base_probs']['draw']:.1%} ({delta:+.1%})")
+
+            with col3:
+                st.metric(
+                    "Away Win",
+                    f"{ma['away_win']:.1%}",
+                    help="Probabilità vittoria trasferta"
+                )
+                if ma.get('base_probs'):
+                    delta = ma['away_win'] - ma['base_probs']['away']
+                    st.caption(f"Base xG: {ma['base_probs']['away']:.1%} ({delta:+.1%})")
+
+            # Ensemble Weights
+            if xg.ensemble_weights:
+                st.caption(f"**Ensemble Weights:** xG {xg.ensemble_weights['xg']:.0%} • Spread {xg.ensemble_weights['spread']:.0%}")
+
+                # Spiega il peso
+                if xg.ensemble_weights['spread'] > 0.30:
+                    st.info("🟢 **Sharp money detected**: Spread ha peso maggiore (più affidabile)")
+                else:
+                    st.caption("⚪ Peso standard: xG ha più influenza")
+
+        # BTTS BAYESIAN
+        if xg.bayesian_btts is not None:
+            st.subheader("⚽⚽ BTTS Bayesian (Monte Carlo + Market Factors)")
+
+            bb = xg.bayesian_btts
+
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                # Progress bar visuale
+                st.metric("BTTS Probability", f"{bb['btts_prob']:.1%}")
+                st.progress(bb['btts_prob'])
+
+                if bb.get('base_btts'):
+                    delta = bb['btts_prob'] - bb['base_btts']
+                    st.caption(f"Base (Monte Carlo): {bb['base_btts']:.1%} ({delta:+.1%})")
+
+                st.caption(f"Method: {bb.get('method', 'N/A')}")
+
+            with col2:
+                st.metric("NO BTTS", f"{bb['nobtts_prob']:.1%}")
+
+                # Mostra fattori
+                if bb.get('openness_score') is not None:
+                    openness_pct = bb['openness_score'] * 100
+                    st.caption(f"🎯 Openness: {openness_pct:.0f}%")
+
+                if bb.get('balance_score') is not None:
+                    balance_pct = bb['balance_score'] * 100
+                    st.caption(f"⚖️ Balance: {balance_pct:.0f}%")
+
+                if bb.get('total_boost') is not None:
+                    st.caption(f"📈 Total Boost: {bb['total_boost']:+.1%}")
+
+            # Interpretazione
+            if bb['btts_prob'] > 0.60:
+                st.success("🟢 **Alta probabilità BTTS**: Entrambe le squadre segnano molto probabilmente")
+            elif bb['btts_prob'] > 0.40:
+                st.info("🟡 **Media probabilità BTTS**: Situazione equilibrata")
+            else:
+                st.warning("🔴 **Bassa probabilità BTTS**: Almeno una squadra potrebbe non segnare")
+
+        # Dettagli tecnici espandibili
+        with st.expander("🔧 Dettagli Tecnici Opzione C"):
+            if xg.market_adjusted_1x2:
+                st.write("**Market-Adjusted 1X2:**")
+                st.json({
+                    "method": xg.market_adjusted_1x2.get('method'),
+                    "market_signal": round(xg.market_adjusted_1x2.get('market_signal', 0), 3),
+                    "signal_confidence": round(xg.market_adjusted_1x2.get('signal_confidence', 0), 3),
+                    "spread_implied": {
+                        "home": round(xg.market_adjusted_1x2.get('spread_implied', {}).get('home', 0), 3),
+                        "draw": round(xg.market_adjusted_1x2.get('spread_implied', {}).get('draw', 0), 3),
+                        "away": round(xg.market_adjusted_1x2.get('spread_implied', {}).get('away', 0), 3)
+                    }
+                })
+
+            if xg.bayesian_btts:
+                st.write("**Bayesian BTTS:**")
+                st.json({
+                    "base_btts": round(xg.bayesian_btts.get('base_btts', 0), 3),
+                    "openness_score": round(xg.bayesian_btts.get('openness_score', 0), 3),
+                    "balance_score": round(xg.bayesian_btts.get('balance_score', 0), 3),
+                    "total_boost": round(xg.bayesian_btts.get('total_boost', 0), 3),
+                    "method": xg.bayesian_btts.get('method')
+                })
+
+        st.markdown("---")
+        # ==========================================================
+
         # CORE RECOMMENDATIONS
         st.header("🎯 Raccomandazioni CORE")
         st.caption("Alta/Media confidenza - I consigli più solidi")
