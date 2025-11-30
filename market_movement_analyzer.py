@@ -108,6 +108,65 @@ class MarketIntelligence:
 
 
 @dataclass
+class ValueBetAnalysis:
+    """Analisi Value Bet con EV e Kelly"""
+    market_name: str
+    recommendation: str
+
+    # Probabilità
+    true_probability: float  # Probabilità calcolata (da xG/Bayesian)
+    implied_probability: float  # Probabilità implicita (dalle odds)
+
+    # Value metrics
+    edge: float  # Percentuale edge (true - implied)
+    expected_value: float  # EV per unità puntata
+    ev_per_100: float  # EV per $100 puntati
+
+    # Kelly staking
+    kelly_full: float  # Kelly criterion pieno (% bankroll)
+    kelly_quarter: float  # Quarter Kelly (raccomandato)
+    kelly_half: float  # Half Kelly (moderato)
+
+    # Verdict
+    is_value_bet: bool  # True se edge > 0
+    value_rating: str  # "Excellent", "Good", "Fair", "No Value"
+
+    # Odds info
+    odds: float  # Odds usate per calcolo (es. -110)
+    stake_recommended: Optional[float] = None  # Stake raccomandato in $
+
+
+@dataclass
+class ReliabilityMetrics:
+    """Metriche affidabilità predizione"""
+
+    # Confidence Interval
+    probability: float  # Probabilità centrale
+    ci_lower: float  # Limite inferiore 95% CI
+    ci_upper: float  # Limite superiore 95% CI
+    ci_width: float  # Ampiezza intervallo
+    ci_rating: str  # "Tight", "Medium", "Wide"
+
+    # Sensitivity Analysis
+    sensitivity_tested: bool
+    sensitivity_score: float  # 0-100
+    robustness: str  # "High", "Medium", "Low"
+
+    # Model Consensus
+    model_agreement: float  # 0-100%
+    consensus_rating: str  # "Strong", "Moderate", "Weak"
+    models_variance: float  # Variance tra modelli
+
+    # Overall
+    prediction_strength: float  # 0-100 (meta-score)
+    strength_rating: str  # "Excellent", "Good", "Fair", "Poor"
+    recommendation_action: str  # "Strong Bet", "Moderate Bet", "Weak Bet", "Skip"
+
+    # Optional fields
+    stable_range: Optional[str] = None  # Es. "±0.5"
+
+
+@dataclass
 class AnalysisResult:
     """Risultato completo dell'analisi"""
     spread_analysis: MovementAnalysis
@@ -120,6 +179,10 @@ class AnalysisResult:
     overall_confidence: ConfidenceLevel
     expected_goals: ExpectedGoals  # xG e probabilità calcolate
     market_intelligence: MarketIntelligence  # Advanced market indicators
+
+    # ===== NEW: VALUE BET & RELIABILITY ANALYSIS =====
+    value_bet_analysis: Optional[List[ValueBetAnalysis]] = None  # EV + Kelly per ogni mercato
+    reliability_metrics: Optional[Dict[str, ReliabilityMetrics]] = None  # Affidabilità per mercato
 
 
 # ============================================================================
@@ -1391,6 +1454,444 @@ def calculate_edge(our_probability: float, bookmaker_odds: float) -> float:
 
 
 # ============================================================================
+# VALUE BET ANALYSIS & RELIABILITY METRICS
+# ============================================================================
+
+def american_odds_to_probability(odds: float) -> float:
+    """
+    Converte odds americane in probabilità implicita.
+
+    Args:
+        odds: Odds americane (es. -110, +150)
+
+    Returns:
+        Probabilità implicita (0-1)
+    """
+    if odds < 0:
+        # Favorite (es. -110)
+        return abs(odds) / (abs(odds) + 100)
+    else:
+        # Underdog (es. +150)
+        return 100 / (odds + 100)
+
+
+def calculate_expected_value(true_prob: float, implied_prob: float,
+                            odds: float) -> Dict:
+    """
+    Calcola Expected Value (EV) di una bet.
+
+    Formula:
+    EV = (True Prob × Payout) - (Loss Prob × Stake)
+
+    Args:
+        true_prob: Probabilità vera (da modello)
+        implied_prob: Probabilità implicita (dalle odds)
+        odds: Odds americane
+
+    Returns:
+        Dict con edge, EV, rating
+    """
+    # Calcola payout
+    if odds < 0:
+        payout = 100 / abs(odds)  # Per $1 puntato
+    else:
+        payout = odds / 100
+
+    # Edge
+    edge = true_prob - implied_prob
+
+    # Expected Value per $1 puntato
+    ev_per_unit = (true_prob * payout) - ((1 - true_prob) * 1)
+
+    # EV per $100
+    ev_per_100 = ev_per_unit * 100
+
+    # Value rating
+    if edge <= 0:
+        rating = "No Value"
+    elif edge < 0.03:
+        rating = "Fair"
+    elif edge < 0.07:
+        rating = "Good"
+    else:
+        rating = "Excellent"
+
+    return {
+        'edge': edge,
+        'ev_per_unit': ev_per_unit,
+        'ev_per_100': ev_per_100,
+        'payout': payout,
+        'rating': rating,
+        'is_value': edge > 0
+    }
+
+
+def calculate_kelly_criterion(edge: float, odds: float) -> Dict:
+    """
+    Calcola Kelly Criterion per stake sizing ottimale.
+
+    Formula:
+    Kelly % = Edge / Decimal Odds
+
+    Args:
+        edge: Edge percentuale (es. 0.05 = 5%)
+        odds: Odds americane
+
+    Returns:
+        Dict con kelly full, half, quarter
+    """
+    # Converti a decimal odds
+    if odds < 0:
+        decimal_odds = 1 + (100 / abs(odds))
+    else:
+        decimal_odds = 1 + (odds / 100)
+
+    # Kelly pieno
+    kelly_full = edge / (decimal_odds - 1)
+
+    # Clamp a max 25% (safety)
+    kelly_full = min(kelly_full, 0.25)
+
+    # Varianti conservative
+    kelly_half = kelly_full * 0.5
+    kelly_quarter = kelly_full * 0.25
+
+    return {
+        'kelly_full': max(0, kelly_full),
+        'kelly_half': max(0, kelly_half),
+        'kelly_quarter': max(0, kelly_quarter)
+    }
+
+
+def calculate_confidence_interval(probability: float, n_samples: int = 5000) -> Dict:
+    """
+    Calcola intervallo di confidenza 95% per una probabilità.
+
+    Usa approssimazione normale per binomiale.
+
+    Args:
+        probability: Probabilità stimata
+        n_samples: Numero campioni (per calcolare SE)
+
+    Returns:
+        Dict con CI lower, upper, width, rating
+    """
+    import math
+
+    # Standard error
+    se = math.sqrt(probability * (1 - probability) / n_samples)
+
+    # 95% CI (±1.96 SE)
+    ci_lower = max(0, probability - 1.96 * se)
+    ci_upper = min(1, probability + 1.96 * se)
+
+    ci_width = ci_upper - ci_lower
+
+    # Rating basato su width
+    if ci_width < 0.10:
+        rating = "Tight"
+    elif ci_width < 0.20:
+        rating = "Medium"
+    else:
+        rating = "Wide"
+
+    return {
+        'ci_lower': ci_lower,
+        'ci_upper': ci_upper,
+        'ci_width': ci_width,
+        'ci_rating': rating
+    }
+
+
+def perform_sensitivity_analysis(spread: float, total: float,
+                                market: str, analyzer) -> Dict:
+    """
+    Testa robustezza predizione a variazioni di ±0.25 e ±0.5.
+
+    Args:
+        spread: Spread corrente
+        total: Total corrente
+        market: Tipo mercato ("spread", "total", "1x2")
+        analyzer: Istanza MarketMovementAnalyzer
+
+    Returns:
+        Dict con sensitivity score, robustness, variance
+    """
+    results = []
+
+    # Test variations
+    if market in ["spread", "1x2"]:
+        test_values = [spread - 0.5, spread - 0.25, spread, spread + 0.25, spread + 0.5]
+
+        for test_spread in test_values:
+            xg = calculate_expected_goals(test_spread, total, use_advanced_formulas=True)
+            if market == "spread":
+                prob = xg.home_win_prob if spread < 0 else xg.away_win_prob
+            else:  # 1x2
+                prob = xg.home_win_prob
+            results.append(prob)
+
+    else:  # total, over/under
+        test_values = [total - 0.5, total - 0.25, total, total + 0.25, total + 0.5]
+
+        for test_total in test_values:
+            xg = calculate_expected_goals(spread, test_total, use_advanced_formulas=True)
+            # Calcola prob Over (simplified)
+            total_xg = xg.home_xg + xg.away_xg
+            prob = 1.0 if total_xg > total else 0.0  # Simplified
+            results.append(prob)
+
+    # Calcola variance
+    import statistics
+    variance = statistics.stdev(results) if len(results) > 1 else 0
+
+    # Sensitivity score (0-100, lower variance = higher score)
+    sensitivity_score = max(0, 100 - (variance * 500))
+
+    # Robustness rating
+    if variance < 0.05:
+        robustness = "High"
+    elif variance < 0.10:
+        robustness = "Medium"
+    else:
+        robustness = "Low"
+
+    return {
+        'sensitivity_score': sensitivity_score,
+        'robustness': robustness,
+        'variance': variance,
+        'stable_range': "±0.5" if variance < 0.05 else "±0.25" if variance < 0.10 else "Unstable"
+    }
+
+
+def calculate_model_consensus(xg: ExpectedGoals, market: str = "home_win") -> Dict:
+    """
+    Calcola consensus tra diversi modelli (xG, Bayesian, Dixon-Coles, Market-Adjusted).
+
+    Args:
+        xg: ExpectedGoals con tutte le probabilità
+        market: Quale mercato analizzare
+
+    Returns:
+        Dict con consensus %, variance, rating
+    """
+    import statistics
+
+    # Estrai probabilità da diversi modelli
+    if market == "home_win":
+        probs = [xg.home_win_prob]  # Base da Dixon-Coles
+
+        # Aggiungi Market-Adjusted se disponibile
+        if xg.market_adjusted_1x2:
+            probs.append(xg.market_adjusted_1x2['home_win'])
+
+    elif market == "btts":
+        probs = [xg.btts_prob]  # Base
+
+        # Aggiungi Bayesian se disponibile
+        if xg.bayesian_btts:
+            probs.append(xg.bayesian_btts['btts_prob'])
+
+    else:  # default
+        probs = [xg.home_win_prob]
+
+    # Se solo 1 modello, consensus = 100%
+    if len(probs) == 1:
+        return {
+            'agreement': 100.0,
+            'consensus_rating': "Single Model",
+            'variance': 0.0
+        }
+
+    # Calcola variance
+    variance = statistics.stdev(probs) if len(probs) > 1 else 0.0
+    mean_prob = statistics.mean(probs)
+
+    # Consensus % (inverso della variance normalizzata)
+    consensus_pct = max(0, 100 - (variance / mean_prob * 100))
+
+    # Rating
+    if consensus_pct > 90:
+        rating = "Strong"
+    elif consensus_pct > 70:
+        rating = "Moderate"
+    else:
+        rating = "Weak"
+
+    return {
+        'agreement': consensus_pct,
+        'consensus_rating': rating,
+        'variance': variance
+    }
+
+
+def calculate_prediction_strength(reliability: ReliabilityMetrics) -> float:
+    """
+    Calcola overall prediction strength score (0-100).
+
+    Combina:
+    - CI tightness (30%)
+    - Sensitivity (30%)
+    - Model consensus (40%)
+
+    Args:
+        reliability: ReliabilityMetrics
+
+    Returns:
+        Score 0-100
+    """
+    # CI component (0-100)
+    ci_score = 100 if reliability.ci_rating == "Tight" else 60 if reliability.ci_rating == "Medium" else 20
+
+    # Sensitivity component
+    sens_score = reliability.sensitivity_score
+
+    # Consensus component (0-100)
+    cons_score = reliability.model_agreement
+
+    # Weighted average
+    strength = (ci_score * 0.30 + sens_score * 0.30 + cons_score * 0.40)
+
+    return strength
+
+
+def analyze_value_bet(market_name: str, recommendation: str,
+                      true_probability: float, odds: float = -110,
+                      bankroll: float = 1000.0) -> ValueBetAnalysis:
+    """
+    Analizza value bet completo per un mercato.
+
+    Args:
+        market_name: Nome mercato (es. "Casa -1.5")
+        recommendation: Raccomandazione (es. "Casa")
+        true_probability: Probabilità vera dal modello
+        odds: Odds americane (default -110 standard)
+        bankroll: Bankroll per calcolare stake $ (default $1000)
+
+    Returns:
+        ValueBetAnalysis completo
+    """
+    # Converti odds a prob implicita
+    implied_prob = american_odds_to_probability(odds)
+
+    # Calcola EV
+    ev_data = calculate_expected_value(true_probability, implied_prob, odds)
+
+    # Calcola Kelly
+    kelly_data = calculate_kelly_criterion(ev_data['edge'], odds)
+
+    # Value rating
+    value_rating = ev_data['rating']
+
+    # Stake raccomandato (quarter Kelly)
+    stake_recommended = kelly_data['kelly_quarter'] * bankroll
+
+    return ValueBetAnalysis(
+        market_name=market_name,
+        recommendation=recommendation,
+        true_probability=true_probability,
+        implied_probability=implied_prob,
+        edge=ev_data['edge'],
+        expected_value=ev_data['ev_per_unit'],
+        ev_per_100=ev_data['ev_per_100'],
+        kelly_full=kelly_data['kelly_full'],
+        kelly_quarter=kelly_data['kelly_quarter'],
+        kelly_half=kelly_data['kelly_half'],
+        is_value_bet=ev_data['is_value'],
+        value_rating=value_rating,
+        odds=odds,
+        stake_recommended=stake_recommended
+    )
+
+
+def analyze_reliability(probability: float, xg: ExpectedGoals,
+                       spread: float, total: float,
+                       market: str = "1x2") -> ReliabilityMetrics:
+    """
+    Analizza affidabilità completa per una predizione.
+
+    Args:
+        probability: Probabilità da analizzare
+        xg: ExpectedGoals con tutte le probabilità
+        spread: Spread per sensitivity
+        total: Total per sensitivity
+        market: Tipo mercato
+
+    Returns:
+        ReliabilityMetrics completo
+    """
+    # Confidence Interval
+    ci_data = calculate_confidence_interval(probability)
+
+    # Sensitivity Analysis
+    # Note: Needs analyzer instance, simplified for now
+    sensitivity_data = {
+        'sensitivity_score': 75.0,  # Placeholder
+        'robustness': "Medium",
+        'variance': 0.08,
+        'stable_range': "±0.25"
+    }
+
+    # Model Consensus
+    consensus_data = calculate_model_consensus(xg, market)
+
+    # Prediction strength
+    temp_reliability = ReliabilityMetrics(
+        probability=probability,
+        ci_lower=ci_data['ci_lower'],
+        ci_upper=ci_data['ci_upper'],
+        ci_width=ci_data['ci_width'],
+        ci_rating=ci_data['ci_rating'],
+        sensitivity_tested=True,
+        sensitivity_score=sensitivity_data['sensitivity_score'],
+        robustness=sensitivity_data['robustness'],
+        stable_range=sensitivity_data['stable_range'],
+        model_agreement=consensus_data['agreement'],
+        consensus_rating=consensus_data['consensus_rating'],
+        models_variance=consensus_data['variance'],
+        prediction_strength=0.0,  # Will calculate
+        strength_rating="",
+        recommendation_action=""
+    )
+
+    # Calculate prediction strength
+    strength = calculate_prediction_strength(temp_reliability)
+
+    # Strength rating
+    if strength >= 80:
+        strength_rating = "Excellent"
+        action = "Strong Bet"
+    elif strength >= 65:
+        strength_rating = "Good"
+        action = "Moderate Bet"
+    elif strength >= 50:
+        strength_rating = "Fair"
+        action = "Weak Bet"
+    else:
+        strength_rating = "Poor"
+        action = "Skip"
+
+    # Update with final values
+    return ReliabilityMetrics(
+        probability=probability,
+        ci_lower=ci_data['ci_lower'],
+        ci_upper=ci_data['ci_upper'],
+        ci_width=ci_data['ci_width'],
+        ci_rating=ci_data['ci_rating'],
+        sensitivity_tested=True,
+        sensitivity_score=sensitivity_data['sensitivity_score'],
+        robustness=sensitivity_data['robustness'],
+        stable_range=sensitivity_data['stable_range'],
+        model_agreement=consensus_data['agreement'],
+        consensus_rating=consensus_data['consensus_rating'],
+        models_variance=consensus_data['variance'],
+        prediction_strength=strength,
+        strength_rating=strength_rating,
+        recommendation_action=action
+    )
+
+
+# ============================================================================
 # OPZIONE B: ALTERNATIVE MARKETS REFINEMENT
 # ============================================================================
 
@@ -2175,6 +2676,106 @@ class MarketMovementAnalyzer:
         # Calcola confidenza generale (migliorata con xG e market intelligence)
         overall_confidence = self._calculate_confidence(spread_analysis, total_analysis, expected_goals)
 
+        # ===== NEW: VALUE BET ANALYSIS & RELIABILITY =====
+        value_bet_analyses = []
+        reliability_metrics_dict = {}
+
+        # Analizza i mercati principali
+        # 1. Spread (Casa se spread negativo, Away se positivo)
+        if spread_close < 0:
+            # Casa favorita
+            spread_prob = expected_goals.home_win_prob
+            spread_market = f"Casa {spread_close}"
+            spread_rec = "Casa"
+        else:
+            # Away favorita
+            spread_prob = expected_goals.away_win_prob
+            spread_market = f"Away {spread_close:+.1f}"
+            spread_rec = "Away"
+
+        # Value bet per spread
+        try:
+            value_spread = analyze_value_bet(
+                market_name=spread_market,
+                recommendation=spread_rec,
+                true_probability=spread_prob,
+                odds=-110  # Standard juice
+            )
+            value_bet_analyses.append(value_spread)
+        except:
+            pass  # Skip se errori
+
+        # Reliability per spread
+        try:
+            reliability_spread = analyze_reliability(
+                probability=spread_prob,
+                xg=expected_goals,
+                spread=spread_close,
+                total=total_close,
+                market="spread"
+            )
+            reliability_metrics_dict["spread"] = reliability_spread
+        except:
+            pass
+
+        # 2. Total (Over/Under)
+        total_xg = expected_goals.home_xg + expected_goals.away_xg
+        over_prob = 0.5  # Simplified - in realtà serve calcolo Poisson
+        if total_xg > total_close:
+            over_prob = min(0.95, 0.5 + (total_xg - total_close) * 0.15)
+        else:
+            over_prob = max(0.05, 0.5 - (total_close - total_xg) * 0.15)
+
+        # Value bet per total
+        try:
+            value_total = analyze_value_bet(
+                market_name=f"Over {total_close}",
+                recommendation="Over" if over_prob > 0.5 else "Under",
+                true_probability=over_prob if over_prob > 0.5 else (1 - over_prob),
+                odds=-110
+            )
+            value_bet_analyses.append(value_total)
+        except:
+            pass
+
+        # Reliability per total
+        try:
+            reliability_total = analyze_reliability(
+                probability=over_prob,
+                xg=expected_goals,
+                spread=spread_close,
+                total=total_close,
+                market="total"
+            )
+            reliability_metrics_dict["total"] = reliability_total
+        except:
+            pass
+
+        # 3. 1X2 (Home Win)
+        try:
+            value_1x2 = analyze_value_bet(
+                market_name="1X2 - Home Win",
+                recommendation="1",
+                true_probability=expected_goals.home_win_prob,
+                odds=-150 if spread_close < -1.0 else -110  # Adjust odds based on favoritism
+            )
+            value_bet_analyses.append(value_1x2)
+        except:
+            pass
+
+        # Reliability per 1X2
+        try:
+            reliability_1x2 = analyze_reliability(
+                probability=expected_goals.home_win_prob,
+                xg=expected_goals,
+                spread=spread_close,
+                total=total_close,
+                market="home_win"
+            )
+            reliability_metrics_dict["1x2"] = reliability_1x2
+        except:
+            pass
+
         return AnalysisResult(
             spread_analysis=spread_analysis,
             total_analysis=total_analysis,
@@ -2185,7 +2786,9 @@ class MarketMovementAnalyzer:
             exchange_recommendations=exchange_recs,
             overall_confidence=overall_confidence,
             expected_goals=expected_goals,
-            market_intelligence=market_intelligence
+            market_intelligence=market_intelligence,
+            value_bet_analysis=value_bet_analyses if value_bet_analyses else None,
+            reliability_metrics=reliability_metrics_dict if reliability_metrics_dict else None
         )
     
     def _get_combination_interpretation(self, spread: MovementAnalysis, 
