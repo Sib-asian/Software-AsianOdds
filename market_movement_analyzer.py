@@ -70,6 +70,13 @@ class ExpectedGoals:
     draw_prob: float  # P(pareggio) via Poisson
     away_win_prob: float  # P(trasferta vince) via Poisson
 
+    # ===== OPZIONE C: ADVANCED PREDICTIONS =====
+    market_adjusted_1x2: Optional[Dict] = None  # 1X2 aggiustato con movimenti
+    bayesian_btts: Optional[Dict] = None  # BTTS con Bayesian update
+    confidence_score: Optional[float] = None  # Market confidence (0-100)
+    prediction_method: Optional[str] = None  # "bayesian_ensemble", "xg_only", ecc.
+    ensemble_weights: Optional[Dict] = None  # Pesi usati (xg, spread, movement)
+
 
 @dataclass
 class MarketIntelligence:
@@ -353,6 +360,454 @@ def calculate_market_efficiency(spread_open: float, spread_close: float,
     }
 
 
+# ============================================================================
+# OPZIONE C: ADVANCED PROBABILITY CALCULATION FUNCTIONS
+# ============================================================================
+
+def spread_to_implied_probability(spread: float) -> Dict:
+    """
+    Converte Asian Handicap spread in probabilità 1X2 implicite.
+
+    Formula empirica basata su analisi dati reali:
+    - Spread -1.5 ≈ 65% home win, 25% draw, 10% away win
+    - Spread 0.0 ≈ 33% home, 33% draw, 33% away
+
+    Args:
+        spread: Spread value (negativo = casa favorita)
+
+    Returns:
+        Dict con probabilità implicite {home, draw, away}
+    """
+    if spread < 0:
+        # Casa favorita
+        home_base = 0.50  # 50% base per spread 0
+        home_boost = abs(spread) * 0.16  # 16% per punto
+        home_prob = min(0.85, home_base + home_boost)
+
+        # Draw diminuisce con spread
+        draw_prob = max(0.10, 0.33 - abs(spread) * 0.08)
+
+        # Away è il resto
+        away_prob = 1.0 - home_prob - draw_prob
+
+    elif spread > 0:
+        # Trasferta favorita (speculare)
+        away_base = 0.50
+        away_boost = abs(spread) * 0.16
+        away_prob = min(0.85, away_base + away_boost)
+
+        draw_prob = max(0.10, 0.33 - abs(spread) * 0.08)
+        home_prob = 1.0 - away_prob - draw_prob
+
+    else:
+        # Spread 0 = equilibrio perfetto
+        home_prob = draw_prob = away_prob = 0.333
+
+    # Normalizza
+    total = home_prob + draw_prob + away_prob
+    return {
+        'home': home_prob / total,
+        'draw': draw_prob / total,
+        'away': away_prob / total
+    }
+
+
+def calculate_dynamic_home_advantage(spread_open: float, spread_close: float) -> float:
+    """
+    Home advantage dinamico basato su movimenti di mercato.
+
+    LOGICA:
+    - Spread si muove verso casa = HA aumenta (mercato crede di più in casa)
+    - Spread si muove verso trasferta = HA diminuisce
+
+    Args:
+        spread_open: Spread apertura
+        spread_close: Spread chiusura
+
+    Returns:
+        Home advantage factor (1.05 - 1.25)
+    """
+    # Base home advantage
+    base_ha = 1.15  # +15% standard
+
+    # Calcola movimento spread (negativo = verso casa)
+    movement = spread_close - spread_open
+
+    # Aggiustamento: ogni 0.25 punti di movimento = ±2% HA
+    ha_adjustment = -movement * 0.08  # -0.25 → +2%, +0.25 → -2%
+
+    # Clamp tra 1.05 e 1.25 (min +5%, max +25%)
+    dynamic_ha = max(1.05, min(1.25, base_ha + ha_adjustment))
+
+    return dynamic_ha
+
+
+def bayesian_probability_update(
+    prior_probs: Dict,
+    market_signal: float,
+    signal_confidence: float
+) -> Dict:
+    """
+    Aggiornamento Bayesiano: Prior (xG) + Evidence (movimenti).
+
+    FORMULA BAYESIANA:
+    P(H|E) = P(E|H) * P(H) / P(E)
+
+    Dove:
+    - H = hypothesis (es. "casa vince")
+    - E = evidence (movimento di mercato)
+    - P(H) = prior (da xG)
+    - P(E|H) = likelihood (quanto è probabile questo movimento se casa vince)
+    - P(H|E) = posterior (probabilità aggiornata)
+
+    Args:
+        prior_probs: Probabilità prior da xG {home, draw, away}
+        market_signal: Segnale mercato (-1 a +1, negativo = pro-casa)
+        signal_confidence: Quanto fidarsi del segnale (0-1)
+
+    Returns:
+        Probabilità aggiornate {home, draw, away}
+    """
+    # Calcola likelihood ratios basati sul segnale
+    if market_signal < -0.2:  # Segnale pro-casa
+        strength = abs(market_signal)
+        home_likelihood = 1.0 + signal_confidence * strength
+        away_likelihood = 1.0 - signal_confidence * strength * 0.5
+        draw_likelihood = 1.0 - signal_confidence * strength * 0.3
+
+    elif market_signal > 0.2:  # Segnale pro-trasferta
+        strength = abs(market_signal)
+        away_likelihood = 1.0 + signal_confidence * strength
+        home_likelihood = 1.0 - signal_confidence * strength * 0.5
+        draw_likelihood = 1.0 - signal_confidence * strength * 0.3
+
+    else:  # Segnale neutro
+        home_likelihood = draw_likelihood = away_likelihood = 1.0
+
+    # Posterior = Prior * Likelihood
+    home_posterior = prior_probs['home'] * home_likelihood
+    draw_posterior = prior_probs['draw'] * draw_likelihood
+    away_posterior = prior_probs['away'] * away_likelihood
+
+    # Normalizza
+    total = home_posterior + draw_posterior + away_posterior
+
+    return {
+        'home': home_posterior / total,
+        'draw': draw_posterior / total,
+        'away': away_posterior / total
+    }
+
+
+def monte_carlo_btts_simulation(
+    home_xg: float,
+    away_xg: float,
+    n_simulations: int = 5000
+) -> Dict:
+    """
+    Monte Carlo Simulation per BTTS usando distribuzione Poisson.
+
+    Simula N partite e calcola % di partite con Both Teams To Score.
+
+    Args:
+        home_xg: Expected goals casa
+        away_xg: Expected goals trasferta
+        n_simulations: Numero simulazioni (default 5000)
+
+    Returns:
+        Dict con statistiche BTTS
+    """
+    import random
+
+    btts_count = 0
+    home_scores = []
+    away_scores = []
+
+    for _ in range(n_simulations):
+        # Simula gol usando distribuzione Poisson
+        # P(k goals) = (λ^k * e^-λ) / k!
+        # Usiamo metodo inverso: genera random e trova k corrispondente
+
+        # Simula gol casa
+        home_goals = 0
+        prob_sum = math.exp(-home_xg)  # P(0)
+        rand = random.random()
+
+        while rand > prob_sum and home_goals < 10:
+            home_goals += 1
+            prob_sum += poisson_probability(home_goals, home_xg)
+
+        # Simula gol trasferta
+        away_goals = 0
+        prob_sum = math.exp(-away_xg)  # P(0)
+        rand = random.random()
+
+        while rand > prob_sum and away_goals < 10:
+            away_goals += 1
+            prob_sum += poisson_probability(away_goals, away_xg)
+
+        home_scores.append(home_goals)
+        away_scores.append(away_goals)
+
+        # BTTS se entrambe > 0
+        if home_goals > 0 and away_goals > 0:
+            btts_count += 1
+
+    btts_prob = btts_count / n_simulations
+
+    return {
+        'btts_prob': btts_prob,
+        'nobtts_prob': 1 - btts_prob,
+        'avg_home_goals': sum(home_scores) / n_simulations,
+        'avg_away_goals': sum(away_scores) / n_simulations,
+        'simulations': n_simulations
+    }
+
+
+def calculate_smart_btts(
+    home_xg: float,
+    away_xg: float,
+    total_open: float,
+    total_close: float,
+    spread_close: float,
+    use_monte_carlo: bool = True
+) -> Dict:
+    """
+    BTTS intelligente con logica di mercato + Monte Carlo.
+
+    LOGICA:
+    1. Total alto + Spread basso = partita aperta = GG più probabile
+    2. Total basso + Spread alto = dominio difensivo = NOGG
+    3. Total sale = mercato si aspetta più gol = boost GG
+
+    Args:
+        home_xg: Expected goals casa
+        away_xg: Expected goals trasferta
+        total_open: Total apertura
+        total_close: Total chiusura
+        spread_close: Spread chiusura
+        use_monte_carlo: Se True usa Monte Carlo (default)
+
+    Returns:
+        Dict con BTTS probability e fattori
+    """
+    # 1. BTTS base (Monte Carlo o formula standard)
+    if use_monte_carlo:
+        mc_result = monte_carlo_btts_simulation(home_xg, away_xg, n_simulations=5000)
+        base_btts = mc_result['btts_prob']
+    else:
+        # Formula standard
+        base_btts = (1 - math.exp(-home_xg)) * (1 - math.exp(-away_xg))
+
+    # 2. Fattore "Partita Aperta" (spread basso + total alto = aperta)
+    abs_spread = abs(spread_close)
+    openness_factor = total_close / max(abs_spread, 0.5)
+    # Es: Total 3.0 / Spread 0.5 = 6.0 (molto aperta)
+    # Es: Total 2.0 / Spread 2.0 = 1.0 (chiusa)
+
+    # Normalizza 0-1 (6.0 → 1.0, 1.0 → 0.2)
+    openness_normalized = min(1.0, max(0.2, openness_factor / 6.0))
+
+    # 3. Fattore "Total Movement" (se total sale = più gol attesi)
+    total_movement = total_close - total_open
+    total_boost = total_movement * 0.1  # Ogni +0.25 → +2.5% boost BTTS
+
+    # 4. Fattore "Balance" (partita equilibrata = più BTTS)
+    balance_factor = max(0.5, 1.0 - (abs_spread / 3.0))  # Spread 0 = 1.0, Spread 3 = 0.5
+
+    # 5. BTTS aggiustato - Usa boost additivi invece di moltiplicativi
+    # Base = base_btts
+    # +total_boost per movimento total
+    # +openness_boost per partita aperta
+    # +balance_boost per equilibrio
+    openness_boost = (openness_normalized - 0.5) * 0.15  # Max +7.5% se molto aperta
+    balance_boost = (balance_factor - 0.75) * 0.10  # Max +2.5% se equilibrata
+
+    btts_adjusted = base_btts * (1 + total_boost + openness_boost + balance_boost)
+    btts_adjusted = min(0.95, max(0.05, btts_adjusted))  # Clamp 5-95%
+
+    return {
+        'btts_prob': btts_adjusted,
+        'nobtts_prob': 1 - btts_adjusted,
+        'base_btts': base_btts,
+        'openness_score': openness_normalized,
+        'balance_score': balance_factor,
+        'total_boost': total_boost,
+        'method': 'monte_carlo' if use_monte_carlo else 'formula'
+    }
+
+
+def calculate_market_adjusted_probabilities(
+    home_xg: float,
+    away_xg: float,
+    spread_open: float,
+    spread_close: float,
+    sharp_money_detected: bool,
+    steam_move_detected: bool
+) -> Dict:
+    """
+    1X2 aggiustato usando movimenti di mercato come segnale.
+
+    WEIGHTED ENSEMBLE:
+    - Probabilità base da xG (Dixon-Coles)
+    - Probabilità implied da spread
+    - Peso dinamico basato su sharp money signals
+
+    Args:
+        home_xg: Expected goals casa
+        away_xg: Expected goals trasferta
+        spread_open: Spread apertura
+        spread_close: Spread chiusura
+        sharp_money_detected: Se rilevato sharp money
+        steam_move_detected: Se rilevato steam move
+
+    Returns:
+        Dict con probabilità aggiustate e metadati
+    """
+    # 1. Calcola probabilità BASE da xG (Dixon-Coles)
+    base_home = 0.0
+    base_draw = 0.0
+    base_away = 0.0
+
+    for h in range(10):
+        for a in range(10):
+            prob = dixon_coles_probability(h, a, home_xg, away_xg)
+            if h > a:
+                base_home += prob
+            elif h == a:
+                base_draw += prob
+            else:
+                base_away += prob
+
+    base_probs = {'home': base_home, 'draw': base_draw, 'away': base_away}
+
+    # 2. Calcola IMPLIED probabilities dallo SPREAD
+    spread_implied = spread_to_implied_probability(spread_close)
+
+    # 3. Calcola MOVEMENT STRENGTH e market signal
+    movement = spread_close - spread_open
+    movement_strength = abs(movement) / max(abs(spread_open), 0.1)
+    movement_strength = min(movement_strength, 0.5)  # Cap al 50%
+
+    # Market signal: -1 (pro-casa) a +1 (pro-trasferta)
+    market_signal = movement / max(abs(spread_open), 0.5)
+    market_signal = max(-1.0, min(1.0, market_signal))
+
+    # 4. Calcola CONFIDENCE nel segnale
+    signal_confidence = 0.3  # Base 30%
+
+    if sharp_money_detected:
+        signal_confidence += 0.3  # +30% se sharp
+    if steam_move_detected:
+        signal_confidence += 0.2  # +20% se steam
+
+    signal_confidence = min(0.8, signal_confidence)  # Max 80%
+
+    # 5. BAYESIAN UPDATE
+    bayesian_probs = bayesian_probability_update(
+        base_probs,
+        market_signal,
+        signal_confidence
+    )
+
+    # 6. WEIGHTED ENSEMBLE: xG + Spread implied
+    # Peso movimento dipende da sharp signals
+    alpha = signal_confidence * 0.5  # Max 40% peso a spread
+
+    final_home = (1 - alpha) * bayesian_probs['home'] + alpha * spread_implied['home']
+    final_draw = (1 - alpha) * bayesian_probs['draw'] + alpha * spread_implied['draw']
+    final_away = (1 - alpha) * bayesian_probs['away'] + alpha * spread_implied['away']
+
+    # Normalizza
+    total = final_home + final_draw + final_away
+
+    return {
+        'home_win': final_home / total,
+        'draw': final_draw / total,
+        'away_win': final_away / total,
+        'method': 'bayesian_ensemble',
+        'base_probs': base_probs,
+        'spread_implied': spread_implied,
+        'bayesian_probs': bayesian_probs,
+        'ensemble_weight': {
+            'xg': 1 - alpha,
+            'spread': alpha
+        },
+        'market_signal': market_signal,
+        'signal_confidence': signal_confidence
+    }
+
+
+def calculate_market_confidence_score(
+    spread_analysis: 'MovementAnalysis',
+    total_analysis: 'MovementAnalysis',
+    market_intel: 'MarketIntelligence',
+    prediction_variance: float
+) -> float:
+    """
+    Calcola confidence score (0-100) per le predizioni.
+
+    FATTORI:
+    1. Market coherence (correlation tra spread/total)
+    2. Sharp money signals (professionalità movimento)
+    3. Prediction variance (quanto sono diverse le stime)
+    4. Market efficiency (quanto il mercato è stabile)
+
+    Args:
+        spread_analysis: Analisi movimento spread
+        total_analysis: Analisi movimento total
+        market_intel: Market intelligence data
+        prediction_variance: Varianza tra xG e spread implied
+
+    Returns:
+        Confidence score 0-100
+    """
+    score = 50.0  # Base 50
+
+    # 1. Market Coherence (+20 pts se coerente)
+    if market_intel.market_coherent:
+        score += 20
+    elif market_intel.correlation_score < -0.5:
+        score -= 10  # Penalità segnali contrastanti
+
+    # 2. Sharp Money (+15 pts se sharp)
+    if market_intel.sharp_money_detected:
+        score += 15
+        if market_intel.contrarian_signal:
+            score += 5  # Bonus contrarian
+
+    # 3. Steam Move (+10 pts se steam)
+    if market_intel.steam_move_detected:
+        score += 10
+
+    # 4. Key Numbers (+5 pts)
+    if market_intel.on_key_spread or market_intel.on_key_total:
+        score += 5
+
+    # 5. Market Efficiency (+10 pts se efficiente)
+    if market_intel.efficiency_score >= 85:
+        score += 10
+    elif market_intel.efficiency_score < 60:
+        score -= 10
+
+    # 6. Prediction Variance (penalità se troppo diverse)
+    # Variance bassa = stime concordano = +confidence
+    if prediction_variance < 0.1:
+        score += 10
+    elif prediction_variance > 0.3:
+        score -= 15
+
+    # 7. Movement Intensity (moderato è meglio)
+    avg_intensity = (spread_analysis.movement_steps + total_analysis.movement_steps) / 2
+    if 0.25 <= avg_intensity <= 0.75:
+        score += 5  # Movimento moderato = buono
+    elif avg_intensity > 1.5:
+        score -= 10  # Movimento eccessivo = caos
+
+    # Clamp 0-100
+    return max(0, min(100, score))
+
+
 def calculate_expected_goals(spread: float, total: float, use_advanced_formulas: bool = True) -> ExpectedGoals:
     """
     Calcola Expected Goals (xG) da spread e total usando Asian Handicap.
@@ -444,6 +899,123 @@ def calculate_expected_goals(spread: float, total: float, use_advanced_formulas:
         home_win_prob=home_win_prob,
         draw_prob=draw_prob,
         away_win_prob=away_win_prob
+    )
+
+
+def calculate_expected_goals_advanced(
+    spread_open: float,
+    spread_close: float,
+    total_open: float,
+    total_close: float,
+    market_intel: MarketIntelligence,
+    spread_analysis: MovementAnalysis,
+    total_analysis: MovementAnalysis
+) -> ExpectedGoals:
+    """
+    OPZIONE C: Expected Goals con TUTTE le funzioni avanzate.
+
+    Usa:
+    - Bayesian Market Update
+    - Monte Carlo BTTS Simulation
+    - Market-Adjusted Probabilities
+    - Dynamic Home Advantage
+    - Confidence Score
+
+    Args:
+        spread_open: Spread apertura
+        spread_close: Spread chiusura
+        total_open: Total apertura
+        total_close: Total chiusura
+        market_intel: Market intelligence data
+        spread_analysis: Analisi movimento spread
+        total_analysis: Analisi movimento total
+
+    Returns:
+        ExpectedGoals con tutti i campi avanzati popolati
+    """
+    # 1. Calcola xG base
+    home_xg_base = (total_close - spread_close) / 2
+    away_xg_base = (total_close + spread_close) / 2
+
+    home_xg_base = max(0.1, home_xg_base)
+    away_xg_base = max(0.1, away_xg_base)
+
+    # 2. DYNAMIC HOME ADVANTAGE (usa movimenti)
+    dynamic_ha = calculate_dynamic_home_advantage(spread_open, spread_close)
+    home_xg = home_xg_base * dynamic_ha
+    away_xg = away_xg_base * (2.0 - dynamic_ha)  # Inverso per trasferta
+
+    # 3. Calcola probabilità BASE con Dixon-Coles
+    base_home = 0.0
+    base_draw = 0.0
+    base_away = 0.0
+
+    for h in range(10):
+        for a in range(10):
+            prob = dixon_coles_probability(h, a, home_xg, away_xg)
+            if h > a:
+                base_home += prob
+            elif h == a:
+                base_draw += prob
+            else:
+                base_away += prob
+
+    # 4. MARKET-ADJUSTED 1X2 (usa movimenti + sharp signals)
+    market_adj_1x2 = calculate_market_adjusted_probabilities(
+        home_xg,
+        away_xg,
+        spread_open,
+        spread_close,
+        market_intel.sharp_money_detected,
+        market_intel.steam_move_detected
+    )
+
+    # 5. SMART BTTS con Monte Carlo
+    smart_btts = calculate_smart_btts(
+        home_xg,
+        away_xg,
+        total_open,
+        total_close,
+        spread_close,
+        use_monte_carlo=True
+    )
+
+    # 6. Calcola Clean Sheet probabilities
+    home_clean_sheet_prob = math.exp(-away_xg)
+    away_clean_sheet_prob = math.exp(-home_xg)
+
+    # 7. Calcola PREDICTION VARIANCE (quanto sono diverse le stime)
+    variance = abs(market_adj_1x2['home_win'] - base_home)
+    variance += abs(market_adj_1x2['draw'] - base_draw)
+    variance += abs(market_adj_1x2['away_win'] - base_away)
+    variance /= 3  # Media
+
+    # 8. MARKET CONFIDENCE SCORE
+    confidence = calculate_market_confidence_score(
+        spread_analysis,
+        total_analysis,
+        market_intel,
+        variance
+    )
+
+    # 9. Return ExpectedGoals con TUTTI i campi
+    return ExpectedGoals(
+        # Standard fields
+        home_xg=home_xg,
+        away_xg=away_xg,
+        home_clean_sheet_prob=home_clean_sheet_prob,
+        away_clean_sheet_prob=away_clean_sheet_prob,
+        btts_prob=smart_btts['btts_prob'],
+        home_win_prob=market_adj_1x2['home_win'],
+        draw_prob=market_adj_1x2['draw'],
+        away_win_prob=market_adj_1x2['away_win'],
+
+        # Advanced fields (Opzione C)
+        market_adjusted_1x2=market_adj_1x2,
+        bayesian_btts=smart_btts,
+        confidence_score=confidence,
+        prediction_method="bayesian_ensemble_monte_carlo",
+        ensemble_weights=market_adj_1x2['ensemble_weight']
     )
 
 
@@ -1171,9 +1743,6 @@ class MarketMovementAnalyzer:
         spread_analysis = self.spread_analyzer.analyze(spread_open, spread_close)
         total_analysis = self.total_analyzer.analyze(total_open, total_close)
 
-        # Calcola Expected Goals (xG) dai valori di chiusura
-        expected_goals = calculate_expected_goals(spread_close, total_close)
-
         # ============== ADVANCED MARKET INTELLIGENCE ==============
         # 1. Sharp Money Detection
         sharp = detect_sharp_money(spread_open, spread_close, total_open, total_close)
@@ -1214,6 +1783,19 @@ class MarketMovementAnalyzer:
             value_opportunity=efficiency["value_opportunity"]
         )
         # ==========================================================
+
+        # ============== OPZIONE C: ADVANCED EXPECTED GOALS ==============
+        # Usa TUTTE le funzioni avanzate: Bayesian, Monte Carlo, Market-Adjusted, ecc.
+        expected_goals = calculate_expected_goals_advanced(
+            spread_open=spread_open,
+            spread_close=spread_close,
+            total_open=total_open,
+            total_close=total_close,
+            market_intel=market_intelligence,
+            spread_analysis=spread_analysis,
+            total_analysis=total_analysis
+        )
+        # ================================================================
 
         # Gestisci casi stabili
         spread_dir_key = spread_analysis.direction.name if spread_analysis.direction != MovementDirection.STABLE else "STABLE"
