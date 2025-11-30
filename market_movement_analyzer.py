@@ -933,7 +933,7 @@ def calculate_expected_goals_advanced(
     Returns:
         ExpectedGoals con tutti i campi avanzati popolati
     """
-    # 1. Calcola xG base
+    # 1. Calcola xG base da CLOSE (per altre metriche)
     home_xg_base = (total_close - spread_close) / 2
     away_xg_base = (total_close + spread_close) / 2
 
@@ -961,9 +961,14 @@ def calculate_expected_goals_advanced(
                 base_away += prob
 
     # 4. MARKET-ADJUSTED 1X2 (usa movimenti + sharp signals)
+    # IMPORTANTE: Usa xG da OPEN come base, non da CLOSE!
+    # Altrimenti il movimento è già incorporato e Bayesian update non ha effetto
+    home_xg_open = max(0.1, (total_open - spread_open) / 2)
+    away_xg_open = max(0.1, (total_open + spread_open) / 2)
+
     market_adj_1x2 = calculate_market_adjusted_probabilities(
-        home_xg,
-        away_xg,
+        home_xg_open,  # Base da OPEN
+        away_xg_open,  # Base da OPEN
         spread_open,
         spread_close,
         market_intel.sharp_money_detected,
@@ -1295,6 +1300,11 @@ def dixon_coles_probability(h: int, a: int, lambda_h: float, lambda_a: float,
         tau = 1 + rho
     else:
         tau = 1  # Nessuna correlazione per risultati alti
+
+    # SAFETY: Clamp tau per evitare probabilità negative con xG estremi
+    # Dixon-Coles è valido per xG "normali" (0.5-3.5)
+    # Con xG > 4.0, il termine lambda_h * lambda_a * rho può eccedere 1
+    tau = max(0.01, tau)  # Minimo 1% della prob base
 
     return base_prob * tau
 
