@@ -22,13 +22,13 @@ def reverse_engineer_spread_from_xg(home_xg: float, away_xg: float) -> float:
     """
     Dato xG, calcola quale spread implicherebbe.
 
-    Logic:
-    - Differenza xG → spread
-    - home_xg - away_xg ≈ spread / 0.4
+    Logic (MATEMATICAMENTE CORRETTO):
+    - Poiché: home_xg = (total - spread) / 2
+    -         away_xg = (total + spread) / 2
+    - Allora: home_xg - away_xg = -spread
+    - Quindi: spread = away_xg - home_xg
     """
-    xg_diff = home_xg - away_xg
-    implied_spread = xg_diff * 0.4
-    return -implied_spread  # Negativo se casa favorita
+    return away_xg - home_xg
 
 
 def reverse_engineer_total_from_xg(home_xg: float, away_xg: float) -> float:
