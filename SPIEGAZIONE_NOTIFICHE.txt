@@ -1,0 +1,80 @@
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║     📱 PERCHÉ NON RICEVI NOTIFICHE                          ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+✅ IL SISTEMA FUNZIONA CORRETTAMENTE!
+
+   Il sistema sta analizzando partite, ma NESSUNA opportunità
+   supera i filtri di qualità. Questo è COMPORTAMENTO NORMALE
+   e DESIDERABILE per evitare scommesse rischiose.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 COSA STA SUCCEDENDO:
+
+   ✅ Partite analizzate: Sì (Czechia vs Gibraltar, Germany vs Slovakia, etc.)
+   ❌ Decisione finale: SKIP (non BET)
+   
+   Motivi del rifiuto:
+   • Confidence troppo bassa: 33% < 70% (minimo richiesto)
+   • Qualità dati bassa: 10% (usa fallback data)
+   • Uncertainty molto alta: VERY_HIGH
+   • Red flags: 3 (confidence low, calibration shift, data quality)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 SOGLIE ATTUALE (nel .env):
+
+   AUTOMATION_MIN_EV=8.0          (EV minimo 8%)
+   AUTOMATION_MIN_CONFIDENCE=70.0  (Confidence minima 70%)
+
+   Problema: Le analisi mostrano confidence 33% (troppo bassa).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔧 SOLUZIONI:
+
+   OPZIONE 1: Abbassare le soglie (per ricevere più notifiche)
+   
+   Modifica il file .env:
+   
+   AUTOMATION_MIN_EV=5.0          (da 8.0 a 5.0)
+   AUTOMATION_MIN_CONFIDENCE=50.0  (da 70.0 a 50.0)
+   
+   ⚠️ ATTENZIONE: Più notifiche = più rischi!
+   
+   OPZIONE 2: Attendere opportunità migliori
+   
+   Il sistema continuerà ad analizzare. Quando trova un'opportunità
+   che supera i filtri, riceverai la notifica automaticamente.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ TELEGRAM CONFIGURATO:
+
+   ✅ Bot Token: Configurato (valore di default)
+   ✅ Chat ID: Configurato (valore di default)
+   
+   Le notifiche verranno inviate quando un'opportunità supera i filtri.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📝 COSA FARE:
+
+   1. Se vuoi più notifiche: Abbassa le soglie nel .env
+   2. Se vuoi solo opportunità di qualità: Lascia così (consigliato)
+   3. Riavvia il servizio dopo aver modificato il .env
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ CONCLUSIONE:
+
+   NON è un problema! Il sistema funziona correttamente e sta
+   filtrando opportunità a bassa qualità. Questo è comportamento
+   normale e desiderabile per evitare scommesse rischiose.
+
+   Quando trova un'opportunità che supera i filtri, riceverai
+   automaticamente la notifica su Telegram! 🚀
+

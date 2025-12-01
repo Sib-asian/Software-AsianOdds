@@ -74,3 +74,8 @@ Write-Host "Ora puoi creare PR con:" -ForegroundColor Cyan
 Write-Host "  .\quick_pr.ps1 -Message 'Descrizione modifiche'" -ForegroundColor White
 Write-Host ""
 
+
+
+
+
+

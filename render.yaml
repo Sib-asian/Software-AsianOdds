@@ -4,17 +4,50 @@ services:
     env: docker
     dockerfilePath: ./Dockerfile.automation
     dockerContext: .
+    plan: starter  # Starter Plan ($7/mese) - necessario per 24/7
+    region: frankfurt  # Scegli: frankfurt, london, oregon, singapore
+    autoDeploy: false  # 🚫 Disabilita deploy automatici
+
+    # 🔧 PERSISTENT DISK per salvare database IA e risultati
+    disk:
+      name: automation-data
+      mountPath: /data
+      sizeGB: 1  # 1GB sufficiente per database IA
+
     envVars:
+      # Variabili di sistema
       - key: PYTHONUNBUFFERED
         value: 1
+      
+      # Variabili Telegram (OBBLIGATORIE)
       - key: TELEGRAM_BOT_TOKEN
-        sync: false
+        sync: false  # NON sincronizzare - ogni service ha il suo
       - key: TELEGRAM_CHAT_ID
         sync: false
+      
+      # Variabili API (OBBLIGATORIE)
+      - key: API_FOOTBALL_KEY
+        sync: false  # Chiave API-SPORTS (v3.football.api-sports.io)
+      
+      # Variabili configurazione (OPZIONALI - hanno default)
       - key: AUTOMATION_MIN_EV
         value: 8.0
       - key: AUTOMATION_MIN_CONFIDENCE
         value: 70.0
       - key: AUTOMATION_UPDATE_INTERVAL
-        value: 300
+        value: 1200  # 20 minuti (1200 secondi)
+      
+      # Variabili API opzionali
+      - key: THEODDS_API_KEY
+        sync: false  # Opzionale - per TheOddsAPI
+      - key: FOOTBALL_DATA_KEY
+        sync: false  # Opzionale - per Football-Data.org
+      - key: NEWSAPI_KEY
+        sync: false  # Opzionale - per analisi news
+
+
+
+
+
+
 
