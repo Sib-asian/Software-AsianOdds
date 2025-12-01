@@ -279,6 +279,17 @@ st.header("🎯 Performance per Mercato")
 
 if by_market:
     df_markets = pd.DataFrame(by_market)
+    df_markets['roi_text'] = df_markets['roi'].apply(
+        lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A"
+    )
+    df_markets['win_rate_text'] = df_markets['win_rate'].apply(
+        lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A"
+    )
+    df_markets['avg_edge_text'] = df_markets['avg_edge'].apply(
+        lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A"
+    )
+    df_markets['roi_value'] = df_markets['roi'].fillna(0)
+    df_markets['win_rate_value'] = df_markets['win_rate'].fillna(0)
 
     col1, col2 = st.columns(2)
 
@@ -287,13 +298,13 @@ if by_market:
         fig_roi = px.bar(
             df_markets,
             x='market',
-            y='roi',
+            y='roi_value',
             title="ROI per Mercato",
-            color='roi',
+            color='roi_value',
             color_continuous_scale=['red', 'yellow', 'green'],
-            text='roi'
+            text='roi_text'
         )
-        fig_roi.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+        fig_roi.update_traces(texttemplate='%{text}', textposition='outside')
         st.plotly_chart(fig_roi, use_container_width=True)
 
     with col2:
@@ -301,18 +312,27 @@ if by_market:
         fig_wr = px.bar(
             df_markets,
             x='market',
-            y='win_rate',
+            y='win_rate_value',
             title="Win Rate per Mercato",
-            color='win_rate',
+            color='win_rate_value',
             color_continuous_scale=['red', 'yellow', 'green'],
-            text='win_rate'
+            text='win_rate_text'
         )
-        fig_wr.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+        fig_wr.update_traces(texttemplate='%{text}', textposition='outside')
         st.plotly_chart(fig_wr, use_container_width=True)
 
     # Tabella dettagliata
+    table_columns = [
+        'market', 'total_bets', 'pending_bets', 'wins', 'losses', 'pushes',
+        'decision_bets', 'win_rate_text', 'total_staked', 'total_profit', 'roi_text', 'avg_edge_text'
+    ]
     st.dataframe(
-        df_markets.sort_values('total_profit', ascending=False),
+        df_markets.sort_values('total_profit', ascending=False)[table_columns].rename(columns={
+            'total_bets': 'settled_bets',
+            'win_rate_text': 'win_rate',
+            'roi_text': 'roi',
+            'avg_edge_text': 'avg_edge'
+        }),
         use_container_width=True,
         hide_index=True
     )
