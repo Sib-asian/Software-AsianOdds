@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Market Movement Analyzer
-========================
+Market Movement Analyzer (Sib10)
+=================================
 
 Tool per analizzare i movimenti di Spread e Total e generare
 interpretazioni e giocate consigliate basate su pattern di mercato.
+
+Version: Sib10 - Calcoli migliorati con logica avanzata per tutti i mercati
 
 Usage:
     python market_movement_analyzer.py
@@ -72,56 +74,77 @@ class AnalysisResult:
 class SpreadAnalyzer:
     """Analizzatore per movimenti Spread"""
     
-    # Tabelle interpretazione movimenti spread
+    # Tabelle interpretazione movimenti spread (gestisce valori positivi e negativi)
     SPREAD_MOVEMENTS_DOWN = {
+        # Valori negativi (casa favorita)
         -1.75: (-1.5, "Leggero calo di fiducia nel favorito, mercato più prudente"),
         -1.5: (-1.25, "Favorito meno dominante, mercato vede 1–0 o 2–1"),
         -1.25: (-1.0, "Fiducia in calo evidente, l'underdog 'resiste' meglio"),
         -1.0: (-0.75, "Mercato molto più equilibrato, favorito vulnerabile"),
         -0.75: (-0.5, "Fiducia nel favorito in netto calo"),
         -0.5: (-0.25, "Favorito quasi al pari"),
-        -0.25: (0.0, "Favorita perde fiducia → equilibrio totale"),
+        -0.25: (0.0, "Favorito perde fiducia → equilibrio totale"),
+        # Valori positivi (trasferta favorita)
+        1.75: (1.5, "Leggero calo di fiducia nella trasferta favorita, mercato più prudente"),
+        1.5: (1.25, "Trasferta meno dominante, mercato vede 0–1 o 1–2"),
+        1.25: (1.0, "Fiducia in calo evidente, la casa 'resiste' meglio"),
+        1.0: (0.75, "Mercato molto più equilibrato, trasferta vulnerabile"),
+        0.75: (0.5, "Fiducia nella trasferta in netto calo"),
+        0.5: (0.25, "Trasferta quasi al pari"),
+        0.25: (0.0, "Trasferta perde fiducia → equilibrio totale"),
     }
     
     SPREAD_MOVEMENTS_UP = {
-        -0.25: (-0.5, "Cresce la fiducia nel favorito, mercato lo vede superiore"),
-        -0.5: (-0.75, "Favorito in netto rafforzamento, l'1 diventa più stabile"),
+        # Valori negativi (casa favorita)
+        -0.25: (-0.5, "Cresce la fiducia nella casa favorita, mercato la vede superiore"),
+        -0.5: (-0.75, "Casa in netto rafforzamento, l'1 diventa più stabile"),
         -0.75: (-1.0, "Vittoria più larga attesa, possibile 2–0"),
-        -1.0: (-1.25, "Grande fiducia nel favorito, mercato sbilanciato su di lui"),
-        -1.25: (-1.5, "Favorito dominante, l'underdog viene svalutato"),
+        -1.0: (-1.25, "Grande fiducia nella casa, mercato sbilanciato su di lei"),
+        -1.25: (-1.5, "Casa dominante, l'underdog viene svalutato"),
         -1.5: (-1.75, "Massima fiducia, probabile goleada"),
+        # Valori positivi (trasferta favorita)
+        0.25: (0.5, "Cresce la fiducia nella trasferta favorita, mercato la vede superiore"),
+        0.5: (0.75, "Trasferta in netto rafforzamento, il 2 diventa più stabile"),
+        0.75: (1.0, "Vittoria più larga attesa, possibile 0–2"),
+        1.0: (1.25, "Grande fiducia nella trasferta, mercato sbilanciato su di lei"),
+        1.25: (1.5, "Trasferta dominante, la casa viene svalutata"),
+        1.5: (1.75, "Massima fiducia, probabile goleada trasferta"),
     }
     
     def analyze(self, opening: float, closing: float) -> MovementAnalysis:
-        """Analizza il movimento dello spread"""
-        # Per lo spread, confrontiamo i valori assoluti per determinare se si indurisce o ammorbidisce
-        abs_opening = abs(opening)
-        abs_closing = abs(closing)
-        movement = abs_closing - abs_opening  # Se negativo = si ammorbidisce, positivo = si indurisce
-
-        # Determina direzione
-        if abs(movement) < 0.01:
-            direction = MovementDirection.STABLE
-            intensity = MovementIntensity.NONE
-            interpretation = "Spread stabile, nessun cambiamento significativo"
-        elif movement < 0:
-            direction = MovementDirection.SOFTEN
-            interpretation = self._get_soften_interpretation(opening, closing)
-        else:
-            direction = MovementDirection.HARDEN
-            interpretation = self._get_harden_interpretation(opening, closing)
+        """Analizza il movimento dello spread con gestione migliorata"""
+        # Gestione cambio segno (pick'em o cambio favorito)
+        sign_changed = (opening > 0 and closing < 0) or (opening < 0 and closing > 0)
         
-        # Calcola intensità
-        abs_movement = abs(movement)
-        if abs_movement < 0.3:
-            intensity = MovementIntensity.LIGHT
-        elif abs_movement < 0.6:
-            intensity = MovementIntensity.MEDIUM
+        if sign_changed:
+            # Cambio di favorito: caso speciale
+            total_movement = abs(opening) + abs(closing)
+            direction = MovementDirection.SOFTEN  # Sempre ammorbidisce verso equilibrio
+            interpretation = f"Cambio favorito: da {format_spread_display(opening)} a {format_spread_display(closing)}"
+            steps = self._calculate_discrete_steps(opening, closing, is_spread=True)
+            intensity = self._calculate_intensity(total_movement, opening, closing, is_spread=True)
         else:
-            intensity = MovementIntensity.STRONG
-        
-        # Calcola step (multipli di 0.25)
-        steps = abs_movement / 0.25
+            # Movimento normale: usa valore assoluto
+            abs_opening = abs(opening)
+            abs_closing = abs(closing)
+            movement = abs_closing - abs_opening  # Se negativo = si ammorbidisce, positivo = si indurisce
+            
+            # Soglia stabilità migliorata (0.125 = mezzo step discreto)
+            if abs(movement) < 0.125:
+                direction = MovementDirection.STABLE
+                intensity = MovementIntensity.NONE
+                interpretation = "Spread stabile, nessun cambiamento significativo"
+                steps = 0.0
+            elif movement < 0:
+                direction = MovementDirection.SOFTEN
+                interpretation = self._get_soften_interpretation(opening, closing)
+                steps = self._calculate_discrete_steps(opening, closing, is_spread=True)
+                intensity = self._calculate_intensity(abs(movement), opening, closing, is_spread=True)
+            else:
+                direction = MovementDirection.HARDEN
+                interpretation = self._get_harden_interpretation(opening, closing)
+                steps = self._calculate_discrete_steps(opening, closing, is_spread=True)
+                intensity = self._calculate_intensity(abs(movement), opening, closing, is_spread=True)
         
         if direction == MovementDirection.STABLE:
             intensity = MovementIntensity.NONE
@@ -135,27 +158,164 @@ class SpreadAnalyzer:
             interpretation=interpretation
         )
     
-    def _get_soften_interpretation(self, opening: float, closing: float) -> str:
-        """Ottiene interpretazione per spread che si ammorbidisce"""
-        # Cerca nella tabella il range più vicino
-        for start, (end, interpretation) in self.SPREAD_MOVEMENTS_DOWN.items():
-            if opening >= start and closing <= end:
-                return interpretation
+    def _calculate_discrete_steps(self, opening: float, closing: float, is_spread: bool) -> float:
+        """Calcola step discreti effettivi tra valori di linea (multipli di 0.25)"""
+        # Normalizza ai valori di linea (multipli di 0.25)
+        def normalize_to_line(value: float) -> float:
+            return round(value * 4) / 4
         
-        # Fallback generico
-        if closing > opening:
-            return f"Fiducia nel favorito cala da {opening} a {closing}"
+        norm_open = normalize_to_line(opening)
+        norm_close = normalize_to_line(closing)
+        
+        if is_spread:
+            # Per spread: usa valore assoluto
+            abs_open = abs(norm_open)
+            abs_close = abs(norm_close)
+            diff = abs_close - abs_open
+        else:
+            # Per total: differenza diretta
+            diff = norm_close - norm_open
+        
+        # Converti in step discreti (ogni 0.25 = 1 step)
+        steps = diff / 0.25
+        
+        return round(steps, 2)  # Arrotonda a 2 decimali per precisione
+    
+    def _calculate_intensity(self, movement: float, opening_value: float, 
+                            closing_value: float, is_spread: bool) -> MovementIntensity:
+        """Calcola intensità normalizzata e contestualizzata"""
+        abs_movement = abs(movement)
+        
+        # Normalizza per valore base (movimento relativo)
+        if abs(opening_value) > 0.01:
+            relative_movement = abs_movement / abs(opening_value)
+        else:
+            relative_movement = abs_movement
+        
+        # Arrotonda a step discreti (0.25)
+        discrete_steps = round(abs_movement / 0.25)
+        
+        # Intensità basata su step discreti + movimento relativo
+        if discrete_steps == 0:
+            return MovementIntensity.NONE
+        elif discrete_steps == 1:
+            # Leggero: 1 step (0.25) o movimento relativo < 15%
+            if relative_movement < 0.15:
+                return MovementIntensity.LIGHT
+            else:
+                return MovementIntensity.MEDIUM
+        elif discrete_steps == 2:
+            # Medio: 2 step (0.5) o movimento relativo 15-35%
+            if relative_movement < 0.35:
+                return MovementIntensity.MEDIUM
+            else:
+                return MovementIntensity.STRONG
+        elif discrete_steps >= 3:
+            # Forte: 3+ step (0.75+) o movimento relativo > 35%
+            return MovementIntensity.STRONG
+        else:
+            # Default per valori intermedi
+            if relative_movement < 0.20:
+                return MovementIntensity.LIGHT
+            elif relative_movement < 0.40:
+                return MovementIntensity.MEDIUM
+            else:
+                return MovementIntensity.STRONG
+    
+    def _get_soften_interpretation(self, opening: float, closing: float) -> str:
+        """Ottiene interpretazione per spread che si ammorbidisce con interpolazione"""
+        # Normalizza per gestire valori assoluti
+        abs_opening = abs(opening)
+        abs_closing = abs(closing)
+        opening_sign = -1 if opening < 0 else 1
+        closing_sign = -1 if closing < 0 else 1
+        
+        # Cerca nella tabella il range più vicino (considera segno)
+        best_match = None
+        min_distance = float('inf')
+        
+        for start, (end, interpretation) in self.SPREAD_MOVEMENTS_DOWN.items():
+            # Controlla se il segno corrisponde
+            if (start < 0 and opening < 0) or (start > 0 and opening > 0) or (start == 0):
+                # Match esatto
+                if (opening_sign * abs_opening >= opening_sign * start and 
+                    closing_sign * abs_closing <= closing_sign * end):
+                    return interpretation
+                
+                # Calcola distanza per interpolazione
+                if opening_sign * abs_opening >= opening_sign * start:
+                    distance = abs(abs_closing - abs(end)) if closing_sign * abs_closing > closing_sign * end else 0
+                else:
+                    distance = abs(abs_opening - abs(start))
+                
+                if distance < min_distance:
+                    min_distance = distance
+                    best_match = (start, end, interpretation)
+        
+        # Se trovato un match vicino, modifica l'interpretazione
+        if best_match and min_distance < 0.5:
+            start, end, base_interpretation = best_match
+            movement_completion = abs(abs_closing - abs(end)) / abs(abs(start) - abs(end)) if abs(abs(start) - abs(end)) > 0 else 1.0
+            
+            if movement_completion < 0.3:
+                modifier = "parzialmente "
+            elif movement_completion > 0.7:
+                modifier = ""
+            else:
+                modifier = "progressivamente "
+            
+            return modifier + base_interpretation.lower()
+        
+        # Fallback migliorato
+        if abs_closing < abs_opening:
+            return f"Fiducia nel favorito cala da {format_spread_display(opening)} a {format_spread_display(closing)}"
         return "Spread si ammorbidisce, mercato più equilibrato"
     
     def _get_harden_interpretation(self, opening: float, closing: float) -> str:
-        """Ottiene interpretazione per spread che si indurisce"""
-        for start, (end, interpretation) in self.SPREAD_MOVEMENTS_UP.items():
-            if opening >= start and closing <= end:
-                return interpretation
+        """Ottiene interpretazione per spread che si indurisce con interpolazione"""
+        abs_opening = abs(opening)
+        abs_closing = abs(closing)
+        opening_sign = -1 if opening < 0 else 1
+        closing_sign = -1 if closing < 0 else 1
         
-        # Fallback generico
-        if closing < opening:
-            return f"Fiducia nel favorito aumenta da {opening} a {closing}"
+        best_match = None
+        min_distance = float('inf')
+        
+        for start, (end, interpretation) in self.SPREAD_MOVEMENTS_UP.items():
+            # Controlla se il segno corrisponde
+            if (start < 0 and opening < 0) or (start > 0 and opening > 0) or (start == 0):
+                # Match esatto
+                if (opening_sign * abs_opening <= opening_sign * start and 
+                    closing_sign * abs_closing >= closing_sign * end):
+                    return interpretation
+                
+                # Calcola distanza per interpolazione
+                if opening_sign * abs_opening <= opening_sign * start:
+                    distance = abs(abs_closing - abs(end)) if closing_sign * abs_closing < closing_sign * end else 0
+                else:
+                    distance = abs(abs_opening - abs(start))
+                
+                if distance < min_distance:
+                    min_distance = distance
+                    best_match = (start, end, interpretation)
+        
+        # Se trovato un match vicino, modifica l'interpretazione
+        if best_match and min_distance < 0.5:
+            start, end, base_interpretation = best_match
+            movement_completion = abs(abs_closing - abs(end)) / abs(abs(start) - abs(end)) if abs(abs(start) - abs(end)) > 0 else 1.0
+            
+            if movement_completion < 0.3:
+                modifier = "parzialmente "
+            elif movement_completion > 0.7:
+                modifier = ""
+            else:
+                modifier = "progressivamente "
+            
+            return modifier + base_interpretation.lower()
+        
+        # Fallback migliorato
+        if abs_closing > abs_opening:
+            return f"Fiducia nel favorito aumenta da {format_spread_display(opening)} a {format_spread_display(closing)}"
         return "Spread si indurisce, favorito più forte"
 
 
@@ -181,31 +341,26 @@ class TotalAnalyzer:
     }
     
     def analyze(self, opening: float, closing: float) -> MovementAnalysis:
-        """Analizza il movimento del total"""
+        """Analizza il movimento del total con calcoli migliorati"""
         movement = closing - opening  # Positivo = sale, negativo = scende
+        abs_movement = abs(movement)
         
-        # Determina direzione
-        if abs(movement) < 0.01:
+        # Soglia stabilità migliorata (0.125 = mezzo step discreto)
+        if abs_movement < 0.125:
             direction = MovementDirection.STABLE
             intensity = MovementIntensity.NONE
             interpretation = "Total stabile, ritmo atteso invariato"
+            steps = 0.0
         elif movement > 0:
             direction = MovementDirection.HARDEN  # Sale = più gol
             interpretation = self._get_up_interpretation(opening, closing)
+            steps = self._calculate_discrete_steps(opening, closing, is_spread=False)
+            intensity = self._calculate_intensity(abs_movement, opening, closing, is_spread=False)
         else:
             direction = MovementDirection.SOFTEN  # Scende = meno gol
             interpretation = self._get_down_interpretation(opening, closing)
-        
-        # Calcola intensità
-        abs_movement = abs(movement)
-        if abs_movement < 0.3:
-            intensity = MovementIntensity.LIGHT
-        elif abs_movement < 0.6:
-            intensity = MovementIntensity.MEDIUM
-        else:
-            intensity = MovementIntensity.STRONG
-        
-        steps = abs_movement / 0.25
+            steps = self._calculate_discrete_steps(opening, closing, is_spread=False)
+            intensity = self._calculate_intensity(abs_movement, opening, closing, is_spread=False)
         
         if direction == MovementDirection.STABLE:
             intensity = MovementIntensity.NONE
@@ -219,19 +374,141 @@ class TotalAnalyzer:
             interpretation=interpretation
         )
     
+    def _calculate_discrete_steps(self, opening: float, closing: float, is_spread: bool) -> float:
+        """Calcola step discreti effettivi tra valori di linea (multipli di 0.25)"""
+        # Normalizza ai valori di linea (multipli di 0.25)
+        def normalize_to_line(value: float) -> float:
+            return round(value * 4) / 4
+        
+        norm_open = normalize_to_line(opening)
+        norm_close = normalize_to_line(closing)
+        
+        if is_spread:
+            # Per spread: usa valore assoluto
+            abs_open = abs(norm_open)
+            abs_close = abs(norm_close)
+            diff = abs_close - abs_open
+        else:
+            # Per total: differenza diretta
+            diff = norm_close - norm_open
+        
+        # Converti in step discreti (ogni 0.25 = 1 step)
+        steps = diff / 0.25
+        
+        return round(steps, 2)  # Arrotonda a 2 decimali per precisione
+    
+    def _calculate_intensity(self, movement: float, opening_value: float, 
+                            closing_value: float, is_spread: bool) -> MovementIntensity:
+        """Calcola intensità normalizzata e contestualizzata"""
+        abs_movement = abs(movement)
+        
+        # Normalizza per valore base (movimento relativo)
+        if abs(opening_value) > 0.01:
+            relative_movement = abs_movement / abs(opening_value)
+        else:
+            relative_movement = abs_movement
+        
+        # Arrotonda a step discreti (0.25)
+        discrete_steps = round(abs_movement / 0.25)
+        
+        # Intensità basata su step discreti + movimento relativo
+        if discrete_steps == 0:
+            return MovementIntensity.NONE
+        elif discrete_steps == 1:
+            # Leggero: 1 step (0.25) o movimento relativo < 10%
+            if relative_movement < 0.10:
+                return MovementIntensity.LIGHT
+            else:
+                return MovementIntensity.MEDIUM
+        elif discrete_steps == 2:
+            # Medio: 2 step (0.5) o movimento relativo 10-25%
+            if relative_movement < 0.25:
+                return MovementIntensity.MEDIUM
+            else:
+                return MovementIntensity.STRONG
+        elif discrete_steps >= 3:
+            # Forte: 3+ step (0.75+) o movimento relativo > 25%
+            return MovementIntensity.STRONG
+        else:
+            # Default per valori intermedi
+            if relative_movement < 0.15:
+                return MovementIntensity.LIGHT
+            elif relative_movement < 0.30:
+                return MovementIntensity.MEDIUM
+            else:
+                return MovementIntensity.STRONG
+    
     def _get_up_interpretation(self, opening: float, closing: float) -> str:
-        """Interpretazione per total che sale"""
+        """Interpretazione per total che sale con interpolazione"""
+        best_match = None
+        min_distance = float('inf')
+        
         for start, (end, interpretation) in self.TOTAL_MOVEMENTS_UP.items():
+            # Match esatto
             if opening <= start and closing >= end:
                 return interpretation
-        return f"Total sale da {opening} a {closing}, più gol attesi"
+            
+            # Calcola distanza per interpolazione
+            if opening <= start:
+                distance = abs(closing - end) if closing < end else 0
+            else:
+                distance = abs(opening - start)
+            
+            if distance < min_distance:
+                min_distance = distance
+                best_match = (start, end, interpretation)
+        
+        # Se trovato un match vicino, modifica l'interpretazione
+        if best_match and min_distance < 0.5:
+            start, end, base_interpretation = best_match
+            movement_completion = abs(closing - end) / abs(start - end) if abs(start - end) > 0 else 1.0
+            
+            if movement_completion < 0.3:
+                modifier = "parzialmente "
+            elif movement_completion > 0.7:
+                modifier = ""
+            else:
+                modifier = "progressivamente "
+            
+            return modifier + base_interpretation.lower()
+        
+        return f"Total sale da {opening:.2f} a {closing:.2f}, più gol attesi"
     
     def _get_down_interpretation(self, opening: float, closing: float) -> str:
-        """Interpretazione per total che scende"""
+        """Interpretazione per total che scende con interpolazione"""
+        best_match = None
+        min_distance = float('inf')
+        
         for start, (end, interpretation) in self.TOTAL_MOVEMENTS_DOWN.items():
+            # Match esatto
             if opening >= start and closing <= end:
                 return interpretation
-        return f"Total scende da {opening} a {closing}, meno gol attesi"
+            
+            # Calcola distanza per interpolazione
+            if opening >= start:
+                distance = abs(closing - end) if closing > end else 0
+            else:
+                distance = abs(opening - start)
+            
+            if distance < min_distance:
+                min_distance = distance
+                best_match = (start, end, interpretation)
+        
+        # Se trovato un match vicino, modifica l'interpretazione
+        if best_match and min_distance < 0.5:
+            start, end, base_interpretation = best_match
+            movement_completion = abs(closing - end) / abs(start - end) if abs(start - end) > 0 else 1.0
+            
+            if movement_completion < 0.3:
+                modifier = "parzialmente "
+            elif movement_completion > 0.7:
+                modifier = ""
+            else:
+                modifier = "progressivamente "
+            
+            return modifier + base_interpretation.lower()
+        
+        return f"Total scende da {opening:.2f} a {closing:.2f}, meno gol attesi"
 
 
 class MarketMovementAnalyzer:
@@ -348,9 +625,10 @@ class MarketMovementAnalyzer:
         abs_spread = abs(spread.closing_value)
         
         # Determina chi è favorito in base al segno dello spread
-        # spread > 0: Casa favorita (1)
-        # spread < 0: Trasferta favorita (2)
-        favorito = "1" if spread.closing_value > 0 else "2" if spread.closing_value < 0 else "X"
+        # spread = lambda_a - lambda_h (come in Frontendcloud.py)
+        # spread > 0: Trasferta favorita (2) - lambda_a > lambda_h
+        # spread < 0: Casa favorita (1) - lambda_a < lambda_h
+        favorito = "2" if spread.closing_value > 0 else "1" if spread.closing_value < 0 else "X"
 
         # EDGE CASE: Spread quasi pick'em (< 0.25) - Match 50-50
         if abs_spread < 0.25:
@@ -379,21 +657,36 @@ class MarketMovementAnalyzer:
                 explanation=f"Spread si indurisce: {spread.interpretation}"
             ))
         elif spread.direction == MovementDirection.SOFTEN:
-            # Spread si ammorbidisce → guarda closing value con THRESHOLDS GRANULARI
+            # Spread si ammorbidisce → guarda closing value + movimento total con THRESHOLDS GRANULARI
             if abs_spread < 0.5:
-                # Match molto equilibrato
-                recommendations.append(MarketRecommendation(
-                    market_name="1X2",
-                    recommendation="X (Pareggio) o X2",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Spread equilibrato ({spread.closing_value}), favorito molto debole"
-                ))
+                # Match molto equilibrato → considera movimento total
+                if total.direction == MovementDirection.HARDEN:
+                    # Total sale → match più aperto → meno probabile pareggio
+                    recommendations.append(MarketRecommendation(
+                        market_name="1X2",
+                        recommendation="12 (Risultato incerto, evita X)",
+                        confidence=ConfidenceLevel.MEDIUM,
+                        explanation=f"Spread equilibrato ({spread.closing_value:.2f}) ma total sale ({total.closing_value:.2f}), match aperto"
+                    ))
+                else:
+                    # Total stabile o scende → pareggio più probabile
+                    recommendations.append(MarketRecommendation(
+                        market_name="1X2",
+                        recommendation="X (Pareggio) o X2",
+                        confidence=ConfidenceLevel.MEDIUM,
+                        explanation=f"Spread equilibrato ({spread.closing_value:.2f}), favorito molto debole"
+                    ))
             elif abs_spread < 0.75:
                 # Match abbastanza equilibrato - threshold più granulare
                 favorito_x = f"{favorito}X" if favorito != "X" else "X"
+                # Se total sale molto, match più aperto → meno probabile X
+                if total.direction == MovementDirection.HARDEN and total.intensity == MovementIntensity.STRONG:
+                    recommendation_text = f"{favorito_x} (Evita X, match aperto)"
+                else:
+                    recommendation_text = f"X o {favorito_x} (Incertezza, evita underdog)"
                 recommendations.append(MarketRecommendation(
                     market_name="1X2",
-                    recommendation=f"X o {favorito_x} (Incertezza, evita underdog)",
+                    recommendation=recommendation_text,
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation=f"Spread si ammorbidisce a {format_spread_display(spread.closing_value)}, match equilibrato"
                 ))
@@ -466,60 +759,128 @@ class MarketMovementAnalyzer:
                     explanation=f"Favorito forte, spread {format_spread_display(spread.closing_value)}"
                 ))
 
-        # Over/Under - LOGICA MIGLIORATA: considera movimento + closing value
+        # Over/Under - LOGICA MIGLIORATA: considera movimento, opening vs closing, e soglie granulari
+        # Normalizza il total closing a linea discreta per la raccomandazione
+        total_line = round(total.closing_value * 4) / 4
+        
         if total.direction == MovementDirection.HARDEN:
-            # Total sale → Over
-            conf = ConfidenceLevel.HIGH if total.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
+            # Total sale → Over (movimento verso più gol)
+            # Calcola quanto è aumentato rispetto all'opening
+            movement_magnitude = total.closing_value - total.opening_value
+            
+            # Se aumento significativo (> 0.5) → HIGH confidence
+            if total.intensity == MovementIntensity.STRONG or movement_magnitude >= 0.5:
+                conf = ConfidenceLevel.HIGH
+            else:
+                conf = ConfidenceLevel.MEDIUM
+            
             recommendations.append(MarketRecommendation(
                 market_name="Over/Under",
-                recommendation=f"Over {total.closing_value}",
+                recommendation=f"Over {total_line:.2f}",
                 confidence=conf,
-                explanation=f"Total sale: {total.interpretation}"
+                explanation=f"Total sale da {total.opening_value:.2f} a {total.closing_value:.2f}: {total.interpretation}"
             ))
         elif total.direction == MovementDirection.SOFTEN:
-            # Total scende → guarda closing value
+            # Total scende → decisione basata su closing value e intensità movimento
+            movement_magnitude = total.opening_value - total.closing_value
+            
+            # ZONA ALTA (>= 2.75): Anche se scende, è ancora alto
             if total.closing_value >= 2.75:
-                # Scende ma ancora alto → Over con MEDIUM confidence
-                recommendations.append(MarketRecommendation(
-                    market_name="Over/Under",
-                    recommendation=f"Over {total.closing_value}",
-                    confidence=ConfidenceLevel.MEDIUM,
-                    explanation=f"Total scende ma closing {total.closing_value} ancora alto"
-                ))
+                # Se scende poco → Over, se scende molto → Under con cautela
+                if movement_magnitude < 0.5:
+                    recommendations.append(MarketRecommendation(
+                        market_name="Over/Under",
+                        recommendation=f"Over {total_line:.2f}",
+                        confidence=ConfidenceLevel.MEDIUM,
+                        explanation=f"Total scende ma {total.closing_value:.2f} ancora alto, partita aperta"
+                    ))
+                else:
+                    # Scende molto → Under con MEDIUM confidence
+                    recommendations.append(MarketRecommendation(
+                        market_name="Over/Under",
+                        recommendation=f"Under {total_line:.2f}",
+                        confidence=ConfidenceLevel.MEDIUM,
+                        explanation=f"Total scende significativamente da {total.opening_value:.2f} a {total.closing_value:.2f}"
+                    ))
+            # ZONA INTERMEDIA (2.25-2.75): Dipende da intensità movimento
+            elif total.closing_value >= 2.25:
+                if total.intensity == MovementIntensity.STRONG or movement_magnitude >= 0.5:
+                    # Scende molto → Under
+                    conf = ConfidenceLevel.HIGH if total.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
+                    recommendations.append(MarketRecommendation(
+                        market_name="Over/Under",
+                        recommendation=f"Under {total_line:.2f}",
+                        confidence=conf,
+                        explanation=f"Total scende: {total.interpretation}"
+                    ))
+                else:
+                    # Scende poco → Over ancora possibile
+                    recommendations.append(MarketRecommendation(
+                        market_name="Over/Under",
+                        recommendation=f"Over {total_line:.2f}",
+                        confidence=ConfidenceLevel.MEDIUM,
+                        explanation=f"Total scende poco, ancora sopra media ({total.closing_value:.2f})"
+                    ))
+            # ZONA BASSA (< 2.25): Under
             else:
-                # Scende e basso → Under
                 conf = ConfidenceLevel.HIGH if total.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
                 recommendations.append(MarketRecommendation(
                     market_name="Over/Under",
-                    recommendation=f"Under {total.closing_value}",
+                    recommendation=f"Under {total_line:.2f}",
                     confidence=conf,
-                    explanation=f"Total scende: {total.interpretation}"
+                    explanation=f"Total basso e scende: {total.interpretation}"
                 ))
         else:  # STABLE
-            # Total stabile → guarda closing value
+            # Total stabile → guarda closing value con soglie granulari
             if total.closing_value >= 2.75:
                 recommendations.append(MarketRecommendation(
                     market_name="Over/Under",
-                    recommendation=f"Over {total.closing_value}",
+                    recommendation=f"Over {total_line:.2f}",
                     confidence=ConfidenceLevel.MEDIUM,
-                    explanation="Total alto e stabile, partita aperta attesa"
+                    explanation=f"Total alto e stabile ({total.closing_value:.2f}), partita aperta attesa"
                 ))
-            elif total.closing_value <= 2.25:
+            elif total.closing_value >= 2.5:
+                # Zona intermedia alta: Over con MEDIUM confidence
                 recommendations.append(MarketRecommendation(
                     market_name="Over/Under",
-                    recommendation=f"Under {total.closing_value}",
+                    recommendation=f"Over {total_line:.2f}",
                     confidence=ConfidenceLevel.MEDIUM,
-                    explanation="Total basso e stabile, partita tattica attesa"
+                    explanation=f"Total medio-alto e stabile ({total.closing_value:.2f}), partita abbastanza aperta"
                 ))
+            elif total.closing_value <= 2.0:
+                # Zona bassa: Under
+                recommendations.append(MarketRecommendation(
+                    market_name="Over/Under",
+                    recommendation=f"Under {total_line:.2f}",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation=f"Total basso e stabile ({total.closing_value:.2f}), partita tattica attesa"
+                ))
+            else:
+                # Zona intermedia (2.0-2.5): Neutrale, dipende da spread
+                # Se spread si ammorbidisce → match più equilibrato → Over più probabile
+                if spread.direction == MovementDirection.SOFTEN and abs_spread < 1.0:
+                    recommendations.append(MarketRecommendation(
+                        market_name="Over/Under",
+                        recommendation=f"Over {total_line:.2f}",
+                        confidence=ConfidenceLevel.MEDIUM,
+                        explanation=f"Total medio ({total.closing_value:.2f}), match equilibrato favorisce gol"
+                    ))
+                else:
+                    recommendations.append(MarketRecommendation(
+                        market_name="Over/Under",
+                        recommendation=f"Under {total_line:.2f}",
+                        confidence=ConfidenceLevel.MEDIUM,
+                        explanation=f"Total medio ({total.closing_value:.2f}), partita più controllata"
+                    ))
 
-        # GOAL/NOGOAL - EDGE CASES + LOGICA MIGLIORATA
+        # GOAL/NOGOAL - LOGICA MIGLIORATA: considera spread, total e zone intermedie
         # EDGE CASE: Total molto basso (< 1.75) - Partita chiusissima
         if total.closing_value < 1.75:
             recommendations.append(MarketRecommendation(
                 market_name="GOAL/NOGOAL",
                 recommendation="NOGOAL + Under (Partita chiusissima)",
                 confidence=ConfidenceLevel.HIGH,
-                explanation=f"Total molto basso ({total.closing_value}), pochi/nessun gol atteso"
+                explanation=f"Total molto basso ({total.closing_value:.2f}), pochi/nessun gol atteso"
             ))
         # EDGE CASE: Total molto alto (> 3.5) - Goleada
         elif total.closing_value > 3.5:
@@ -527,33 +888,81 @@ class MarketMovementAnalyzer:
                 market_name="GOAL/NOGOAL",
                 recommendation="GOAL + Over (Goleada attesa)",
                 confidence=ConfidenceLevel.HIGH,
-                explanation=f"Total molto alto ({total.closing_value}), molti gol e GOAL sicuro"
+                explanation=f"Total molto alto ({total.closing_value:.2f}), molti gol e GOAL sicuro"
             ))
-        # LOGICA NORMALE
-        elif total.direction == MovementDirection.HARDEN or total.closing_value >= 2.75:
-            conf = ConfidenceLevel.HIGH if total.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
+        # ZONA ALTA (2.75-3.5): Partita aperta, probabile GOAL
+        elif total.closing_value >= 2.75:
+            # Considera anche spread: se si ammorbidisce molto, match più equilibrato = più probabile GOAL
+            spread_contribution = 0.15 if spread.direction == MovementDirection.SOFTEN and abs_spread < 0.75 else 0.0
+            conf = ConfidenceLevel.HIGH if (total.intensity == MovementIntensity.STRONG or total.direction == MovementDirection.HARDEN) else ConfidenceLevel.MEDIUM
             recommendations.append(MarketRecommendation(
                 market_name="GOAL/NOGOAL",
                 recommendation="GOAL (Entrambe segnano)",
                 confidence=conf,
-                explanation=f"Partita viva, total {total.closing_value}"
+                explanation=f"Partita aperta (total {total.closing_value:.2f}), entrambe le squadre segnano"
             ))
-        elif total.direction == MovementDirection.SOFTEN or total.closing_value <= 2.0:
+        # ZONA INTERMEDIA ALTA (2.5-2.75): Dipende da movimento e spread
+        elif total.closing_value >= 2.5:
+            # Se total sale o è stabile alto + spread equilibrato → GOAL
+            if total.direction == MovementDirection.HARDEN or (total.direction == MovementDirection.STABLE and abs_spread < 1.0):
+                conf = ConfidenceLevel.MEDIUM if total.intensity == MovementIntensity.STRONG else ConfidenceLevel.MEDIUM
+                recommendations.append(MarketRecommendation(
+                    market_name="GOAL/NOGOAL",
+                    recommendation="GOAL (Entrambe segnano)",
+                    confidence=conf,
+                    explanation=f"Total medio-alto ({total.closing_value:.2f}), partita abbastanza aperta"
+                ))
+            else:
+                # Total scende o spread sbilanciato → NOGOAL possibile
+                recommendations.append(MarketRecommendation(
+                    market_name="GOAL/NOGOAL",
+                    recommendation="NOGOAL (Almeno una non segna)",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation=f"Total medio ({total.closing_value:.2f}), partita più chiusa"
+                ))
+        # ZONA INTERMEDIA BASSA (2.0-2.5): Dipende molto da movimento
+        elif total.closing_value >= 2.0:
+            # Se total scende significativamente o spread si indurisce molto → NOGOAL
+            if (total.direction == MovementDirection.SOFTEN and total.intensity != MovementIntensity.LIGHT) or \
+               (spread.direction == MovementDirection.HARDEN and spread.intensity == MovementIntensity.STRONG):
+                recommendations.append(MarketRecommendation(
+                    market_name="GOAL/NOGOAL",
+                    recommendation="NOGOAL (Almeno una non segna)",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation=f"Total medio-basso ({total.closing_value:.2f}), partita più tattica"
+                ))
+            else:
+                # Total stabile o sale leggermente → GOAL possibile
+                recommendations.append(MarketRecommendation(
+                    market_name="GOAL/NOGOAL",
+                    recommendation="GOAL (Entrambe segnano)",
+                    confidence=ConfidenceLevel.MEDIUM,
+                    explanation=f"Total medio ({total.closing_value:.2f}), entrambe possono segnare"
+                ))
+        # ZONA BASSA (< 2.0): NOGOAL probabile
+        else:
             recommendations.append(MarketRecommendation(
                 market_name="GOAL/NOGOAL",
                 recommendation="NOGOAL (Almeno una non segna)",
-                confidence=ConfidenceLevel.MEDIUM,
-                explanation=f"Partita chiusa, total {total.closing_value}"
+                confidence=ConfidenceLevel.HIGH if total.direction == MovementDirection.SOFTEN else ConfidenceLevel.MEDIUM,
+                explanation=f"Total basso ({total.closing_value:.2f}), partita chiusa"
             ))
 
-        # Handicap Asiatico - LOGICA MIGLIORATA: considera closing value
+        # Handicap Asiatico - LOGICA MIGLIORATA: considera closing value e normalizza a linee discrete
         if spread.direction != MovementDirection.STABLE:
-            handicap_value = abs_spread
+            # Normalizza handicap a linea discreta (multipli di 0.25)
+            handicap_value_raw = abs_spread
+            handicap_value = round(handicap_value_raw * 4) / 4
+            
+            # Se valore normalizzato è 0, usa 0.25 come minimo
+            if handicap_value < 0.25 and abs_spread > 0.05:
+                handicap_value = 0.25
+            
             if spread.direction == MovementDirection.HARDEN:
                 # Favorito si rafforza → gioca favorito con handicap
-                # Se spread > 0, favorito è casa (1), quindi handicap negativo
-                # Se spread < 0, favorito è trasferta (2), quindi handicap positivo
-                handicap_sign = "-" if spread.closing_value > 0 else "+"
+                # Se spread > 0, favorito è trasferta (2), quindi handicap positivo
+                # Se spread < 0, favorito è casa (1), quindi handicap negativo
+                handicap_sign = "+" if spread.closing_value > 0 else "-"
                 recommendations.append(MarketRecommendation(
                     market_name="Handicap Asiatico",
                     recommendation=f"{favorito} {handicap_sign}{handicap_value}",
@@ -564,7 +973,7 @@ class MarketMovementAnalyzer:
                 # Spread si ammorbidisce
                 if abs_spread >= 1.0:
                     # Ancora favorito forte → Favorito con handicap ridotto
-                    handicap_sign = "-" if spread.closing_value > 0 else "+"
+                    handicap_sign = "+" if spread.closing_value > 0 else "-"
                     recommendations.append(MarketRecommendation(
                         market_name="Handicap Asiatico",
                         recommendation=f"{favorito} {handicap_sign}{handicap_value} (valore)",
@@ -613,7 +1022,10 @@ class MarketMovementAnalyzer:
         abs_spread = abs(spread.closing_value)
         
         # Determina chi è favorito in base al segno dello spread
-        favorito = "1" if spread.closing_value > 0 else "2" if spread.closing_value < 0 else "X"
+        # spread = lambda_a - lambda_h
+        # spread > 0: Trasferta favorita (2)
+        # spread < 0: Casa favorita (1)
+        favorito = "2" if spread.closing_value > 0 else "1" if spread.closing_value < 0 else "X"
 
         # Combo favorito + Over/Under - LOGICA MIGLIORATA: considera closing value
         if spread.direction == MovementDirection.HARDEN:
@@ -662,7 +1074,7 @@ class MarketMovementAnalyzer:
                         explanation="Match equilibrato e chiuso"
                     ))
 
-        # HT/FT Combinations - LOGICA MIGLIORATA: considera closing value
+        # HT/FT Combinations - LOGICA MIGLIORATA: considera closing value e favorito reale
         if spread.direction == MovementDirection.HARDEN:
             # Favorito si rafforza
             if spread.intensity == MovementIntensity.STRONG:
@@ -675,7 +1087,7 @@ class MarketMovementAnalyzer:
             else:
                 recommendations.append(MarketRecommendation(
                     market_name="HT/FT",
-                    recommendation="X/1 (Pareggio HT, Favorito FT)",
+                    recommendation=f"X/{favorito} (Pareggio HT, Favorito FT)",
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation="Favorito decide nella ripresa"
                 ))
@@ -693,7 +1105,7 @@ class MarketMovementAnalyzer:
                 # Favorito ancora presente
                 recommendations.append(MarketRecommendation(
                     market_name="HT/FT",
-                    recommendation="X/1 (Pareggio HT, Favorito FT)",
+                    recommendation=f"X/{favorito} (Pareggio HT, Favorito FT)",
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation=f"Favorito decide nella ripresa ({spread.closing_value})"
                 ))
@@ -701,7 +1113,7 @@ class MarketMovementAnalyzer:
                 # Incertezza
                 recommendations.append(MarketRecommendation(
                     market_name="HT/FT",
-                    recommendation="X/X o X/1",
+                    recommendation=f"X/X o X/{favorito}",
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation=f"Match incerto ({spread.closing_value})"
                 ))
@@ -710,7 +1122,7 @@ class MarketMovementAnalyzer:
             if abs_spread >= 1.0:
                 recommendations.append(MarketRecommendation(
                     market_name="HT/FT",
-                    recommendation="X/1 (Pareggio HT, Favorito FT)",
+                    recommendation=f"X/{favorito} (Pareggio HT, Favorito FT)",
                     confidence=ConfidenceLevel.MEDIUM,
                     explanation=f"Favorito vince ({spread.closing_value})"
                 ))
@@ -722,8 +1134,8 @@ class MarketMovementAnalyzer:
                     explanation=f"Match equilibrato ({spread.closing_value})"
                 ))
 
-        # Over/Under HT
-        ht_total_estimate = total.closing_value * 0.5
+        # Over/Under HT - Stima migliorata
+        ht_total_estimate = self._estimate_ht_total(total.closing_value, spread_analysis=spread, total_analysis=total)
         if total.direction == MovementDirection.HARDEN:
             if ht_total_estimate >= 1.0:
                 recommendations.append(MarketRecommendation(
@@ -797,7 +1209,10 @@ class MarketMovementAnalyzer:
         abs_spread = abs(spread.closing_value)
         
         # Determina chi è favorito in base al segno dello spread
-        favorito = "1" if spread.closing_value > 0 else "2" if spread.closing_value < 0 else "X"
+        # spread = lambda_a - lambda_h
+        # spread > 0: Trasferta favorita (2)
+        # spread < 0: Casa favorita (1)
+        favorito = "2" if spread.closing_value > 0 else "1" if spread.closing_value < 0 else "X"
 
         # Risultati esatti - Top 2-3 più probabili
         exact_scores = self._get_likely_exact_scores(spread, total)
@@ -902,30 +1317,87 @@ class MarketMovementAnalyzer:
 
         return scores
     
+    def _estimate_ht_total(self, total_value: float, spread_analysis: MovementAnalysis,
+                          total_analysis: MovementAnalysis) -> float:
+        """Stima più accurata del Total per primo tempo"""
+        
+        base_ht = total_value * 0.45  # Base: ~45% dei gol nel 1T (media storica)
+        
+        # Fattore spread: favorito forte → più gol 1T
+        if spread_analysis.direction == MovementDirection.HARDEN:
+            if spread_analysis.intensity == MovementIntensity.STRONG:
+                spread_factor = 1.15  # +15% se favorito molto forte
+            else:
+                spread_factor = 1.08  # +8% se favorito medio
+        elif spread_analysis.direction == MovementDirection.SOFTEN:
+            spread_factor = 0.92  # -8% se favorito debole (partita più equilibrata)
+        else:
+            spread_factor = 1.0
+        
+        # Fattore total movement: se total sale → partita più viva → più gol 1T
+        if total_analysis.direction == MovementDirection.HARDEN:
+            total_factor = 1.10 if total_analysis.intensity == MovementIntensity.STRONG else 1.05
+        elif total_analysis.direction == MovementDirection.SOFTEN:
+            total_factor = 0.95  # Partita più tattica
+        else:
+            total_factor = 1.0
+        
+        # Valore base totale
+        adjusted_ht = base_ht * spread_factor * total_factor
+        
+        # Normalizza ai valori di linea
+        return round(adjusted_ht * 4) / 4
+    
     def _calculate_confidence(self, spread: MovementAnalysis,
                              total: MovementAnalysis) -> ConfidenceLevel:
-        """Calcola confidenza generale - FIX: considera segnali contrastanti"""
+        """Calcola confidenza generale pesata per intensità e ampiezza"""
 
-        # SEGNALI CONTRASTANTI: uno HARDEN, uno SOFTEN → mai HIGH, sempre MEDIUM
-        # Es: Spread HARDEN (favorito forte) ma Total SOFTEN (pochi gol) = segnali contrastanti
+        # Pesi per intensità
+        intensity_weights = {
+            MovementIntensity.NONE: 0.0,
+            MovementIntensity.LIGHT: 0.3,
+            MovementIntensity.MEDIUM: 0.6,
+            MovementIntensity.STRONG: 1.0
+        }
+        
+        spread_weight = intensity_weights.get(spread.intensity, 0.5)
+        total_weight = intensity_weights.get(total.intensity, 0.5)
+        
+        # Fattore ampiezza: movimento più ampio = più confidenza
+        spread_amplitude = min(abs(spread.movement_steps) / 4.0, 1.0)  # Normalizza a max 4 step
+        total_amplitude = min(abs(total.movement_steps) / 4.0, 1.0)
+        
+        # Peso combinato (spread più importante)
+        combined_weight = (spread_weight * 0.6 + total_weight * 0.4)
+        amplitude_factor = (spread_amplitude * 0.6 + total_amplitude * 0.4)
+        
+        # Score finale (0-1)
+        confidence_score = combined_weight * 0.7 + amplitude_factor * 0.3
+        
+        # Penalità per segnali contrastanti
         if (spread.direction == MovementDirection.HARDEN and total.direction == MovementDirection.SOFTEN) or \
            (spread.direction == MovementDirection.SOFTEN and total.direction == MovementDirection.HARDEN):
-            return ConfidenceLevel.MEDIUM  # Mai HIGH con segnali contrastanti!
-
-        # Se entrambi concordi (stessa direzione) e forti → HIGH
+            confidence_score *= 0.65  # Riduce confidenza del 35%
+        
+        # Bonus per concordi e forti
         if (spread.direction == total.direction and
             spread.direction != MovementDirection.STABLE and
             spread.intensity in [MovementIntensity.MEDIUM, MovementIntensity.STRONG] and
             total.intensity in [MovementIntensity.MEDIUM, MovementIntensity.STRONG]):
+            confidence_score = min(confidence_score * 1.15, 1.0)  # Boost del 15% (max 1.0)
+        
+        # Penalità per entrambi STABLE
+        if (spread.direction == MovementDirection.STABLE and 
+            total.direction == MovementDirection.STABLE):
+            confidence_score *= 0.5  # Riduce confidenza del 50%
+        
+        # Conversione a ConfidenceLevel
+        if confidence_score >= 0.75:
             return ConfidenceLevel.HIGH
-
-        # Se concordi ma uno leggero → MEDIUM
-        if spread.direction == total.direction and spread.direction != MovementDirection.STABLE:
+        elif confidence_score >= 0.45:
             return ConfidenceLevel.MEDIUM
-
-        # Se uno o entrambi STABLE → MEDIUM
-        # Default: MEDIUM
-        return ConfidenceLevel.MEDIUM
+        else:
+            return ConfidenceLevel.LOW
 
 
 def format_spread_display(spread_value: float) -> str:
@@ -943,14 +1415,14 @@ def format_spread_display(spread_value: float) -> str:
     if spread_value is None:
         return "N/A"
     
-    # Se spread viene calcolato come lambda_h - lambda_a:
-    # - spread > 0: Casa favorita → mostra (-)
-    # - spread < 0: Trasferta favorita → mostra (+)
-    # Quindi invertiamo il segno per la visualizzazione
+    # Spread viene calcolato come lambda_a - lambda_h (come in Frontendcloud.py)
+    # - spread > 0: Trasferta favorita → mostra (+)
+    # - spread < 0: Casa favorita → mostra (-)
+    # Quindi il segno è già corretto per la visualizzazione
     if spread_value > 0:
-        return f"-{abs(spread_value):.2f}"
-    elif spread_value < 0:
         return f"+{abs(spread_value):.2f}"
+    elif spread_value < 0:
+        return f"-{abs(spread_value):.2f}"
     else:
         return "0.00"
 
