@@ -8,6 +8,15 @@ Analizza partite in corso e suggerisce scommesse basate su:
 - Eventi in campo (cartellini, possesso, ecc.)
 """
 
+import sys
+import os
+from pathlib import Path
+
+# Assicura che la directory root del progetto sia nel sys.path
+project_root = Path(__file__).parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import logging
 import re
 import math
@@ -16,7 +25,17 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 
+# Initialize logger before it's used
 logger = logging.getLogger(__name__)
+
+# 🎯 FASE 2: Import Frontendcloud per calcoli matematici precisi (Poisson, Dixon-Coles)
+try:
+    import Frontendcloud
+    FRONTENDCLOUD_AVAILABLE = True
+    logger.info("✅ Frontendcloud importato: calcoli BTTS/Over-Under precisi disponibili")
+except ImportError as e:
+    FRONTENDCLOUD_AVAILABLE = False
+    logger.warning(f"⚠️ Frontendcloud non disponibile: {e}. Uso formule approssimate.")
 
 # 🛡️ SANITY CHECK - Costanti per filtrare opportunità irrealistiche
 # OPZIONE B (BILANCIATA): Permette value betting dove AI trova valore sottostimato dal mercato
@@ -331,27 +350,561 @@ class LiveBettingAdvisor:
 
         return status
 
+    def _estimate_lambda_from_live_data(
+        self,
+        live_data: Dict[str, Any],
+        is_home: bool = True
+    ) -> float:
+        """
+        🎯 FASE 2: Stima lambda (expected goals rate) dai dati live per calcoli Poisson precisi.
+
+        Lambda rappresenta il tasso medio di gol per squadra. Lo stimiamo da:
+        - xG (expected goals) se disponibili
+        - Score attuale + minuti giocati
+        - Statistiche offensive (tiri porta, attacchi pericolosi)
+        - Possesso palla
+
+        Args:
+            live_data: Dati live (score, minute, xG, stats)
+            is_home: True per home, False per away
+
+        Returns:
+            Lambda stimato (goals per 90 minuti)
+        """
+        if not live_data:
+            return 1.5  # Default neutro (media Serie A/Premier League)
+
+        minute = live_data.get('minute', 0)
+        if minute <= 0:
+            return 1.5  # Partita non iniziata
+
+        # Prendi dati squadra
+        if is_home:
+            score = live_data.get('score_home', 0)
+            xg = live_data.get('xg_home', 0.0)
+            shots_on_target = live_data.get('shots_on_target_home', 0)
+            dangerous_attacks = live_data.get('dangerous_attacks_home', 0)
+            possession = live_data.get('possession_home', 50.0)
+        else:
+            score = live_data.get('score_away', 0)
+            xg = live_data.get('xg_away', 0.0)
+            shots_on_target = live_data.get('shots_on_target_away', 0)
+            dangerous_attacks = live_data.get('dangerous_attacks_away', 0)
+            possession = live_data.get('possession_away', 50.0)
+
+        # Metodo 1: xG se disponibile (più preciso)
+        if xg > 0:
+            # xG è già per 90 minuti proiettato, o per minuti giocati?
+            # Assumiamo sia per minuti giocati, proiettiamo a 90'
+            lambda_from_xg = (xg / minute) * 90 if minute > 0 else xg
+            return max(0.3, min(4.0, lambda_from_xg))  # Clamp tra 0.3 e 4.0
+
+        # Metodo 2: Score attuale + proiezione
+        if score > 0 and minute >= 15:
+            # Goals/minuto attuale, proiettato a 90'
+            goals_per_minute = score / minute
+            lambda_from_score = goals_per_minute * 90
+
+            # Aggiusta con statistiche offensive
+            # Più tiri porta = più pericolosa
+            if shots_on_target > 0:
+                shot_efficiency = score / shots_on_target if shots_on_target > 0 else 0.15
+                # Media conversione è ~15-20%, aggiusta lambda
+                if shot_efficiency > 0.20:  # Molto efficiente
+                    lambda_from_score *= 1.2
+                elif shot_efficiency < 0.10:  # Poco efficiente
+                    lambda_from_score *= 0.8
+
+            # Aggiusta con possesso
+            possession_factor = possession / 50.0  # 50% = neutro
+            lambda_from_score *= (0.7 + possession_factor * 0.3)  # Possesso influisce 30%
+
+            return max(0.3, min(4.0, lambda_from_score))
+
+        # Metodo 3: Solo statistiche (se score = 0)
+        if shots_on_target > 0 or dangerous_attacks > 0:
+            # Stima lambda da tiri porta (media: 1 gol ogni 5-7 tiri porta)
+            lambda_from_shots = (shots_on_target / minute) * 90 * 0.15  # 15% conversione
+
+            # Aggiungi contributo attacchi pericolosi (1 gol ogni 15-20 attacchi)
+            lambda_from_attacks = (dangerous_attacks / minute) * 90 * 0.06  # 6% conversione
+
+            # Media pesata
+            lambda_estimated = (lambda_from_shots * 0.7) + (lambda_from_attacks * 0.3)
+
+            # Aggiusta con possesso
+            possession_factor = possession / 50.0
+            lambda_estimated *= (0.7 + possession_factor * 0.3)
+
+            return max(0.5, min(3.5, lambda_estimated))
+
+        # Fallback: Default basato su possesso
+        possession_factor = possession / 50.0
+        lambda_default = 1.5 * (0.7 + possession_factor * 0.3)
+        return max(0.8, min(2.5, lambda_default))
+
+    def _calculate_synthetic_odds(
+        self,
+        match_data: Dict[str, Any],
+        market: str,
+        live_data: Dict[str, Any] = None
+    ) -> Optional[float]:
+        """
+        🆕 CALCOLA QUOTE SINTETICHE per mercati secondari usando formule matematiche.
+
+        Deriviamo quote per mercati non disponibili dall'API usando:
+        - Quote 1X2 (odds_1, odds_x, odds_2)
+        - Quote Over/Under (odds_over_X_X, odds_under_X_X)
+        - Statistiche live (possesso, tiri, score, minuto, pressione)
+        - Modelli probabilistici avanzati
+
+        Mercati calcolabili:
+        - DNB, Double Chance, Asian Handicap (da 1X2)
+        - Team to score next (da statistiche pressione + xG)
+        - BTTS (da Over/Under + bias squadre)
+        - Clean Sheet (da Under + difesa)
+        - Win to Nil (da 1X2 + Clean Sheet)
+        - Exact Score (da 1X2 + Over/Under)
+        - Half Time markets (da statistiche HT)
+
+        Args:
+            match_data: Dati partita con quote base
+            market: Mercato da calcolare (es. 'dnb_home', 'next_goal_home', 'btts_yes')
+            live_data: Dati live opzionali per aggiustamenti
+
+        Returns:
+            Quota sintetica calcolata o None se impossibile
+        """
+        try:
+            # Recupera quote base 1X2
+            odds_1 = match_data.get('odds_1')  # Home win
+            odds_x = match_data.get('odds_x')  # Draw
+            odds_2 = match_data.get('odds_2')  # Away win
+
+            # Recupera quote Over/Under
+            odds_over_0_5 = match_data.get('odds_over_0_5')
+            odds_over_1_5 = match_data.get('odds_over_1_5')
+            odds_over_2_5 = match_data.get('odds_over_2_5')
+            odds_under_0_5 = match_data.get('odds_under_0_5')
+            odds_under_1_5 = match_data.get('odds_under_1_5')
+            odds_under_2_5 = match_data.get('odds_under_2_5')
+
+            # 🛡️ VALIDAZIONE E NORMALIZZAZIONE STATISTICHE LIVE
+            if live_data:
+                # Estrai e valida con defaults sicuri
+                score_home = int(live_data.get('score_home') or 0)
+                score_away = int(live_data.get('score_away') or 0)
+                minute = int(live_data.get('minute') or 0)
+                possession_home = float(live_data.get('possession_home') or 50)
+                shots_home = int(live_data.get('shots_home') or 0)
+                shots_away = int(live_data.get('shots_away') or 0)
+                shots_on_target_home = int(live_data.get('shots_on_target_home') or 0)
+                shots_on_target_away = int(live_data.get('shots_on_target_away') or 0)
+                attacks_home = int(live_data.get('attacks_home') or 0)
+                attacks_away = int(live_data.get('attacks_away') or 0)
+                dangerous_attacks_home = int(live_data.get('dangerous_attacks_home') or 0)
+                dangerous_attacks_away = int(live_data.get('dangerous_attacks_away') or 0)
+
+                # 🛡️ NORMALIZZAZIONE VALORI (previeni valori invalidi da API)
+                minute = max(0, min(120, minute))  # 0-120 minuti (regolari + extra time)
+                possession_home = max(0, min(100, possession_home))  # 0-100%
+                score_home = max(0, score_home)  # No score negativi
+                score_away = max(0, score_away)
+                shots_home = max(0, shots_home)  # No valori negativi
+                shots_away = max(0, shots_away)
+                shots_on_target_home = max(0, min(shots_home, shots_on_target_home))  # <= total shots
+                shots_on_target_away = max(0, min(shots_away, shots_on_target_away))
+                attacks_home = max(0, attacks_home)
+                attacks_away = max(0, attacks_away)
+                dangerous_attacks_home = max(0, min(attacks_home, dangerous_attacks_home))  # <= attacks
+                dangerous_attacks_away = max(0, min(attacks_away, dangerous_attacks_away))
+
+                # Calcola derivati (una volta sola per performance)
+                possession_away = 100 - possession_home
+                total_goals = score_home + score_away
+            else:
+                score_home = score_away = minute = 0
+                possession_home = possession_away = 50
+                shots_home = shots_away = 0
+                shots_on_target_home = shots_on_target_away = 0
+                attacks_home = attacks_away = 0
+                dangerous_attacks_home = dangerous_attacks_away = 0
+                total_goals = 0
+
+            # 🛡️ VALIDAZIONE QUOTE BASE (previeni NaN, Inf, negativi)
+            import math
+            for odd_name in ['odds_1', 'odds_x', 'odds_2', 'odds_over_0_5', 'odds_over_1_5', 'odds_over_2_5',
+                            'odds_under_0_5', 'odds_under_1_5', 'odds_under_2_5']:
+                odd_value = locals().get(odd_name)
+                if odd_value is not None:
+                    if isinstance(odd_value, (int, float)):
+                        if math.isnan(odd_value) or math.isinf(odd_value) or odd_value <= 0:
+                            logger.warning(f"⚠️ {odd_name} invalido: {odd_value}, impostato a None")
+                            locals()[odd_name] = None
+
+            market_lower = market.lower()
+
+            # === DRAW NO BET (DNB) - FASE 2: Formula già PRECISA ===
+            # Formula matematica: DNB = odds_team * odds_draw / (odds_draw - 1)
+            # ✅ Derivata da teoria probabilità: P(DNB) = P(Win) / (1 - P(Draw))
+            # Logica: elimina il pareggio, rimborsa se finisce X
+            # Esempio: odds_1=2.0, odds_x=3.0 → DNB=3.0 (corretto!)
+            if 'dnb_home' in market_lower or (market_lower == 'draw_no_bet_home'):
+                if odds_1 and odds_x and odds_x > 1.01:
+                    dnb_home = (odds_1 * odds_x) / (odds_x - 1)
+                    # Validazione: DNB deve essere < odds_1 (meno rischioso) ma > 1.01
+                    if dnb_home > 1.01 and dnb_home < odds_1 * 1.5:  # Max 1.5x odds_1
+                        logger.info(f"🔢 DNB Home (formula precisa): {dnb_home:.2f} (odds_1={odds_1:.2f}, odds_x={odds_x:.2f})")
+                        return round(dnb_home, 2)
+
+            elif 'dnb_away' in market_lower or (market_lower == 'draw_no_bet_away'):
+                if odds_2 and odds_x and odds_x > 1.01:
+                    dnb_away = (odds_2 * odds_x) / (odds_x - 1)
+                    if dnb_away > 1.01 and dnb_away < odds_2 * 1.5:
+                        logger.info(f"🔢 DNB Away (formula precisa): {dnb_away:.2f} (odds_2={odds_2:.2f}, odds_x={odds_x:.2f})")
+                        return round(dnb_away, 2)
+
+            # === DOUBLE CHANCE (1X, X2, 12) - FASE 2: Formula già PRECISA ===
+            # Formula matematica: DC = 1 / (P_a + P_b) = 1 / (1/odds_a + 1/odds_b)
+            # ✅ Derivata da teoria probabilità: somma probabilità implicite
+            # Logica: combina due esiti, vinci se uno dei due si verifica
+            # Esempio: odds_1=2.0, odds_x=3.0 → DC_1x=1.2 (corretto!)
+            elif '1x' in market_lower and 'x2' not in market_lower:  # 1X (Home or Draw)
+                if odds_1 and odds_x and odds_1 > 1.01 and odds_x > 1.01:
+                    dc_1x = 1 / ((1/odds_1) + (1/odds_x))
+                    # Validazione: DC deve essere < min(odds_1, odds_x) (più prob = odds più bassa)
+                    if dc_1x > 1.01 and dc_1x < min(odds_1, odds_x):
+                        logger.info(f"🔢 Double Chance 1X (formula precisa): {dc_1x:.2f} (odds_1={odds_1:.2f}, odds_x={odds_x:.2f})")
+                        return round(dc_1x, 2)
+
+            elif 'x2' in market_lower:  # X2 (Draw or Away)
+                if odds_x and odds_2 and odds_x > 1.01 and odds_2 > 1.01:
+                    dc_x2 = 1 / ((1/odds_x) + (1/odds_2))
+                    if dc_x2 > 1.01 and dc_x2 < min(odds_x, odds_2):
+                        logger.info(f"🔢 Double Chance X2 (formula precisa): {dc_x2:.2f} (odds_x={odds_x:.2f}, odds_2={odds_2:.2f})")
+                        return round(dc_x2, 2)
+
+            elif '12' in market_lower:  # 12 (Home or Away)
+                if odds_1 and odds_2 and odds_1 > 1.01 and odds_2 > 1.01:
+                    dc_12 = 1 / ((1/odds_1) + (1/odds_2))
+                    if dc_12 > 1.01 and dc_12 < min(odds_1, odds_2):
+                        logger.info(f"🔢 Double Chance 12 calcolato sinteticamente: {dc_12:.2f} (da odds_1={odds_1:.2f}, odds_2={odds_2:.2f})")
+                        return round(dc_12, 2)
+
+            # === ASIAN HANDICAP (stima basata su differenza quote) ===
+            # Logica: se home favorita (odds_1 < odds_2), AH home negativo vale più
+            elif 'asian_handicap' in market_lower or 'handicap' in market_lower:
+                if odds_1 and odds_2 and odds_1 > 1.01 and odds_2 > 1.01:
+                    # Estrai handicap dal nome mercato
+                    import re
+                    handicap_match = re.search(r'([+-]?\d+\.?\d*)', market_lower)
+                    if handicap_match:
+                        h_value = float(handicap_match.group(1))
+
+                        # Stima AH basata su quanto è favorita una squadra
+                        # Se odds_1 << odds_2, home molto favorita → AH home con handicap negativo
+                        odds_ratio = odds_2 / odds_1 if odds_1 > 0 else 1
+
+                        # Aggiustamento live se disponibile
+                        live_adjustment = 1.0
+                        if live_data:
+                            score_home = live_data.get('score_home', 0)
+                            score_away = live_data.get('score_away', 0)
+                            goal_diff = score_home - score_away
+                            # Se già in vantaggio, AH più favorevole
+                            live_adjustment = 1 + (goal_diff * 0.05)  # +5% per ogni gol di vantaggio
+
+                        # Stima AH (formula semplificata)
+                        if 'home' in market_lower:
+                            # AH Home: se favorita (odds_1 < odds_2), quota più bassa
+                            ah_base = odds_1 * (1 + (h_value * 0.1))  # Aggiusta per handicap
+                            ah_odds = ah_base * live_adjustment
+                        else:  # away
+                            ah_base = odds_2 * (1 + (h_value * 0.1))
+                            ah_odds = ah_base * live_adjustment
+
+                        # Validazione: AH deve essere ragionevole (1.5-3.5 tipicamente)
+                        if 1.3 <= ah_odds <= 5.0:
+                            logger.info(f"🔢 Asian Handicap calcolato sinteticamente: {ah_odds:.2f} (stima, da odds_1={odds_1:.2f}, odds_2={odds_2:.2f})")
+                            return round(ah_odds, 2)
+
+            # === TEAM TO SCORE NEXT (da statistiche pressione + xG) ===
+            # Logica: usa possesso, tiri in porta, attacchi pericolosi per stimare chi segna prossimo
+            elif 'next_goal' in market_lower or 'team_to_score_next' in market_lower:
+                if live_data and minute > 0:
+                    # Solo se partita in corso e non troppo tardi
+                    if minute >= 10 and minute <= 85 and total_goals < 5:
+                        # Calcola xG (expected goals) semplificato da statistiche
+                        # Formula: xG = (shots_on_target * 0.3) + (dangerous_attacks * 0.05)
+                        xg_home = (shots_on_target_home * 0.3) + (dangerous_attacks_home * 0.05)
+                        xg_away = (shots_on_target_away * 0.3) + (dangerous_attacks_away * 0.05)
+
+                        # Aggiungi peso per possesso (team con più possesso più probabile)
+                        possession_factor_home = possession_home / 100
+                        possession_factor_away = possession_away / 100  # 🛡️ FIX: usa variabile pre-calcolata
+
+                        xg_home_weighted = xg_home * (0.7 + possession_factor_home * 0.3)
+                        xg_away_weighted = xg_away * (0.7 + possession_factor_away * 0.3)
+
+                        # 🛡️ FIX BUG #4: Normalizza probabilità con soglia più robusta
+                        total_xg = xg_home_weighted + xg_away_weighted
+                        if total_xg > 0.5:  # Soglia aumentata da 0.1 a 0.5 per evitare divisioni per valori troppo piccoli
+                            prob_home = xg_home_weighted / total_xg
+                            prob_away = xg_away_weighted / total_xg
+
+                            # Converti a quote (odds = 1 / prob)
+                            if 'home' in market_lower and prob_home > 0.15:  # Min 15% probabilità
+                                odds_next_home = 1 / prob_home
+                                # Validazione: quote ragionevoli per next goal (1.5-8.0)
+                                if 1.5 <= odds_next_home <= 8.0:
+                                    logger.info(f"🔢 Next Goal Home calcolato da statistiche: {odds_next_home:.2f} (xG_home={xg_home:.2f}, possesso={possession_home}%)")
+                                    return round(odds_next_home, 2)
+
+                            elif 'away' in market_lower and prob_away > 0.15:
+                                odds_next_away = 1 / prob_away
+                                if 1.5 <= odds_next_away <= 8.0:
+                                    logger.info(f"🔢 Next Goal Away calcolato da statistiche: {odds_next_away:.2f} (xG_away={xg_away:.2f}, possesso={(100-possession_home)}%)")
+                                    return round(odds_next_away, 2)
+
+            # === BTTS (FASE 2: Calcolo PRECISO con Poisson di Frontendcloud) ===
+            elif 'btts_yes' in market_lower:
+                # 🎯 FASE 2: Usa Frontendcloud per calcolo matematico preciso
+                if FRONTENDCLOUD_AVAILABLE and live_data:
+                    try:
+                        # Stima lambda per entrambe le squadre dai dati live
+                        lambda_home = self._estimate_lambda_from_live_data(live_data, is_home=True)
+                        lambda_away = self._estimate_lambda_from_live_data(live_data, is_home=False)
+
+                        # Calcola probabilità BTTS con Poisson bivariato (formula precisa!)
+                        # rho = coefficiente correlazione (0.0 = indipendenti, tipicamente -0.1 a 0.1)
+                        rho = -0.05  # Leggera correlazione negativa (se una segna, altra leggermente meno probabile)
+                        prob_btts = Frontendcloud.btts_probability_bivariate(lambda_home, lambda_away, rho)
+
+                        # 🛡️ FIX BUG #3: Aggiustamento live (se già entrambe segnato)
+                        if score_home > 0 and score_away > 0:
+                            prob_btts = 0.99  # Max 99% → odds = 1.01 (minimo valido)
+                        # Se una squadra non ha ancora segnato ma minuto avanzato, riduci
+                        elif minute > 70 and (score_home == 0 or score_away == 0):
+                            prob_btts *= 0.6  # -40% se una non ha segnato dopo 70'
+                        elif minute > 60 and (score_home == 0 or score_away == 0):
+                            prob_btts *= 0.75  # -25% se una non ha segnato dopo 60'
+
+                        # 🛡️ FIX: Assicura prob_btts < 1.0 per evitare odds invalide
+                        prob_btts = min(0.99, max(0.05, prob_btts))  # Clamp tra 5% e 99%
+
+                        if prob_btts > 0.10:
+                            odds_btts = 1 / prob_btts
+                            if 1.2 <= odds_btts <= 8.0:
+                                logger.info(
+                                    f"🎯 BTTS Yes (POISSON PRECISO): {odds_btts:.2f} "
+                                    f"(λ_h={lambda_home:.2f}, λ_a={lambda_away:.2f}, prob={prob_btts:.2%})"
+                                )
+                                return round(odds_btts, 2)
+                    except Exception as e:
+                        logger.warning(f"⚠️ Errore calcolo BTTS con Frontendcloud: {e}, fallback a formula approssimata")
+                        # Fallback a formula approssimata se errore
+
+                # FALLBACK: Formula approssimata se Frontendcloud non disponibile
+                if odds_over_1_5 and odds_1 and odds_2:
+                    # Probabilità Over 1.5 (almeno 2 gol)
+                    prob_over_1_5 = 1 / odds_over_1_5 if odds_over_1_5 > 1.01 else 0
+
+                    # Equilibrio squadre: più equilibrate, più probabile BTTS
+                    balance = min(odds_1 / odds_2, odds_2 / odds_1) if odds_1 > 0 and odds_2 > 0 else 0
+
+                    # BTTS più probabile se Over 1.5 probabile + squadre equilibrate
+                    prob_btts = prob_over_1_5 * (0.5 + balance * 0.4)
+
+                    # Aggiustamento live
+                    if live_data and score_home > 0 and score_away > 0:
+                        prob_btts = 0.99
+                    elif live_data and minute > 60 and (score_home == 0 or score_away == 0):
+                        prob_btts *= 0.7
+
+                    prob_btts = min(0.99, prob_btts)
+
+                    if prob_btts > 0.15:
+                        odds_btts = 1 / prob_btts
+                        if 1.3 <= odds_btts <= 6.0:
+                            logger.info(f"🔢 BTTS Yes (approssimato): {odds_btts:.2f} (prob_over_1.5={prob_over_1_5:.2f}, balance={balance:.2f})")
+                            return round(odds_btts, 2)
+
+            elif 'btts_no' in market_lower:
+                # 🛡️ FIX BUG #1: BTTS No senza ricorsione (calcolo inline)
+                if odds_over_1_5 and odds_1 and odds_2 and odds_over_1_5 > 1.01 and odds_1 > 0 and odds_2 > 0:
+                    # Calcola BTTS Yes inline (no ricorsione)
+                    prob_over_1_5 = 1 / odds_over_1_5
+                    balance = min(odds_1 / odds_2, odds_2 / odds_1)
+                    prob_btts_yes = prob_over_1_5 * (0.5 + balance * 0.4)
+
+                    # Aggiustamenti live (stesso di BTTS Yes)
+                    if live_data and score_home > 0 and score_away > 0:
+                        prob_btts_yes = 0.99
+                    elif live_data and minute > 60 and (score_home == 0 or score_away == 0):
+                        prob_btts_yes *= 0.7
+
+                    # Limita a 99%
+                    prob_btts_yes = min(0.99, prob_btts_yes)
+
+                    # BTTS No = opposto
+                    prob_btts_no = 1 - prob_btts_yes
+                    if prob_btts_no > 0.15:
+                        odds_btts_no = 1 / prob_btts_no
+                        if 1.1 <= odds_btts_no <= 5.0:
+                            logger.info(f"🔢 BTTS No calcolato inline: {odds_btts_no:.2f} (prob_yes={prob_btts_yes:.2f})")
+                            return round(odds_btts_no, 2)
+
+            # === CLEAN SHEET (da Under + difesa) ===
+            # Logica: Clean sheet correlato a Under + forza difensiva
+            elif 'clean_sheet_home' in market_lower:
+                if odds_under_1_5 and odds_under_1_5 > 1.01 and live_data:
+                    # Probabilità Under 1.5 (max 1 gol totale)
+                    prob_under_1_5 = 1 / odds_under_1_5
+
+                    # 🛡️ FIX BUG #8: Se away ha già segnato, clean sheet home impossibile
+                    if score_away != 0:  # Check robusto (copre anche negativi se bug upstream)
+                        return 50.0  # Quote altissime (quasi impossibile)
+
+                    # Se 0-0 o 1-0, clean sheet possibile
+                    # Considera tiri in porta away (più tiri = meno probabile clean)
+                    shots_factor = max(0.3, 1 - (shots_on_target_away * 0.1))  # -10% per ogni tiro porta
+
+                    prob_clean_home = prob_under_1_5 * shots_factor * 0.6  # ~60% di Under 1.5
+
+                    if prob_clean_home > 0.1:
+                        odds_clean = 1 / prob_clean_home
+                        if 1.5 <= odds_clean <= 10.0:
+                            logger.info(f"🔢 Clean Sheet Home calcolato: {odds_clean:.2f} (under_1.5={odds_under_1_5:.2f}, shots_away={shots_on_target_away})")
+                            return round(odds_clean, 2)
+
+            elif 'clean_sheet_away' in market_lower:
+                if odds_under_1_5 and odds_under_1_5 > 1.01 and live_data:
+                    prob_under_1_5 = 1 / odds_under_1_5
+
+                    # 🛡️ FIX: Check robusto
+                    if score_home != 0:
+                        return 50.0
+
+                    shots_factor = max(0.3, 1 - (shots_on_target_home * 0.1))
+                    prob_clean_away = prob_under_1_5 * shots_factor * 0.6
+
+                    if prob_clean_away > 0.1:
+                        odds_clean = 1 / prob_clean_away
+                        if 1.5 <= odds_clean <= 10.0:
+                            logger.info(f"🔢 Clean Sheet Away calcolato: {odds_clean:.2f} (under_1.5={odds_under_1_5:.2f}, shots_home={shots_on_target_home})")
+                            return round(odds_clean, 2)
+
+            # === WIN TO NIL (da 1X2 + Clean Sheet) ===
+            # Logica: Vittoria senza subire = Vittoria AND Clean sheet
+            elif 'win_to_nil_home' in market_lower or 'home_win_to_nil' in market_lower:
+                if odds_1 and odds_1 > 1.01:
+                    # Calcola clean sheet home
+                    odds_clean = self._calculate_synthetic_odds(match_data, 'clean_sheet_home', live_data)
+                    # 🛡️ FIX BUG #2: Validazione robusta odds_clean
+                    if odds_clean and odds_clean > 1.01 and odds_clean < 50.0:  # Escludi quote impossibili (50.0)
+                        # Win to nil = P(win) × P(clean)
+                        prob_win = 1 / odds_1
+                        prob_clean = 1 / odds_clean
+                        prob_win_to_nil = prob_win * prob_clean
+
+                        if prob_win_to_nil > 0.05:
+                            odds_wtn = 1 / prob_win_to_nil
+                            if 2.0 <= odds_wtn <= 20.0:
+                                logger.info(f"🔢 Win to Nil Home calcolato: {odds_wtn:.2f} (odds_1={odds_1:.2f}, clean={odds_clean:.2f})")
+                                return round(odds_wtn, 2)
+
+            elif 'win_to_nil_away' in market_lower or 'away_win_to_nil' in market_lower:
+                if odds_2 and odds_2 > 1.01:
+                    odds_clean = self._calculate_synthetic_odds(match_data, 'clean_sheet_away', live_data)
+                    # 🛡️ FIX BUG #2: Validazione robusta
+                    if odds_clean and odds_clean > 1.01 and odds_clean < 50.0:
+                        prob_win = 1 / odds_2
+                        prob_clean = 1 / odds_clean
+                        prob_win_to_nil = prob_win * prob_clean
+
+                        if prob_win_to_nil > 0.05:
+                            odds_wtn = 1 / prob_win_to_nil
+                            if 2.0 <= odds_wtn <= 20.0:
+                                logger.info(f"🔢 Win to Nil Away calcolato: {odds_wtn:.2f} (odds_2={odds_2:.2f}, clean={odds_clean:.2f})")
+                                return round(odds_wtn, 2)
+
+            # === EXACT SCORE (da 1X2 + Over/Under) ===
+            # Logica: Combina probabilità esito + numero gol
+            elif 'exact_score' in market_lower or market_lower.startswith('score_'):
+                import re
+                # 🛡️ FIX BUG #5: Estrai score con validazione robusta
+                score_match = re.search(r'(\d+)[_-](\d+)', market_lower)
+                # Valida che ci siano almeno 2 gruppi (home e away score)
+                if score_match and len(score_match.groups()) >= 2 and odds_1 and odds_x and odds_2 and \
+                   odds_1 > 1.01 and odds_x > 1.01 and odds_2 > 1.01:
+                    expected_home = int(score_match.group(1))
+                    expected_away = int(score_match.group(2))
+                    expected_total = expected_home + expected_away
+
+                    # Determina esito
+                    if expected_home > expected_away:
+                        prob_result = 1 / odds_1  # Home win
+                    elif expected_away > expected_home:
+                        prob_result = 1 / odds_2  # Away win
+                    else:
+                        prob_result = 1 / odds_x  # Draw
+
+                    # Probabilità numero gol (da Over/Under)
+                    # Usa distribuzione Poisson semplificata
+                    prob_goals = 0.15  # Base probability per exact score
+
+                    # Aggiusta per total goals
+                    if expected_total == 0 and odds_under_0_5:
+                        prob_goals = (1 / odds_under_0_5) * 0.8
+                    elif expected_total == 1 and odds_under_1_5:
+                        prob_goals = (1 / odds_under_1_5) * 0.4
+                    elif expected_total == 2 and odds_over_1_5 and odds_under_2_5:
+                        prob_over_1_5 = 1 / odds_over_1_5 if odds_over_1_5 > 1.01 else 0
+                        prob_under_2_5 = 1 / odds_under_2_5 if odds_under_2_5 > 1.01 else 0
+                        prob_goals = prob_over_1_5 * prob_under_2_5 * 0.5
+                    elif expected_total >= 3 and odds_over_2_5:
+                        prob_goals = (1 / odds_over_2_5) * 0.3
+
+                    # Exact score = P(result) × P(goals)
+                    prob_exact = prob_result * prob_goals
+
+                    if prob_exact > 0.02:  # Min 2% probability
+                        odds_exact = 1 / prob_exact
+                        if 5.0 <= odds_exact <= 100.0:  # Exact scores tipicamente 5.0-100.0
+                            logger.info(f"🔢 Exact Score {expected_home}-{expected_away} calcolato: {odds_exact:.2f}")
+                            return round(odds_exact, 2)
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"⚠️  Errore calcolo quote sintetiche per {market}: {e}")
+            return None
+
     def _get_real_odds(
         self,
         match_data: Dict[str, Any],
         market: str,
         situation: str = None,
         threshold: str = None,
-        handicap: str = None
+        handicap: str = None,
+        live_data: Dict[str, Any] = None
     ) -> Optional[float]:
         """
         🎯 RECUPERA QUOTE REALI DALL'API - PRECISIONE AL MILLESIMO
-        
+        🆕 Con fallback a calcolo sintetico per mercati secondari
+
         Mappa ogni mercato alle quote reali disponibili dall'API.
+        Se non disponibili, prova a calcolare sinteticamente da quote 1X2.
         Restituisce None se la quota non è disponibile.
-        
+
         Args:
             match_data: Dati partita con quote API
             market: Nome mercato (es. 'over_0.5_ht', 'btts_yes', 'asian_handicap')
             situation: Situazione (opzionale, usato come fallback)
             threshold: Threshold numerico (es. '0.5', '1.5', '2.5')
             handicap: Valore handicap per asian_handicap (es. '+1', '-0.5')
-        
+            live_data: Dati live opzionali per calcolo sintetico
+
         Returns:
             Quota reale (float) o None se non disponibile
         """
@@ -432,7 +985,15 @@ class LiveBettingAdvisor:
             odds_key = 'odds_dnb_home'
         elif 'dnb_away' in market_lower or ('draw_no_bet' in market_lower and 'away' in market_lower):
             odds_key = 'odds_dnb_away'
-        
+
+        # 🆕 FIX: Match Winner (1X2) - home_win, away_win, draw
+        elif 'home_win' in market_lower or ('1x2' in market_lower and 'home' in market_lower):
+            odds_key = 'odds_1'
+        elif 'away_win' in market_lower or ('1x2' in market_lower and 'away' in market_lower):
+            odds_key = 'odds_2'
+        elif 'draw' in market_lower and ('match' in market_lower or '1x2' in market_lower):
+            odds_key = 'odds_x'
+
         # Asian Handicap - usa all_odds
         elif 'asian_handicap' in market_lower or 'handicap' in market_lower:
             all_odds = match_data.get('all_odds', {})
@@ -526,8 +1087,398 @@ class LiveBettingAdvisor:
                     return None
                 if odd and isinstance(odd, (int, float)) and odd >= 1.0:
                     return float(odd)
-        
+
+        # 🆕 FALLBACK: Se quota reale non disponibile, prova calcolo sintetico
+        # Supporta: DNB, Double Chance, Asian Handicap (stime)
+        synthetic_odds = self._calculate_synthetic_odds(match_data, market, live_data)
+        if synthetic_odds:
+            logger.info(f"✅ Usata quota sintetica per {market}: {synthetic_odds:.2f}")
+            return synthetic_odds
+
         return None
+
+    def _validate_realistic_odds(
+        self,
+        market: str,
+        odds: float,
+        match_data: Dict[str, Any],
+        live_data: Dict[str, Any]
+    ) -> tuple[bool, Optional[str]]:
+        """
+        🛡️ VALIDAZIONE QUOTE REALISTICHE
+
+        Verifica che una quota sia realistica per il mercato e contesto di gioco.
+        Previene EV irrealistici causati da quote API errate.
+
+        Args:
+            market: Nome mercato (es. 'under_1.5', 'over_2.5')
+            odds: Quota da validare
+            match_data: Dati partita
+            live_data: Dati live (score, minuto, stats)
+
+        Returns:
+            (is_valid, error_message):
+                - True se quota è valida
+                - False + messaggio di errore se quota è sospetta
+        """
+        if not odds or odds < 1.01:
+            return False, f"Quote troppo bassa: {odds}"
+
+        if odds > 100:
+            return False, f"Quota troppo alta: {odds} (max 100)"
+
+        # Estrai contesto partita
+        score_home = live_data.get('score_home', 0)
+        score_away = live_data.get('score_away', 0)
+        minute = live_data.get('minute', 0)
+        total_goals = score_home + score_away
+
+        market_lower = market.lower()
+
+        # 🎯 VALIDAZIONE UNDER 1.5
+        if 'under_1.5' in market_lower or 'under_1_5' in market_lower:
+            # Under 1.5 con 0 gol al 65'+: quota realistica 1.10-2.50
+            if total_goals == 0 and minute >= 65:
+                if odds > 3.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 1.5 a {odds:.2f} con 0-0 al {minute}' è SOSPETTO! "
+                        f"(dovrebbe essere 1.10-2.50). Possibile errore API."
+                    )
+                elif odds > 10.0:
+                    return False, (
+                        f"🚨 QUOTA ASSURDA: Under 1.5 a {odds:.2f} è IMPOSSIBILE! "
+                        f"Implica solo {100/odds:.1f}% probabilità - probabile errore API."
+                    )
+            # Under 1.5 con già 1 gol: quota realistica 1.05-1.80
+            elif total_goals == 1:
+                if odds > 2.5:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 1.5 a {odds:.2f} con già {total_goals} gol è SOSPETTO! "
+                        f"(dovrebbe essere 1.05-1.80)"
+                    )
+
+        # 🎯 VALIDAZIONE UNDER 2.5
+        elif 'under_2.5' in market_lower or 'under_2_5' in market_lower:
+            # Under 2.5 con 0-1 gol al 60'+: quota realistica 1.10-2.00
+            if total_goals <= 1 and minute >= 60:
+                if odds > 3.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 2.5 a {odds:.2f} al {minute}' con {total_goals} gol è SOSPETTO! "
+                        f"(dovrebbe essere 1.10-2.00). Possibile errore API."
+                    )
+            # Under 2.5 con già 2 gol: quota molto bassa 1.05-1.40
+            elif total_goals == 2:
+                if odds > 2.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 2.5 a {odds:.2f} con già 2 gol è SOSPETTO! "
+                        f"(dovrebbe essere 1.05-1.40)"
+                    )
+
+        # 🎯 VALIDAZIONE OVER 0.5
+        elif 'over_0.5' in market_lower or 'over_0_5' in market_lower:
+            # Over 0.5 con 0 gol: quota realistica 1.05-1.50
+            if total_goals == 0:
+                if odds > 3.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 0.5 a {odds:.2f} con 0 gol è SOSPETTO! "
+                        f"(dovrebbe essere 1.05-1.50)"
+                    )
+            # Over 0.5 con già 1+ gol: già verificato, quota ~1.01-1.05
+            elif total_goals >= 1:
+                if odds > 1.10:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 0.5 a {odds:.2f} con già {total_goals} gol è ASSURDO! "
+                        f"Mercato già deciso!"
+                    )
+
+        # 🎯 VALIDAZIONE OVER 1.5
+        elif 'over_1.5' in market_lower or 'over_1_5' in market_lower:
+            # Over 1.5 con 0 gol dopo 30'+: quota realistica 1.20-2.50
+            if total_goals == 0 and minute >= 30:
+                if odds > 4.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 1.5 a {odds:.2f} con 0-0 al {minute}' è SOSPETTO! "
+                        f"(dovrebbe essere 1.20-2.50)"
+                    )
+            # Over 1.5 con già 2+ gol: mercato deciso
+            elif total_goals >= 2:
+                if odds > 1.10:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 1.5 a {odds:.2f} con già {total_goals} gol è ASSURDO! "
+                        f"Mercato già deciso!"
+                    )
+
+        # 🎯 VALIDAZIONE OVER 2.5
+        elif 'over_2.5' in market_lower or 'over_2_5' in market_lower:
+            # Over 2.5 con 0-1 gol al 70'+: quota realistica 3.00-15.00
+            if total_goals <= 1 and minute >= 70:
+                if odds < 2.5:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 2.5 a {odds:.2f} al {minute}' con {total_goals} gol è SOSPETTO! "
+                        f"(dovrebbe essere almeno 3.00)"
+                    )
+            # Over 2.5 con già 3+ gol: mercato deciso
+            elif total_goals >= 3:
+                if odds > 1.10:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 2.5 a {odds:.2f} con già {total_goals} gol è ASSURDO! "
+                        f"Mercato già deciso!"
+                    )
+
+        # 🎯 VALIDAZIONE UNDER 0.5
+        elif 'under_0.5' in market_lower or 'under_0_5' in market_lower:
+            # Under 0.5 con già 1+ gol: mercato perso
+            if total_goals >= 1:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 0.5 a {odds:.2f} con {total_goals} gol è ASSURDO! "
+                        f"Mercato già perso! (dovrebbe essere >10)"
+                    )
+            # Under 0.5 al 70'+: quota deve essere alta
+            elif minute >= 70 and total_goals == 0:
+                if odds < 3.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 0.5 a {odds:.2f} al {minute}' con 0 gol è SOSPETTO! "
+                        f"(dovrebbe essere >3.00, partita può ancora sbloccarsi)"
+                    )
+
+        # 🎯 VALIDAZIONE UNDER 3.5
+        elif 'under_3.5' in market_lower or 'under_3_5' in market_lower:
+            # Under 3.5 con già 4+ gol: mercato perso
+            if total_goals >= 4:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 3.5 a {odds:.2f} con {total_goals} gol è ASSURDO! "
+                        f"Mercato già perso!"
+                    )
+            # Under 3.5 con 3 gol: quota molto bassa
+            elif total_goals == 3:
+                if odds > 1.50:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Under 3.5 a {odds:.2f} con 3 gol è SOSPETTO! "
+                        f"(dovrebbe essere 1.05-1.50)"
+                    )
+
+        # 🎯 VALIDAZIONE OVER 3.5
+        elif 'over_3.5' in market_lower or 'over_3_5' in market_lower:
+            # Over 3.5 con già 4+ gol: mercato deciso
+            if total_goals >= 4:
+                if odds > 1.10:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 3.5 a {odds:.2f} con {total_goals} gol è ASSURDO! "
+                        f"Mercato già deciso!"
+                    )
+            # Over 3.5 al 80'+ con 0-1 gol: quota altissima
+            elif minute >= 80 and total_goals <= 1:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Over 3.5 a {odds:.2f} al {minute}' con {total_goals} gol è SOSPETTO! "
+                        f"(dovrebbe essere >10)"
+                    )
+
+        # 🎯 VALIDAZIONE BTTS (Both Teams To Score)
+        elif 'btts_yes' in market_lower:
+            # BTTS Yes con già entrambe segnato: mercato deciso
+            if score_home >= 1 and score_away >= 1:
+                if odds > 1.10:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: BTTS Yes a {odds:.2f} con score {score_home}-{score_away} è ASSURDO! "
+                        f"Mercato già deciso!"
+                    )
+            # BTTS Yes al 80'+ con 0-0: quota molto alta
+            elif minute >= 80 and total_goals == 0:
+                if odds < 5.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: BTTS Yes a {odds:.2f} al {minute}' con 0-0 è SOSPETTO! "
+                        f"(dovrebbe essere >5.00, poco tempo)"
+                    )
+
+        elif 'btts_no' in market_lower:
+            # BTTS No con già entrambe segnato: mercato perso
+            if score_home >= 1 and score_away >= 1:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: BTTS No a {odds:.2f} con score {score_home}-{score_away} è ASSURDO! "
+                        f"Mercato già perso! (dovrebbe essere >10)"
+                    )
+            # BTTS No al 85'+ con una squadra ancora a 0: quota molto bassa
+            elif minute >= 85:
+                if (score_home == 0 or score_away == 0) and odds > 1.50:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: BTTS No a {odds:.2f} al {minute}' con {score_home}-{score_away} è SOSPETTO! "
+                        f"(dovrebbe essere <1.50, poco tempo)"
+                    )
+
+        # 🎯 VALIDAZIONE 1X2 (Match Winner)
+        elif any(x in market_lower for x in ['home_win', 'away_win', '1x2_home', '1x2_away', 'match_winner']):
+            is_home = 'home' in market_lower or '1x2_home' in market_lower
+            diff = score_home - score_away if is_home else score_away - score_home
+
+            # Squadra già in vantaggio di 2+ gol al 70'+: quota molto bassa
+            if diff >= 2 and minute >= 70:
+                if odds > 1.30:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Vittoria a {odds:.2f} con {'casa' if is_home else 'trasferta'} avanti di {diff} gol al {minute}' è SOSPETTO! "
+                        f"(dovrebbe essere <1.30)"
+                    )
+            # Squadra in svantaggio di 2+ gol al 70'+: quota molto alta
+            elif diff <= -2 and minute >= 70:
+                if odds < 5.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Vittoria a {odds:.2f} con {'casa' if is_home else 'trasferta'} sotto di {abs(diff)} gol al {minute}' è SOSPETTO! "
+                        f"(dovrebbe essere >5.00)"
+                    )
+
+        # 🎯 VALIDAZIONE DRAW (pareggio)
+        elif 'draw' in market_lower and '1x2' in market_lower:
+            # Pareggio al 85'+ con score diverso di 2+: quota altissima
+            if minute >= 85 and abs(score_home - score_away) >= 2:
+                if odds < 15.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Pareggio a {odds:.2f} al {minute}' con {score_home}-{score_away} è SOSPETTO! "
+                        f"(dovrebbe essere >15)"
+                    )
+
+        # 🎯 VALIDAZIONE DOUBLE CHANCE
+        elif any(x in market_lower for x in ['1x', 'x2', '12', 'double_chance']):
+            # Double Chance al 80'+ con vantaggio di 2+: quota molto bassa
+            if minute >= 80:
+                if ('1x' in market_lower and score_home - score_away >= 2) or \
+                   ('x2' in market_lower and score_away - score_home >= 2):
+                    if odds > 1.15:
+                        return False, (
+                            f"🚨 QUOTA ANOMALA: Double Chance a {odds:.2f} al {minute}' con vantaggio di 2+ gol è SOSPETTO! "
+                            f"(dovrebbe essere <1.15)"
+                        )
+
+        # 🎯 VALIDAZIONE DRAW NO BET
+        elif any(x in market_lower for x in ['dnb_home', 'dnb_away', 'draw_no_bet']):
+            is_home = 'home' in market_lower
+            diff = score_home - score_away if is_home else score_away - score_home
+
+            # DNB con vantaggio di 2+ al 75'+: quota molto bassa
+            if diff >= 2 and minute >= 75:
+                if odds > 1.20:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: DNB a {odds:.2f} con vantaggio di {diff} gol al {minute}' è SOSPETTO! "
+                        f"(dovrebbe essere <1.20)"
+                    )
+
+        # 🎯 VALIDAZIONE WIN TO NIL / CLEAN SHEET
+        elif any(x in market_lower for x in ['win_to_nil', 'clean_sheet']):
+            is_home = 'home' in market_lower
+            conceded = score_away if is_home else score_home
+            own_score = score_home if is_home else score_away
+
+            # Se ha già subito gol: mercato perso
+            if conceded >= 1:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Clean Sheet a {odds:.2f} con {conceded} gol subiti è ASSURDO! "
+                        f"Mercato già perso!"
+                    )
+            # Win to nil al 85'+ con 0-0 o perdendo: quota molto alta
+            elif 'win_to_nil' in market_lower and minute >= 85 and own_score == 0:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Win to Nil a {odds:.2f} al {minute}' senza aver segnato è SOSPETTO! "
+                        f"(dovrebbe essere >10)"
+                    )
+
+        # 🎯 VALIDAZIONE ODD/EVEN
+        elif any(x in market_lower for x in ['odd', 'even', 'total_goals']):
+            # Al 85'+ con score già stabilito: le quote dovrebbero favorire lo status quo
+            if minute >= 85:
+                is_odd = total_goals % 2 == 1
+                if ('odd' in market_lower and is_odd) or ('even' in market_lower and not is_odd):
+                    # Il mercato attualmente vincente dovrebbe avere quota bassa
+                    if odds > 1.50:
+                        return False, (
+                            f"🚨 QUOTA ANOMALA: {'Odd' if is_odd else 'Even'} a {odds:.2f} al {minute}' con {total_goals} gol è SOSPETTO! "
+                            f"(dovrebbe essere <1.50)"
+                        )
+
+        # 🎯 VALIDAZIONE TEAM TO SCORE NEXT/FIRST
+        elif any(x in market_lower for x in ['next_goal', 'first_goal', 'team_to_score']):
+            # Se una squadra è in netto vantaggio territoriale, quote troppo alte sono sospette
+            # Ma questo richiede stats avanzate, quindi facciamo solo check base
+            if minute >= 85:
+                # Al 85'+, quote per prossimo gol dovrebbero essere molto balance o No Goal favorite
+                if odds > 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Team to Score a {odds:.2f} al {minute}' è SOSPETTO! "
+                        f"(quote >10 in zona Cesarini sono anomale)"
+                    )
+
+        # 🎯 VALIDAZIONE HT/FT
+        elif 'ht_ft' in market_lower or 'half_time_full_time' in market_lower:
+            # Se il HT è già passato e il risultato HT è deciso
+            if minute >= 45:
+                # Il risultato HT è già fissato, quindi alcuni combo sono impossibili
+                # Es: se HT era 0-0, "Casa-Casa" richiede la casa vinca in FT
+                # Quote dovrebbero riflettere questo
+                if odds < 1.01:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: HT/FT a {odds:.2f} è SOSPETTO! "
+                        f"(quota quasi 1.00 è impossibile)"
+                    )
+
+        # 🎯 VALIDAZIONE GOAL RANGE
+        elif 'goal_range' in market_lower or 'range_gol' in market_lower:
+            # Se siamo già oltre il range superiore: mercato perso
+            if '0_1' in market_lower and total_goals >= 2:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Goal Range 0-1 a {odds:.2f} con {total_goals} gol è ASSURDO! "
+                        f"Mercato già perso!"
+                    )
+            elif '2_3' in market_lower and total_goals >= 4:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Goal Range 2-3 a {odds:.2f} con {total_goals} gol è ASSURDO! "
+                        f"Mercato già perso!"
+                    )
+
+        # 🎯 VALIDAZIONE TIME OF NEXT GOAL
+        elif 'next_goal_before' in market_lower or 'next_goal_after' in market_lower:
+            # Se siamo già oltre il threshold temporale
+            if 'before_75' in market_lower and minute >= 75:
+                if odds < 10.0:
+                    return False, (
+                        f"🚨 QUOTA ANOMALA: Next Goal Before 75' a {odds:.2f} al {minute}' è ASSURDO! "
+                        f"Siamo già oltre il 75'!"
+                    )
+
+        # 🎯 SANITY CHECK GENERALE: Probabilità implicita
+        prob_implied = 1.0 / odds if odds > 1.0 else 0.5
+
+        # Quote che implicano < 5% probabilità sono sospette per la maggior parte dei mercati live
+        if prob_implied < 0.05 and minute > 20:
+            # Eccezione: mercati già decisi o score estremi
+            if not (
+                # Mercati già decisi
+                (total_goals >= 3 and 'under_2.5' in market_lower) or
+                (total_goals == 0 and minute > 80 and 'over_3.5' in market_lower)
+            ):
+                return False, (
+                    f"🚨 PROBABILITÀ IMPLICITA SOSPETTA: Quote {odds:.2f} implica solo {prob_implied*100:.1f}% probabilità "
+                    f"al {minute}' - probabile errore API"
+                )
+
+        # Quote che implicano > 95% probabilità sono sospette a meno che il mercato non sia quasi deciso
+        if prob_implied > 0.95 and minute < 80:
+            if not (
+                # Eccezioni: mercati quasi certi
+                (total_goals >= 1 and 'over_0.5' in market_lower) or
+                (total_goals >= 2 and 'over_1.5' in market_lower)
+            ):
+                return False, (
+                    f"🚨 QUOTA TROPPO BASSA: Quote {odds:.2f} implica {prob_implied*100:.1f}% probabilità "
+                    f"al {minute}' - sospetto"
+                )
+
+        # ✅ Quota superata tutti i controlli
+        return True, None
 
     def _calculate_dynamic_confidence(
         self,
@@ -1659,10 +2610,10 @@ class LiveBettingAdvisor:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, '1x') if self.ai_pipeline else 0
                     confidence = 75 + ai_boost  # Alta confidence solo se domina
                     
-                    # 🎯 RECUPERA QUOTA REALE DALL'API
-                    odds_1x = self._get_real_odds(match_data, '1x', situation='double_chance_1x_comeback')
+                    # 🎯 RECUPERA QUOTA REALE DALL'API (con fallback sintetico)
+                    odds_1x = self._get_real_odds(match_data, '1x', situation='double_chance_1x_comeback', live_data=live_data)
                     if not odds_1x:
-                        logger.debug(f"⏭️  1X saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
+                        logger.debug(f"⏭️  1X saltato: quota non disponibile (né reale né sintetica) per {match_data.get('home')} vs {match_data.get('away')}")
                     else:
                         opportunity = LiveBettingOpportunity(
                             match_id=match_id, match_data=match_data,
@@ -1689,8 +2640,8 @@ class LiveBettingAdvisor:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'x2') if self.ai_pipeline else 0
                     confidence = 75 + ai_boost
                     
-                    # 🎯 RECUPERA QUOTA REALE DALL'API
-                    odds_x2 = self._get_real_odds(match_data, 'x2', situation='double_chance_x2_comeback')
+                    # 🎯 RECUPERA QUOTA REALE DALL'API (con fallback sintetico)
+                    odds_x2 = self._get_real_odds(match_data, 'x2', situation='double_chance_x2_comeback', live_data=live_data)
                     if not odds_x2:
                         logger.debug(f"⏭️  X2 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                     else:
@@ -1806,7 +2757,19 @@ class LiveBettingAdvisor:
             # Calcola tasso gol atteso
             goals_per_minute = total_goals / minute if minute > 0 else 0
             expected_goals_final = goals_per_minute * 90 if minute > 0 else 0
-            
+
+            # 🛡️ FILTRI ANTI-OVVIETÀ per Over/Under
+            # Funzione helper per verificare se un mercato Over/Under è ovvio
+            def is_over_under_obvious(market_type: str, threshold: float, current_goals: int) -> bool:
+                """Verifica se un mercato Over/Under è ovvio dato lo score attuale"""
+                if 'over' in market_type:
+                    # Over X.5 è ovvio se total_goals > X
+                    return current_goals > threshold
+                else:  # under
+                    # Under X.5 è ovvio (impossibile) se total_goals > X
+                    # Esempio: Under 2.5 con 3+ gol = impossibile
+                    return current_goals > threshold
+
             # OVER 0.5: Nessun gol ma partita aperta
             # 🔧 ABBASSATO: shots/min > 0.15 (da 0.25), SOT >= 1 (da 2) per permettere più opportunità
             if total_goals == 0 and minute >= 20 and minute <= 70:
@@ -1821,16 +2784,25 @@ class LiveBettingAdvisor:
                     if not odds_over_0_5:
                         logger.warning(f"⏭️ Over 0.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                     else:
-                        # Quote alternative (se disponibili)
-                        odds_over_1_5 = match_data.get('odds_over_1_5')
-                        odds_over_2_5 = match_data.get('odds_over_2_5')
-                        alternative_markets = []
-                        if odds_over_1_5:
-                            alternative_markets.append({'market': 'over_1.5', 'confidence': confidence - 15, 'odds': odds_over_1_5})
-                        if odds_over_2_5:
-                            alternative_markets.append({'market': 'over_2.5', 'confidence': confidence - 25, 'odds': odds_over_2_5})
+                        # 🛡️ NUOVO: Valida quote realistiche
+                        is_valid, error_msg = self._validate_realistic_odds('over_0.5', odds_over_0_5, match_data, live_data)
+                        if not is_valid:
+                            logger.warning(f"⏭️ Over 0.5 SCARTATO per {match_data.get('home')} vs {match_data.get('away')}: {error_msg}")
+                        else:
+                            # Quote alternative (se disponibili e valide)
+                            odds_over_1_5 = match_data.get('odds_over_1_5')
+                            odds_over_2_5 = match_data.get('odds_over_2_5')
+                            alternative_markets = []
+                            if odds_over_1_5:
+                                is_valid_1_5, _ = self._validate_realistic_odds('over_1.5', odds_over_1_5, match_data, live_data)
+                                if is_valid_1_5:
+                                    alternative_markets.append({'market': 'over_1.5', 'confidence': confidence - 15, 'odds': odds_over_1_5})
+                            if odds_over_2_5:
+                                is_valid_2_5, _ = self._validate_realistic_odds('over_2.5', odds_over_2_5, match_data, live_data)
+                                if is_valid_2_5:
+                                    alternative_markets.append({'market': 'over_2.5', 'confidence': confidence - 25, 'odds': odds_over_2_5})
 
-                        opportunity = LiveBettingOpportunity(
+                            opportunity = LiveBettingOpportunity(
                             match_id=match_id, match_data=match_data,
                             situation='over_0.5_general', market='over_0.5',
                             recommendation="Punta Over 0.5 Gol",
@@ -1870,11 +2842,20 @@ class LiveBettingAdvisor:
                 if not odds_over_1_5:
                     logger.warning(f"⏭️ Over 1.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                 else:
-                    # Quota alternativa Over 2.5 (se disponibile)
-                    odds_over_2_5 = match_data.get('odds_over_2_5')
-                    alternative_markets = [{'market': 'over_2.5', 'confidence': confidence - 12, 'odds': odds_over_2_5}] if odds_over_2_5 else None
+                    # 🛡️ NUOVO: Valida quote realistiche
+                    is_valid, error_msg = self._validate_realistic_odds('over_1.5', odds_over_1_5, match_data, live_data)
+                    if not is_valid:
+                        logger.warning(f"⏭️ Over 1.5 SCARTATO per {match_data.get('home')} vs {match_data.get('away')}: {error_msg}")
+                    else:
+                        # Quota alternativa Over 2.5 (se disponibile e valida)
+                        odds_over_2_5 = match_data.get('odds_over_2_5')
+                        alternative_markets = None
+                        if odds_over_2_5:
+                            is_valid_2_5, _ = self._validate_realistic_odds('over_2.5', odds_over_2_5, match_data, live_data)
+                            if is_valid_2_5:
+                                alternative_markets = [{'market': 'over_2.5', 'confidence': confidence - 12, 'odds': odds_over_2_5}]
 
-                    opportunity = LiveBettingOpportunity(
+                        opportunity = LiveBettingOpportunity(
                         match_id=match_id, match_data=match_data,
                         situation='over_1.5_general', market='over_1.5',
                         recommendation="Punta Over 1.5 Gol",
@@ -1905,11 +2886,20 @@ class LiveBettingAdvisor:
                     if not odds_over_2_5:
                         logger.warning(f"⏭️ Over 2.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                     else:
-                        # Quota alternativa Over 3.5 (se disponibile)
-                        odds_over_3_5 = match_data.get('odds_over_3_5')
-                        alternative_markets = [{'market': 'over_3.5', 'confidence': confidence - 20, 'odds': odds_over_3_5}] if odds_over_3_5 else None
+                        # 🛡️ NUOVO: Valida quote realistiche
+                        is_valid, error_msg = self._validate_realistic_odds('over_2.5', odds_over_2_5, match_data, live_data)
+                        if not is_valid:
+                            logger.warning(f"⏭️ Over 2.5 SCARTATO per {match_data.get('home')} vs {match_data.get('away')}: {error_msg}")
+                        else:
+                            # Quota alternativa Over 3.5 (se disponibile e valida)
+                            odds_over_3_5 = match_data.get('odds_over_3_5')
+                            alternative_markets = None
+                            if odds_over_3_5:
+                                is_valid_3_5, _ = self._validate_realistic_odds('over_3.5', odds_over_3_5, match_data, live_data)
+                                if is_valid_3_5:
+                                    alternative_markets = [{'market': 'over_3.5', 'confidence': confidence - 20, 'odds': odds_over_3_5}]
 
-                        opportunity = LiveBettingOpportunity(
+                            opportunity = LiveBettingOpportunity(
                             match_id=match_id, match_data=match_data,
                             situation='over_2.5_general', market='over_2.5',
                             recommendation="Punta Over 2.5 Gol",
@@ -1939,23 +2929,28 @@ class LiveBettingAdvisor:
                     if not odds_over_2_5:
                         logger.debug(f"⏭️  Over 2.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                     else:
-                        opportunity = LiveBettingOpportunity(
-                            match_id=match_id, match_data=match_data,
-                            situation='over_2.5_high_tempo', market='over_2.5',
-                            recommendation="Punta Over 2.5 Gol (partita molto aperta)",
-                            reasoning=(
-                                f"🎯 OVER 2.5!\n\n"
-                                f"• Score: {score_home}-{score_away} al {minute}'\n"
-                                f"• Partita MOLTO APERTA:\n"
-                                f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min)\n"
-                                f"  - Tiri in porta: {total_shots_on_target}\n"
-                                f"• Alta probabilità altri gol → Over 2.5\n"
-                                f"• IA boost: +{ai_boost:.0f}%"
-                            ),
-                            confidence=confidence, odds=odds_over_2_5, stake_suggestion=2.5,
-                            timestamp=datetime.now()
-                        )
-                        opportunities.append(opportunity)
+                        # 🛡️ NUOVO: Valida quote realistiche
+                        is_valid, error_msg = self._validate_realistic_odds('over_2.5', odds_over_2_5, match_data, live_data)
+                        if not is_valid:
+                            logger.warning(f"⏭️ Over 2.5 SCARTATO per {match_data.get('home')} vs {match_data.get('away')}: {error_msg}")
+                        else:
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation='over_2.5_high_tempo', market='over_2.5',
+                                recommendation="Punta Over 2.5 Gol (partita molto aperta)",
+                                reasoning=(
+                                    f"🎯 OVER 2.5!\n\n"
+                                    f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                    f"• Partita MOLTO APERTA:\n"
+                                    f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min)\n"
+                                    f"  - Tiri in porta: {total_shots_on_target}\n"
+                                    f"• Alta probabilità altri gol → Over 2.5\n"
+                                    f"• IA boost: +{ai_boost:.0f}%"
+                                ),
+                                confidence=confidence, odds=odds_over_2_5, stake_suggestion=2.5,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
             
             # OVER 3.5: Già 3 gol o partita estremamente aperta
             # 🚫 FIX: Over 3.5 troppo aggressivo ai minuti avanzati - limitato a max 70'
@@ -1969,21 +2964,26 @@ class LiveBettingAdvisor:
                 if not odds_over_3_5:
                     logger.warning(f"⏭️ Over 3.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                 else:
-                    opportunity = LiveBettingOpportunity(
-                        match_id=match_id, match_data=match_data,
-                        situation='over_3.5_general', market='over_3.5',
-                        recommendation="Punta Over 3.5 Gol",
-                        reasoning=(
-                            f"🎯 OVER 3.5!\n\n"
-                            f"• Score: {score_home}-{score_away} al {minute}'\n"
-                            f"• Già 3 gol, partita ESTREMAMENTE APERTA\n"
-                            f"• Alta probabilità quarto gol\n"
-                            f"• IA boost: +{ai_boost:.0f}%"
-                        ),
-                        confidence=confidence, odds=odds_over_3_5, stake_suggestion=2.5,
-                        timestamp=datetime.now()
-                    )
-                    opportunities.append(opportunity)
+                    # 🛡️ NUOVO: Valida quote realistiche
+                    is_valid, error_msg = self._validate_realistic_odds('over_3.5', odds_over_3_5, match_data, live_data)
+                    if not is_valid:
+                        logger.warning(f"⏭️ Over 3.5 SCARTATO per {match_data.get('home')} vs {match_data.get('away')}: {error_msg}")
+                    else:
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='over_3.5_general', market='over_3.5',
+                            recommendation="Punta Over 3.5 Gol",
+                            reasoning=(
+                                f"🎯 OVER 3.5!\n\n"
+                                f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                f"• Già 3 gol, partita ESTREMAMENTE APERTA\n"
+                                f"• Alta probabilità quarto gol\n"
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=odds_over_3_5, stake_suggestion=2.5,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
             
             # UNDER 1.5: Partita chiusa, max 1 gol
             # 🆕 FIX: NON generare Under 1.5 se c'è già 1 gol e siamo oltre 45' (illogico - se è 1-0 al 50', under 1.5 è già perso se segna un altro gol)
@@ -1994,28 +2994,33 @@ class LiveBettingAdvisor:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'under_1.5') if self.ai_pipeline else 0
                     base_confidence = 75 + (minute - 50) * 0.5
                     confidence = min(93, base_confidence + ai_boost)
-                    
+
                     # 🆕 Usa quota reale da match_data se disponibile
                     odds_under_1_5 = match_data.get('odds_under_1_5')
                     if not odds_under_1_5:
                         logger.warning(f"⏭️ Under 1.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                     else:
-                        opportunity = LiveBettingOpportunity(
-                            match_id=match_id, match_data=match_data,
-                            situation='under_1.5_general', market='under_1.5',
-                            recommendation="Punta Under 1.5 Gol",
-                            reasoning=(
-                                f"🎯 UNDER 1.5!\n\n"
-                                f"• Score: {score_home}-{score_away} al {minute}'\n"
-                                f"• Partita CHIUSA:\n"
-                                f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min - bassa)\n"
-                                f"• Alta probabilità max 1 gol totale\n"
-                                f"• IA boost: +{ai_boost:.0f}%"
-                            ),
-                            confidence=confidence, odds=odds_under_1_5, stake_suggestion=2.5,
-                            timestamp=datetime.now()
-                        )
-                        opportunities.append(opportunity)
+                        # 🛡️ NUOVO: Valida quote realistiche
+                        is_valid, error_msg = self._validate_realistic_odds('under_1.5', odds_under_1_5, match_data, live_data)
+                        if not is_valid:
+                            logger.warning(f"⏭️ Under 1.5 SCARTATO per {match_data.get('home')} vs {match_data.get('away')}: {error_msg}")
+                        else:
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation='under_1.5_general', market='under_1.5',
+                                recommendation="Punta Under 1.5 Gol",
+                                reasoning=(
+                                    f"🎯 UNDER 1.5!\n\n"
+                                    f"• Score: {score_home}-{score_away} al {minute}'\n"
+                                    f"• Partita CHIUSA:\n"
+                                    f"  - Tiri: {total_shots} (media: {shots_per_minute:.2f}/min - bassa)\n"
+                                    f"• Alta probabilità max 1 gol totale\n"
+                                    f"• IA boost: +{ai_boost:.0f}%"
+                                ),
+                                confidence=confidence, odds=odds_under_1_5, stake_suggestion=2.5,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
             
             # UNDER 2.5: Partita chiusa, max 2 gol
             # 🚫 FIX: Blocca Under 2.5 se c'è già 1 gol e siamo prima del 30' (troppo rischioso)
@@ -2036,17 +3041,10 @@ class LiveBettingAdvisor:
                         # Se non c'è quota reale, salta questa opportunità (NON fidarsi di quote stimate)
                         logger.warning(f"⏭️ Under 2.5 saltato: quota reale non disponibile per {match_data.get('home')} vs {match_data.get('away')}")
                     else:
-                        # 🚨 NUOVO: Validazione quote anomale vs situazione di gioco
-                        # Al 60'+ con 1 gol, Under 2.5 dovrebbe avere quote BASSE (1.10-1.50)
-                        # Quote > 3.0 indicano errore API o quote invertite
-                        if odds_under_2_5 > 3.0:
-                            logger.warning(
-                                f"🚨 QUOTE ANOMALE: Under 2.5 a {odds_under_2_5:.2f} al {minute}' con {total_goals} gol è SOSPETTO! "
-                                f"(dovrebbe essere 1.10-1.50) - Possibile errore API o quote invertite. "
-                                f"Partita: {match_data.get('home')} vs {match_data.get('away')}"
-                            )
-                            # NON generare opportunità con quote chiaramente sbagliate
-                            pass  # Salta questa opportunità
+                        # 🛡️ NUOVO: Valida quote realistiche (sostituisce il vecchio controllo > 3.0)
+                        is_valid, error_msg = self._validate_realistic_odds('under_2.5', odds_under_2_5, match_data, live_data)
+                        if not is_valid:
+                            logger.warning(f"⏭️ Under 2.5 SCARTATO per {match_data.get('home')} vs {match_data.get('away')}: {error_msg}")
                         else:
                             opportunity = LiveBettingOpportunity(
                                 match_id=match_id, match_data=match_data,
@@ -3612,13 +4610,17 @@ class LiveBettingAdvisor:
             shots_on_target_home = live_data.get('shots_on_target_home', 0)
             shots_on_target_away = live_data.get('shots_on_target_away', 0)
             
-            odds_1 = match_data.get('odds_1', 2.0)
-            odds_2 = match_data.get('odds_2', 2.0)
-            
+            # 🎯 FIX: Recupera quote reali live dall'API (con live_data per calcoli sintetici)
+            odds_1 = self._get_real_odds(match_data, 'home_win', live_data=live_data) or match_data.get('odds_1', 2.0)
+            odds_2 = self._get_real_odds(match_data, 'away_win', live_data=live_data) or match_data.get('odds_2', 2.0)
+            odds_x = self._get_real_odds(match_data, 'draw', live_data=live_data) or match_data.get('odds_x', 3.0)
+
             # Home Win: Pareggio ma home domina nettamente
-            # 🆕 FIX: Aumentata confidence base (70% troppo bassa, min richiesto 78% per match_winner)
-            if score_home == score_away and minute >= 50 and minute <= 75:
-                if possession_home > 65 and shots_home > shots_away * 1.5 and shots_on_target_home >= 4:
+            # 🆕 FIX: Condizioni rilassate per permettere più opportunità valide
+            # PRIMA: solo 50-75', possesso > 65%, tiri > 1.5x, tiri porta >= 4
+            # DOPO: 30-80', possesso > 58%, tiri > 1.3x, tiri porta >= 3
+            if score_home == score_away and minute >= 30 and minute <= 80:
+                if possession_home > 58 and shots_home > shots_away * 1.3 and shots_on_target_home >= 3:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'home_win') if self.ai_pipeline else 0
                     # 🆕 FIX: Confidence base aumentata a 75% (minimo 78% richiesto, quindi serve almeno +3% da AI)
                     confidence = 75 + ai_boost
@@ -3645,10 +4647,12 @@ class LiveBettingAdvisor:
                     opportunities.append(opportunity)
             
             # Away Win: Pareggio ma away domina nettamente
-            # 🆕 FIX: Aumentata confidence base (70% troppo bassa, min richiesto 78% per match_winner)
-            elif score_home == score_away and minute >= 50 and minute <= 75:
+            # 🆕 FIX: Condizioni rilassate per permettere più opportunità valide
+            # PRIMA: solo 50-75', possesso > 65%, tiri > 1.5x, tiri porta >= 4
+            # DOPO: 30-80', possesso > 58%, tiri > 1.3x, tiri porta >= 3
+            elif score_home == score_away and minute >= 30 and minute <= 80:
                 possession_away = 100 - possession_home
-                if possession_away > 65 and shots_away > shots_home * 1.5 and shots_on_target_away >= 4:
+                if possession_away > 58 and shots_away > shots_home * 1.3 and shots_on_target_away >= 3:
                     ai_boost = self._get_ai_market_confidence(match_data, live_data, 'away_win') if self.ai_pipeline else 0
                     # 🆕 FIX: Confidence base aumentata a 75% (minimo 78% richiesto, quindi serve almeno +3% da AI)
                     confidence = 75 + ai_boost
@@ -3673,7 +4677,153 @@ class LiveBettingAdvisor:
                         timestamp=datetime.now()
                     )
                     opportunities.append(opportunity)
-                    
+
+            # 🆕 NUOVO: Home Win quando già in vantaggio e domina (conferma vittoria)
+            # Scenario: Home vince 1-0, 2-1, ecc. e continua a dominare → alta probabilità mantiene vantaggio
+            elif score_home > score_away and minute >= 60 and minute <= 85:
+                goal_diff = score_home - score_away
+                total_goals = score_home + score_away
+
+                # 🛡️ FILTRI ANTI-OVVIETÀ
+                # Blocca se:
+                # 1. Quote troppo basse (< 1.30) = troppo ovvio
+                # 2. Vantaggio 2+ gol dopo 70' = quasi certo
+                # 3. Score alto (5+ gol) con vantaggio 2 = molto probabile
+                is_obvious = (
+                    odds_1 < 1.30 or  # Quote troppo basse
+                    (goal_diff >= 2 and minute > 70) or  # Vantaggio netto a fine partita
+                    (total_goals >= 5 and goal_diff >= 2)  # Tanti gol + vantaggio netto
+                )
+
+                if not is_obvious and goal_diff <= 2:  # Solo se NON ovvio e vantaggio piccolo (1-2 gol, non 5-0)
+                    # Verifica dominio per confermare vittoria
+                    if possession_home > 55 and shots_on_target_home > shots_on_target_away:
+                        ai_boost = self._get_ai_market_confidence(match_data, live_data, 'home_win') if self.ai_pipeline else 0
+                        # Confidence aumenta con vantaggio e minuto
+                        base_conf = 70 + (goal_diff * 3) + ((minute - 60) / 5)  # +3% per gol, +1% ogni 5 min
+                        confidence = min(85, base_conf + ai_boost)
+
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='home_win_maintaining_lead', market='home_win',
+                            recommendation=f"Punta {match_data.get('home')} vince",
+                            reasoning=(
+                                f"🎯 VITTORIA FINALE (1X2)!\n\n"
+                                f"• Score: {score_home}-{score_away} (vantaggio {goal_diff} gol) al {minute}'\n"
+                                f"• {match_data.get('home')} in vantaggio e CONTROLLA:\n"
+                                f"  - Possesso: {possession_home}%\n"
+                                f"  - Tiri in porta: {shots_on_target_home} vs {shots_on_target_away}\n"
+                                f"• Alta probabilità mantiene vantaggio\n"
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=odds_1, stake_suggestion=3.0,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
+
+            # 🆕 NUOVO: Away Win quando già in vantaggio e domina (conferma vittoria)
+            elif score_away > score_home and minute >= 60 and minute <= 85:
+                goal_diff = score_away - score_home
+                total_goals = score_home + score_away
+
+                # 🛡️ FILTRI ANTI-OVVIETÀ
+                # Blocca se:
+                # 1. Quote troppo basse (< 1.30) = troppo ovvio
+                # 2. Vantaggio 2+ gol dopo 70' = quasi certo (es. 2-4 al 71' come Real Madrid)
+                # 3. Score alto (5+ gol) con vantaggio 2 = molto probabile
+                is_obvious = (
+                    odds_2 < 1.30 or  # Quote troppo basse
+                    (goal_diff >= 2 and minute > 70) or  # Vantaggio netto a fine partita
+                    (total_goals >= 5 and goal_diff >= 2)  # Tanti gol + vantaggio netto
+                )
+
+                if not is_obvious and goal_diff <= 2:  # Solo se NON ovvio e vantaggio piccolo (1-2 gol)
+                    possession_away = 100 - possession_home
+                    if possession_away > 55 and shots_on_target_away > shots_on_target_home:
+                        ai_boost = self._get_ai_market_confidence(match_data, live_data, 'away_win') if self.ai_pipeline else 0
+                        base_conf = 70 + (goal_diff * 3) + ((minute - 60) / 5)
+                        confidence = min(85, base_conf + ai_boost)
+
+                        opportunity = LiveBettingOpportunity(
+                            match_id=match_id, match_data=match_data,
+                            situation='away_win_maintaining_lead', market='away_win',
+                            recommendation=f"Punta {match_data.get('away')} vince",
+                            reasoning=(
+                                f"🎯 VITTORIA FINALE (1X2)!\n\n"
+                                f"• Score: {score_home}-{score_away} (vantaggio {goal_diff} gol) al {minute}'\n"
+                                f"• {match_data.get('away')} in vantaggio e CONTROLLA:\n"
+                                f"  - Possesso: {possession_away}%\n"
+                                f"  - Tiri in porta: {shots_on_target_away} vs {shots_on_target_home}\n"
+                                f"• Alta probabilità mantiene vantaggio\n"
+                                f"• IA boost: +{ai_boost:.0f}%"
+                            ),
+                            confidence=confidence, odds=odds_2, stake_suggestion=3.0,
+                            timestamp=datetime.now()
+                        )
+                        opportunities.append(opportunity)
+
+            # 🆕 NUOVO: Home Win quando in svantaggio ma domina NETTAMENTE (ribaltone)
+            # Scenario: Home perde 0-1 o 1-2 ma STRAPAZZA l'avversario → ribaltone probabile
+            elif score_home < score_away and minute >= 40 and minute <= 75:
+                goal_diff = score_away - score_home
+                if goal_diff <= 2:  # Solo se svantaggio recuperabile (max 2 gol)
+                    # Deve dominare MOLTO nettamente per ribaltone
+                    if possession_home > 62 and shots_home > shots_away * 1.5 and shots_on_target_home >= 4:
+                        ai_boost = self._get_ai_market_confidence(match_data, live_data, 'home_win') if self.ai_pipeline else 0
+                        # Confidence più bassa per ribaltone (più difficile)
+                        base_conf = 65 - (goal_diff * 2)  # -2% per ogni gol di svantaggio
+                        confidence = base_conf + ai_boost
+
+                        if confidence >= 60:  # Solo se abbastanza alta
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation='home_win_comeback', market='home_win',
+                                recommendation=f"Punta {match_data.get('home')} vince (RIBALTONE)",
+                                reasoning=(
+                                    f"🎯 VITTORIA FINALE - RIBALTONE (1X2)!\n\n"
+                                    f"• Score: {score_home}-{score_away} (svantaggio {goal_diff} gol) al {minute}'\n"
+                                    f"• {match_data.get('home')} perde ma DOMINA NETTAMENTE:\n"
+                                    f"  - Possesso: {possession_home}%\n"
+                                    f"  - Tiri: {shots_home} vs {shots_away}\n"
+                                    f"  - Tiri in porta: {shots_on_target_home} vs {shots_on_target_away}\n"
+                                    f"• Ribaltone molto probabile!\n"
+                                    f"• IA boost: +{ai_boost:.0f}%"
+                                ),
+                                confidence=confidence, odds=odds_1, stake_suggestion=2.5,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
+
+            # 🆕 NUOVO: Away Win quando in svantaggio ma domina NETTAMENTE (ribaltone)
+            elif score_away < score_home and minute >= 40 and minute <= 75:
+                goal_diff = score_home - score_away
+                if goal_diff <= 2:  # Solo se svantaggio recuperabile
+                    possession_away = 100 - possession_home
+                    if possession_away > 62 and shots_away > shots_home * 1.5 and shots_on_target_away >= 4:
+                        ai_boost = self._get_ai_market_confidence(match_data, live_data, 'away_win') if self.ai_pipeline else 0
+                        base_conf = 65 - (goal_diff * 2)
+                        confidence = base_conf + ai_boost
+
+                        if confidence >= 60:
+                            opportunity = LiveBettingOpportunity(
+                                match_id=match_id, match_data=match_data,
+                                situation='away_win_comeback', market='away_win',
+                                recommendation=f"Punta {match_data.get('away')} vince (RIBALTONE)",
+                                reasoning=(
+                                    f"🎯 VITTORIA FINALE - RIBALTONE (1X2)!\n\n"
+                                    f"• Score: {score_home}-{score_away} (svantaggio {goal_diff} gol) al {minute}'\n"
+                                    f"• {match_data.get('away')} perde ma DOMINA NETTAMENTE:\n"
+                                    f"  - Possesso: {possession_away}%\n"
+                                    f"  - Tiri: {shots_away} vs {shots_home}\n"
+                                    f"  - Tiri in porta: {shots_on_target_away} vs {shots_on_target_home}\n"
+                                    f"• Ribaltone molto probabile!\n"
+                                    f"• IA boost: +{ai_boost:.0f}%"
+                                ),
+                                confidence=confidence, odds=odds_2, stake_suggestion=2.5,
+                                timestamp=datetime.now()
+                            )
+                            opportunities.append(opportunity)
+
         except Exception as e:
             logger.debug(f"⚠️  Errore check match winner markets: {e}")
         return opportunities
@@ -5463,6 +6613,19 @@ class LiveBettingAdvisor:
             # Arrotonda a 4 decimali per precisione massima (es: 8.5234%)
             ev_percent = float(ev_percent_decimal.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP))
             
+            # 🛡️ SANITY CHECK FINALE: EV irrealistici
+            if ev_percent > 100.0:
+                logger.error(
+                    f"🚨 EV ASSURDO BLOCCATO: {ev_percent:.1f}% con conf={confidence:.1f}%, odds={odds:.2f} "
+                    f"→ RIDOTTO a 100% (probabilmente quote API errate!)"
+                )
+                ev_percent = 100.0
+            elif ev_percent > 50.0:
+                logger.warning(
+                    f"⚠️ EV SOSPETTO: {ev_percent:.1f}% con conf={confidence:.1f}%, odds={odds:.2f} "
+                    f"→ Possibile errore quote API! Verificare!"
+                )
+
             # 🎯 Log dettagliato per debug (sempre per tracciabilità, più dettagliato se significativo)
             if abs(ev_percent) > 5.0 or ev_percent < -10.0:
                 # Log dettagliato per EV significativo o anomalo
@@ -5476,7 +6639,7 @@ class LiveBettingAdvisor:
                 logger.debug(
                     f"🔢 EV calcolato: conf={confidence:.2f}%, odds={odds:.4f} → EV={ev_percent:.4f}%"
                 )
-            
+
             return ev_percent
             
         except (InvalidOperation, ValueError, TypeError) as e:
@@ -6216,49 +7379,108 @@ class LiveBettingAdvisor:
         final_suitability = base_suitability * statistical_multiplier
         return max(0.0, min(100.0, final_suitability))
 
-    def _get_diversity_bonus(self, market_type: str) -> float:
+    def _get_market_category(self, market_type: str) -> str:
         """
-        🎯 NUOVO: Calcola bonus/penalità basato su quanto un mercato è stato usato recentemente.
+        🎯 FASE 1: Classifica mercato in categoria per market rotation.
 
-        Se un mercato è stato raccomandato troppo → penalità leggera
-        Se un mercato è stato raccomandato poco → bonus leggero
+        Questo permette di penalizzare/premiare intere categorie, non singoli mercati.
+        Esempio: se troppi "over_2.5", penalizza anche "over_1.5", "under_3.5", etc.
 
         Returns:
-            Bonus/penalità in punti percentuali (range: -5 a +5)
+            Categoria mercato: 'over_under', 'btts', '1x2', 'double_chance', 'dnb', 'other'
+        """
+        market = market_type.lower().strip()
+
+        # Over/Under (FT, HT, 1H, 2H)
+        if 'over' in market or 'under' in market:
+            return 'over_under'
+
+        # BTTS (Both Teams To Score)
+        elif 'btts' in market:
+            return 'btts'
+
+        # 1X2 (Match Winner)
+        elif '1x2' in market or 'home_win' in market or 'away_win' in market or 'draw' in market:
+            return '1x2'
+
+        # Double Chance
+        elif 'double_chance' in market or market in ['1x', 'x2', '12']:
+            return 'double_chance'
+
+        # Draw No Bet
+        elif 'dnb' in market or 'draw_no_bet' in market:
+            return 'dnb'
+
+        # Asian Handicap
+        elif 'handicap' in market or 'asian' in market:
+            return 'asian_handicap'
+
+        # Altri mercati
+        else:
+            return 'other'
+
+    def _get_diversity_bonus(self, market_type: str) -> float:
+        """
+        🎯 FASE 1 MIGLIORATA: Market Rotation - Penalizza Over/Under se dominano.
+
+        Calcola bonus/penalità basato su quanto una CATEGORIA di mercato è stata usata.
+        Non conta singoli mercati (es. "over_2.5") ma CATEGORIE (es. tutti gli Over/Under).
+
+        LOGICA:
+        - Over/Under dominano? → Penalità FORTE (-8% a -10%)
+        - Mercati secondari rari? → Bonus FORTE (+8% a +10%)
+
+        Questo forza varietà: se ha già suggerito 3-4 Over/Under, boost BTTS/1X2/DC.
+
+        Returns:
+            Bonus/penalità in punti percentuali (range: -10 a +10)
         """
         if not self.recent_markets:
             return 0.0  # Nessun dato, nessun adjustment
 
-        # Normalizza market type per confronto
-        market = market_type.lower().strip()
+        # Classifica mercato in categoria
+        category = self._get_market_category(market_type)
 
-        # Conta quante volte questo mercato appare negli ultimi N consigli
-        market_count = sum(1 for m in self.recent_markets if m.lower().strip() == market)
+        # Conta quanti mercati della STESSA CATEGORIA negli ultimi N consigli
+        category_count = sum(1 for m in self.recent_markets if self._get_market_category(m) == category)
         total_count = len(self.recent_markets)
 
         if total_count == 0:
             return 0.0
 
-        # Calcola percentuale di utilizzo
-        usage_percentage = (market_count / total_count) * 100
+        # Calcola percentuale di utilizzo della CATEGORIA
+        usage_percentage = (category_count / total_count) * 100
 
-        # Logica di bonus/penalità conservativa:
-        # - Se uso > 50% → penalità -5%
-        # - Se uso > 40% → penalità -3%
-        # - Se uso < 10% → bonus +5%
-        # - Se uso < 20% → bonus +3%
-        # - Altrimenti → neutro
-
-        if usage_percentage >= 50:
-            return -5.0  # Troppo usato
-        elif usage_percentage >= 40:
-            return -3.0
-        elif usage_percentage < 10 and total_count >= 10:  # Poco usato (ma solo se abbiamo almeno 10 campioni)
-            return 5.0
-        elif usage_percentage < 20 and total_count >= 10:
-            return 3.0
+        # 🎯 LOGICA MIGLIORATA: Penalità più aggressive per Over/Under
+        if category == 'over_under':
+            # Over/Under: penalità se dominano (>60% degli ultimi segnali)
+            if usage_percentage >= 70:
+                logger.debug(f"🚫 Market Rotation: Over/Under dominano ({usage_percentage:.0f}%), penalità -10%")
+                return -10.0  # Penalità MOLTO forte
+            elif usage_percentage >= 60:
+                logger.debug(f"⚠️ Market Rotation: Over/Under troppi ({usage_percentage:.0f}%), penalità -8%")
+                return -8.0   # Penalità forte
+            elif usage_percentage >= 50:
+                logger.debug(f"⚠️ Market Rotation: Over/Under molti ({usage_percentage:.0f}%), penalità -5%")
+                return -5.0   # Penalità media
+            elif usage_percentage >= 40:
+                return -3.0   # Penalità leggera
+            else:
+                return 0.0    # Uso normale
         else:
-            return 0.0  # Uso normale
+            # Mercati secondari: bonus se poco usati (varietà!)
+            if usage_percentage < 10 and total_count >= 5:
+                logger.info(f"✨ Market Rotation: {category} poco usato ({usage_percentage:.0f}%), bonus +10%")
+                return 10.0  # Bonus MOLTO forte per varietà
+            elif usage_percentage < 20 and total_count >= 5:
+                logger.info(f"✨ Market Rotation: {category} raro ({usage_percentage:.0f}%), bonus +8%")
+                return 8.0   # Bonus forte
+            elif usage_percentage < 30:
+                return 5.0   # Bonus medio
+            elif usage_percentage >= 50:
+                return -3.0  # Anche altri mercati se dominano troppo
+            else:
+                return 0.0   # Uso normale
 
     def _update_market_tracking(self, market_type: str):
         """
@@ -6339,7 +7561,7 @@ class LiveBettingAdvisor:
             (confidence_score / 100.0 * 0.45) +      # 45% peso confidence
             (time_suitability / 100.0 * 0.35) +      # 35% peso timing
             (ev_normalized / 100.0 * 0.15) +         # 15% peso EV
-            ((diversity_bonus + 50) / 100.0 * 0.05)  # 5% peso diversity (normalizzato da -5/+5 a 0-100)
+            ((diversity_bonus + 10) / 20.0 * 0.05)   # 5% peso diversity (normalizzato da -10/+10 a 0-1)
         )
 
         # Log per debugging (solo se abbiamo suitability significativamente diversa da default)

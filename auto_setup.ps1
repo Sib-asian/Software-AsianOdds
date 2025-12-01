@@ -242,3 +242,8 @@ Write-Host "   - README_AUTO_PR.md (guida rapida)" -ForegroundColor Gray
 Write-Host "   - ISTRUZIONI_SETUP.md (setup dettagliato)" -ForegroundColor Gray
 Write-Host ""
 
+
+
+
+
+

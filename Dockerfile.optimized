@@ -41,6 +41,11 @@ ENV PYTHONPATH=/app
 COPY automation_24h.py .
 COPY start_automation.py .
 COPY api_manager.py .
+COPY Frontendcloud.py .
+COPY advanced_features.py .
+COPY auto_features.py .
+COPY team_profiles.json .
+COPY ai_system/data/storico_analisi.csv ./storico_analisi.csv
 
 # Copia ai_system (solo file Python essenziali)
 # Crea directory prima
@@ -91,4 +96,9 @@ RUN apt-get clean && \
 
 # Comando di avvio
 CMD ["python", "start_automation.py"]
+
+
+
+
+
 

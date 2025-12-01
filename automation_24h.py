@@ -982,27 +982,6 @@ class Automation24H:
                     away = teams_data.get("away", {}).get("name", "?")
                     logger.info(f"   Partita {i+1}: {home} vs {away} - Status: {status_short}")
 
-        except urllib.error.HTTPError as e:
-            error_body = ""
-            try:
-                error_body = e.read().decode()
-            except:
-                pass
-            logger.error(f"❌ API-Football HTTP error: {e.code} - {e.reason}")
-            if error_body:
-                logger.error(f"   Response body: {error_body[:500]}")
-            if e.code == 429:
-                logger.error("⚠️  Rate limit raggiunto, aspetta prima di riprovare")
-            elif e.code == 401:
-                logger.error("⚠️  API key non valida o scaduta")
-            elif e.code == 403:
-                logger.error("⚠️  Accesso negato - verifica API key e permessi")
-            matches_found = []
-            return []
-        except Exception as e:
-            logger.error(f"❌ Errore chiamata API-Football: {e}")
-            matches_found = []
-            return []
             
             # Se non ci sono partite, ritorna lista vuota
             if not matches_found:
@@ -1075,14 +1054,16 @@ class Automation24H:
                     if not home_team or not away_team:
                         continue
                     
-                    # 🎯 FILTRO ESSENZIALE: Richiede statistiche per calcolare confidence precisa
-                    logger.info(f"🔍 Verificando statistiche per {home_team} vs {away_team} (fixture {fixture_id}, status: {status_short})...")
+                    # 🎯 MODIFICATO: Le statistiche sono OBBLIGATORIE per le notifiche
+                    # L'utente vuole ricevere notifiche SOLO per partite con statistiche E quote disponibili
+                    logger.debug(f"🔍 Verificando statistiche per {home_team} vs {away_team} (fixture {fixture_id}, status: {status_short})...")
                     statistics = self._fetch_statistics_from_api_football(fixture_id, api_key, base_url)
                     if not statistics:
+                        logger.warning(f"⏭️ SALTATA: {home_team} vs {away_team} - nessuna statistica disponibile (status: {status_short})")
                         skipped_no_stats += 1
-                        logger.warning(f"⚠️  Partita LIVE {home_team} vs {away_team} (status: {status_short}) senza statistiche disponibili, skip (necessarie per confidence precisa)")
-                        continue  # Salta questa partita, serve statistiche per confidence precisa
-                    logger.info(f"✅ Statistiche disponibili per {home_team} vs {away_team} (status: {status_short}), procedo con estrazione quote")
+                        continue  # Salta partite senza statistiche
+                    else:
+                        logger.info(f"✅ Statistiche disponibili per {home_team} vs {away_team} (status: {status_short}), procedo con estrazione quote")
                     
                     # 🔧 FIX: Per partite LIVE, dobbiamo fare una chiamata separata per le quote
                     # L'endpoint /fixtures non include sempre le quote per partite LIVE, dobbiamo richiederle
@@ -1102,20 +1083,65 @@ class Automation24H:
                             self.api_usage_today += 1  # Conta chiamata API per quote
                             logger.info(f"✅ Quote recuperate per {home_team} vs {away_team} (fixture {fixture_id}, {len(odds_data)} bookmaker)")
                         else:
+                            # 🎯 MODIFICATO: Quote OBBLIGATORIE - salta partite senza quote
+                            logger.warning(f"⏭️ SALTATA: {home_team} vs {away_team} - nessuna quota disponibile (fixture {fixture_id})")
                             skipped_no_odds += 1
-                            odds_pending = True
-                            odds_data = []
-                            logger.warning(f"⚠️  Nessuna quota disponibile per fixture {fixture_id}, lascio che il watchdog ritenti")
+                            continue  # Salta partite senza quote
                     else:
                         logger.debug(f"✅ Quote già presenti in /fixtures per {home_team} vs {away_team} ({len(odds_data)} bookmaker)")
                     
-                    # Estrai TUTTE le quote disponibili
+                    # 🎯 NUOVO: Estrai score e minuto PRIMA di chiamare _extract_all_odds_from_api_football
+                    # (necessario per validare quote RAW rispetto al risultato)
+                    score_home = 0
+                    score_away = 0
+                    score_home_ht = 0
+                    score_away_ht = 0
+                    minute = 0
+                    
+                    # Estrai score da goals_data (se disponibile)
+                    if isinstance(goals_data, dict):
+                        score_home = goals_data.get("home") or 0
+                        score_away = goals_data.get("away") or 0
+                    
+                    # Estrai minuto da status
+                    status_data = fixture_data.get("status", {})
+                    if isinstance(status_data, dict):
+                        minute = (status_data.get("elapsed") or 
+                                 status_data.get("elapsed_time") or 
+                                 status_data.get("elapsedTime") or
+                                 status_data.get("minute") or
+                                 status_data.get("time") or 0)
+                        if minute is None:
+                            minute = 0
+                        else:
+                            try:
+                                minute = int(minute)
+                            except (ValueError, TypeError):
+                                minute = 0
+                        
+                        # Estrai score halftime se disponibile
+                        score_data = fixture.get("score", {})
+                        if isinstance(score_data, dict):
+                            halftime = score_data.get("halftime", {})
+                            if isinstance(halftime, dict):
+                                score_home_ht = halftime.get("home") or 0
+                                score_away_ht = halftime.get("away") or 0
+                    
+                    # Estrai TUTTE le quote disponibili (con validazione rispetto al risultato per partite live)
                     logger.info(f"🔍 Estraendo quote per {home_team} vs {away_team} (fixture {fixture_id})...")
                     logger.info(f"   odds_data type: {type(odds_data)}, length: {len(odds_data) if isinstance(odds_data, list) else 'N/A'}")
                     if odds_data and len(odds_data) > 0:
                         logger.info(f"   Primo bookmaker keys: {list(odds_data[0].keys()) if isinstance(odds_data[0], dict) else 'NOT_DICT'}")
                     
-                    all_odds = self._extract_all_odds_from_api_football(odds_data)
+                    all_odds = self._extract_all_odds_from_api_football(
+                        odds_data,
+                        score_home=score_home,
+                        score_away=score_away,
+                        score_home_ht=score_home_ht,
+                        score_away_ht=score_away_ht,
+                        is_live=is_live,
+                        minute=minute
+                    )
                     
                     # 🔧 DEBUG: Log dettagliato quote estratte (INFO per vedere nei log)
                     logger.info(f"📊 Quote estratte per {home_team} vs {away_team}:")
@@ -1159,6 +1185,21 @@ class Automation24H:
                         logger.info(f"📊 Mercati trovati per {home_team} vs {away_team}: {', '.join(markets_found)}")
                     else:
                         logger.warning(f"⚠️  Nessun mercato trovato per {home_team} vs {away_team} (fixture {fixture_id})")
+                    
+                    # 🎯 NUOVO: Verifica che almeno i mercati principali siano disponibili
+                    # L'utente vuole notifiche solo con quote principali (1X2 o Over/Under)
+                    has_1x2 = all_odds.get('match_winner', {}).get('home') is not None
+                    has_over_under = len(all_odds.get('over_under', {})) > 0
+                    
+                    # 🔧 DEBUG: Log dettagliato per capire perché viene scartata
+                    logger.info(f"🔍 Verifica mercati principali per {home_team} vs {away_team}:")
+                    logger.info(f"   has_1x2 (home presente): {has_1x2} (valore: {all_odds.get('match_winner', {}).get('home')})")
+                    logger.info(f"   has_over_under: {has_over_under} (thresholds: {len(all_odds.get('over_under', {}))})")
+
+                    if not has_1x2 and not has_over_under:
+                        logger.warning(f"⏭️ SALTATA: {home_team} vs {away_team} - nessun mercato principale (1X2 o Over/Under) disponibile (has_1x2={has_1x2}, has_over_under={has_over_under})")
+                        skipped_no_odds += 1
+                        continue  # Salta partite senza mercati principali
                     
                     # Estrai score e minute dalla fixture
                     # 🔧 FIX CRITICO: Lo score NON è in fixture_data['score'] ma probabilmente in fixture['goals']
@@ -1217,7 +1258,7 @@ class Automation24H:
                                 score_away = ht_away or score_away
                                 logger.info(f"   ⚽ Score da halftime: {score_home}-{score_away}")
                     
-                    logger.info(f"   ⚽ Score FINALE estratto: {score_home}-{score_away}")
+                    logger.info(f"   ⚽ Score FINALE estratto: {score_home}-{score_away} (HT: {score_home_ht}-{score_away_ht}, min {minute}')")
                     
                     # 🔧 DEBUG: Log RAW fixture_data per capire struttura completa
                     logger.info(f"🔍 RAW fixture_data per {home_team} vs {away_team}:")
@@ -1533,38 +1574,39 @@ class Automation24H:
                     logger.info(f"   Ha statistiche: {bool(statistics)}")
                     logger.info(f"   Ha almeno qualche quota: {has_1x2_partial or has_other_odds}")
                     
-                    # 🎯 FILTRO ESSENZIALE: Aggiungi solo partite con statistiche E quote (necessarie per confidence ed EV precisi)
-                    # L'utente vuole calcolare confidence ed EV solo per partite complete
-                    if statistics and (has_1x2_complete or has_1x2_partial or has_other_odds):
+                    # 🎯 MODIFICATO: Accetta partite con quote, anche senza statistiche
+                    # Le statistiche migliorano la confidence, ma non sono più obbligatorie
+                    # Richiede almeno ALCUNE quote disponibili (1X2 parziali O altri mercati)
+                    if (has_1x2_complete or has_1x2_partial or has_other_odds):
                         matches.append(match)
-                        if has_1x2_complete:
+                        if statistics and has_1x2_complete:
                             logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e quote 1X2 complete)")
-                        elif has_1x2_partial and has_other_odds:
+                        elif statistics and has_1x2_partial and has_other_odds:
                             logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche, quote 1X2 parziali e altre quote)")
-                        elif has_1x2_partial:
+                        elif statistics and has_1x2_partial:
                             logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e almeno 1 quota 1X2)")
-                        elif has_other_odds:
+                        elif statistics and has_other_odds:
                             logger.info(f"✅ Match {home_team} vs {away_team} aggiunto (ha statistiche e altre quote disponibili)")
-                    elif not statistics:
-                        skipped_no_stats += 1
-                        logger.debug(f"⏭️  Match {home_team} vs {away_team} senza statistiche, skip (necessarie per confidence precisa)")
+                        elif not statistics and (has_1x2_complete or has_1x2_partial or has_other_odds):
+                            logger.warning(f"⚠️  Match {home_team} vs {away_team} aggiunto SENZA statistiche (ha quote: 1X2={has_1x2_complete or has_1x2_partial}, altre={has_other_odds}), confidence sarà ridotta")
                     else:
                         skipped_no_odds += 1
                         logger.debug(f"⏭️  Match {home_team} vs {away_team} senza quote sufficienti (1X2: {bool(odds_1)}/{bool(odds_x)}/{bool(odds_2)}, altre: {has_other_odds}), skip (necessarie per EV preciso)")
                 
                 except Exception as e:
-                    logger.debug(f"⚠️  Error processing fixture: {e}")
+                    logger.error(f"❌ ERRORE CRITICO durante processamento fixture {fixture_id} ({home_team} vs {away_team}): {e}")
+                    import traceback
+                    logger.error(f"   Traceback completo:\n{traceback.format_exc()}")
+                    skipped_no_odds += 1
                     continue
             
             logger.info(f"✅ Riepilogo estrazione partite LIVE:")
             logger.info(f"   - Partite LIVE totali trovate: {len(data['response'])}")
-            logger.info(f"📊 RIEPILOGO FILTRAGGIO PARTITE LIVE:")
-            logger.info(f"   ✅ Partite LIVE processate: {live_count}")
-            logger.info(f"   ⏭️  Partite finite (skipped): {skipped_finished}")
-            logger.info(f"   ⏭️  Partite non LIVE (skipped): {skipped_not_live}")
-            logger.info(f"   ⚠️  Partite LIVE senza statistiche (skipped): {skipped_no_stats}")
-            logger.info(f"   ⚠️  Partite LIVE senza quote (skipped): {skipped_no_odds}")
-            logger.info(f"   ✅ Partite LIVE con quote e statistiche (VALIDATE): {len(matches)}")
+            logger.info(f"   - Partite LIVE processate: {live_count}")
+            logger.info(f"   - Partite finite (skipped): {skipped_finished}")
+            logger.info(f"   - Partite troppo vecchie (skipped): {skipped_not_live}")
+            logger.info(f"   - Partite LIVE senza quote sufficienti (skipped): {skipped_no_odds}")
+            logger.info(f"   - Partite aggiunte al monitoraggio: {len(matches)}")
             
             if len(matches) == 0:
                 if live_count == 0:
@@ -1597,7 +1639,16 @@ class Automation24H:
             "x-rapidapi-key": api_key,
             "x-rapidapi-host": "v3.football.api-sports.io"
         }
+        # 🔧 FIX: Aggiungi parametri per ottenere quote da tutti i bookmaker disponibili
+        # L'API supporta parametri opzionali per filtrare bookmaker, ma senza specificarli
+        # dovrebbe restituire tutti i bookmaker disponibili
+        # Proviamo senza filtri prima, poi se non funziona aggiungiamo bookmaker specifici
         odds_url = f"{base_url}/odds?fixture={fixture_id}"
+        
+        # 🆕 PROVA: Aggiungi parametro per richiedere tutti i bookmaker (se supportato)
+        # Alcune versioni dell'API supportano bookmaker=all o bookmaker=1 per tutti
+        # Proviamo prima senza, poi logghiamo cosa restituisce
+        logger.debug(f"📡 Fetching odds per fixture {fixture_id} da {odds_url}")
         
         def _make_odds_request():
             odds_req = urllib.request.Request(odds_url, headers=headers)
@@ -1606,18 +1657,69 @@ class Automation24H:
         
         odds_data_response = self._retry_api_call(_make_odds_request, max_retries=3, base_delay=1.0)
         if odds_data_response is None:
+            logger.warning(f"⚠️  Nessuna risposta dall'API per odds fixture {fixture_id}")
+            return None
+        
+        # 🔧 DEBUG: Log struttura risposta per capire cosa restituisce l'API
+        if odds_data_response.get("errors"):
+            logger.error(f"❌ API-Football errori per odds fixture {fixture_id}: {odds_data_response.get('errors')}")
             return None
         
         response = odds_data_response.get("response")
         if not response:
+            logger.warning(f"⚠️  Risposta API vuota per odds fixture {fixture_id}. Response keys: {list(odds_data_response.keys())}")
+            # 🔧 DEBUG: Log completo della risposta per capire la struttura
+            logger.debug(f"   Full response: {json.dumps(odds_data_response, indent=2, default=str)[:500]}")
             return None
+        
+        # 🔧 DEBUG: Log struttura response per capire formato
+        logger.debug(f"📊 Risposta odds fixture {fixture_id}: type={type(response)}, length={len(response) if isinstance(response, list) else 'N/A'}")
+        if isinstance(response, list) and len(response) > 0:
+            first_item = response[0]
+            logger.debug(f"   Primo elemento keys: {list(first_item.keys()) if isinstance(first_item, dict) else 'NOT_DICT'}")
+            if isinstance(first_item, dict):
+                if "bookmakers" in first_item:
+                    logger.debug(f"   Struttura con 'bookmakers': {len(first_item.get('bookmakers', []))} bookmaker nel primo elemento")
+                else:
+                    logger.debug(f"   Struttura diretta (bookmaker direttamente): {first_item.get('bookmaker', {}).get('name', 'N/A')}")
         
         bookmakers_list: List[Dict[str, Any]] = []
         for item in response:
-            if isinstance(item, dict) and item.get("bookmakers"):
-                bookmakers_list.extend(item.get("bookmakers") or [])
+            if isinstance(item, dict):
+                # Caso 1: Item ha "bookmakers" come lista annidata
+                if item.get("bookmakers"):
+                    bookmakers = item.get("bookmakers", [])
+                    bookmakers_list.extend(bookmakers)
+                    logger.debug(f"   Aggiunti {len(bookmakers)} bookmaker da struttura annidata")
+                # Caso 2: Item è direttamente un bookmaker (ha "bookmaker" key)
+                elif item.get("bookmaker"):
+                    bookmakers_list.append(item)
+                    logger.debug(f"   Aggiunto bookmaker diretto: {item.get('bookmaker', {}).get('name', 'N/A')}")
+                # Caso 3: Item potrebbe essere già nella forma corretta
+                else:
+                    bookmakers_list.append(item)
+                    logger.debug(f"   Aggiunto item diretto (struttura sconosciuta)")
             else:
                 bookmakers_list.append(item)
+        
+        logger.info(f"✅ Totale {len(bookmakers_list)} bookmaker estratti per fixture {fixture_id}")
+        if bookmakers_list:
+            # Log nomi dei primi 3 bookmaker per debug
+            for i, bm in enumerate(bookmakers_list[:3]):
+                bm_name = bm.get("bookmaker", {}).get("name", "Unknown") if isinstance(bm, dict) else "Unknown"
+                logger.debug(f"   Bookmaker {i+1}: {bm_name}")
+        else:
+            # 🔧 FIX: Se non otteniamo bookmaker, la risposta potrebbe essere vuota o struttura diversa
+            # L'API-Football /odds dovrebbe restituire tutti i bookmaker disponibili senza parametri aggiuntivi
+            # Se non ci sono bookmaker, significa che:
+            # 1. Non ci sono quote disponibili per questa partita (normale per alcune partite live)
+            # 2. La struttura della risposta è diversa (da verificare con logging)
+            # 3. L'API richiede parametri aggiuntivi (non documentato, ma possibile)
+            logger.warning(
+                f"⚠️  Nessun bookmaker estratto per fixture {fixture_id}. "
+                f"Questo potrebbe essere normale se la partita non ha quote disponibili, "
+                f"o potrebbe indicare un problema con la struttura della risposta API."
+            )
         
         return bookmakers_list or None
     
@@ -1668,15 +1770,529 @@ class Automation24H:
             logger.debug(f"⚠️  Errore validazione quota: {odd}, errore: {e}")
             return None
     
-    def _select_realistic_odds(self, odds_dict: Dict[str, Decimal], market_name: str = "unknown") -> Tuple[Optional[Decimal], Optional[str]]:
+    def _get_trusted_bookmakers(self) -> Dict[str, float]:
+        """
+        🎯 BOOKMAKER AFFIDABILI: Restituisce un dizionario di bookmaker affidabili con i loro pesi.
+        
+        I bookmaker più affidabili hanno peso più alto.
+        I bookmaker meno conosciuti hanno peso più basso ma non vengono completamente esclusi.
+        """
+        return {
+            'bet365': 1.0,           # Massima fiducia
+            'pinnacle': 0.95,        # Bookmaker professionale
+            'betfair': 0.95,         # Exchange affidabile - margini più bassi (aumentato da 0.90)
+            'william hill': 0.85,    # Bookmaker storico
+            'bwin': 0.85,
+            'unibet': 0.85,
+            '888sport': 0.80,
+            'betway': 0.80,
+            'ladbrokes': 0.80,
+            'coral': 0.75,
+            'betvictor': 0.75,
+            'marathonbet': 0.75,
+            'sportingbet': 0.70,
+            'interwetten': 0.70,
+            '10bet': 0.70,
+            'betsson': 0.70,
+            '1xbet': 0.65,           # Meno affidabile ma comune
+            'betfred': 0.65,
+            'skybet': 0.65,
+            'dafabet': 0.60,
+            'betonline': 0.60,
+            'bodog': 0.60,
+            'sportsbet.io': 0.60,
+            'leovegas': 0.55,
+            'mr green': 0.55,
+        }
+    
+    def _get_bookmaker_weight(self, bookmaker_name: str) -> float:
+        """
+        Restituisce il peso di affidabilità di un bookmaker.
+        Bookmaker sconosciuti ricevono peso base 0.5.
+        """
+        if not bookmaker_name:
+            return 0.5
+        
+        bookmaker_lower = bookmaker_name.lower().strip()
+        trusted_bookmakers = self._get_trusted_bookmakers()
+        
+        # Cerca corrispondenza esatta o parziale
+        for trusted_name, weight in trusted_bookmakers.items():
+            if trusted_name in bookmaker_lower or bookmaker_lower in trusted_name:
+                return weight
+        
+        # Bookmaker non nella lista: peso medio-basso ma non zero
+        return 0.5
+    
+    def _calculate_consensus_score(self, odd: Decimal, all_odds_list: List[Decimal]) -> float:
+        """
+        🎯 MIGLIORAMENTO 2: Calcola score di consenso per una quota.
+        
+        Se molti bookmaker hanno quote simili, significa che la quota è più affidabile.
+        Score alto = molti bookmaker concordano, score basso = quota isolata.
+        
+        Args:
+            odd: Quota da valutare
+            all_odds_list: Lista di tutte le quote disponibili per questo mercato
+        
+        Returns:
+            Score di consenso (0.0-1.0), dove 1.0 = massimo consenso
+        """
+        if not all_odds_list or len(all_odds_list) < 2:
+            return 0.5  # Consenso neutro se poche quote
+        
+        try:
+            odd_float = float(odd)
+            consensus_count = 0
+            total_count = len(all_odds_list)
+            
+            # Considera quote "vicine" come consenso (entro ±5%)
+            consensus_threshold = 0.05  # 5%
+            
+            for other_odd in all_odds_list:
+                other_float = float(other_odd)
+                if other_float > 0:
+                    diff_pct = abs(odd_float - other_float) / other_float
+                    if diff_pct <= consensus_threshold:
+                        consensus_count += 1
+            
+            # Score basato su percentuale di bookmaker che concordano
+            consensus_ratio = consensus_count / total_count
+            
+            # Normalizza: 50%+ consenso = score alto, <30% = score basso
+            if consensus_ratio >= 0.5:
+                return min(1.0, consensus_ratio * 1.5)  # Bonus per alto consenso
+            elif consensus_ratio >= 0.3:
+                return 0.5 + (consensus_ratio - 0.3) * 2.5  # 0.5-0.95
+            else:
+                return consensus_ratio * 1.5  # 0-0.45
+            
+        except Exception as e:
+            logger.debug(f"⚠️  Errore calcolo consensus score: {e}")
+            return 0.5
+    
+    def _calculate_odds_quality_score(self, odd: Decimal, bookmaker: str, total_odds_count: int, 
+                                      has_trusted_bookmakers: bool = True, 
+                                      all_odds_list: Optional[List[Decimal]] = None) -> float:
+        """
+        🎯 CALCOLA QUALITÀ QUOTA: Restituisce uno score (0-1) per la qualità di una quota.
+        
+        Fattori considerati:
+        1. Affidabilità bookmaker (peso 35%)
+        2. Numero totale quote disponibili (peso 15%)
+        3. Presenza di bookmaker affidabili (peso 15%)
+        4. Valore quota (peso 15%)
+        5. 🆕 Consenso tra bookmaker (peso 20%) - MIGLIORAMENTO 2
+        
+        Args:
+            odd: Quota da valutare
+            bookmaker: Nome del bookmaker
+            total_odds_count: Numero totale di quote disponibili per questo mercato
+            has_trusted_bookmakers: Se ci sono bookmaker affidabili tra le quote
+            all_odds_list: Lista di tutte le quote per calcolare consenso (opzionale)
+        
+        Returns:
+            Score di qualità (0.0-1.0), dove 1.0 è la migliore qualità
+        """
+        try:
+            quality_score = 0.0
+            
+            # 1. Affidabilità bookmaker (35% - ridotto da 40% per fare spazio al consenso)
+            bookmaker_weight = self._get_bookmaker_weight(bookmaker)
+            quality_score += bookmaker_weight * 0.35
+            
+            # 2. Numero quote disponibili (15% - ridotto da 20%)
+            # Più quote = più affidabile (più bookmaker concordano)
+            if total_odds_count >= 10:
+                odds_availability_score = 1.0
+            elif total_odds_count >= 5:
+                odds_availability_score = 0.7
+            elif total_odds_count >= 3:
+                odds_availability_score = 0.5
+            else:
+                odds_availability_score = 0.3
+            quality_score += odds_availability_score * 0.15
+            
+            # 3. Presenza bookmaker affidabili (15% - ridotto da 20%)
+            if has_trusted_bookmakers:
+                quality_score += 1.0 * 0.15
+            else:
+                quality_score += 0.5 * 0.15
+            
+            # 4. Valore quota (15% - ridotto da 20%)
+            # Quote troppo basse (< 1.1) o troppo alte (> 100) sono sospette
+            odd_float = float(odd)
+            if 1.1 <= odd_float <= 50:
+                value_score = 1.0
+            elif 1.05 <= odd_float < 1.1 or 50 < odd_float <= 100:
+                value_score = 0.7
+            else:
+                value_score = 0.3
+            quality_score += value_score * 0.15
+            
+            # 5. 🆕 MIGLIORAMENTO 2: Consenso tra bookmaker (20%)
+            if all_odds_list and len(all_odds_list) >= 2:
+                consensus_score = self._calculate_consensus_score(odd, all_odds_list)
+                quality_score += consensus_score * 0.2
+            else:
+                quality_score += 0.5 * 0.2  # Consenso neutro se non disponibile
+            
+            return min(1.0, max(0.0, quality_score))
+            
+        except Exception as e:
+            logger.debug(f"⚠️  Errore calcolo quality score: {e}")
+            return 0.5  # Score neutro in caso di errore
+    
+    def _validate_market_implied_probabilities(self, odds_dict: Dict[str, Any], market_type: str = "1x2") -> bool:
+        """
+        🎯 VALIDAZIONE PROBABILITÀ IMPLICITE: Verifica che le quote di un mercato siano coerenti.
+        
+        Calcola la somma delle probabilità implicite (1/odd) per tutte le quote di un mercato.
+        Per un mercato equilibrato, la somma dovrebbe essere tra 1.01 e 1.08 (margine del bookmaker).
+        
+        Args:
+            odds_dict: Dict con le quote del mercato (es. {'home': 2.5, 'draw': 3.0, 'away': 2.8})
+            market_type: Tipo di mercato ('1x2', 'over_under', 'btts', etc.)
+        
+        Returns:
+            True se le quote sono coerenti, False altrimenti
+        """
+        if not odds_dict:
+            return False
+        
+        try:
+            total_implied_prob = Decimal('0')
+            valid_outcomes = 0
+            
+            for outcome, odd_value in odds_dict.items():
+                if odd_value is None:
+                    continue
+                
+                odd_decimal = self._validate_odds(odd_value)
+                if odd_decimal is None:
+                    continue
+                
+                # Probabilità implicita = 1 / quota
+                implied_prob = Decimal('1') / odd_decimal
+                total_implied_prob += implied_prob
+                valid_outcomes += 1
+            
+            if valid_outcomes == 0:
+                return False
+            
+            total_implied_prob_float = float(total_implied_prob)
+            
+            # 🎯 VALIDAZIONE MIGLIORATA: Range diversi per tipo di mercato
+            # Per mercati 1X2: margine tipico 1.03-1.09 (rilassato per league minori e live)
+            # Per Over/Under: margine tipico 1.04-1.12 (più variabilità, specialmente per live)
+            # Per BTTS: margine tipico 1.03-1.10
+            
+            if 'over_under' in market_type.lower() or 'goals' in market_type.lower():
+                # Over/Under: accetta range più ampio (margini più alti sono normali per Over/Under)
+                min_total = Decimal('1.02')
+                max_total = Decimal('1.12')  # Più permissivo - margini fino al 12% sono accettabili
+                soft_limit = Decimal('1.15')  # Soft limit: accetta se leggermente sopra ma logga warning
+            else:
+                # 1X2, BTTS, etc.: range più stretto ma rilassato
+                min_total = Decimal('1.01')
+                max_total = Decimal('1.09')  # Rilassato da 1.08 a 1.09
+                soft_limit = Decimal('1.12')  # Soft limit per 1X2
+            
+            if total_implied_prob < min_total:
+                logger.debug(
+                    f"⚠️  {market_type}: Probabilità implicita totale molto bassa ({total_implied_prob_float:.4f}), "
+                    f"possibile errore o opportunità"
+                )
+                # Accettiamo comunque se è molto vicino a 1.0 (potrebbe essere un'opportunità rara)
+                # Ma solo se abbiamo almeno 2 outcomes (altrimenti potrebbe essere errore)
+                if valid_outcomes >= 2:
+                    return total_implied_prob >= Decimal('0.98')
+                return False
+            
+            # 🆕 LOGICA MIGLIORATA: Accetta quote anche se leggermente sopra il threshold
+            if total_implied_prob > max_total:
+                # Se supera il soft limit, scarta sempre
+                if total_implied_prob > soft_limit:
+                    logger.warning(
+                        f"⚠️  {market_type}: Probabilità implicita totale molto alta ({total_implied_prob_float:.4f} > {float(soft_limit):.2f}), "
+                        f"quote probabilmente errate. Scarto."
+                    )
+                    return False
+                else:
+                    # Se è tra max_total e soft_limit, accetta ma logga warning (non error)
+                    logger.info(
+                        f"ℹ️  {market_type}: Probabilità implicita leggermente alta ({total_implied_prob_float:.4f}, threshold={float(max_total):.2f}), "
+                        f"accetto comunque (margine ancora accettabile per league minori/live)"
+                    )
+                    return True  # Accetta quote con margine leggermente alto ma ancora ragionevole
+            
+            # 🆕 VALIDAZIONE AGGIUNTIVA: Controlla se le quote sono troppo vicine tra loro
+            # (potrebbe indicare che non sono state aggiornate o sono errate)
+            if valid_outcomes >= 2:
+                odds_list = [float(self._validate_odds(v)) for v in odds_dict.values() if v is not None]
+                odds_list = [o for o in odds_list if o is not None]
+                if len(odds_list) >= 2:
+                    odds_range = max(odds_list) - min(odds_list)
+                    odds_avg = statistics.mean(odds_list)
+                    # Se le quote sono troppo vicine (< 5% di variazione), potrebbe essere sospetto
+                    if odds_avg > 0 and (odds_range / odds_avg) < 0.05:
+                        logger.debug(
+                            f"🔍 {market_type}: Quote molto vicine tra loro (range={odds_range:.3f}, avg={odds_avg:.3f}), "
+                            f"possibile problema, ma accetto se probabilità implicita è valida"
+                        )
+                        # Accettiamo comunque se la probabilità implicita è valida
+            
+            # Se siamo nel range accettabile (tra min_total e max_total)
+            return True
+            
+        except Exception as e:
+            logger.debug(f"⚠️  Errore validazione probabilità implicite per {market_type}: {e}")
+            return True  # In caso di errore, accettiamo per non escludere quote valide
+    
+    def _is_odds_stale(self, odds_timestamp: Optional[str], is_match_live: bool = False, max_age_minutes: int = 10) -> bool:
+        """
+        🎯 MIGLIORAMENTO 5: Rileva se una quota è troppo vecchia (stale) per essere utilizzata.
+        
+        Per partite live, le quote devono essere aggiornate di recente (max 5-10 minuti).
+        Per partite pre-match, possiamo accettare quote più vecchie.
+        
+        Args:
+            odds_timestamp: Timestamp ISO della quota (da precision snapshot)
+            is_match_live: True se la partita è in corso
+            max_age_minutes: Minuti massimi di età per quote live (default: 10)
+        
+        Returns:
+            True se la quota è troppo vecchia, False altrimenti
+        """
+        if not odds_timestamp:
+            # Se non abbiamo timestamp, assumiamo che non sia stale (conservativo)
+            return False
+        
+        try:
+            # Parse timestamp
+            if isinstance(odds_timestamp, str):
+                # Rimuovi timezone info se presente e converti
+                timestamp_str = odds_timestamp.replace('Z', '+00:00')
+                odds_time = datetime.fromisoformat(timestamp_str)
+            else:
+                return False  # Timestamp non valido
+            
+            # Calcola età della quota
+            now = datetime.now(timezone.utc)
+            if odds_time.tzinfo is None:
+                odds_time = odds_time.replace(tzinfo=timezone.utc)
+            
+            age_seconds = (now - odds_time).total_seconds()
+            age_minutes = age_seconds / 60.0
+            
+            # Per partite live, le quote devono essere più recenti
+            if is_match_live:
+                # Per partite live, usiamo un threshold più stretto (5-7 minuti)
+                stale_threshold = min(7, max_age_minutes)
+                if age_minutes > stale_threshold:
+                    logger.debug(
+                        f"⏰ Quota stale rilevata: {age_minutes:.1f} minuti fa "
+                        f"(threshold: {stale_threshold} min per partita live)"
+                    )
+                    return True
+            else:
+                # Per partite pre-match, possiamo accettare quote fino a 30-60 minuti
+                if age_minutes > 60:
+                    logger.debug(
+                        f"⏰ Quota stale rilevata: {age_minutes:.1f} minuti fa "
+                        f"(threshold: 60 min per partita pre-match)"
+                    )
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.debug(f"⚠️  Errore controllo stale quota: {e}")
+            return False  # In caso di errore, assumiamo non stale (conservativo)
+    
+    def _validate_raw_odds_against_score(self, all_bookmaker_odds: Dict[str, Any], score_home: int, score_away: int, 
+                                          score_home_ht: int = 0, score_away_ht: int = 0, 
+                                          is_live: bool = False, minute: int = 0) -> Dict[str, Any]:
+        """
+        🎯 NUOVO: Valida le quote RAW dai bookmaker rispetto al risultato corrente (PRIMA della selezione).
+        
+        Rimuove quote stale/irrealistiche dai bookmaker prima che vengano selezionate.
+        Questo è CRUCIALE per partite live - filtra quote che sono chiaramente obsolete.
+        
+        Args:
+            all_bookmaker_odds: Dizionario con tutte le quote RAW dai bookmaker (per ogni bookmaker)
+            score_home: Gol della squadra di casa (risultato totale)
+            score_away: Gol della squadra ospite (risultato totale)
+            score_home_ht: Gol della squadra di casa al primo tempo (default: 0)
+            score_away_ht: Gol della squadra ospite al primo tempo (default: 0)
+            is_live: True se la partita è in corso
+            minute: Minuto della partita (default: 0)
+        
+        Returns:
+            all_bookmaker_odds modificato con quote irrealistiche/stale rimosse
+        """
+        if not is_live:
+            # Per partite non live, non validiamo contro lo score (è pre-match)
+            return all_bookmaker_odds
+        
+        total_goals = score_home + score_away
+        total_goals_ht = score_home_ht + score_away_ht
+        
+        logger.info(f"🔍 Validazione quote RAW vs risultato LIVE: {score_home}-{score_away} ({total_goals} gol totali, min {minute}')")
+        
+        if total_goals == 0:
+            # Nessun gol ancora segnato, tutte le quote over sono valide
+            return all_bookmaker_odds
+        
+        MAX_ODDS_THRESHOLD = 2.0  # Quota massima per over già superati
+        odds_filtered_count = 0
+        
+        def _validate_over_under_market(bookmaker_odds_dict: Dict[str, Any], total_goals_current: int, 
+                                       market_type: str = "FT") -> int:
+            """Valida un mercato Over/Under rimuovendo quote stale"""
+            filtered = 0
+            for threshold, outcomes_dict in bookmaker_odds_dict.items():
+                if not isinstance(threshold, (int, float)):
+                    try:
+                        threshold = float(str(threshold).replace('_', '.'))
+                    except (ValueError, TypeError):
+                        continue
+                
+                # Controlla se il risultato attuale supera già il threshold
+                if total_goals_current > threshold:
+                    # Threshold già superato - le quote "over" dovrebbero essere molto basse
+                    if 'over' in outcomes_dict and isinstance(outcomes_dict['over'], dict):
+                        stale_bookmakers = []
+                        for bookmaker_name, odd_value in list(outcomes_dict['over'].items()):
+                            try:
+                                odd_float = float(odd_value) if not isinstance(odd_value, float) else odd_value
+                                goals_beyond = total_goals_current - threshold
+                                max_allowed = 1.8 if goals_beyond >= 1.0 else MAX_ODDS_THRESHOLD
+                                
+                                if odd_float > max_allowed:
+                                    # Quota irrealistica/stale - rimuovi dal bookmaker
+                                    del outcomes_dict['over'][bookmaker_name]
+                                    stale_bookmakers.append((bookmaker_name, odd_float))
+                                    filtered += 1
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        if stale_bookmakers:
+                            logger.warning(
+                                f"❌ Rimosse quote STALE per Over {threshold} {market_type} da {len(stale_bookmakers)} bookmaker: "
+                                f"{[(bm, f'{odd:.2f}') for bm, odd in stale_bookmakers[:3]]}"
+                                f"{'...' if len(stale_bookmakers) > 3 else ''} "
+                                f"(risultato: {total_goals_current} gol, threshold {threshold} già superato, max accettabile: {max_allowed})"
+                            )
+                    
+                    # 🆕 MIGLIORAMENTO 1: Se threshold già superato, "under" è IMPOSSIBILE - rimuovi quote basse
+                    if 'under' in outcomes_dict and isinstance(outcomes_dict['under'], dict):
+                        impossible_bookmakers = []
+                        for bookmaker_name, odd_value in list(outcomes_dict['under'].items()):
+                            try:
+                                odd_float = float(odd_value) if not isinstance(odd_value, float) else odd_value
+                                # Se il threshold è già superato, under è impossibile - quota dovrebbe essere molto alta (>50)
+                                if odd_float < 50.0:
+                                    # Quota irrealistica - under è già perso, quota troppo bassa
+                                    del outcomes_dict['under'][bookmaker_name]
+                                    impossible_bookmakers.append((bookmaker_name, odd_value))
+                                    filtered += 1
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        if impossible_bookmakers:
+                            logger.warning(
+                                f"❌ Rimosse quote IMPOSSIBILI per Under {threshold} {market_type} da {len(impossible_bookmakers)} bookmaker: "
+                                f"{[(bm, f'{odd:.2f}') for bm, odd in impossible_bookmakers[:3]]}"
+                                f"{'...' if len(impossible_bookmakers) > 3 else ''} "
+                                f"(risultato: {total_goals_current} gol, threshold {threshold} già superato, under è IMPOSSIBILE)"
+                            )
+                
+                # 🆕 MIGLIORAMENTO 2: Filtra quote troppo basse (< 1.01) - probabilmente errori
+                for outcome_type in ['over', 'under']:
+                    if outcome_type in outcomes_dict and isinstance(outcomes_dict[outcome_type], dict):
+                        invalid_bookmakers = []
+                        for bookmaker_name, odd_value in list(outcomes_dict[outcome_type].items()):
+                            try:
+                                odd_float = float(odd_value) if not isinstance(odd_value, float) else odd_value
+                                if odd_float < 1.01:
+                                    # Quota troppo bassa - probabilmente errore
+                                    del outcomes_dict[outcome_type][bookmaker_name]
+                                    invalid_bookmakers.append((bookmaker_name, odd_float))
+                                    filtered += 1
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        if invalid_bookmakers:
+                            logger.warning(
+                                f"⚠️  Rimosse quote INVALIDE (troppo basse < 1.01) per {outcome_type} {threshold} {market_type} "
+                                f"da {len(invalid_bookmakers)} bookmaker: {[(bm, f'{odd:.3f}') for bm, odd in invalid_bookmakers[:2]]}"
+                            )
+            
+            return filtered
+        
+        # Valida Over/Under FT
+        if 'over_under' in all_bookmaker_odds:
+            odds_filtered_count += _validate_over_under_market(
+                all_bookmaker_odds['over_under'], total_goals, "FT"
+            )
+        
+        # Valida Over/Under HT (usa risultato primo tempo)
+        if 'over_under_ht' in all_bookmaker_odds and minute > 45:
+            # Se siamo nel secondo tempo, le quote HT sono già determinate
+            odds_filtered_count += _validate_over_under_market(
+                all_bookmaker_odds['over_under_ht'], total_goals_ht, "HT"
+            )
+        
+        # Valida First Half Goals (se siamo nel secondo tempo, il primo tempo è finito)
+        if 'first_half_goals' in all_bookmaker_odds and minute > 45:
+            odds_filtered_count += _validate_over_under_market(
+                all_bookmaker_odds['first_half_goals'], total_goals_ht, "1H"
+            )
+        
+        # Valida Second Half Goals (usa solo gol del secondo tempo)
+        if 'second_half_goals' in all_bookmaker_odds and minute > 45:
+            second_half_goals = total_goals - total_goals_ht
+            odds_filtered_count += _validate_over_under_market(
+                all_bookmaker_odds['second_half_goals'], second_half_goals, "2H"
+            )
+        
+        if odds_filtered_count > 0:
+            logger.info(f"✅ Validazione quote RAW: rimosse {odds_filtered_count} quote stale/irrealistiche da bookmaker")
+        
+        return all_bookmaker_odds
+    
+    def _validate_odds_against_score(self, all_odds: Dict[str, Any], score_home: int, score_away: int, is_live: bool = False) -> Dict[str, Any]:
+        """
+        🎯 DEPRECATO: Mantenuto per compatibilità. 
+        La validazione ora avviene PRIMA della selezione tramite _validate_raw_odds_against_score.
+        """
+        # Questa funzione viene ancora chiamata dopo la selezione come doppio controllo
+        # ma la validazione principale ora avviene sulle quote RAW
+        return all_odds
+    
+    def _select_realistic_odds(self, odds_dict: Dict[str, Decimal], market_name: str = "unknown",
+                                is_live: bool = False, total_goals: int = 0, threshold: float = None) -> Tuple[Optional[Decimal], Optional[str]]:
         """
         🎯 SELEZIONE INTELLIGENTE QUOTE: Seleziona una quota "realistica" evitando outlier.
         
-        Strategia:
+        Strategia MIGLIORATA:
         1. Raccoglie tutte le quote valide
-        2. Calcola statistiche (media, mediana, deviazione standard)
-        3. Filtra outlier (> 2 deviazioni standard dalla media)
-        4. Seleziona 75° percentile o mediana dei top bookmaker (più realistico della quota massima)
+        2. Filtra per bookmaker affidabili (preferenza)
+        3. Calcola statistiche (media, mediana, deviazione standard)
+        4. Filtra outlier (> 2 deviazioni standard dalla media)
+        5. Calcola media ponderata per affidabilità bookmaker
+        6. Seleziona tra media ponderata, 75° percentile o mediana
+        
+        🆕 MIGLIORAMENTO LIVE: Per partite live, preferisce quote più vicine alla media/media ponderata
+        invece di sempre la più alta, perché quote più alte potrebbero essere stale.
+        
+        Args:
+            odds_dict: Dict {bookmaker_name: quota} con tutte le quote disponibili
+            market_name: Nome del mercato per logging
+            is_live: True se la partita è in corso (default: False)
+            total_goals: Gol totali della partita (default: 0)
+            threshold: Threshold del mercato (es. 1.5 per Over/Under, default: None)
         
         Args:
             odds_dict: Dict {bookmaker_name: quota} con tutte le quote disponibili
@@ -1688,22 +2304,28 @@ class Automation24H:
         if not odds_dict:
             return None, None
         
-        # Raccogli tutte le quote valide
-        valid_odds: List[Tuple[Decimal, str]] = []
+        # Raccogli tutte le quote valide con i loro pesi
+        valid_odds: List[Tuple[Decimal, str, float]] = []
         for bookmaker, odd in odds_dict.items():
             validated = self._validate_odds(odd)
             if validated is not None:
-                valid_odds.append((validated, bookmaker))
+                weight = self._get_bookmaker_weight(bookmaker)
+                valid_odds.append((validated, bookmaker, weight))
         
         if not valid_odds:
             return None, None
         
         # Se c'è solo una quota valida, usala
         if len(valid_odds) == 1:
-            return valid_odds[0]
+            return valid_odds[0][0], valid_odds[0][1]
+        
+        # Separa quote da bookmaker affidabili (peso >= 0.75) e altri
+        trusted_odds = [(odd, bm, w) for odd, bm, w in valid_odds if w >= 0.75]
+        other_odds = [(odd, bm, w) for odd, bm, w in valid_odds if w < 0.75]
         
         # Estrai solo i valori numerici per calcoli statistici
-        odds_values = [float(odd) for odd, _ in valid_odds]
+        odds_values = [float(odd) for odd, _, _ in valid_odds]
+        trusted_odds_values = [float(odd) for odd, _, _ in trusted_odds] if trusted_odds else []
         
         # Calcola statistiche
         mean_odds = statistics.mean(odds_values)
@@ -1719,54 +2341,250 @@ class Automation24H:
             std_dev = 0
         
         # Filtra outlier: rimuovi quote > 2 deviazioni standard dalla media
-        # (ma mantieni almeno la quota più alta se tutte sono outlier)
         filtered_odds = []
         outlier_threshold = mean_odds + (2 * std_dev) if std_dev > 0 else float('inf')
+        outlier_threshold_low = mean_odds - (2 * std_dev) if std_dev > 0 else 0.0
         
-        for odd, bookmaker in valid_odds:
-            if float(odd) <= outlier_threshold:
-                filtered_odds.append((odd, bookmaker))
+        for odd, bookmaker, weight in valid_odds:
+            odd_float = float(odd)
+            # Accetta quote nel range [mean - 2*std, mean + 2*std]
+            if outlier_threshold_low <= odd_float <= outlier_threshold:
+                filtered_odds.append((odd, bookmaker, weight))
         
-        # Se tutte le quote sono outlier, usa comunque la migliore (ma logga warning)
+        # Se tutte le quote sono outlier, usa comunque quelle da bookmaker affidabili
         if not filtered_odds:
-            max_odd, max_bookmaker = max(valid_odds, key=lambda x: x[0])
-            diff_pct = 0.0
-            if mean_odds > 0:
-                diff_pct = ((float(max_odd) - mean_odds) / mean_odds) * 100
-            logger.warning(
+            if trusted_odds:
+                # Usa la migliore tra i bookmaker affidabili
+                best_trusted = max(trusted_odds, key=lambda x: (x[2], x[0]))  # Max peso, poi quota
+                logger.warning(
+                    f"⚠️  QUOTE ANOMALE per {market_name}: tutte le quote sono outlier. "
+                    f"Uso bookmaker affidabile: {float(best_trusted[0]):.3f} da {best_trusted[1]} "
+                    f"(media={mean_odds:.3f})"
+                )
+                return best_trusted[0], best_trusted[1]
+            else:
+                # Fallback: usa la migliore disponibile
+                max_odd, max_bookmaker = max(valid_odds, key=lambda x: x[0])
+                diff_pct = 0.0
+                if mean_odds > 0:
+                    diff_pct = ((float(max_odd) - mean_odds) / mean_odds) * 100
+                logger.warning(
                 f"⚠️  QUOTE ANOMALE per {market_name}: tutte le quote sono outlier "
                 f"(media={mean_odds:.3f}, max={float(max_odd):.3f}, diff={diff_pct:.1f}%). "
                 f"Uso comunque la migliore: {float(max_odd):.3f} da {max_bookmaker}"
             )
             return max_odd, max_bookmaker
         
-        # Seleziona quota "realistica": usa 75° percentile invece della quota massima
-        # Questo evita quote anomale ma mantiene quote competitive
-        sorted_odds = sorted(filtered_odds, key=lambda x: x[0])
+        # 🆕 NUOVO: Calcola media ponderata per affidabilità bookmaker
+        # Le quote da bookmaker più affidabili hanno più peso
+        weighted_sum = Decimal('0')
+        total_weight = Decimal('0')
         
-        # Calcola 75° percentile
-        percentile_75_idx = int(len(sorted_odds) * 0.75)
-        if percentile_75_idx >= len(sorted_odds):
-            percentile_75_idx = len(sorted_odds) - 1
+        for odd, bookmaker, weight in filtered_odds:
+            weighted_sum += odd * Decimal(str(weight))
+            total_weight += Decimal(str(weight))
         
-        selected_odd, selected_bookmaker = sorted_odds[percentile_75_idx]
+        weighted_average = float(weighted_sum / total_weight) if total_weight > 0 else mean_odds
         
-        # Se la differenza tra 75° percentile e max è < 5%, preferisci la max (più competitiva)
-        max_odd, max_bookmaker = sorted_odds[-1]
-        diff_pct = float(((max_odd - selected_odd) / selected_odd) * 100) if selected_odd > 0 else 0.0
+        # Filtra quote trusted che sono nel range filtrato
+        filtered_trusted = [(odd, bm, w) for odd, bm, w in filtered_odds if w >= 0.75]
         
-        if diff_pct < 5.0 and len(filtered_odds) >= 3:
-            # Usa la quota massima se è vicina al 75° percentile (non è un outlier)
-            selected_odd, selected_bookmaker = max_odd, max_bookmaker
-        
-        # Log dettagliato se ci sono outlier filtrati
-        if len(filtered_odds) < len(valid_odds):
-            outliers_count = len(valid_odds) - len(filtered_odds)
-            logger.info(
-                f"📊 {market_name}: {outliers_count} outlier filtrati su {len(valid_odds)} quote. "
-                f"Media={mean_odds:.3f}, Mediana={median_odds:.3f}, StdDev={std_dev:.3f}, "
-                f"Selezionata={float(selected_odd):.3f} (75° percentile) da {selected_bookmaker}"
+        # 🆕 Calcola quality score per ogni quota filtrata (include consensus - MIGLIORAMENTO 2)
+        has_trusted = len(filtered_trusted) > 0
+        all_odds_list = [odd for odd, _, _ in filtered_odds]  # Lista per consensus
+        filtered_odds_with_quality = []
+        for odd, bookmaker, weight in filtered_odds:
+            quality_score = self._calculate_odds_quality_score(
+                odd, bookmaker, len(filtered_odds), has_trusted, all_odds_list
             )
+            filtered_odds_with_quality.append((odd, bookmaker, weight, quality_score))
+        
+        # Strategia di selezione:
+        # 1. Se ci sono bookmaker affidabili filtrati, preferisci la loro media ponderata o migliore
+        # 2. Altrimenti usa 75° percentile o mediana, considerando anche quality score
+        if filtered_trusted:
+            # Calcola media ponderata solo per bookmaker affidabili
+            trusted_weighted_sum = Decimal('0')
+            trusted_total_weight = Decimal('0')
+            
+            for odd, bookmaker, weight in filtered_trusted:
+                trusted_weighted_sum += odd * Decimal(str(weight))
+                trusted_total_weight += Decimal(str(weight))
+            
+            trusted_weighted_avg = float(trusted_weighted_sum / trusted_total_weight) if trusted_total_weight > 0 else None
+            
+            # 🆕 Trova la quota trusted con il miglior quality score che è vicina alla media
+            if trusted_weighted_avg:
+                # 🆕 MIGLIORAMENTO 1: Priorità Exchange - Cerca Betfair tra le quote trusted
+                exchange_bookmakers = ['betfair']
+                exchange_odds = []
+                other_trusted_odds = []
+                
+                for odd, bookmaker, weight in filtered_trusted:
+                    is_exchange = any(exc.lower() in bookmaker.lower() for exc in exchange_bookmakers)
+                    quality_score = self._calculate_odds_quality_score(
+                        odd, bookmaker, len(filtered_odds), True, all_odds_list
+                    )
+                    diff_from_avg = abs(float(odd) - trusted_weighted_avg) / trusted_weighted_avg * 100
+                    combined_score = quality_score * 0.6 + (1.0 - min(diff_from_avg / 10.0, 1.0)) * 0.4
+                    
+                    odds_data = (odd, bookmaker, weight, quality_score, combined_score, diff_from_avg, is_exchange)
+                    
+                    if is_exchange:
+                        exchange_odds.append(odds_data)
+                    else:
+                        other_trusted_odds.append(odds_data)
+                
+                # 🆕 Preferisci Exchange (Betfair) se disponibile e competitivo
+                if exchange_odds:
+                    best_exchange = max(exchange_odds, key=lambda x: (x[0], x[4]))  # Max quota, poi combined score
+                    odd, bookmaker, weight, quality, combined, diff_avg, is_exchange = best_exchange
+                    
+                    # Trova la miglior quota non-exchange per confronto
+                    best_non_exchange = None
+                    if other_trusted_odds:
+                        best_non_exchange = max(other_trusted_odds, key=lambda x: x[4])
+                    
+                    # Usa Exchange se:
+                    # 1. La quota è entro 3% dalla miglior non-exchange (se disponibile)
+                    # 2. O se la quota è competitiva (entro 5% dalla media)
+                    use_exchange = False
+                    if best_non_exchange:
+                        non_ex_odd, non_ex_bm = best_non_exchange[0], best_non_exchange[1]
+                        diff_from_best = ((float(odd) - float(non_ex_odd)) / float(non_ex_odd)) * 100
+                        if diff_from_best >= -3.0:  # Exchange è entro 3% dalla miglior non-exchange
+                            use_exchange = True
+                            logger.info(
+                                f"✅ {market_name}: Preferita quota Exchange (Betfair) {float(odd):.3f} "
+                                f"(vs miglior non-exchange {float(non_ex_odd):.3f} da {non_ex_bm}, diff={diff_from_best:+.2f}%)"
+                            )
+                    elif diff_avg < 5.0 or quality > 0.8:
+                        use_exchange = True
+                        logger.info(
+                            f"✅ {market_name}: Preferita quota Exchange (Betfair) {float(odd):.3f} "
+                            f"(quality={quality:.2f}, diff={diff_avg:.1f}% dalla media)"
+                        )
+                    
+                    if use_exchange:
+                        return odd, bookmaker
+                
+                # Se Exchange non disponibile o non competitivo, usa logica normale
+                trusted_with_quality = exchange_odds + other_trusted_odds
+                if trusted_with_quality:
+                    best_trusted = max(trusted_with_quality, key=lambda x: x[4])  # Max combined score
+                    odd, bookmaker, weight, quality, combined, diff_avg, _ = best_trusted
+                    
+                    # Usa se è entro 5% dalla media o se ha quality score molto alto (> 0.8)
+                    if diff_avg < 5.0 or quality > 0.8:
+                        logger.info(
+                            f"✅ {market_name}: Selezionata quota da bookmaker affidabile "
+                            f"{float(odd):.3f} da {bookmaker} "
+                            f"(quality={quality:.2f}, media trusted={trusted_weighted_avg:.3f}, diff={diff_avg:.1f}%)"
+                        )
+                        return odd, bookmaker
+        
+        # Strategia fallback: usa 75° percentile o mediana, considerando quality score
+        # 🆕 Se abbiamo quality scores, preferisci quote con quality score alto
+        if filtered_odds_with_quality and len(filtered_odds_with_quality) >= 2:
+            # Ordina per quality score (decrescente), poi per quota (decrescente)
+            sorted_by_quality = sorted(
+                filtered_odds_with_quality,
+                key=lambda x: (x[3], float(x[0])),  # (quality_score, odd)
+                reverse=True
+            )
+            
+            # Prendi le top 3 quote per quality score
+            top_quality_odds = sorted_by_quality[:min(3, len(sorted_by_quality))]
+            
+            # Tra queste, scegli quella con la quota più alta (più competitiva)
+            if top_quality_odds:
+                selected_odd, selected_bookmaker, selected_weight, selected_quality = max(
+                    top_quality_odds,
+                    key=lambda x: float(x[0])  # Max quota tra le top quality
+                )
+                logger.info(
+                    f"✅ {market_name}: Selezionata quota con quality score alto "
+                    f"{float(selected_odd):.3f} da {selected_bookmaker} "
+                    f"(quality={selected_quality:.2f})"
+                )
+                return selected_odd, selected_bookmaker
+        
+        # Fallback: usa 75° percentile o mediana (strategia originale)
+        sorted_odds = sorted(filtered_odds, key=lambda x: float(x[0]))
+        
+        # 🆕 MIGLIORAMENTO LIVE: Per partite live, preferisce quote più vicine alla media/media ponderata
+        # invece di sempre la più alta (che potrebbe essere stale)
+        if is_live and len(filtered_odds) >= 3:
+            # Calcola la media ponderata come target "realistico"
+            target_odd = weighted_average if weighted_average > 0 else median_odds
+            
+            # Trova la quota più vicina alla media/media ponderata (più realistica)
+            closest_to_target = min(
+                filtered_odds,
+                key=lambda x: abs(float(x[0]) - target_odd)
+            )
+            closest_odd, closest_bookmaker, closest_weight = closest_to_target
+            diff_from_target = abs(float(closest_odd) - target_odd) / target_odd * 100
+            
+            # Prendi anche la max e la min per confronto
+            max_odd, max_bookmaker, max_weight = sorted_odds[-1]
+            min_odd, min_bookmaker, min_weight = sorted_odds[0]
+            
+            # Se la quota più vicina alla media è molto diversa dalla max (> 5%),
+            # preferisci quella più vicina alla media (più realistica)
+            diff_max_vs_closest = abs(float(max_odd) - float(closest_odd)) / float(closest_odd) * 100
+            
+            if diff_max_vs_closest > 5.0 and diff_from_target < 10.0:
+                # La quota più vicina alla media è significativamente diversa dalla max
+                # e è vicina alla media (< 10% di differenza) -> preferiscila
+                selected_odd, selected_bookmaker, selected_weight = closest_odd, closest_bookmaker, closest_weight
+                logger.info(
+                    f"📊 {market_name} (LIVE): Preferita quota REALISTICA {float(selected_odd):.3f} da {selected_bookmaker} "
+                    f"(vicina alla media/media ponderata {target_odd:.3f}, diff={diff_from_target:.1f}%) "
+                    f"invece della max {float(max_odd):.3f} (diff={diff_max_vs_closest:.1f}%)"
+                )
+            else:
+                # Le quote sono simili o la quota vicina alla media non è abbastanza vicina
+                # Usa logica normale: 75° percentile o max se vicina
+                percentile_75_idx = int(len(sorted_odds) * 0.75)
+                if percentile_75_idx >= len(sorted_odds):
+                    percentile_75_idx = len(sorted_odds) - 1
+                
+                selected_odd, selected_bookmaker, selected_weight = sorted_odds[percentile_75_idx]
+                diff_pct = float(((max_odd - selected_odd) / selected_odd) * 100) if selected_odd > 0 else 0.0
+                
+                if diff_pct < 5.0:
+                    selected_odd, selected_bookmaker, selected_weight = max_odd, max_bookmaker, max_weight
+        else:
+            # Per partite pre-match, usa logica originale: preferisci max se vicina al 75° percentile
+            percentile_75_idx = int(len(sorted_odds) * 0.75)
+            if percentile_75_idx >= len(sorted_odds):
+                percentile_75_idx = len(sorted_odds) - 1
+            
+            selected_odd, selected_bookmaker, selected_weight = sorted_odds[percentile_75_idx]
+            max_odd, max_bookmaker, max_weight = sorted_odds[-1]
+            diff_pct = float(((max_odd - selected_odd) / selected_odd) * 100) if selected_odd > 0 else 0.0
+            
+            if diff_pct < 5.0 and len(filtered_odds) >= 3:
+                # Usa la quota massima se è vicina al 75° percentile (non è un outlier)
+                selected_odd, selected_bookmaker, selected_weight = max_odd, max_bookmaker, max_weight
+        
+        # Log dettagliato
+        outliers_count = len(valid_odds) - len(filtered_odds)
+        trusted_count = len([x for x in filtered_odds if x[2] >= 0.75])
+        selected_quality = next(
+            (q for o, b, w, q in filtered_odds_with_quality 
+             if o == selected_odd and b == selected_bookmaker),
+            0.0
+        ) if filtered_odds_with_quality else 0.0
+        
+        logger.info(
+            f"📊 {market_name}: {outliers_count} outlier filtrati su {len(valid_odds)} quote. "
+            f"Media={mean_odds:.3f}, Mediana={median_odds:.3f}, MediaPonderata={weighted_average:.3f}, "
+            f"BookmakerAffidabili={trusted_count}/{len(filtered_odds)}, "
+            f"Selezionata={float(selected_odd):.3f} da {selected_bookmaker} "
+            f"(affidabilità={selected_weight:.2f}, quality={selected_quality:.2f})"
+        )
         
         return selected_odd, selected_bookmaker
     
@@ -1896,7 +2714,12 @@ class Automation24H:
             logger.warning(f"🕵️  Watchdog: nessuna quota disponibile per fixture {fixture_id} durante il refresh")
             return
         
-        refreshed_odds = self._extract_all_odds_from_api_football(odds_data)
+        # Per refresh durante watchdog, non abbiamo info su score/minuto, usa default (validazione saltata)
+        refreshed_odds = self._extract_all_odds_from_api_football(
+            odds_data,
+            score_home=0, score_away=0, score_home_ht=0, score_away_ht=0,
+            is_live=False, minute=0
+        )
         if not refreshed_odds:
             logger.warning(f"🕵️  Watchdog: estrazione quote fallita per fixture {fixture_id}")
             return
@@ -1982,7 +2805,10 @@ class Automation24H:
         logger.error(f"❌ Tutti i {max_retries} tentativi falliti, ultimo errore: {last_exception}")
         return None
     
-    def _extract_all_odds_from_api_football(self, odds_list: List[Dict]) -> Dict[str, Any]:
+    def _extract_all_odds_from_api_football(self, odds_list: List[Dict], 
+                                             score_home: int = 0, score_away: int = 0,
+                                             score_home_ht: int = 0, score_away_ht: int = 0,
+                                             is_live: bool = False, minute: int = 0) -> Dict[str, Any]:
         """
         Estrae TUTTE le quote disponibili da API-Football.
         
@@ -2048,12 +2874,58 @@ class Automation24H:
             'asian_handicap': {}
         }
         
+        # 🔧 DEBUG: Log iniziale per capire cosa viene passato
+        logger.info(f"📡 Estrazione quote: ricevuti {len(odds_list)} bookmaker dall'API")
+        
         # Itera su tutti i bookmaker per raccogliere tutte le quote
+        bets_1x2_found = 0
+        bets_over_under_found = 0
+        total_bookmakers_processed = 0
+        
         for bookmaker in odds_list:
-            bookmaker_name = bookmaker.get("bookmaker", {}).get("name", "")
+            # 🔧 FIX CRITICO: La struttura può essere diversa!
+            # Dai log: "Primo bookmaker keys: ['id', 'name', 'bets']"
+            # Quindi la struttura è DIRETTA: {"id": ..., "name": "...", "bets": [...]}
+            # NON annidata: {"bookmaker": {"name": "..."}, "bets": [...]}
+            
+            if not isinstance(bookmaker, dict):
+                continue
+            
+            total_bookmakers_processed += 1
+            
+            # Prova prima struttura diretta (come mostrato nei log)
+            bookmaker_name = bookmaker.get("name", "")
+            
+            # Se non trovato, prova struttura annidata (per compatibilità)
+            if not bookmaker_name and bookmaker.get("bookmaker"):
+                bookmaker_name = bookmaker.get("bookmaker", {}).get("name", "")
+            
+            # 🔧 DEBUG: Log se nome non trovato
+            if not bookmaker_name:
+                logger.warning(
+                    f"⚠️  Bookmaker senza nome trovato! Keys disponibili: {list(bookmaker.keys())}. "
+                    f"Usa 'Unknown' come fallback. Bookmaker completo (primi 200 char): {str(bookmaker)[:200]}"
+                )
+                bookmaker_name = "Unknown"  # Fallback per non perdere quote
+            else:
+                # 🔧 DEBUG: Log nome bookmaker estratto (solo primi 2 per non intasare i log)
+                if not hasattr(self, '_logged_bookmaker_names'):
+                    self._logged_bookmaker_names = set()
+                if len(self._logged_bookmaker_names) < 2:
+                    self._logged_bookmaker_names.add(bookmaker_name)
+                    logger.debug(f"✅ Nome bookmaker estratto correttamente: '{bookmaker_name}' (keys: {list(bookmaker.keys())})")
+            
             bets = bookmaker.get("bets", [])
             
             for bet in bets:
+                bet_id = bet.get("id")
+                bet_name = bet.get("name", "").lower()
+                
+                # 🔧 DEBUG: Conta mercati trovati
+                if bet_id == 1 or "match winner" in bet_name or "1x2" in bet_name:
+                    bets_1x2_found += 1
+                elif bet_id == 5 or "over/under" in bet_name or "total goals" in bet_name:
+                    bets_over_under_found += 1
                 bet_id = bet.get("id")
                 bet_name = bet.get("name", "").lower()
                 values = bet.get("values", [])
@@ -2304,6 +3176,13 @@ class Automation24H:
                             except (ValueError, TypeError):
                                 continue
         
+        # 🔧 DEBUG: Log riepilogo quote raccolte
+        logger.info(f"📊 Riepilogo estrazione quote:")
+        logger.info(f"   Bookmaker processati: {total_bookmakers_processed}")
+        logger.info(f"   Mercati 1X2 trovati: {bets_1x2_found}")
+        logger.info(f"   Mercati Over/Under trovati: {bets_over_under_found}")
+        logger.info(f"   Quote 1X2 raccolte: home={len(all_bookmaker_odds['match_winner']['home'])}, draw={len(all_bookmaker_odds['match_winner']['draw'])}, away={len(all_bookmaker_odds['match_winner']['away'])}")
+        
         # 🔧 NUOVO: Calcola numero di bookmaker disponibili per ogni mercato/outcome
         bookmaker_counts = {
             'match_winner': {'home': 0, 'draw': 0, 'away': 0},
@@ -2336,6 +3215,14 @@ class Automation24H:
         _populate_counts_for_threshold(all_bookmaker_odds['over_under_ht'], 'over_under_ht')
         _populate_counts_for_threshold(all_bookmaker_odds['first_half_goals'], 'first_half_goals')
         _populate_counts_for_threshold(all_bookmaker_odds['second_half_goals'], 'second_half_goals')
+        
+        # 🎯 NUOVO: Valida quote RAW rispetto al risultato PRIMA della selezione (per partite live)
+        # Questo filtra quote stale/irrealistiche dai bookmaker prima che vengano selezionate
+        if is_live and (score_home > 0 or score_away > 0):
+            all_bookmaker_odds = self._validate_raw_odds_against_score(
+                all_bookmaker_odds, score_home, score_away, 
+                score_home_ht, score_away_ht, is_live=True, minute=minute
+            )
 
         for outcome in ['yes', 'no']:
             count = len(all_bookmaker_odds['btts'][outcome])
@@ -2360,16 +3247,32 @@ class Automation24H:
         # Sostituisce le quote massime con quote "realistiche" (75° percentile, filtra outlier)
         logger.debug("🔍 Applicazione selezione intelligente quote (filtro outlier)...")
         
+        # 🔧 DEBUG: Log quote RAW prima della selezione intelligente
+        for outcome in ['home', 'draw', 'away']:
+            raw_odds_count = len(all_bookmaker_odds['match_winner'][outcome])
+            if raw_odds_count > 0:
+                raw_odds_list = list(all_bookmaker_odds['match_winner'][outcome].values())
+                logger.info(f"📊 Quote RAW 1X2 {outcome}: {raw_odds_count} bookmaker, valori: {[float(odd) for odd in raw_odds_list[:5]]}")
+            else:
+                logger.warning(f"⚠️  Nessuna quota RAW trovata per 1X2 {outcome}")
+        
         # Match Winner (1X2)
         for outcome in ['home', 'draw', 'away']:
             if all_bookmaker_odds['match_winner'][outcome]:
+                # 🆕 Passa parametri per selezione intelligente in partite live
                 selected_odd, selected_bookmaker = self._select_realistic_odds(
                     all_bookmaker_odds['match_winner'][outcome],
-                    f"1X2_{outcome}"
+                    f"1X2_{outcome}",
+                    is_live=is_live,
+                    total_goals=score_home + score_away,
+                    threshold=None  # 1X2 non ha threshold
                 )
                 if selected_odd is not None:
                     all_odds['match_winner'][outcome] = float(selected_odd)
                     bookmaker_tracker['match_winner'][outcome] = selected_bookmaker
+                    logger.info(f"✅ Quota 1X2 {outcome} selezionata: {float(selected_odd)} da {selected_bookmaker}")
+                else:
+                    logger.warning(f"⚠️  _select_realistic_odds ha restituito None per 1X2 {outcome} (quote disponibili: {len(all_bookmaker_odds['match_winner'][outcome])})")
         
         # Over/Under FT e HT
         for threshold_dict, market_key, odds_key, tracker_key in [
@@ -2381,9 +3284,13 @@ class Automation24H:
             for threshold, outcomes in threshold_dict.items():
                 for outcome_type in ['over', 'under']:
                     if outcome_type in outcomes and outcomes[outcome_type]:
+                        # 🆕 Passa parametri per selezione intelligente in partite live
                         selected_odd, selected_bookmaker = self._select_realistic_odds(
                             outcomes[outcome_type],
-                            f"{market_key}_{threshold}_{outcome_type}"
+                            f"{market_key}_{threshold}_{outcome_type}",
+                            is_live=is_live,
+                            total_goals=score_home + score_away,
+                            threshold=float(threshold) if isinstance(threshold, (int, float)) else None
                         )
                         if selected_odd is not None:
                             if threshold not in odds_key:
@@ -2395,37 +3302,55 @@ class Automation24H:
         
         # BTTS FT e HT
         for outcome in ['yes', 'no']:
-            for market_key, target_dict in [
-                ('btts', all_odds['btts']),
-                ('btts_ht', all_odds['btts_ht'])
+            for market_key, target_dict, tracker_dict in [
+                ('btts', all_odds['btts'], bookmaker_tracker['btts']),
+                ('btts_ht', all_odds['btts_ht'], bookmaker_tracker['btts_ht'])
             ]:
                 if all_bookmaker_odds[market_key][outcome]:
+                    # 🆕 Passa parametri per selezione intelligente in partite live
                     selected_odd, selected_bookmaker = self._select_realistic_odds(
                         all_bookmaker_odds[market_key][outcome],
-                        f"{market_key}_{outcome}"
+                        f"{market_key}_{outcome}",
+                        is_live=is_live,
+                        total_goals=score_home + score_away,
+                        threshold=None
                     )
                     if selected_odd is not None:
                         target_dict[outcome] = float(selected_odd)
+                        # 🔧 FIX: Aggiorna anche bookmaker_tracker per BTTS
+                        tracker_dict[outcome] = selected_bookmaker
         
         # Double Chance
         for outcome in ['1x', '12', 'x2']:
             if all_bookmaker_odds['double_chance'][outcome]:
+                # 🆕 Passa parametri per selezione intelligente in partite live
                 selected_odd, selected_bookmaker = self._select_realistic_odds(
                     all_bookmaker_odds['double_chance'][outcome],
-                    f"double_chance_{outcome}"
+                    f"double_chance_{outcome}",
+                    is_live=is_live,
+                    total_goals=score_home + score_away,
+                    threshold=None
                 )
                 if selected_odd is not None:
                     all_odds['double_chance'][outcome] = float(selected_odd)
+                    # 🔧 FIX: Aggiorna anche bookmaker_tracker per Double Chance
+                    bookmaker_tracker['double_chance'][outcome] = selected_bookmaker
         
         # Draw No Bet
         for outcome in ['home', 'away']:
             if all_bookmaker_odds['draw_no_bet'][outcome]:
+                # 🆕 Passa parametri per selezione intelligente in partite live
                 selected_odd, selected_bookmaker = self._select_realistic_odds(
                     all_bookmaker_odds['draw_no_bet'][outcome],
-                    f"dnb_{outcome}"
+                    f"dnb_{outcome}",
+                    is_live=is_live,
+                    total_goals=score_home + score_away,
+                    threshold=None
                 )
                 if selected_odd is not None:
                     all_odds['draw_no_bet'][outcome] = float(selected_odd)
+                    # 🔧 FIX: Aggiorna anche bookmaker_tracker per Draw No Bet
+                    bookmaker_tracker['draw_no_bet'][outcome] = selected_bookmaker
         
         # 🔧 OPZIONE 4: Applica logica ibrida - preferisci bet365 se differenza < 5%
         # Cerca bet365 in tutti i bookmaker (case-insensitive)
@@ -2463,39 +3388,46 @@ class Automation24H:
                         bet365_odds[f'second_half_goals_{threshold}_{outcome_type}'] = list(bet365_quota.values())[0]
         
         # Applica logica ibrida: se bet365 disponibile e differenza < 5%, usa bet365
-        def apply_hybrid_logic(best_odd, bet365_odd_key, market_path, outcome_key=None):
+        def apply_hybrid_logic(best_odd, bet365_odd_key, market_path, outcome_key=None, market_name=None):
             """Applica logica ibrida: preferisci bet365 se differenza < 5%"""
             if bet365_odd_key not in bet365_odds:
                 return best_odd, None  # Nessuna quota bet365 disponibile
             
             bet365_odd = bet365_odds[bet365_odd_key]
             if best_odd is None:
-                return bet365_odd, 'bet365'
+                return float(bet365_odd) if isinstance(bet365_odd, Decimal) else bet365_odd, 'bet365'
+            
+            # 🔧 FIX: Converti entrambi a float per evitare TypeError (float - Decimal)
+            best_odd_float = float(best_odd) if not isinstance(best_odd, float) else best_odd
+            bet365_odd_float = float(bet365_odd) if isinstance(bet365_odd, Decimal) else bet365_odd
             
             # Calcola differenza percentuale
-            diff_pct = ((best_odd - bet365_odd) / bet365_odd) * 100
+            diff_pct = ((best_odd_float - bet365_odd_float) / bet365_odd_float) * 100
             
             if diff_pct < 5.0:  # Differenza < 5%, preferisci bet365
                 # Aggiorna all_odds con quota bet365
                 if outcome_key:
                     if isinstance(market_path, dict) and outcome_key in market_path:
-                        market_path[outcome_key] = bet365_odd
+                        market_path[outcome_key] = bet365_odd_float
                 elif isinstance(market_path, dict) and 'over' in market_path and 'under' in market_path:
                     # Per over/under, devo sapere quale outcome
                     pass  # Gestito separatamente
-                return bet365_odd, 'bet365'
+                return bet365_odd_float, 'bet365'
             else:
-                return best_odd, bookmaker_tracker.get(market_path, {}).get(outcome_key) if outcome_key else None
+                # 🔧 FIX: Restituisci None per bookmaker - viene già tracciato in bookmaker_tracker
+                # Non possiamo usare market_path come chiave perché è un dict non hashable
+                return best_odd_float, None
         
         # Applica logica ibrida per match_winner
         for outcome in ['home', 'draw', 'away']:
             best_odd = all_odds['match_winner'][outcome]
             bet365_key = f'match_winner_{outcome}'
-            new_odd, used_bookmaker = apply_hybrid_logic(best_odd, bet365_key, all_odds['match_winner'], outcome)
+            new_odd, used_bookmaker = apply_hybrid_logic(best_odd, bet365_key, all_odds['match_winner'], outcome, market_name='match_winner')
             if used_bookmaker == 'bet365':
                 all_odds['match_winner'][outcome] = new_odd
                 bookmaker_tracker['match_winner'][outcome] = 'bet365'
                 logger.info(f"✅ Preferita bet365 per 1X2 {outcome}: {new_odd} (differenza < 5% dalla quota migliore {best_odd})")
+            # Se used_bookmaker è None, il bookmaker è già tracciato in bookmaker_tracker dalla selezione precedente
         
         # Applica logica ibrida per over/under e second_half_goals
         for market_type in ['over_under', 'second_half_goals']:
@@ -2507,11 +3439,119 @@ class Automation24H:
                         bet365_key = f'{market_type}_{threshold}_{outcome_type}'
                         if bet365_key in bet365_odds:
                             bet365_odd = bet365_odds[bet365_key]
-                            diff_pct = ((best_odd - bet365_odd) / bet365_odd) * 100
+                            # 🔧 FIX: Converti entrambi a float per evitare TypeError (float - Decimal)
+                            best_odd_float = float(best_odd) if not isinstance(best_odd, float) else best_odd
+                            bet365_odd_float = float(bet365_odd) if isinstance(bet365_odd, Decimal) else bet365_odd
+                            diff_pct = ((best_odd_float - bet365_odd_float) / bet365_odd_float) * 100
                             if diff_pct < 5.0:
-                                market_dict[threshold][outcome_type] = bet365_odd
+                                market_dict[threshold][outcome_type] = float(bet365_odd) if isinstance(bet365_odd, Decimal) else bet365_odd
                                 bookmaker_tracker[market_type][threshold][outcome_type] = 'bet365'
-                                logger.info(f"✅ Preferita bet365 per {market_type} {threshold} {outcome_type}: {bet365_odd} (differenza {diff_pct:.1f}% < 5%)")
+                                logger.info(f"✅ Preferita bet365 per {market_type} {threshold} {outcome_type}: {bet365_odd_float} (differenza {diff_pct:.1f}% < 5%)")
+        
+        # 🎯 VALIDAZIONE PROBABILITÀ IMPLICITE: Verifica coerenza delle quote
+        # Rimuovi quote incoerenti prima di restituirle
+        logger.debug("🔍 Validazione probabilità implicite per coerenza quote...")
+        
+        # 🔧 DEBUG: Log quote PRIMA della validazione
+        logger.info(f"📊 Quote 1X2 PRIMA della validazione: home={all_odds['match_winner'].get('home')}, draw={all_odds['match_winner'].get('draw')}, away={all_odds['match_winner'].get('away')}")
+        
+        # Valida 1X2 - verifica se ci sono quote da validare
+        has_any_1x2_odds = any([all_odds['match_winner'].get('home'), all_odds['match_winner'].get('draw'), all_odds['match_winner'].get('away')])
+        logger.info(f"🔍 Ha almeno una quota 1X2 prima della validazione: {has_any_1x2_odds}")
+        
+        if all_odds['match_winner'] and has_any_1x2_odds:
+            match_winner_valid = self._validate_market_implied_probabilities(
+                all_odds['match_winner'], '1X2'
+            )
+            if not match_winner_valid:
+                valid_count = sum([
+                    1 for v in all_odds['match_winner'].values() if v is not None
+                ])
+                
+                # 🆕 LOGICA MIGLIORATA: Calcola probabilità implicita per vedere quanto è sopra il threshold
+                try:
+                    total_implied = Decimal('0')
+                    for v in all_odds['match_winner'].values():
+                        if v is not None:
+                            odd_dec = self._validate_odds(v)
+                            if odd_dec:
+                                total_implied += Decimal('1') / odd_dec
+                    total_implied_float = float(total_implied)
+                    
+                    # Se abbiamo almeno 2 quote e il margine è < 1.12, manteniamo comunque
+                    # (il nuovo threshold è 1.09, ma accettiamo fino a 1.12 per non perdere quote utili)
+                    if valid_count >= 2 and total_implied_float <= 1.12:
+                        logger.info(
+                            f"ℹ️  Quote 1X2 con margine leggermente alto ({total_implied_float:.4f}), "
+                            f"mantenute comunque (home={all_odds['match_winner'].get('home')}, "
+                            f"draw={all_odds['match_winner'].get('draw')}, away={all_odds['match_winner'].get('away')})"
+                        )
+                        # Non reset, mantieni le quote
+                    else:
+                        logger.warning(
+                            f"⚠️  Quote 1X2 con margine troppo alto ({total_implied_float:.4f} > 1.12), "
+                            f"mantenute solo se almeno 2 quote valide (count={valid_count})"
+                        )
+                        if valid_count < 2:
+                            logger.warning("⚠️  Reset quote 1X2: meno di 2 quote valide")
+                            all_odds['match_winner'] = {'home': None, 'draw': None, 'away': None}
+                except Exception as e:
+                    logger.debug(f"Errore calcolo probabilità implicite 1X2: {e}, mantengo quote")
+        
+        # 🔧 DEBUG: Log quote DOPO la validazione
+        logger.info(f"📊 Quote 1X2 DOPO la validazione: home={all_odds['match_winner'].get('home')}, draw={all_odds['match_winner'].get('draw')}, away={all_odds['match_winner'].get('away')}")
+        
+        # Valida Over/Under per ogni threshold
+        for market_type in ['over_under', 'over_under_ht', 'first_half_goals', 'second_half_goals']:
+            market_dict = all_odds.get(market_type, {})
+            for threshold, odds_pair in list(market_dict.items()):
+                if isinstance(odds_pair, dict) and ('over' in odds_pair or 'under' in odds_pair):
+                    is_valid = self._validate_market_implied_probabilities(odds_pair, f"{market_type}_{threshold}")
+                    if not is_valid:
+                        # 🆕 LOGICA MIGLIORATA: Calcola probabilità implicita per vedere se è accettabile
+                        try:
+                            total_implied = Decimal('0')
+                            valid_odds_count = 0
+                            for outcome_type in ['over', 'under']:
+                                odd_val = odds_pair.get(outcome_type)
+                                if odd_val is not None:
+                                    odd_dec = self._validate_odds(odd_val)
+                                    if odd_dec:
+                                        total_implied += Decimal('1') / odd_dec
+                                        valid_odds_count += 1
+                            
+                            if valid_odds_count > 0:
+                                total_implied_float = float(total_implied)
+                                # Per Over/Under: accetta fino a 1.15 (più permissivo per live/league minori)
+                                if total_implied_float <= 1.15:
+                                    logger.debug(
+                                        f"ℹ️  Quote {market_type} {threshold} con margine {total_implied_float:.4f}, "
+                                        f"mantenute (leggermente sopra threshold ma accettabile)"
+                                    )
+                                    # Non reset, mantieni le quote
+                                else:
+                                    logger.warning(
+                                        f"⚠️  Quote {market_type} {threshold} con margine troppo alto ({total_implied_float:.4f} > 1.15), reset"
+                                    )
+                                    all_odds[market_type][threshold] = {'over': None, 'under': None}
+                            else:
+                                # Nessuna quota valida, reset
+                                all_odds[market_type][threshold] = {'over': None, 'under': None}
+                        except Exception as e:
+                            logger.debug(f"Errore validazione {market_type} {threshold}: {e}, reset conservativo")
+                            # Reset conservativo in caso di errore
+                            all_odds[market_type][threshold] = {'over': None, 'under': None}
+        
+        # Valida BTTS
+        for market_type in ['btts', 'btts_ht']:
+            btts_dict = all_odds.get(market_type, {})
+            if btts_dict:
+                is_valid = self._validate_market_implied_probabilities(btts_dict, market_type)
+                if not is_valid:
+                    logger.warning(f"⚠️  Quote {market_type} incoerenti, reset")
+                    all_odds[market_type] = {'yes': None, 'no': None}
+        
+        logger.debug("✅ Validazione probabilità implicite completata")
         
         # 🔧 NUOVO: Aggiungi tracker, conteggi e riepilogo offerte a all_odds per uso futuro
         best_offer_summary = []

@@ -23,3 +23,8 @@ services:
       - key: AUTOMATION_UPDATE_INTERVAL
         value: "1200"  # 20 minuti (1200 secondi)
 
+
+
+
+
+

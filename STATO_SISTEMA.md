@@ -86,3 +86,8 @@ Le impostazioni sono in `automation_service_wrapper.py`:
 4. Il sistema monitora automaticamente tutte le partite disponibili
 
 
+
+
+
+
+
